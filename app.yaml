@@ -1,0 +1,7 @@
+runtime: nodejs20
+entrypoint: node server.js
+
+handlers:
+  - url: /.*
+    script: auto
+    secure: always
