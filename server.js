@@ -17,6 +17,8 @@ if (process.env.NODE_ENV === 'development') {
   app.use(cors({
     origin: function (origin, callback) {
       const ALLOWED_ORIGINS = [
+        'https://aspect-agents.firebaseapp.com',
+        'https://aspect-agents.web.app',
         'https://primyo.io',
         'https://boostmind-b052c.web.app'
       ];
