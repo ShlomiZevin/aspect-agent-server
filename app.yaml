@@ -2,13 +2,7 @@ runtime: nodejs20
 entrypoint: node server.js
 
 env_variables:
-  OPENAI_API_KEY: "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"
-  OPENAI_ORG_ID: "org-EmJpgaT003YWXOLYiV6Iw6gk"
-  OPENAI_PROJECT_ID: "proj_reQKc0LhRJFrgi6EfO2RTz9k"
-  ASSISTANT_ID: "asst_467Ou8URhy35BDKbrEe18XKd"
-  ASSISTANT_ID_FINANCE: "asst_467Ou8URhy35BDKbrEe18XKd"
-  ASSISTANT_ID_BOOKING: "asst_9J7xOxkO40mhjwORvTVBIoU2"
-
+  
 handlers:
   - url: /.*
     script: auto
