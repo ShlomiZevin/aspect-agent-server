@@ -1,8 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
-const { OpenAI } = require('openai');
 const cors = require('cors');
+const llmService = require('./services/llm');
 
 const app = express();
 // Development CORS (more permissive)
@@ -37,14 +37,6 @@ if (process.env.NODE_ENV === 'development') {
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const ASSISTANT_ID = process.env.ASSISTANT_ID;
-
-const headers = { headers: { 'OpenAI-Beta': 'assistants=v2' } };
-
-// 🧠 In-memory conversation → threadId map
-const conversationThreads = new Map();
-
 app.post('/api/finance-assistant', async (req, res) => {
   const { message, conversationId } = req.body;
 
@@ -53,50 +45,11 @@ app.post('/api/finance-assistant', async (req, res) => {
   }
 
   try {
-    let threadId;
-
-    if (conversationThreads.has(conversationId)) {
-      threadId = conversationThreads.get(conversationId);
-    } else {
-      const thread = await openai.beta.threads.create({}, headers);
-      threadId = thread.id;
-      conversationThreads.set(conversationId, threadId);
-    }
-
-    // Add message to thread
-    await openai.beta.threads.messages.create(threadId, {
-      role: 'user',
-      content: message
-    }, headers);
-
-    // Run assistant
-    const run = await openai.beta.threads.runs.create(threadId, {
-      assistant_id: ASSISTANT_ID
-    }, headers);
-
-    // Poll run status
-    for (let i = 0; i < 100; i++) {
-      const status = await openai.beta.threads.runs.retrieve(threadId, run.id, headers);
-      if (status.status === 'completed') break;
-      if (status.status === 'failed') throw new Error('Assistant run failed');
-      await new Promise(r => setTimeout(r, 50));
-    }
-
-    // Get reply
-    const messages = await openai.beta.threads.messages.list(threadId, {
-      order: 'desc',
-      limit: 1
-    }, headers);
-
-    const reply = messages.data[0].content
-      .filter(item => item.type === 'text')
-      .map(item => item.text.value)
-      .join('\n');
-
+    const reply = await llmService.sendMessage(message, conversationId);
     res.json({ reply });
   } catch (err) {
     console.error('❌ Error:', err.message);
-    res.status(500).json({ error: 'error handling message' + err.message });
+    res.status(500).json({ error: 'Error handling message: ' + err.message });
   }
 });
 
