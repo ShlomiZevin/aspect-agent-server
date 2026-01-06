@@ -130,21 +130,19 @@ class OpenAIService {
 
       // Yield each chunk as it arrives
       for await (const chunk of stream) {
+        console.log(chunk);
         // Handle different event types
-        if (chunk.type === 'response.output_item.done') {
-          const item = chunk.item;
-          if (item.role === 'assistant' && item.type === 'message') {
-            assistantMessageId = item.id;
-            // Full reply is already built from deltas
-          }
-        } else if (chunk.type === 'response.output_item.delta') {
+        if (chunk.type === 'response.output_text.done') {
+          assistantMessageId = chunk.item_id;
+        } else if (chunk.type === 'response.output_text.delta') {
           const delta = chunk.delta;
-          if (delta.type === 'output_text' && delta.text) {
-            fullReply += delta.text;
-            yield delta.text;
+          if (delta) {
+            fullReply += delta;
+            yield delta;
           }
         }
       }
+      console.log(fullReply);
 
       // Add assistant reply to conversation history
       if (fullReply && assistantMessageId) {
