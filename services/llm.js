@@ -20,6 +20,16 @@ class LLMService {
   }
 
   /**
+   * Send a message and get a streaming response
+   * @param {string} message - The user message
+   * @param {string} conversationId - Unique conversation identifier
+   * @returns {AsyncGenerator} - Stream of text chunks
+   */
+  async *sendMessageStream(message, conversationId) {
+    yield* this.provider.sendMessageStream(message, conversationId);
+  }
+
+  /**
    * Clear conversation history for a given conversation ID
    * @param {string} conversationId - The conversation to clear
    */
