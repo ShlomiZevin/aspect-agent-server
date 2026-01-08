@@ -1,4 +1,11 @@
 const { OpenAI } = require('openai');
+const { toFile } = require('openai/uploads');
+const { File } = require('node:buffer');
+
+// Polyfill for File in Node.js < 20
+if (typeof globalThis.File === 'undefined') {
+  globalThis.File = File;
+}
 
 /**
  * OpenAI service using Responses API with Prompt ID
@@ -176,24 +183,36 @@ class OpenAIService {
 
   /**
    * Add a file to the knowledge base vector store
-   * @param {Buffer|string} fileContent - The file content (Buffer) or file path (string)
+   * @param {Buffer} fileBuffer - The file content as Buffer
    * @param {string} fileName - The name of the file
    * @returns {Promise<Object>} - The file upload result
    */
-  async addFileToKnowledgeBase(fileContent, fileName) {
+  async addFileToKnowledgeBase(fileBuffer, fileName) {
     try {
       const VECTOR_STORE_ID = 'vs_695e750fc75481918e3d76851ce30cae'; // meanapause KB
 
+      // Check if file already exists
+      const list = await this.client.files.list();
+
+      for await (const file of list) {
+        if (file.filename === fileName) {
+          console.log(`❌ File already exists with ID: ${file.id}`);
+          throw new Error(`File "${fileName}" already exists in the knowledge base with ID: ${file.id}`);
+        }
+      }
+
       // Step 1: Upload the file to OpenAI
+      const fileObject = await toFile(fileBuffer, fileName);
+
       const file = await this.client.files.create({
-        file: fileContent,
+        file: fileObject,
         purpose: 'assistants'
       });
 
-      console.log(`✅ File uploaded: ${file.id}`);
+      console.log(`✅ File uploaded with ID: ${file.id}`);
 
-      // Step 2: Add the file to the vector store
-      const vectorStoreFile = await this.client.beta.vectorStores.files.create(
+      // Step 2: Add the file to the vector store using the file_id
+      const vectorStoreFile = await this.client.vectorStores.files.create(
         VECTOR_STORE_ID,
         {
           file_id: file.id
@@ -211,6 +230,7 @@ class OpenAIService {
       };
     } catch (error) {
       console.error('❌ Error adding file to knowledge base:', error.message);
+      console.error('Full error:', error);
       throw new Error(`Failed to add file to knowledge base: ${error.message}`);
     }
   }

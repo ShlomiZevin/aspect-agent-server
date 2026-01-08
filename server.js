@@ -2,7 +2,16 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
+const multer = require('multer');
 const llmService = require('./services/llm');
+
+// Configure multer for file uploads (memory storage)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50MB limit
+  }
+});
 
 const app = express();
 // Development CORS (more permissive)
@@ -96,6 +105,26 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
     res.flush && res.flush();
     res.end();
+  }
+});
+
+// File upload to knowledge base endpoint
+app.post('/api/kb/upload', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
+  try {
+    console.log(`📤 Uploading file: ${req.file.originalname} (${req.file.size} bytes)`);
+
+    // Pass the buffer directly - OpenAI SDK will handle it
+    const result = await llmService.addFileToKnowledgeBase(req.file.buffer, req.file.originalname);
+
+    console.log(`✅ File uploaded successfully: ${result.fileId}`);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Upload Error:', err.message);
+    res.status(500).json({ error: 'Error uploading file: ' + err.message });
   }
 });
 
