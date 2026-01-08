@@ -36,6 +36,16 @@ class LLMService {
   clearConversation(conversationId) {
     return this.provider.clearConversation(conversationId);
   }
+
+  /**
+   * Add a file to the knowledge base vector store
+   * @param {Buffer|string} fileContent - The file content (Buffer) or file path (string)
+   * @param {string} fileName - The name of the file
+   * @returns {Promise<Object>} - The file upload result
+   */
+  async addFileToKnowledgeBase(fileContent, fileName) {
+    return this.provider.addFileToKnowledgeBase(fileContent, fileName);
+  }
 }
 
 module.exports = new LLMService();

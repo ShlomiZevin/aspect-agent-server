@@ -173,6 +173,47 @@ class OpenAIService {
     }
     return false;
   }
+
+  /**
+   * Add a file to the knowledge base vector store
+   * @param {Buffer|string} fileContent - The file content (Buffer) or file path (string)
+   * @param {string} fileName - The name of the file
+   * @returns {Promise<Object>} - The file upload result
+   */
+  async addFileToKnowledgeBase(fileContent, fileName) {
+    try {
+      const VECTOR_STORE_ID = 'vs_695e750fc75481918e3d76851ce30cae'; // meanapause KB
+
+      // Step 1: Upload the file to OpenAI
+      const file = await this.client.files.create({
+        file: fileContent,
+        purpose: 'assistants'
+      });
+
+      console.log(`✅ File uploaded: ${file.id}`);
+
+      // Step 2: Add the file to the vector store
+      const vectorStoreFile = await this.client.beta.vectorStores.files.create(
+        VECTOR_STORE_ID,
+        {
+          file_id: file.id
+        }
+      );
+
+      console.log(`✅ File added to vector store: ${vectorStoreFile.id}`);
+
+      return {
+        success: true,
+        fileId: file.id,
+        vectorStoreFileId: vectorStoreFile.id,
+        fileName: fileName,
+        status: vectorStoreFile.status
+      };
+    } catch (error) {
+      console.error('❌ Error adding file to knowledge base:', error.message);
+      throw new Error(`Failed to add file to knowledge base: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new OpenAIService();
