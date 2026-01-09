@@ -50,20 +50,29 @@ class OpenAIService {
         }]
       });
 
-      // Use Responses API with stored prompt
-      const response = await this.client.responses.create({
+      const response = await openai.responses.create({
         prompt: {
-          id: this.promptId,
-          version: '1'
+          "id": this.promptId,
+          "version": "2"
         },
         input: input,
         text: {
-          format: {
-            type: 'text'
+          "format": {
+            "type": "text"
           }
         },
+        reasoning: {},
+        tools: [
+          {
+            "type": "file_search",
+            "vector_store_ids": [
+              "vs_695e750fc75481918e3d76851ce30cae"
+            ]
+          }
+        ],
         max_output_tokens: 2048,
-        store: true
+        store: true,
+        include: ["web_search_call.action.sources"]
       });
 
       // Extract assistant reply from output
@@ -118,18 +127,28 @@ class OpenAIService {
       // Use Responses API with stored prompt
       const stream = await this.client.responses.create({
         prompt: {
-          id: this.promptId,
-          version: '1'
+          "id": this.promptId,
+          "version": "2"
         },
         input: input,
         text: {
-          format: {
-            type: 'text'
+          "format": {
+            "type": "text"
           }
         },
+        reasoning: {},
+        tools: [
+          {
+            "type": "file_search",
+            "vector_store_ids": [
+              "vs_695e750fc75481918e3d76851ce30cae"
+            ]
+          }
+        ],
         max_output_tokens: 2048,
-        stream: true,
-        store: true
+        store: true,
+        include: ["web_search_call.action.sources"],
+        stream: true
       });
 
       let fullReply = '';
