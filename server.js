@@ -74,7 +74,7 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId } = req.body;
+  const { message, conversationId, useKnowledgeBase } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -94,7 +94,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     if (res.flush) res.flush();
 
     // Stream the response
-    for await (const chunk of llmService.sendMessageStream(message, conversationId)) {
+    for await (const chunk of llmService.sendMessageStream(message, conversationId, useKnowledgeBase)) {
       res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
       res.flush && res.flush(); // Flush after each chunk
     }

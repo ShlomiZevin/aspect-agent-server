@@ -26,6 +26,7 @@ echo "   Stop previous: NO"
 echo ""
 
 # Deploy with --no-promote and --no-stop-previous-version
+# gcloud app deploy --version=general-flex-1 --no-promote --no-stop-previous-version
 gcloud app deploy --version="$VERSION_ID" --no-promote --no-stop-previous-version
 
 if [ $? -eq 0 ]; then

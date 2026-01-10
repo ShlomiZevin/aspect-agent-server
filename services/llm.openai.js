@@ -104,7 +104,7 @@ class OpenAIService {
    * @param {string} conversationId - Unique conversation identifier
    * @returns {AsyncGenerator} - Stream of text chunks
    */
-  async *sendMessageStream(message, conversationId) {
+  async *sendMessageStream(message, conversationId, useKnowledgeBase = true) {
     try {
       // Get or initialize conversation history
       let input = this.conversations.get(conversationId);
@@ -124,6 +124,16 @@ class OpenAIService {
         }]
       });
 
+      // Build tools array conditionally based on useKnowledgeBase flag
+      const tools = useKnowledgeBase ? [
+        {
+          "type": "file_search",
+          "vector_store_ids": [
+            "vs_695e750fc75481918e3d76851ce30cae"
+          ]
+        }
+      ] : [];
+
       // Use Responses API with stored prompt
       const stream = await this.client.responses.create({
         prompt: {
@@ -137,14 +147,7 @@ class OpenAIService {
           }
         },
         reasoning: {},
-        tools: [
-          {
-            "type": "file_search",
-            "vector_store_ids": [
-              "vs_695e750fc75481918e3d76851ce30cae"
-            ]
-          }
-        ],
+        tools: tools,
         max_output_tokens: 2048,
         store: true,
         include: ["web_search_call.action.sources"],

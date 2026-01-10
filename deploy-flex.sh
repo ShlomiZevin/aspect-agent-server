@@ -26,6 +26,7 @@ echo "   Config: app.flexible.yaml"
 echo ""
 
 # Deploy using the flexible environment config
+# gcloud app deploy app.flexible.yaml --version=general-flex-1 --no-promote --no-stop-previous-version
 gcloud app deploy app.flexible.yaml --version="$VERSION_ID" --no-promote --no-stop-previous-version
 
 if [ $? -eq 0 ]; then

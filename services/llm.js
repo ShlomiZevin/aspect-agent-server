@@ -25,8 +25,8 @@ class LLMService {
    * @param {string} conversationId - Unique conversation identifier
    * @returns {AsyncGenerator} - Stream of text chunks
    */
-  async *sendMessageStream(message, conversationId) {
-    yield* this.provider.sendMessageStream(message, conversationId);
+  async *sendMessageStream(message, conversationId, useKnowledgeBase) {
+    yield* this.provider.sendMessageStream(message, conversationId, useKnowledgeBase);
   }
 
   /**
