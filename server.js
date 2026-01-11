@@ -7,6 +7,7 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 const multer = require('multer');
 const llmService = require('./services/llm');
+const db = require('./services/database');
 
 // Configure multer for file uploads (memory storage)
 const upload = multer({
@@ -52,9 +53,14 @@ app.use(bodyParser.json());
 app.use(express.static('public'));
 
 // Health check endpoint for App Engine Flexible
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
+app.get('/health', async (req, res) => {
+  const health = await db.healthCheck();
+  const statusCode = health.status === 'healthy' ? 200 : 503;
+  res.status(statusCode).json(health);
 });
+
+// Database test routes
+app.use('/api/db', require('./routes/db-test'));
 
 app.post('/api/finance-assistant', async (req, res) => {
   const { message, conversationId } = req.body;
@@ -132,6 +138,29 @@ app.post('/api/kb/upload', upload.single('file'), async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Agent running at http://localhost:${PORT}`);
-});
+
+// Initialize database and start server
+async function startServer() {
+  try {
+    // Initialize database connection
+    console.log('🔄 Initializing database connection...');
+    await db.initialize();
+    console.log('✅ Database connected successfully');
+
+    // Start Express server
+    app.listen(PORT, () => {
+      console.log(`✅ Agent server running at http://localhost:${PORT}`);
+      console.log(`📊 Health check available at http://localhost:${PORT}/health`);
+    });
+  } catch (error) {
+    console.error('❌ Failed to start server:', error.message);
+    console.error('💡 The server will continue running, but database features will be unavailable');
+
+    // Start server anyway (allows it to run without database for backward compatibility)
+    app.listen(PORT, () => {
+      console.log(`⚠️  Agent server running at http://localhost:${PORT} (without database)`);
+    });
+  }
+}
+
+startServer();

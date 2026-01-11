@@ -1,5 +1,6 @@
 .env
 .env.production
+.env.cloudsql
 node_modules/
 *.log
 .DS_Store
@@ -7,3 +8,8 @@ data/
 temp/
 app.yaml
 app.flexible.yaml
+
+# Cloud SQL configuration
+scripts/cloud-sql/cloud-sql-config.env
+scripts/cloud-sql/*.env
+!scripts/cloud-sql/*.env.template
