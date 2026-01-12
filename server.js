@@ -64,6 +64,25 @@ app.get('/health', async (req, res) => {
 // Database test routes
 app.use('/api/db', require('./routes/db-test'));
 
+// Create new anonymous user
+app.post('/api/user/create', async (req, res) => {
+  try {
+    // Generate unique external ID
+    const externalId = `anon_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Create user in database
+    const user = await conversationService.getOrCreateUser(externalId);
+
+    res.json({
+      userId: user.externalId,
+      createdAt: user.createdAt
+    });
+  } catch (err) {
+    console.error('❌ Error creating user:', err.message);
+    res.status(500).json({ error: 'Error creating user: ' + err.message });
+  }
+});
+
 // Get conversation history
 app.get('/api/conversation/:conversationId/history', async (req, res) => {
   const { conversationId } = req.params;
