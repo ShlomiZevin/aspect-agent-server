@@ -8,6 +8,7 @@ const cors = require('cors');
 const multer = require('multer');
 const llmService = require('./services/llm');
 const db = require('./services/db.pg');
+const conversationService = require('./services/conversation.service');
 
 // Configure multer for file uploads (memory storage)
 const upload = multer({
@@ -63,15 +64,50 @@ app.get('/health', async (req, res) => {
 // Database test routes
 app.use('/api/db', require('./routes/db-test'));
 
+// Get conversation history
+app.get('/api/conversation/:conversationId/history', async (req, res) => {
+  const { conversationId } = req.params;
+  const { limit } = req.query;
+
+  try {
+    const history = await conversationService.getConversationHistory(
+      conversationId,
+      limit ? parseInt(limit) : 50
+    );
+
+    res.json({
+      conversationId,
+      messageCount: history.length,
+      messages: history
+    });
+  } catch (err) {
+    console.error('❌ Error fetching history:', err.message);
+    res.status(500).json({ error: 'Error fetching conversation history: ' + err.message });
+  }
+});
+
 app.post('/api/finance-assistant', async (req, res) => {
-  const { message, conversationId } = req.body;
+  const { message, conversationId, userId } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
   }
 
   try {
+    // Save user message to database
+    await conversationService.saveUserMessage(
+      conversationId,
+      'Freeda 2.0',
+      message,
+      userId || null
+    );
+
+    // Get AI response
     const reply = await llmService.sendMessage(message, conversationId);
+
+    // Save assistant response to database
+    await conversationService.saveAssistantMessage(conversationId, reply);
+
     res.json({ reply });
   } catch (err) {
     console.error('❌ Error:', err.message);
@@ -81,13 +117,21 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, useKnowledgeBase } = req.body;
+  const { message, conversationId, useKnowledgeBase, userId } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
   }
 
   try {
+    // Save user message to database
+    await conversationService.saveUserMessage(
+      conversationId,
+      'Freeda 2.0',
+      message,
+      userId || null
+    );
+
     // Set headers for Server-Sent Events (SSE)
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -100,10 +144,17 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     res.write(':ok\n\n');
     if (res.flush) res.flush();
 
-    // Stream the response
+    // Stream the response and accumulate full reply
+    let fullReply = '';
     for await (const chunk of llmService.sendMessageStream(message, conversationId, useKnowledgeBase)) {
+      fullReply += chunk;
       res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
       res.flush && res.flush(); // Flush after each chunk
+    }
+
+    // Save assistant response to database
+    if (fullReply) {
+      await conversationService.saveAssistantMessage(conversationId, fullReply);
     }
 
     // Send done signal
