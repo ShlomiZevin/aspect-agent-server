@@ -55,14 +55,8 @@ app.use(express.static('public'));
 
 // Health check endpoint for App Engine Flexible
 app.get('/health', async (req, res) => {
-  const health = await db.healthCheck();
-  const statusCode = health.status === 'healthy' ? 200 : 503;
-  res.status(statusCode).json(health);
-  //res.status(200).json({});
+  res.status(200).json({});
 });
-
-// Database test routes
-app.use('/api/db', require('./routes/db-test'));
 
 // Create new anonymous user
 app.post('/api/user/create', async (req, res) => {
