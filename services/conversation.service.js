@@ -261,6 +261,148 @@ class ConversationService {
 
     return message;
   }
+
+  /**
+   * Get all conversations for a user
+   * @param {string} userExternalId - User's external ID
+   * @param {string} agentName - Optional agent name filter
+   * @returns {Promise<Array>} - Array of conversations with metadata
+   */
+  async getUserConversations(userExternalId, agentName = null) {
+    if (!this.drizzle) this.initialize();
+
+    // Get user
+    const user = await this.drizzle
+      .select()
+      .from(users)
+      .where(eq(users.externalId, userExternalId))
+      .limit(1);
+
+    if (user.length === 0) {
+      return [];
+    }
+
+    // Build query
+    let query = this.drizzle
+      .select({
+        id: conversations.id,
+        externalId: conversations.externalId,
+        createdAt: conversations.createdAt,
+        updatedAt: conversations.updatedAt,
+        metadata: conversations.metadata,
+        agentName: agents.name,
+        agentDomain: agents.domain
+      })
+      .from(conversations)
+      .innerJoin(agents, eq(conversations.agentId, agents.id))
+      .where(
+        and(
+          eq(conversations.userId, user[0].id),
+          eq(conversations.status, 'active')
+        )
+      )
+      .orderBy(desc(conversations.updatedAt));
+
+    // Add agent filter if provided
+    if (agentName) {
+      query = query.where(
+        and(
+          eq(conversations.userId, user[0].id),
+          eq(conversations.status, 'active'),
+          eq(agents.name, agentName)
+        )
+      );
+    }
+
+    const conversationList = await query;
+
+    // Get message counts and first message for each conversation
+    const conversationsWithDetails = await Promise.all(
+      conversationList.map(async (conv) => {
+        const msgs = await this.drizzle
+          .select()
+          .from(messages)
+          .where(eq(messages.conversationId, conv.id))
+          .orderBy(messages.createdAt)
+          .limit(1);
+
+        const messageCount = await this.drizzle
+          .select()
+          .from(messages)
+          .where(eq(messages.conversationId, conv.id));
+
+        return {
+          ...conv,
+          messageCount: messageCount.length,
+          firstMessage: msgs.length > 0 ? msgs[0].content : null,
+          title: conv.metadata?.title || (msgs.length > 0 ? msgs[0].content.substring(0, 50) : 'New Chat')
+        };
+      })
+    );
+
+    return conversationsWithDetails;
+  }
+
+  /**
+   * Update conversation metadata
+   * @param {string} externalConversationId - External conversation ID
+   * @param {Object} metadataUpdate - Metadata to update
+   * @returns {Promise<Object>} - Updated conversation
+   */
+  async updateConversationMetadata(externalConversationId, metadataUpdate) {
+    if (!this.drizzle) this.initialize();
+
+    // Get current conversation
+    const conversation = await this.drizzle
+      .select()
+      .from(conversations)
+      .where(eq(conversations.externalId, externalConversationId))
+      .limit(1);
+
+    if (conversation.length === 0) {
+      throw new Error(`Conversation not found: ${externalConversationId}`);
+    }
+
+    // Merge metadata
+    const currentMetadata = conversation[0].metadata || {};
+    const newMetadata = { ...currentMetadata, ...metadataUpdate };
+
+    // Update conversation
+    const [updated] = await this.drizzle
+      .update(conversations)
+      .set({
+        metadata: newMetadata,
+        updatedAt: new Date()
+      })
+      .where(eq(conversations.id, conversation[0].id))
+      .returning();
+
+    return updated;
+  }
+
+  /**
+   * Delete a conversation (soft delete by changing status)
+   * @param {string} externalConversationId - External conversation ID
+   * @returns {Promise<Object>} - Deleted conversation
+   */
+  async deleteConversation(externalConversationId) {
+    if (!this.drizzle) this.initialize();
+
+    const [deleted] = await this.drizzle
+      .update(conversations)
+      .set({
+        status: 'deleted',
+        updatedAt: new Date()
+      })
+      .where(eq(conversations.externalId, externalConversationId))
+      .returning();
+
+    if (!deleted) {
+      throw new Error(`Conversation not found: ${externalConversationId}`);
+    }
+
+    return deleted;
+  }
 }
 
 // Export singleton instance

@@ -55,10 +55,10 @@ app.use(express.static('public'));
 
 // Health check endpoint for App Engine Flexible
 app.get('/health', async (req, res) => {
-  //const health = await db.healthCheck();
-  //const statusCode = health.status === 'healthy' ? 200 : 503;
-  //res.status(statusCode).json(health);
-  res.status(200).json({});
+  const health = await db.healthCheck();
+  const statusCode = health.status === 'healthy' ? 200 : 503;
+  res.status(statusCode).json(health);
+  //res.status(200).json({});
 });
 
 // Database test routes
@@ -102,6 +102,54 @@ app.get('/api/conversation/:conversationId/history', async (req, res) => {
   } catch (err) {
     console.error('❌ Error fetching history:', err.message);
     res.status(500).json({ error: 'Error fetching conversation history: ' + err.message });
+  }
+});
+
+// Get all conversations for a user
+app.get('/api/user/:userId/conversations', async (req, res) => {
+  const { userId } = req.params;
+  const { agentName } = req.query;
+
+  try {
+    const conversations = await conversationService.getUserConversations(userId, agentName);
+    res.json({
+      userId,
+      count: conversations.length,
+      conversations
+    });
+  } catch (err) {
+    console.error('❌ Error fetching user conversations:', err.message);
+    res.status(500).json({ error: 'Error fetching conversations: ' + err.message });
+  }
+});
+
+// Update conversation metadata (title, etc.)
+app.patch('/api/conversation/:conversationId', async (req, res) => {
+  const { conversationId } = req.params;
+  const { title, metadata } = req.body;
+
+  try {
+    const conversation = await conversationService.updateConversationMetadata(
+      conversationId,
+      { title, ...metadata }
+    );
+    res.json(conversation);
+  } catch (err) {
+    console.error('❌ Error updating conversation:', err.message);
+    res.status(500).json({ error: 'Error updating conversation: ' + err.message });
+  }
+});
+
+// Delete a conversation
+app.delete('/api/conversation/:conversationId', async (req, res) => {
+  const { conversationId } = req.params;
+
+  try {
+    await conversationService.deleteConversation(conversationId);
+    res.json({ success: true, conversationId });
+  } catch (err) {
+    console.error('❌ Error deleting conversation:', err.message);
+    res.status(500).json({ error: 'Error deleting conversation: ' + err.message });
   }
 });
 
