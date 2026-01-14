@@ -46,6 +46,63 @@ class LLMService {
   async addFileToKnowledgeBase(fileContent, fileName) {
     return this.provider.addFileToKnowledgeBase(fileContent, fileName);
   }
+
+  /**
+   * Create a new vector store
+   * @param {string} name - The name of the vector store
+   * @param {string} description - Optional description
+   * @returns {Promise<Object>} - The created vector store
+   */
+  async createVectorStore(name, description) {
+    return this.provider.createVectorStore(name, description);
+  }
+
+  /**
+   * List all vector stores
+   * @returns {Promise<Array>} - Array of vector stores
+   */
+  async listVectorStores() {
+    return this.provider.listVectorStores();
+  }
+
+  /**
+   * Get vector store by ID
+   * @param {string} vectorStoreId - The vector store ID
+   * @returns {Promise<Object>} - The vector store details
+   */
+  async getVectorStore(vectorStoreId) {
+    return this.provider.getVectorStore(vectorStoreId);
+  }
+
+  /**
+   * List files in a vector store
+   * @param {string} vectorStoreId - The vector store ID
+   * @returns {Promise<Array>} - Array of files with metadata
+   */
+  async listVectorStoreFiles(vectorStoreId) {
+    return this.provider.listVectorStoreFiles(vectorStoreId);
+  }
+
+  /**
+   * Delete a file from a vector store
+   * @param {string} vectorStoreId - The vector store ID
+   * @param {string} fileId - The file ID
+   * @returns {Promise<Object>} - Deletion result
+   */
+  async deleteVectorStoreFile(vectorStoreId, fileId) {
+    return this.provider.deleteVectorStoreFile(vectorStoreId, fileId);
+  }
+
+  /**
+   * Add a file to a specific vector store
+   * @param {Buffer} fileBuffer - The file content as Buffer
+   * @param {string} fileName - The name of the file
+   * @param {string} vectorStoreId - The vector store ID to add the file to
+   * @returns {Promise<Object>} - The file upload result
+   */
+  async addFileToVectorStore(fileBuffer, fileName, vectorStoreId) {
+    return this.provider.addFileToVectorStore(fileBuffer, fileName, vectorStoreId);
+  }
 }
 
 module.exports = new LLMService();

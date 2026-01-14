@@ -68,6 +68,7 @@ const knowledgeBases = pgTable('knowledge_bases', {
   description: text('description'),
   vectorStoreId: varchar('vector_store_id', { length: 255 }), // OpenAI vector store ID
   fileCount: integer('file_count').default(0),
+  totalSize: integer('total_size').default(0), // Total size of all files in bytes
   metadata: jsonb('metadata'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
