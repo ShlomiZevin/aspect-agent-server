@@ -41,6 +41,33 @@ async function seed() {
       console.log('✅ Freeda 2.0 created successfully (ID:', inserted.id, ')');
     }
 
+    // Create Aspect agent
+    console.log('Creating Aspect agent...');
+
+    const aspectAgent = {
+      name: 'Aspect',
+      domain: 'finance',
+      description: 'AI-powered business intelligence assistant providing insights on sales, inventory, customer analytics, and financial metrics.',
+      config: {
+        promptId: process.env.OPENAI_PROMPT_ID,
+        model: process.env.OPENAI_MODEL || 'gpt-4-turbo',
+        vectorStoreId: null, // No KB by default
+        features: ['sales_analytics', 'inventory_management', 'customer_insights', 'business_intelligence'],
+        supportedLanguages: ['en', 'he']
+      },
+      isActive: true
+    };
+
+    // Check if Aspect already exists
+    const existingAspect = await drizzle.select().from(agents).where(eq(agents.name, 'Aspect'));
+
+    if (existingAspect.length > 0) {
+      console.log('✅ Aspect already exists (ID:', existingAspect[0].id, ')');
+    } else {
+      const [inserted] = await drizzle.insert(agents).values(aspectAgent).returning();
+      console.log('✅ Aspect created successfully (ID:', inserted.id, ')');
+    }
+
     console.log('');
     console.log('🎉 Seed completed successfully!');
     process.exit(0);

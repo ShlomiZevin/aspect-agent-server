@@ -149,17 +149,20 @@ app.delete('/api/conversation/:conversationId', async (req, res) => {
 });
 
 app.post('/api/finance-assistant', async (req, res) => {
-  const { message, conversationId, userId } = req.body;
+  const { message, conversationId, userId, agentName } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
   }
 
   try {
+    // Default to Aspect if no agent name specified (for backward compatibility)
+    const agent = agentName || 'Aspect';
+
     // Save user message to database
     await conversationService.saveUserMessage(
       conversationId,
-      'Freeda 2.0',
+      agent,
       message,
       userId || null
     );
@@ -179,17 +182,20 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, useKnowledgeBase, userId } = req.body;
+  const { message, conversationId, useKnowledgeBase, userId, agentName } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
   }
 
   try {
+    // Default to Aspect if no agent name specified (for backward compatibility)
+    const agent = agentName || 'Aspect';
+
     // Save user message to database
     await conversationService.saveUserMessage(
       conversationId,
-      'Freeda 2.0',
+      agent,
       message,
       userId || null
     );
