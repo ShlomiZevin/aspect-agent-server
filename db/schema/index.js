@@ -20,7 +20,7 @@ const agents = pgTable('agents', {
   name: varchar('name', { length: 255 }).notNull().unique(),
   domain: varchar('domain', { length: 100 }).notNull(), // menopause, fitness, nutrition, etc.
   description: text('description'),
-  config: jsonb('config'), // Agent-specific configuration
+  config: jsonb('config'), // Agent-specific configuration (includes promptId, vectorStoreId, etc.)
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

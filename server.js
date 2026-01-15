@@ -157,18 +157,24 @@ app.post('/api/finance-assistant', async (req, res) => {
 
   try {
     // Default to Aspect if no agent name specified (for backward compatibility)
-    const agent = agentName || 'Aspect';
+    const agentNameToUse = agentName || 'Aspect';
+
+    // Get agent configuration from database
+    const agent = await conversationService.getAgentByName(agentNameToUse);
 
     // Save user message to database
     await conversationService.saveUserMessage(
       conversationId,
-      agent,
+      agentNameToUse,
       message,
       userId || null
     );
 
-    // Get AI response
-    const reply = await llmService.sendMessage(message, conversationId);
+    // Build agent config from config JSON (includes promptId, vectorStoreId, etc.)
+    const agentConfig = agent.config || {};
+
+    // Get AI response with agent-specific config
+    const reply = await llmService.sendMessage(message, conversationId, agentConfig);
 
     // Save assistant response to database
     await conversationService.saveAssistantMessage(conversationId, reply);
@@ -190,15 +196,21 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
 
   try {
     // Default to Aspect if no agent name specified (for backward compatibility)
-    const agent = agentName || 'Aspect';
+    const agentNameToUse = agentName || 'Aspect';
+
+    // Get agent configuration from database
+    const agent = await conversationService.getAgentByName(agentNameToUse);
 
     // Save user message to database
     await conversationService.saveUserMessage(
       conversationId,
-      agent,
+      agentNameToUse,
       message,
       userId || null
     );
+
+    // Build agent config from config JSON (includes promptId, vectorStoreId, etc.)
+    const agentConfig = agent.config || {};
 
     // Set headers for Server-Sent Events (SSE)
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -212,9 +224,9 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     res.write(':ok\n\n');
     if (res.flush) res.flush();
 
-    // Stream the response and accumulate full reply
+    // Stream the response and accumulate full reply with agent-specific config
     let fullReply = '';
-    for await (const chunk of llmService.sendMessageStream(message, conversationId, useKnowledgeBase)) {
+    for await (const chunk of llmService.sendMessageStream(message, conversationId, useKnowledgeBase, agentConfig)) {
       fullReply += chunk;
       res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
       res.flush && res.flush(); // Flush after each chunk

@@ -48,18 +48,32 @@ class OpenAIService {
    * Send a message and get a response using Responses API with Conversation object
    * @param {string} message - The user message
    * @param {string} conversationId - Unique conversation identifier
+   * @param {Object} agentConfig - Agent configuration (promptId, vectorStoreId, etc.)
    * @returns {Promise<string>} - The assistant's reply
    */
-  async sendMessage(message, conversationId) {
+  async sendMessage(message, conversationId, agentConfig = {}) {
     try {
       // Get or create OpenAI conversation
       const openaiConversationId = await this.getOrCreateConversation(conversationId);
 
+      // Use agent-specific config or fallback to defaults
+      const promptId = agentConfig.promptId || this.promptId;
+      const promptVersion = agentConfig.promptVersion || '1';
+      const vectorStoreId = agentConfig.vectorStoreId || 'vs_695e750fc75481918e3d76851ce30cae';
+
+      // Build tools array conditionally
+      const tools = vectorStoreId ? [
+        {
+          "type": "file_search",
+          "vector_store_ids": [vectorStoreId]
+        }
+      ] : [];
+
       // Create response with conversation object for automatic state management
       const response = await this.client.responses.create({
         prompt: {
-          "id": this.promptId,
-          "version": "2"
+          "id": promptId,
+          "version": promptVersion
         },
         conversation: openaiConversationId,
         input: [{
@@ -75,14 +89,7 @@ class OpenAIService {
           }
         },
         reasoning: {},
-        tools: [
-          {
-            "type": "file_search",
-            "vector_store_ids": [
-              "vs_695e750fc75481918e3d76851ce30cae"
-            ]
-          }
-        ],
+        tools: tools,
         max_output_tokens: 2048,
         store: true,
         include: ["web_search_call.action.sources"]
@@ -104,28 +111,33 @@ class OpenAIService {
    * @param {string} message - The user message
    * @param {string} conversationId - Unique conversation identifier
    * @param {boolean} useKnowledgeBase - Whether to use file_search tool
+   * @param {Object} agentConfig - Agent configuration (promptId, vectorStoreId, etc.)
    * @returns {AsyncGenerator} - Stream of text chunks
    */
-  async *sendMessageStream(message, conversationId, useKnowledgeBase = true) {
+  async *sendMessageStream(message, conversationId, useKnowledgeBase = true, agentConfig = {}) {
     try {
       // Get or create OpenAI conversation
       const openaiConversationId = await this.getOrCreateConversation(conversationId);
 
-      // Build tools array conditionally based on useKnowledgeBase flag
-      const tools = useKnowledgeBase ? [
+      console.log(agentConfig);
+      // Use agent-specific config or fallback to defaults
+      const promptId = agentConfig.promptId || this.promptId;
+      const promptVersion = agentConfig.promptVersion || '1';
+      const vectorStoreId = agentConfig.vectorStoreId || 'vs_695e750fc75481918e3d76851ce30cae';
+
+      // Build tools array conditionally based on useKnowledgeBase flag and vectorStoreId
+      const tools = (useKnowledgeBase && vectorStoreId) ? [
         {
           "type": "file_search",
-          "vector_store_ids": [
-            "vs_695e750fc75481918e3d76851ce30cae"
-          ]
+          "vector_store_ids": [vectorStoreId]
         }
       ] : [];
 
       // Use Responses API with stored prompt and conversation object
       const stream = await this.client.responses.create({
         prompt: {
-          "id": this.promptId,
-          "version": "2"
+          "id": promptId,
+          "version": promptVersion
         },
         conversation: openaiConversationId,
         input: [{
