@@ -13,20 +13,23 @@ class LLMService {
    * Send a message and get a response
    * @param {string} message - The user message
    * @param {string} conversationId - Unique conversation identifier
+   * @param {Object} agentConfig - Agent configuration (promptId, vectorStoreId, etc.)
    * @returns {Promise<string>} - The assistant's reply
    */
-  async sendMessage(message, conversationId) {
-    return this.provider.sendMessage(message, conversationId);
+  async sendMessage(message, conversationId, agentConfig = {}) {
+    return this.provider.sendMessage(message, conversationId, agentConfig);
   }
 
   /**
    * Send a message and get a streaming response
    * @param {string} message - The user message
    * @param {string} conversationId - Unique conversation identifier
+   * @param {boolean} useKnowledgeBase - Whether to use file_search tool
+   * @param {Object} agentConfig - Agent configuration (promptId, vectorStoreId, etc.)
    * @returns {AsyncGenerator} - Stream of text chunks
    */
-  async *sendMessageStream(message, conversationId, useKnowledgeBase) {
-    yield* this.provider.sendMessageStream(message, conversationId, useKnowledgeBase);
+  async *sendMessageStream(message, conversationId, useKnowledgeBase, agentConfig = {}) {
+    yield* this.provider.sendMessageStream(message, conversationId, useKnowledgeBase, agentConfig);
   }
 
   /**

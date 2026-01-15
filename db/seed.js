@@ -21,8 +21,8 @@ async function seed() {
       name: 'Freeda 2.0',
       domain: 'menopause',
       description: 'AI-powered menopause support agent providing personalized guidance, symptom tracking, and evidence-based information for women navigating menopause.',
+      promptId: 'pmpt_695cc633a8248193bfd1601116118463064124325ea89640',
       config: {
-        promptId: process.env.OPENAI_PROMPT_ID,
         model: process.env.OPENAI_MODEL || 'gpt-4-turbo',
         vectorStoreId: 'vs_695e750fc75481918e3d76851ce30cae',
         features: ['symptom_tracking', 'personalized_advice', 'knowledge_base'],
@@ -48,8 +48,8 @@ async function seed() {
       name: 'Aspect',
       domain: 'finance',
       description: 'AI-powered business intelligence assistant providing insights on sales, inventory, customer analytics, and financial metrics.',
+      promptId: 'pmpt_6968b04b9d8c819695d296bc9593c145031da9cca78b9b13',
       config: {
-        promptId: process.env.OPENAI_PROMPT_ID,
         model: process.env.OPENAI_MODEL || 'gpt-4-turbo',
         vectorStoreId: null, // No KB by default
         features: ['sales_analytics', 'inventory_management', 'customer_insights', 'business_intelligence'],
