@@ -1,12 +1,42 @@
 const openaiService = require('./llm.openai');
+const functionRegistry = require('./function-registry');
 
 /**
  * Main LLM service that routes requests to specific providers
  * Currently only supports OpenAI, but designed for future extensibility
+ *
+ * Function calls are handled at this layer (provider-agnostic)
  */
 class LLMService {
   constructor() {
     this.provider = openaiService;
+    this.functionRegistry = functionRegistry;
+  }
+
+  /**
+   * Register a function that can be called by LLM
+   * @param {string} name - Function name (e.g., "getWeather")
+   * @param {Function} handler - Async function that receives params object
+   * @param {Object} schema - Optional JSON schema for parameters
+   */
+  registerFunction(name, handler, schema = null) {
+    this.functionRegistry.register(name, handler, schema);
+  }
+
+  /**
+   * Unregister a function
+   * @param {string} name - Function name to remove
+   */
+  unregisterFunction(name) {
+    return this.functionRegistry.unregister(name);
+  }
+
+  /**
+   * Get all registered function schemas for LLM tool definitions
+   * @returns {Object[]}
+   */
+  getFunctionSchemas() {
+    return this.functionRegistry.getSchemas();
   }
 
   /**
@@ -14,10 +44,22 @@ class LLMService {
    * @param {string} message - The user message
    * @param {string} conversationId - Unique conversation identifier
    * @param {Object} agentConfig - Agent configuration (promptId, vectorStoreId, etc.)
-   * @returns {Promise<string>} - The assistant's reply
+   * @returns {Promise<Object>} - Object with { reply: string, functionCalls: array }
    */
   async sendMessage(message, conversationId, agentConfig = {}) {
     return this.provider.sendMessage(message, conversationId, agentConfig);
+  }
+
+  /**
+   * Send a message and get just the reply text (backward compatible)
+   * @param {string} message - The user message
+   * @param {string} conversationId - Unique conversation identifier
+   * @param {Object} agentConfig - Agent configuration (promptId, vectorStoreId, etc.)
+   * @returns {Promise<string>} - The assistant's reply text only
+   */
+  async sendMessageSimple(message, conversationId, agentConfig = {}) {
+    const result = await this.provider.sendMessage(message, conversationId, agentConfig);
+    return result.reply;
   }
 
   /**

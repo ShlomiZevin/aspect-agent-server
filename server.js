@@ -11,6 +11,10 @@ const db = require('./services/db.pg');
 const conversationService = require('./services/conversation.service');
 const kbService = require('./services/kb.service');
 
+// Register function handlers
+const symptomTracker = require('./functions/symptom-tracker');
+symptomTracker.register();
+
 // Configure multer for file uploads (memory storage)
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -174,12 +178,16 @@ app.post('/api/finance-assistant', async (req, res) => {
     const agentConfig = agent.config || {};
 
     // Get AI response with agent-specific config
-    const reply = await llmService.sendMessage(message, conversationId, agentConfig);
+    const result = await llmService.sendMessage(message, conversationId, agentConfig);
 
     // Save assistant response to database
-    await conversationService.saveAssistantMessage(conversationId, reply);
+    await conversationService.saveAssistantMessage(conversationId, result.reply);
 
-    res.json({ reply });
+    // Return reply and function call info
+    res.json({
+      reply: result.reply,
+      functionCalls: result.functionCalls || []
+    });
   } catch (err) {
     console.error('❌ Error:', err.message);
     res.status(500).json({ error: 'Error handling message: ' + err.message });
@@ -227,8 +235,15 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     // Stream the response and accumulate full reply with agent-specific config
     let fullReply = '';
     for await (const chunk of llmService.sendMessageStream(message, conversationId, useKnowledgeBase, agentConfig)) {
-      fullReply += chunk;
-      res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+      // Check if chunk is a function call event (object) or text (string)
+      if (typeof chunk === 'object' && chunk.type) {
+        // Send function call events as special SSE messages
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      } else {
+        // Text chunk - accumulate and send
+        fullReply += chunk;
+        res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+      }
       res.flush && res.flush(); // Flush after each chunk
     }
 

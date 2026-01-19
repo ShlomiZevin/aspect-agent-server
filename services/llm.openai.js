@@ -1,6 +1,7 @@
 const { OpenAI } = require('openai');
 const { toFile } = require('openai/uploads');
 const { File } = require('node:buffer');
+const functionRegistry = require('./function-registry');
 
 // Polyfill for File in Node.js < 20
 if (typeof globalThis.File === 'undefined') {
@@ -11,6 +12,11 @@ if (typeof globalThis.File === 'undefined') {
  * OpenAI service using Responses API with Prompt ID
  * Migrated from Assistants API (deprecated August 2026)
  * Using Responses API with stored prompts for configuration and versioning
+ *
+ * Function call handling:
+ * - Detects function_call in response output
+ * - Uses function-registry to execute functions (provider-agnostic)
+ * - Supports both regular and streaming responses
  */
 class OpenAIService {
   constructor() {
@@ -22,6 +28,63 @@ class OpenAIService {
 
     // Store OpenAI conversation objects: conversationId -> OpenAI conversation ID
     this.conversations = new Map();
+
+    // Reference to function registry for executing function calls
+    this.functionRegistry = functionRegistry;
+  }
+
+  /**
+   * Build tools array including registered functions
+   * @param {boolean} useKnowledgeBase - Whether to include file_search
+   * @param {string} vectorStoreId - Vector store ID for file_search
+   * @returns {Array} - Tools array for OpenAI API
+   */
+  buildToolsArray(useKnowledgeBase, vectorStoreId) {
+    const tools = [];
+
+    // Add file_search if needed
+    if (useKnowledgeBase && vectorStoreId) {
+      tools.push({
+        type: 'file_search',
+        vector_store_ids: [vectorStoreId]
+      });
+    }
+
+    // Add registered functions as tools
+    // Function names use snake_case format: report_symptom -> call_report_symptom
+    // Responses API format: { type: 'function', name: '...', description: '...', parameters: {...} }
+    const functionSchemas = this.functionRegistry.getSchemas();
+    for (const schema of functionSchemas) {
+      tools.push({
+        type: 'function',
+        name: `call_${schema.name}`,
+        description: schema.description || '',
+        parameters: schema.parameters || { type: 'object', properties: {} }
+      });
+    }
+
+    return tools;
+  }
+
+  /**
+   * Handle function call from OpenAI response
+   * @param {Object} functionCall - The function call object from OpenAI
+   * @returns {Promise<Object>} - Result of function execution
+   */
+  async handleFunctionCall(functionCall) {
+    const { name, arguments: argsString } = functionCall;
+
+    // Parse arguments from JSON string
+    let params = {};
+    try {
+      params = JSON.parse(argsString || '{}');
+    } catch (e) {
+      console.error(`❌ Failed to parse function arguments: ${argsString}`);
+      throw new Error(`Invalid function arguments: ${e.message}`);
+    }
+
+    // Execute via function registry (provider-agnostic)
+    return this.functionRegistry.execute(name, params);
   }
 
   /**
@@ -46,10 +109,11 @@ class OpenAIService {
 
   /**
    * Send a message and get a response using Responses API with Conversation object
+   * Handles function calls automatically - will execute functions and continue conversation
    * @param {string} message - The user message
    * @param {string} conversationId - Unique conversation identifier
    * @param {Object} agentConfig - Agent configuration (promptId, vectorStoreId, etc.)
-   * @returns {Promise<string>} - The assistant's reply
+   * @returns {Promise<Object>} - Object with reply text and any function call results
    */
   async sendMessage(message, conversationId, agentConfig = {}) {
     try {
@@ -60,46 +124,104 @@ class OpenAIService {
       const promptId = agentConfig.promptId || this.promptId;
       const promptVersion = agentConfig.promptVersion || '1';
       const vectorStoreId = agentConfig.vectorStoreId || 'vs_695e750fc75481918e3d76851ce30cae';
+      const useKnowledgeBase = agentConfig.useKnowledgeBase !== false;
 
-      // Build tools array conditionally
-      const tools = vectorStoreId ? [
-        {
-          "type": "file_search",
-          "vector_store_ids": [vectorStoreId]
-        }
-      ] : [];
+      // Build tools array including registered functions
+      const tools = this.buildToolsArray(useKnowledgeBase, vectorStoreId);
 
-      // Create response with conversation object for automatic state management
-      const response = await this.client.responses.create({
-        prompt: {
-          "id": promptId,
-          "version": promptVersion
-        },
-        conversation: openaiConversationId,
-        input: [{
-          role: 'user',
-          content: [{
-            type: 'input_text',
-            text: message
-          }]
-        }],
-        text: {
-          "format": {
-            "type": "text"
+      // Track function call results
+      const functionResults = [];
+
+      // Loop to handle multiple function calls (tool use loop)
+      let currentInput = [{
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: message
+        }]
+      }];
+
+      let finalReply = '';
+      let maxIterations = 10; // Prevent infinite loops
+
+      while (maxIterations > 0) {
+        maxIterations--;
+
+        // Create response with conversation object for automatic state management
+        const response = await this.client.responses.create({
+          prompt: {
+            id: promptId,
+            version: promptVersion
+          },
+          conversation: openaiConversationId,
+          input: currentInput,
+          text: {
+            format: {
+              type: 'text'
+            }
+          },
+          reasoning: {},
+          tools: tools,
+          max_output_tokens: 2048,
+          store: true,
+          include: ['web_search_call.action.sources']
+        });
+
+        // Check for function calls in output
+        const functionCallItems = response.output.filter(
+          item => item.type === 'function_call'
+        );
+
+        if (functionCallItems.length > 0) {
+          // Process all function calls
+          const toolResults = [];
+
+          for (const funcItem of functionCallItems) {
+            try {
+              const result = await this.handleFunctionCall({
+                name: funcItem.name,
+                arguments: funcItem.arguments
+              });
+
+              functionResults.push({
+                name: funcItem.name,
+                params: JSON.parse(funcItem.arguments || '{}'),
+                result
+              });
+
+              toolResults.push({
+                type: 'function_call_output',
+                call_id: funcItem.call_id,
+                output: JSON.stringify(result)
+              });
+            } catch (error) {
+              console.error(`❌ Function call failed: ${funcItem.name}`, error.message);
+
+              toolResults.push({
+                type: 'function_call_output',
+                call_id: funcItem.call_id,
+                output: JSON.stringify({ error: error.message })
+              });
+            }
           }
-        },
-        reasoning: {},
-        tools: tools,
-        max_output_tokens: 2048,
-        store: true,
-        include: ["web_search_call.action.sources"]
-      });
 
-      // Extract assistant reply from output
-      const outputItem = response.output.find(item => item.role === 'assistant' && item.type === 'message');
-      const reply = outputItem?.content.find(c => c.type === 'output_text')?.text || '';
+          // Continue conversation with function results
+          currentInput = toolResults;
+        } else {
+          // No function calls - extract final reply
+          const outputItem = response.output.find(
+            item => item.role === 'assistant' && item.type === 'message'
+          );
+          finalReply = outputItem?.content.find(c => c.type === 'output_text')?.text || '';
+          break;
+        }
+      }
 
-      return reply;
+      // Return structured response
+      return {
+        reply: finalReply,
+        functionCalls: functionResults
+      };
     } catch (error) {
       console.error('❌ OpenAI Service Error:', error.message);
       throw new Error(`Failed to get response: ${error.message}`);
@@ -108,73 +230,162 @@ class OpenAIService {
 
   /**
    * Send a message and get a streaming response using Conversation object
+   * Handles function calls automatically - yields special events for function calls
    * @param {string} message - The user message
    * @param {string} conversationId - Unique conversation identifier
    * @param {boolean} useKnowledgeBase - Whether to use file_search tool
    * @param {Object} agentConfig - Agent configuration (promptId, vectorStoreId, etc.)
-   * @returns {AsyncGenerator} - Stream of text chunks
+   * @returns {AsyncGenerator} - Stream of text chunks or function call events
+   *   Yields: { type: 'text', content: string } for text
+   *           { type: 'function_call', name: string, params: object } for function calls
+   *           { type: 'function_result', name: string, result: any } for function results
    */
   async *sendMessageStream(message, conversationId, useKnowledgeBase = true, agentConfig = {}) {
     try {
       // Get or create OpenAI conversation
       const openaiConversationId = await this.getOrCreateConversation(conversationId);
 
-      console.log(agentConfig);
       // Use agent-specific config or fallback to defaults
       const promptId = agentConfig.promptId || this.promptId;
       const promptVersion = agentConfig.promptVersion || '1';
       const vectorStoreId = agentConfig.vectorStoreId || 'vs_695e750fc75481918e3d76851ce30cae';
 
-      // Build tools array conditionally based on useKnowledgeBase flag and vectorStoreId
-      const tools = (useKnowledgeBase && vectorStoreId) ? [
-        {
-          "type": "file_search",
-          "vector_store_ids": [vectorStoreId]
+      // Build tools array including registered functions
+      const tools = this.buildToolsArray(useKnowledgeBase, vectorStoreId);
+      console.log(tools);
+
+      let maxIterations = 10; // Prevent infinite loops
+      let currentInput = [{
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: message
+        }]
+      }];
+
+      while (maxIterations > 0) {
+        maxIterations--;
+
+        // Use Responses API with stored prompt and conversation object
+        const stream = await this.client.responses.create({
+          prompt: {
+            id: promptId,
+            version: promptVersion
+          },
+          conversation: openaiConversationId,
+          input: currentInput,
+          text: {
+            format: {
+              type: 'text'
+            }
+          },
+          reasoning: {},
+          tools: tools,
+          max_output_tokens: 2048,
+          store: true,
+          include: ['web_search_call.action.sources'],
+          stream: true
+        });
+
+        let fullReply = '';
+        const pendingFunctionCalls = [];
+        let currentFunctionCall = null;
+
+        // Yield each chunk as it arrives
+        for await (const chunk of stream) {
+          // Handle text delta events
+          if (chunk.type === 'response.output_text.delta') {
+            const delta = chunk.delta;
+            if (delta) {
+              fullReply += delta;
+              yield delta; // Keep backward compatible - just yield string for text
+            }
+          }
+
+          // Handle function call events
+          if (chunk.type === 'response.function_call_arguments.start') {
+            currentFunctionCall = {
+              name: chunk.name,
+              call_id: chunk.call_id,
+              arguments: ''
+            };
+          }
+
+          if (chunk.type === 'response.function_call_arguments.delta' && currentFunctionCall) {
+            currentFunctionCall.arguments += chunk.delta || '';
+          }
+
+          if (chunk.type === 'response.function_call_arguments.done' && currentFunctionCall) {
+            pendingFunctionCalls.push({ ...currentFunctionCall });
+            currentFunctionCall = null;
+          }
+
+          // Alternative: handle complete function_call in output
+          if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'function_call') {
+            pendingFunctionCalls.push({
+              name: chunk.item.name,
+              call_id: chunk.item.call_id,
+              arguments: chunk.item.arguments
+            });
+          }
         }
-      ] : [];
 
-      // Use Responses API with stored prompt and conversation object
-      const stream = await this.client.responses.create({
-        prompt: {
-          "id": promptId,
-          "version": promptVersion
-        },
-        conversation: openaiConversationId,
-        input: [{
-          role: 'user',
-          content: [{
-            type: 'input_text',
-            text: message
-          }]
-        }],
-        text: {
-          "format": {
-            "type": "text"
+        // If we have function calls, execute them and continue
+        if (pendingFunctionCalls.length > 0) {
+          const toolResults = [];
+
+          for (const funcCall of pendingFunctionCalls) {
+            // Yield function call event
+            const params = JSON.parse(funcCall.arguments || '{}');
+            yield {
+              type: 'function_call',
+              name: funcCall.name,
+              params
+            };
+
+            try {
+              const result = await this.handleFunctionCall({
+                name: funcCall.name,
+                arguments: funcCall.arguments
+              });
+
+              // Yield function result event
+              yield {
+                type: 'function_result',
+                name: funcCall.name,
+                result
+              };
+
+              toolResults.push({
+                type: 'function_call_output',
+                call_id: funcCall.call_id,
+                output: JSON.stringify(result)
+              });
+            } catch (error) {
+              console.error(`❌ Function call failed: ${funcCall.name}`, error.message);
+
+              yield {
+                type: 'function_error',
+                name: funcCall.name,
+                error: error.message
+              };
+
+              toolResults.push({
+                type: 'function_call_output',
+                call_id: funcCall.call_id,
+                output: JSON.stringify({ error: error.message })
+              });
+            }
           }
-        },
-        reasoning: {},
-        tools: tools,
-        max_output_tokens: 2048,
-        store: true,
-        include: ["web_search_call.action.sources"],
-        stream: true
-      });
 
-      let fullReply = '';
-
-      // Yield each chunk as it arrives
-      for await (const chunk of stream) {
-        console.log(chunk);
-        // Handle different event types
-        if (chunk.type === 'response.output_text.delta') {
-          const delta = chunk.delta;
-          if (delta) {
-            fullReply += delta;
-            yield delta;
-          }
+          // Continue conversation with function results
+          currentInput = toolResults;
+        } else {
+          // No function calls - we're done
+          console.log(`✅ Streaming complete. Total reply length: ${fullReply.length}`);
+          break;
         }
       }
-      console.log(`✅ Streaming complete. Total reply length: ${fullReply.length}`);
     } catch (error) {
       console.error('❌ OpenAI Streaming Error:', error.message);
       console.error('Error details:', error);
