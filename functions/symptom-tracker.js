@@ -10,7 +10,7 @@ const llmService = require('../services/llm');
 
 // Schema matching OpenAI function definition
 const symptomTrackerSchema = {
-  description: 'Whenever a user mentioning any symptom he has',
+  description: 'Everytime a user mentioning any symptom he has',
   parameters: {
     type: 'object',
     properties: {

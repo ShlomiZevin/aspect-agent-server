@@ -10,6 +10,7 @@ const llmService = require('./services/llm');
 const db = require('./services/db.pg');
 const conversationService = require('./services/conversation.service');
 const kbService = require('./services/kb.service');
+const thinkingService = require('./services/thinking.service');
 
 // Register function handlers
 const symptomTracker = require('./functions/symptom-tracker');
@@ -209,17 +210,6 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     // Get agent configuration from database
     const agent = await conversationService.getAgentByName(agentNameToUse);
 
-    // Save user message to database
-    await conversationService.saveUserMessage(
-      conversationId,
-      agentNameToUse,
-      message,
-      userId || null
-    );
-
-    // Build agent config from config JSON (includes promptId, vectorStoreId, etc.)
-    const agentConfig = agent.config || {};
-
     // Set headers for Server-Sent Events (SSE)
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -232,25 +222,75 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     res.write(':ok\n\n');
     if (res.flush) res.flush();
 
+    // Helper to send SSE data
+    const sendSSE = (data) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+      res.flush && res.flush();
+    };
+
+    // Start thinking context with SSE callback
+    thinkingService.startContext(conversationId, null, sendSSE);
+
+    // Add "Message received" thinking step
+    thinkingService.addMessageReceivedStep(conversationId, message);
+
+    // Save user message to database
+    await conversationService.saveUserMessage(
+      conversationId,
+      agentNameToUse,
+      message,
+      userId || null
+    );
+
+    // Build agent config from config JSON (includes promptId, vectorStoreId, etc.)
+    const agentConfig = agent.config || {};
+
+    // Add KB access step if using knowledge base
+    if (useKnowledgeBase && agentConfig.vectorStoreId) {
+      thinkingService.addKnowledgeBaseStep(conversationId, agentConfig.vectorStoreId);
+    }
+
     // Stream the response and accumulate full reply with agent-specific config
     let fullReply = '';
     for await (const chunk of llmService.sendMessageStream(message, conversationId, useKnowledgeBase, agentConfig)) {
       // Check if chunk is a function call event (object) or text (string)
       if (typeof chunk === 'object' && chunk.type) {
+        // Handle function call - add thinking step
+        if (chunk.type === 'function_call') {
+          const funcName = chunk.name.replace(/^call_/, '');
+          let description = `Calling function: ${funcName}`;
+
+          // Custom descriptions for known functions
+          if (funcName === 'report_symptom' && chunk.params?.symptom_name) {
+            description = `Tracked symptom: "${chunk.params.symptom_name}"`;
+          }
+
+          thinkingService.addFunctionCallStep(
+            conversationId,
+            funcName,
+            chunk.params,
+            description
+          );
+        }
+
         // Send function call events as special SSE messages
-        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        sendSSE(chunk);
       } else {
         // Text chunk - accumulate and send
         fullReply += chunk;
-        res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+        sendSSE({ chunk });
       }
-      res.flush && res.flush(); // Flush after each chunk
     }
 
-    // Save assistant response to database
+    // Save assistant response to database first, then save thinking steps with its ID
     if (fullReply) {
-      await conversationService.saveAssistantMessage(conversationId, fullReply);
+      const assistantMessage = await conversationService.saveAssistantMessage(conversationId, fullReply);
+      // Update thinking context with assistant message ID before saving
+      thinkingService.setMessageId(conversationId, assistantMessage.id);
     }
+
+    // End thinking context and save to database
+    await thinkingService.endContext(conversationId);
 
     // Send done signal
     res.write('data: [DONE]\n\n');
@@ -258,6 +298,10 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     res.end();
   } catch (err) {
     console.error('❌ Streaming Error:', err.message);
+    // Clean up thinking context on error
+    if (thinkingService.hasActiveContext(conversationId)) {
+      await thinkingService.endContext(conversationId);
+    }
     res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
     res.flush && res.flush();
     res.end();

@@ -88,6 +88,18 @@ const knowledgeBaseFiles = pgTable('knowledge_base_files', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Thinking steps - tracks thinking process per message for logging/review
+const thinkingSteps = pgTable('thinking_steps', {
+  id: serial('id').primaryKey(),
+  messageId: integer('message_id').references(() => messages.id).notNull(),
+  conversationId: integer('conversation_id').references(() => conversations.id).notNull(),
+  stepType: varchar('step_type', { length: 50 }).notNull(), // message_received, function_call, kb_access, processing, etc.
+  stepDescription: text('step_description').notNull(),
+  stepOrder: integer('step_order').notNull(),
+  metadata: jsonb('metadata'), // Additional data (function name, params, file names, etc.)
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -97,4 +109,5 @@ module.exports = {
   messages,
   knowledgeBases,
   knowledgeBaseFiles,
+  thinkingSteps,
 };

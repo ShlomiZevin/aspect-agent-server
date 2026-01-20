@@ -1,6 +1,6 @@
 const db = require('./db.pg');
-const { agents, users, conversations, messages } = require('../db/schema');
-const { eq, and, desc } = require('drizzle-orm');
+const { agents, users, conversations, messages, thinkingSteps } = require('../db/schema');
+const { eq, and, desc, asc } = require('drizzle-orm');
 
 /**
  * Conversation Service
@@ -154,7 +154,7 @@ class ConversationService {
    * Get conversation history
    * @param {string} externalId - External conversation ID
    * @param {number} limit - Maximum number of messages to retrieve
-   * @returns {Promise<Array>} - Array of messages
+   * @returns {Promise<Array>} - Array of messages with thinking steps
    */
   async getConversationHistory(externalId, limit = 50) {
     if (!this.drizzle) this.initialize();
@@ -178,7 +178,34 @@ class ConversationService {
       .orderBy(desc(messages.createdAt))
       .limit(limit);
 
-    return messageHistory.reverse(); // Return in chronological order
+    // Get thinking steps for all messages in this conversation
+    const allThinkingSteps = await this.drizzle
+      .select()
+      .from(thinkingSteps)
+      .where(eq(thinkingSteps.conversationId, conversation[0].id))
+      .orderBy(asc(thinkingSteps.stepOrder));
+
+    // Group thinking steps by messageId
+    const stepsByMessageId = {};
+    for (const step of allThinkingSteps) {
+      if (!stepsByMessageId[step.messageId]) {
+        stepsByMessageId[step.messageId] = [];
+      }
+      stepsByMessageId[step.messageId].push({
+        stepType: step.stepType,
+        description: step.stepDescription,
+        stepOrder: step.stepOrder,
+        metadata: step.metadata
+      });
+    }
+
+    // Attach thinking steps to messages
+    const messagesWithSteps = messageHistory.map(msg => ({
+      ...msg,
+      thinkingSteps: stepsByMessageId[msg.id] || []
+    }));
+
+    return messagesWithSteps.reverse(); // Return in chronological order
   }
 
   /**
