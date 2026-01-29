@@ -73,18 +73,10 @@ class DatabaseService {
       console.log(`   User: ${result.rows[0].current_user}`);
       console.log(`   Time: ${result.rows[0].now}`);
 
-      // Setup connection error handlers
+      // Setup connection error handler
       this.pool.on('error', (err) => {
         console.error('❌ Unexpected database pool error:', err);
         this.isConnected = false;
-      });
-
-      this.pool.on('connect', () => {
-        console.log('🔗 New database client connected');
-      });
-
-      this.pool.on('remove', () => {
-        console.log('🔌 Database client removed from pool');
       });
 
     } catch (error) {
