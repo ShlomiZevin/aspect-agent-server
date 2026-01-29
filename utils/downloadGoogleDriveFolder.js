@@ -35,6 +35,8 @@ async function listFilesInFolder(drive, folderId) {
       fields: 'nextPageToken, files(id, name, mimeType)',
       pageSize: 1000,
       pageToken: pageToken,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
     });
 
     files.push(...response.data.files);
@@ -48,7 +50,7 @@ async function downloadFile(drive, fileId, destPath) {
   const dest = fs.createWriteStream(destPath);
 
   const response = await drive.files.get(
-    { fileId, alt: 'media' },
+    { fileId, alt: 'media', supportsAllDrives: true },
     { responseType: 'stream' }
   );
 

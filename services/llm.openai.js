@@ -394,6 +394,204 @@ class OpenAIService {
   }
 
   /**
+   * Send a message with inline prompt text (for crew members)
+   * Uses instructions parameter instead of stored prompt ID
+   *
+   * @param {string} message - The user message
+   * @param {string} conversationId - Unique conversation identifier
+   * @param {Object} config - Configuration object
+   * @param {string} config.prompt - The prompt/instructions text
+   * @param {string} config.model - Model to use (optional, defaults to gpt-4)
+   * @param {number} config.maxTokens - Max tokens (optional, defaults to 2048)
+   * @param {Array} config.tools - Tools array for OpenAI (optional)
+   * @param {boolean} config.useKnowledgeBase - Whether to include file_search
+   * @param {string} config.vectorStoreId - Vector store ID for file_search
+   * @param {Object} config.context - Additional context to inject into prompt
+   * @returns {AsyncGenerator} - Stream of text chunks or function call events
+   */
+  async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
+    try {
+      // Get or create OpenAI conversation
+      const openaiConversationId = await this.getOrCreateConversation(conversationId);
+
+      // Extract config
+      const {
+        prompt = '',
+        model = this.model,
+        maxTokens = 2048,
+        tools: crewTools = [],
+        toolHandlers = {},
+        knowledgeBase = null,
+        context = {}
+      } = config;
+
+      // Build full instructions with context
+      let fullInstructions = prompt;
+      if (Object.keys(context).length > 0) {
+        fullInstructions += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
+      }
+
+      // Build tools array
+      const tools = [];
+
+      // Resolve knowledge base: crew's knowledgeBase.storeId → OpenAI file_search
+      // storeId is configured directly in the crew member file
+      if (knowledgeBase?.enabled && knowledgeBase.storeId) {
+        tools.push({
+          type: 'file_search',
+          vector_store_ids: [knowledgeBase.storeId]
+        });
+      }
+
+      // Add crew-specific tools (crew members define their own tools)
+      // No global function registry injection - crew tools are self-contained
+      if (crewTools && crewTools.length > 0) {
+        tools.push(...crewTools);
+      }
+
+      console.log(`🤖 Crew streaming with inline prompt (${fullInstructions.length} chars), ${tools.length} tools`);
+
+      let maxIterations = 10;
+      let currentInput = [{
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: message
+        }]
+      }];
+
+      while (maxIterations > 0) {
+        maxIterations--;
+
+        // Use Responses API with inline instructions instead of stored prompt
+        const stream = await this.client.responses.create({
+          model: model,
+          instructions: fullInstructions,
+          conversation: openaiConversationId,
+          input: currentInput,
+          text: {
+            format: {
+              type: 'text'
+            }
+          },
+          reasoning: {},
+          tools: tools.length > 0 ? tools : undefined,
+          max_output_tokens: maxTokens,
+          store: true,
+          stream: true
+        });
+
+        let fullReply = '';
+        const pendingFunctionCalls = [];
+        let currentFunctionCall = null;
+
+        // Yield each chunk as it arrives
+        for await (const chunk of stream) {
+          // Handle text delta events
+          if (chunk.type === 'response.output_text.delta') {
+            const delta = chunk.delta;
+            if (delta) {
+              fullReply += delta;
+              yield delta;
+            }
+          }
+
+          // Handle function call events
+          if (chunk.type === 'response.function_call_arguments.start') {
+            currentFunctionCall = {
+              name: chunk.name,
+              call_id: chunk.call_id,
+              arguments: ''
+            };
+          }
+
+          if (chunk.type === 'response.function_call_arguments.delta' && currentFunctionCall) {
+            currentFunctionCall.arguments += chunk.delta || '';
+          }
+
+          if (chunk.type === 'response.function_call_arguments.done' && currentFunctionCall) {
+            pendingFunctionCalls.push({ ...currentFunctionCall });
+            currentFunctionCall = null;
+          }
+
+          if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'function_call') {
+            pendingFunctionCalls.push({
+              name: chunk.item.name,
+              call_id: chunk.item.call_id,
+              arguments: chunk.item.arguments
+            });
+          }
+        }
+
+        // Handle function calls
+        if (pendingFunctionCalls.length > 0) {
+          const toolResults = [];
+
+          for (const funcCall of pendingFunctionCalls) {
+            const params = JSON.parse(funcCall.arguments || '{}');
+            yield {
+              type: 'function_call',
+              name: funcCall.name,
+              params
+            };
+
+            try {
+              let result;
+
+              // Use crew tool handler if available, otherwise fall back to global registry
+              const crewHandler = toolHandlers[funcCall.name];
+              if (crewHandler) {
+                console.log(`🔧 Executing crew tool handler: ${funcCall.name}`);
+                result = await crewHandler(params);
+              } else {
+                result = await this.handleFunctionCall({
+                  name: funcCall.name,
+                  arguments: funcCall.arguments
+                });
+              }
+
+              yield {
+                type: 'function_result',
+                name: funcCall.name,
+                result
+              };
+
+              toolResults.push({
+                type: 'function_call_output',
+                call_id: funcCall.call_id,
+                output: JSON.stringify(result)
+              });
+            } catch (error) {
+              console.error(`❌ Function call failed: ${funcCall.name}`, error.message);
+
+              yield {
+                type: 'function_error',
+                name: funcCall.name,
+                error: error.message
+              };
+
+              toolResults.push({
+                type: 'function_call_output',
+                call_id: funcCall.call_id,
+                output: JSON.stringify({ error: error.message })
+              });
+            }
+          }
+
+          currentInput = toolResults;
+        } else {
+          console.log(`✅ Crew streaming complete. Total reply length: ${fullReply.length}`);
+          break;
+        }
+      }
+    } catch (error) {
+      console.error('❌ OpenAI Crew Streaming Error:', error.message);
+      console.error('Error details:', error);
+      throw new Error(`Failed to stream crew response: ${error.message}`);
+    }
+  }
+
+  /**
    * Clear conversation history for a given conversation ID
    * Note: This only removes the local reference. The OpenAI conversation object persists.
    * @param {string} conversationId - The conversation to clear

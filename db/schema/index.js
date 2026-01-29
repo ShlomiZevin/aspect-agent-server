@@ -44,8 +44,9 @@ const conversations = pgTable('conversations', {
   agentId: integer('agent_id').references(() => agents.id).notNull(),
   externalId: varchar('external_id', { length: 255 }).unique(), // External conversation ID
   openaiConversationId: varchar('openai_conversation_id', { length: 255 }), // OpenAI conversation ID
+  currentCrewMember: varchar('current_crew_member', { length: 100 }), // Current crew member handling this conversation
   status: varchar('status', { length: 50 }).default('active').notNull(), // active, archived, deleted
-  metadata: jsonb('metadata'), // Additional conversation data
+  metadata: jsonb('metadata'), // Additional conversation data (includes crew transition history)
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

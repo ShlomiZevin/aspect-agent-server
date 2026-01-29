@@ -11,6 +11,8 @@ const db = require('./services/db.pg');
 const conversationService = require('./services/conversation.service');
 const kbService = require('./services/kb.service');
 const thinkingService = require('./services/thinking.service');
+const crewService = require('./crew/services/crew.service');
+const dispatcherService = require('./crew/services/dispatcher.service');
 
 // Register function handlers
 const symptomTracker = require('./functions/symptom-tracker');
@@ -62,6 +64,24 @@ app.use(express.static('public'));
 // Health check endpoint for App Engine Flexible
 app.get('/health', async (req, res) => {
   res.status(200).json({});
+});
+
+// ========== CREW MANAGEMENT ENDPOINTS ==========
+
+// Get all crew members for an agent
+app.get('/api/agents/:agentName/crew', async (req, res) => {
+  const { agentName } = req.params;
+
+  try {
+    const crewList = await crewService.listCrew(agentName);
+    res.json({
+      agentName,
+      crew: crewList
+    });
+  } catch (err) {
+    console.error('❌ Error fetching crew:', err.message);
+    res.status(500).json({ error: 'Error fetching crew: ' + err.message });
+  }
 });
 
 // Create new anonymous user
@@ -197,7 +217,7 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, useKnowledgeBase, userId, agentName } = req.body;
+  const { message, conversationId, useKnowledgeBase, userId, agentName, overrideCrewMember } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -245,48 +265,138 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     // Build agent config from config JSON (includes promptId, vectorStoreId, etc.)
     const agentConfig = agent.config || {};
 
-    // Add KB access step if using knowledge base
-    if (useKnowledgeBase && agentConfig.vectorStoreId) {
-      thinkingService.addKnowledgeBaseStep(conversationId, agentConfig.vectorStoreId);
-    }
+    // Check if agent has crew members
+    const hasCrew = await crewService.hasCrew(agentNameToUse);
 
-    // Stream the response and accumulate full reply with agent-specific config
     let fullReply = '';
-    for await (const chunk of llmService.sendMessageStream(message, conversationId, useKnowledgeBase, agentConfig)) {
-      // Check if chunk is a function call event (object) or text (string)
-      if (typeof chunk === 'object' && chunk.type) {
-        // Handle function call - add thinking step
-        if (chunk.type === 'function_call') {
-          const funcName = chunk.name.replace(/^call_/, '');
-          let description = `Calling function: ${funcName}`;
+    let currentCrewName = null;
 
-          // Custom descriptions for known functions
-          if (funcName === 'report_symptom' && chunk.params?.symptom_name) {
-            description = `Tracked symptom: "${chunk.params.symptom_name}"`;
+    if (hasCrew) {
+      // ========== CREW-BASED ROUTING ==========
+      console.log(`🎭 Agent ${agentNameToUse} has crew members, using dispatcher`);
+
+      // Get current crew info and send to client
+      const crewInfo = await dispatcherService.getCrewInfo(agentNameToUse, conversationId, overrideCrewMember);
+      let currentCrewDisplayName = null;
+      if (crewInfo) {
+        currentCrewName = crewInfo.name;
+        currentCrewDisplayName = crewInfo.displayName;
+        sendSSE({ type: 'crew_info', crew: crewInfo });
+        thinkingService.addStep(conversationId, 'crew_routing', `Routing to: ${crewInfo.displayName}`);
+      }
+
+      // Add KB access step if using knowledge base
+      // For crew-based routing, the storeId is configured in the crew member file
+      if (useKnowledgeBase && crewInfo?.hasKnowledgeBase) {
+        thinkingService.addKnowledgeBaseStep(conversationId, 'crew knowledge base');
+      }
+
+      // Dispatch through crew system
+      for await (const chunk of dispatcherService.dispatch({
+        message,
+        conversationId,
+        agentName: agentNameToUse,
+        overrideCrewMember,
+        useKnowledgeBase,
+        agentConfig
+      })) {
+        // Check if chunk is a function call event (object) or text (string)
+        if (typeof chunk === 'object' && chunk.type) {
+          // Handle function call - add thinking step
+          if (chunk.type === 'function_call') {
+            const funcName = chunk.name.replace(/^call_/, '');
+            let description = `Calling function: ${funcName}`;
+
+            if (funcName === 'report_symptom' && chunk.params?.symptom_name) {
+              description = `Tracked symptom: "${chunk.params.symptom_name}"`;
+            }
+
+            thinkingService.addFunctionCallStep(conversationId, funcName, chunk.params, description);
           }
 
-          thinkingService.addFunctionCallStep(
-            conversationId,
-            funcName,
-            chunk.params,
-            description
-          );
+          sendSSE(chunk);
+        } else {
+          fullReply += chunk;
+          sendSSE({ chunk });
         }
-
-        // Send function call events as special SSE messages
-        sendSSE(chunk);
-      } else {
-        // Text chunk - accumulate and send
-        fullReply += chunk;
-        sendSSE({ chunk });
       }
-    }
 
-    // Save assistant response to database first, then save thinking steps with its ID
-    if (fullReply) {
-      const assistantMessage = await conversationService.saveAssistantMessage(conversationId, fullReply);
-      // Update thinking context with assistant message ID before saving
-      thinkingService.setMessageId(conversationId, assistantMessage.id);
+      // Handle post-response (check for transitions)
+      const transition = await dispatcherService.handlePostResponse({
+        agentName: agentNameToUse,
+        conversationId,
+        message,
+        response: fullReply,
+        currentCrewName
+      });
+
+      // Send transition info to client if transition occurred
+      if (transition) {
+        sendSSE({ type: 'crew_transition', transition });
+      }
+
+      // Save assistant response with crew metadata
+      if (fullReply) {
+        const messageMetadata = {
+          crewMember: currentCrewDisplayName || currentCrewName,
+          ...(transition && {
+            transitionTo: transition.to,
+            transitionReason: transition.reason
+          })
+        };
+
+        const assistantMessage = await conversationService.saveAssistantMessage(
+          conversationId,
+          fullReply,
+          messageMetadata
+        );
+        thinkingService.setMessageId(conversationId, assistantMessage.id);
+      }
+
+    } else {
+      // ========== LEGACY NON-CREW ROUTING ==========
+      // Add KB access step if using knowledge base
+      if (useKnowledgeBase && agentConfig.vectorStoreId) {
+        thinkingService.addKnowledgeBaseStep(conversationId, agentConfig.vectorStoreId);
+      }
+
+      // Stream the response and accumulate full reply with agent-specific config
+      for await (const chunk of llmService.sendMessageStream(message, conversationId, useKnowledgeBase, agentConfig)) {
+        // Check if chunk is a function call event (object) or text (string)
+        if (typeof chunk === 'object' && chunk.type) {
+          // Handle function call - add thinking step
+          if (chunk.type === 'function_call') {
+            const funcName = chunk.name.replace(/^call_/, '');
+            let description = `Calling function: ${funcName}`;
+
+            // Custom descriptions for known functions
+            if (funcName === 'report_symptom' && chunk.params?.symptom_name) {
+              description = `Tracked symptom: "${chunk.params.symptom_name}"`;
+            }
+
+            thinkingService.addFunctionCallStep(
+              conversationId,
+              funcName,
+              chunk.params,
+              description
+            );
+          }
+
+          // Send function call events as special SSE messages
+          sendSSE(chunk);
+        } else {
+          // Text chunk - accumulate and send
+          fullReply += chunk;
+          sendSSE({ chunk });
+        }
+      }
+
+      // Save assistant response to database first, then save thinking steps with its ID
+      if (fullReply) {
+        const assistantMessage = await conversationService.saveAssistantMessage(conversationId, fullReply);
+        // Update thinking context with assistant message ID before saving
+        thinkingService.setMessageId(conversationId, assistantMessage.id);
+      }
     }
 
     // End thinking context and save to database

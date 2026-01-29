@@ -408,6 +408,58 @@ class ConversationService {
   }
 
   /**
+   * Get conversation by external ID
+   * @param {string} externalConversationId - External conversation ID
+   * @returns {Promise<Object|null>} - Conversation object or null
+   */
+  async getConversationByExternalId(externalConversationId) {
+    if (!this.drizzle) this.initialize();
+
+    const result = await this.drizzle
+      .select()
+      .from(conversations)
+      .where(eq(conversations.externalId, externalConversationId))
+      .limit(1);
+
+    return result.length > 0 ? result[0] : null;
+  }
+
+  /**
+   * Update current crew member for a conversation
+   * @param {string} externalConversationId - External conversation ID
+   * @param {string} crewMemberName - Name of the crew member
+   * @returns {Promise<Object>} - Updated conversation
+   */
+  async updateCurrentCrewMember(externalConversationId, crewMemberName) {
+    if (!this.drizzle) this.initialize();
+
+    const conversation = await this.getConversationByExternalId(externalConversationId);
+    if (!conversation) {
+      throw new Error(`Conversation not found: ${externalConversationId}`);
+    }
+
+    // Update both the dedicated column and metadata
+    const currentMetadata = conversation.metadata || {};
+    const newMetadata = {
+      ...currentMetadata,
+      currentCrewMember: crewMemberName,
+      lastCrewUpdate: new Date().toISOString()
+    };
+
+    const [updated] = await this.drizzle
+      .update(conversations)
+      .set({
+        currentCrewMember: crewMemberName,
+        metadata: newMetadata,
+        updatedAt: new Date()
+      })
+      .where(eq(conversations.id, conversation.id))
+      .returning();
+
+    return updated;
+  }
+
+  /**
    * Delete a conversation (soft delete by changing status)
    * @param {string} externalConversationId - External conversation ID
    * @returns {Promise<Object>} - Deleted conversation

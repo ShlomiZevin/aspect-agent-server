@@ -75,6 +75,17 @@ class LLMService {
   }
 
   /**
+   * Send a message with an inline prompt (for crew members) and get a streaming response
+   * @param {string} message - The user message
+   * @param {string} conversationId - Unique conversation identifier
+   * @param {Object} config - Crew member config (prompt, model, maxTokens, tools, context)
+   * @returns {AsyncGenerator} - Stream of text chunks
+   */
+  async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
+    yield* this.provider.sendMessageStreamWithPrompt(message, conversationId, config);
+  }
+
+  /**
    * Clear conversation history for a given conversation ID
    * @param {string} conversationId - The conversation to clear
    */
