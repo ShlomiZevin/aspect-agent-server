@@ -314,6 +314,19 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             thinkingService.addFunctionCallStep(conversationId, funcName, chunk.params, description);
           }
 
+          // Handle file search results - show which KB files were referenced
+          if (chunk.type === 'file_search_results' && chunk.files?.length > 0) {
+            const topFiles = chunk.files.slice(0, 3);
+            const summary = topFiles.map(f => f.name.length > 30 ? f.name.substring(0, 27) + '...' : f.name).join(', ');
+            const suffix = chunk.files.length > 3 ? ` (+${chunk.files.length - 3} more)` : '';
+            thinkingService.addStep(
+              conversationId,
+              'file_search',
+              `Found in: ${summary}${suffix}`,
+              { files: chunk.files }
+            );
+          }
+
           sendSSE(chunk);
         } else {
           fullReply += chunk;

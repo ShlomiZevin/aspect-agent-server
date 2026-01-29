@@ -478,6 +478,7 @@ class OpenAIService {
           tools: tools.length > 0 ? tools : undefined,
           max_output_tokens: maxTokens,
           store: true,
+          include: ['file_search_call.results'],
           stream: true
         });
 
@@ -520,6 +521,24 @@ class OpenAIService {
               call_id: chunk.item.call_id,
               arguments: chunk.item.arguments
             });
+          }
+
+          // Handle file_search_call results - yield file names found in KB
+          if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'file_search_call') {
+            const results = chunk.item.results || [];
+            const files = results
+              .filter(r => r.score > 0.3)
+              .map(r => ({
+                name: r.file_name || r.filename || 'Unknown',
+                score: r.score
+              }));
+
+            if (files.length > 0) {
+              yield {
+                type: 'file_search_results',
+                files: files.slice(0, 8)
+              };
+            }
           }
         }
 
