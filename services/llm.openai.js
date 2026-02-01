@@ -611,6 +611,45 @@ class OpenAIService {
   }
 
   /**
+   * Send a stateless, non-streaming one-shot request.
+   * Used by micro-agents (e.g., fields extractor) that don't need conversation
+   * state, streaming, or tool handling.
+   *
+   * @param {string} instructions - System instructions/prompt
+   * @param {string} message - The user message content
+   * @param {Object} options - Configuration options
+   * @param {string} options.model - Model to use (default: 'gpt-4o-mini')
+   * @param {number} options.maxTokens - Max output tokens (default: 1024)
+   * @param {boolean} options.jsonOutput - Request JSON output format (default: false)
+   * @returns {Promise<string>} - The response text
+   */
+  async sendOneShot(instructions, message, options = {}) {
+    const { model = 'gpt-4o-mini', maxTokens = 1024, jsonOutput = false } = options;
+
+    try {
+      const requestParams = {
+        model,
+        instructions,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: message }] }],
+        max_output_tokens: maxTokens,
+        store: false
+      };
+
+      if (jsonOutput) {
+        requestParams.text = { format: { type: 'json_object' } };
+      }
+
+      const response = await this.client.responses.create(requestParams);
+
+      const outputItem = response.output.find(item => item.type === 'message');
+      return outputItem?.content.find(c => c.type === 'output_text')?.text || '';
+    } catch (error) {
+      console.error('❌ OpenAI OneShot Error:', error.message);
+      throw new Error(`Failed to get one-shot response: ${error.message}`);
+    }
+  }
+
+  /**
    * Clear conversation history for a given conversation ID
    * Note: This only removes the local reference. The OpenAI conversation object persists.
    * @param {string} conversationId - The conversation to clear

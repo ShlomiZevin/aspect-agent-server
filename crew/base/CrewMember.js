@@ -10,6 +10,8 @@
  * - tools: Available function tools
  * - knowledgeBase: Knowledge base configuration (provider-agnostic)
  * - collectFields: Fields to gather from the user
+ * - fieldsToCollect: Structured field definitions for micro-agent extraction
+ * - transitionTo: Target crew member for automatic transitions
  * - isDefault: Whether this is the default crew member for the agent
  */
 class CrewMember {
@@ -23,7 +25,9 @@ class CrewMember {
    * @param {number} options.maxTokens - Max tokens for response (default: 2048)
    * @param {Array} options.tools - Array of tool definitions { name, description, parameters, handler? }
    * @param {Object} options.knowledgeBase - Knowledge base config { enabled: boolean, storeId?: string }
-   * @param {Array} options.collectFields - Fields to collect from user
+   * @param {Array} options.collectFields - Fields to collect from user (legacy, string array)
+   * @param {Array} options.fieldsToCollect - Structured fields for extraction [{name, description}]
+   * @param {string} options.transitionTo - Target crew member name for automatic transitions
    * @param {boolean} options.isDefault - Whether this is the default crew member
    */
   constructor(options = {}) {
@@ -48,8 +52,15 @@ class CrewMember {
     // storeId: the KB store identifier for this crew member
     this.knowledgeBase = options.knowledgeBase || null;
 
-    // Fields to collect from user during conversation
+    // Fields to collect from user during conversation (legacy, string array)
     this.collectFields = options.collectFields || [];
+
+    // Structured fields for micro-agent extraction
+    // Each entry: { name: string, description: string }
+    this.fieldsToCollect = options.fieldsToCollect || [];
+
+    // Target crew member for automatic transitions
+    this.transitionTo = options.transitionTo || null;
 
     // Whether this is the default crew member for the agent
     this.isDefault = options.isDefault || false;
@@ -114,6 +125,31 @@ class CrewMember {
   }
 
   /**
+   * Determine if a transfer should occur BEFORE the crew response is sent.
+   * Called after the fields extractor completes, while crew response is buffered.
+   * If returns true, the buffered crew response is discarded and the conversation
+   * transitions to the crew member specified by this.transitionTo.
+   *
+   * @param {Object} collectedFields - All collected fields for this conversation
+   * @returns {Promise<boolean>} - true to transfer (using this.transitionTo), false to continue
+   */
+  async preMessageTransfer(collectedFields) {
+    return false;
+  }
+
+  /**
+   * Determine if a transfer should occur AFTER the crew response is sent.
+   * Called after the crew response has been fully streamed to the client.
+   * If returns true, the conversation transitions to this.transitionTo for the next message.
+   *
+   * @param {Object} collectedFields - All collected fields for this conversation
+   * @returns {Promise<boolean>} - true to transfer (using this.transitionTo), false to stay
+   */
+  async postMessageTransfer(collectedFields) {
+    return false;
+  }
+
+  /**
    * Get tool definitions formatted for the LLM provider
    *
    * @returns {Array} - Tool schemas
@@ -139,6 +175,8 @@ class CrewMember {
       description: this.description,
       isDefault: this.isDefault,
       collectFields: this.collectFields,
+      fieldsToCollect: this.fieldsToCollect,
+      transitionTo: this.transitionTo,
       toolCount: this.tools.length,
       hasKnowledgeBase: this.knowledgeBase?.enabled || false
     };

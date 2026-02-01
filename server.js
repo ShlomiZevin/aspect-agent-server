@@ -291,6 +291,9 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         thinkingService.addKnowledgeBaseStep(conversationId, 'crew knowledge base');
       }
 
+      // Track if a pre-transfer transition happened during dispatch
+      let inlineTransition = null;
+
       // Dispatch through crew system
       for await (const chunk of dispatcherService.dispatch({
         message,
@@ -327,6 +330,35 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             );
           }
 
+          // Handle field extraction events from micro-agent
+          if (chunk.type === 'field_extracted') {
+            thinkingService.addStep(
+              conversationId,
+              'field_extracted',
+              `Extracted field: ${chunk.field} = ${chunk.value}`,
+              { field: chunk.field, value: chunk.value }
+            );
+          }
+
+          // Handle inline crew transition (pre-transfer from dispatcher)
+          if (chunk.type === 'crew_transition' && chunk.transition) {
+            inlineTransition = chunk.transition;
+            thinkingService.addStep(
+              conversationId,
+              'crew_transition',
+              `Transitioning to: ${chunk.transition.to} (${chunk.transition.reason})`,
+              chunk.transition
+            );
+            // Reset fullReply - target crew's response will follow
+            fullReply = '';
+          }
+
+          // Handle updated crew info (after pre-transfer transition)
+          if (chunk.type === 'crew_info' && chunk.crew) {
+            currentCrewName = chunk.crew.name;
+            currentCrewDisplayName = chunk.crew.displayName;
+          }
+
           sendSSE(chunk);
         } else {
           fullReply += chunk;
@@ -334,18 +366,21 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         }
       }
 
-      // Handle post-response (check for transitions)
-      const transition = await dispatcherService.handlePostResponse({
-        agentName: agentNameToUse,
-        conversationId,
-        message,
-        response: fullReply,
-        currentCrewName
-      });
+      // Handle post-response (check for transitions) - skip if pre-transfer already happened
+      let transition = inlineTransition;
+      if (!inlineTransition) {
+        transition = await dispatcherService.handlePostResponse({
+          agentName: agentNameToUse,
+          conversationId,
+          message,
+          response: fullReply,
+          currentCrewName
+        });
 
-      // Send transition info to client if transition occurred
-      if (transition) {
-        sendSSE({ type: 'crew_transition', transition });
+        // Send transition info to client if transition occurred
+        if (transition) {
+          sendSSE({ type: 'crew_transition', transition });
+        }
       }
 
       // Save assistant response with crew metadata

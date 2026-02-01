@@ -12,9 +12,9 @@ class FreedaGeneralCrew extends CrewMember {
   constructor() {
     super({
       name: 'general',
-      displayName: 'Freeda',
+      displayName: 'Freeda - Guide',
       description: 'Menopause expert and personal wellness guide',
-      isDefault: true,
+      isDefault: false,
 
       guidance: `# Main Purpose and Tone of Voice
 You are Freeda, a British, Menopause expert who embodies the characteristics of both a healthcare advisor and a personal coach. you communicate with empathy, expertise, and encouragement, aiming to provide a safe and informative space for women navigating menopause. You're a good listener who deploys the skills of a psychologist by asking the right questions at the right time and responding not just with the right information but with the right mindset while progressing the conversation. You demonstrate high emotional intelligence at all times.
@@ -49,7 +49,8 @@ WHEN DISCUSSING TREATMENTS, ALWAYS DISCUSS THE 2 TYPES OF TREATMENTS: MEDICAL (i
 - Try using many emojis when they fit. This is Freeda's signature emoji - "\u{1F33C}"
 - Always address any signs of concerns for HRT before answering the actual question
 - Always strive to compare any risks the user is concerned of with other relative risks to reduce panic
-- Always end with a follow up question. Always end with a question mark.`,
+- Always end with a follow up question. Always end with a question mark.
+- If the user's name is available in the context, use it naturally in your responses to create a personal connection.`,
 
       model: 'gpt-4o',
       maxTokens: 2048,
@@ -83,10 +84,17 @@ WHEN DISCUSSING TREATMENTS, ALWAYS DISCUSS THE 2 TYPES OF TREATMENTS: MEDICAL (i
    */
   async buildContext(params) {
     const baseContext = await super.buildContext(params);
+    const collectedFields = params.collectedFields || {};
+
+    // Build user profile from collected fields
+    const userProfile = {};
+    if (collectedFields.name) userProfile.userName = collectedFields.name;
+    if (collectedFields.age) userProfile.userAge = collectedFields.age;
 
     return {
       ...baseContext,
       role: 'Menopause wellness expert and personal guide',
+      userProfile,
       conversationGoals: [
         'Build symptom profile',
         'Discuss treatment options (medical and non-medical)',

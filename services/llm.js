@@ -86,6 +86,20 @@ class LLMService {
   }
 
   /**
+   * Send a stateless, non-streaming one-shot request.
+   * Used by micro-agents that need a simple request/response without
+   * conversation state, streaming, or tool handling.
+   *
+   * @param {string} instructions - System instructions/prompt
+   * @param {string} message - The user message content
+   * @param {Object} options - { model, maxTokens, jsonOutput }
+   * @returns {Promise<string>} - The response text
+   */
+  async sendOneShot(instructions, message, options = {}) {
+    return this.provider.sendOneShot(instructions, message, options);
+  }
+
+  /**
    * Clear conversation history for a given conversation ID
    * @param {string} conversationId - The conversation to clear
    */
