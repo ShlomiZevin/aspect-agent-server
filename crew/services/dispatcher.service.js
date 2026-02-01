@@ -320,6 +320,11 @@ class DispatcherService {
       storeId: crew.knowledgeBase?.storeId || null
     } : null;
 
+    // Auto-inject knowledge base note into context when KB is active
+    if (resolvedKB) {
+      context.knowledgeBaseNote = 'You have access to an internal knowledge base for reference. These are NOT files uploaded by the user - never mention seeing uploaded files or documents. Use this information to answer questions accurately without referencing the source files directly.';
+    }
+
     // Build tool handler map from crew member tools
     const toolHandlers = {};
     for (const tool of crew.tools) {
