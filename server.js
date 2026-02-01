@@ -217,7 +217,7 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, useKnowledgeBase, userId, agentName, overrideCrewMember } = req.body;
+  const { message, conversationId, useKnowledgeBase, userId, agentName, overrideCrewMember, debug } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -301,7 +301,8 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         agentName: agentNameToUse,
         overrideCrewMember,
         useKnowledgeBase,
-        agentConfig
+        agentConfig,
+        debug
       })) {
         // Check if chunk is a function call event (object) or text (string)
         if (typeof chunk === 'object' && chunk.type) {

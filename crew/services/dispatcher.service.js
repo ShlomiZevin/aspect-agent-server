@@ -234,6 +234,18 @@ class DispatcherService {
       }
     }
 
+    // ========== DEBUG: POST-EXTRACTION CONTEXT ==========
+    if (params.debug && extractorResult) {
+      yield {
+        type: 'debug_context_update',
+        data: {
+          extractedFields: extractorResult.newFields,
+          allCollectedFields: extractorResult.allCollected,
+          remainingFields: extractorResult.remainingFields,
+        }
+      };
+    }
+
     // ========== HANDLE TRANSITION ==========
     if (shouldTransfer && crew.transitionTo) {
       // Yield field events for any newly extracted fields
@@ -327,6 +339,29 @@ class DispatcherService {
       agentConfig,
       context
     };
+
+    // Emit debug data if requested (before LLM call)
+    if (params.debug) {
+      // Build fullInstructions exactly as llm.openai.js does
+      let fullInstructions = crew.guidance;
+      if (context && Object.keys(context).length > 0) {
+        fullInstructions += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
+      }
+
+      yield {
+        type: 'debug_prompt',
+        data: {
+          crewName: crew.name,
+          crewDisplayName: crew.displayName,
+          fullInstructions,
+          model: crew.model,
+          maxTokens: crew.maxTokens,
+          tools: crew.getToolSchemas(),
+          knowledgeBase: resolvedKB,
+          processedMessage,
+        }
+      };
+    }
 
     // Stream response from LLM using inline prompt
     const stream = llmService.sendMessageStreamWithPrompt(

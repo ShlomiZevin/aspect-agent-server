@@ -81,10 +81,11 @@ You MUST actively ask for these. Do not get sidetracked into other topics.
       ...baseContext,
       role: 'Welcome and profile collection',
       fieldsAlreadyCollected: collected.map(f => `${f.name}: ${collectedFields[f.name]}`),
-      fieldsStillNeeded: missing.map(f => f.name),
+      fieldsStillNeeded: missing.map(f => `${f.name} - ${f.description}`),
       instruction: missing.length > 0
         ? `You still need to ask for: ${missing.map(f => f.name).join(', ')}. Focus on getting these.`
-        : 'All fields collected. The system will transition automatically.'
+        : 'All fields collected. The system will transition automatically.',
+      note: 'The fields above reflect state from previous messages. The user\'s current message may contain new field values - check it directly and do not re-ask for information already provided in this message.'
     };
   }
 }
