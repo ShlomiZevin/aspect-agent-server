@@ -14,6 +14,12 @@ const thinkingService = require('./services/thinking.service');
 const crewService = require('./crew/services/crew.service');
 const dispatcherService = require('./crew/services/dispatcher.service');
 
+// WhatsApp bridge
+const { handleIncomingMessage } = require('./whatsapp/bridge.service');
+const { WhatsappService } = require('./whatsapp/whatsapp.service');
+const whatsappService = new WhatsappService();
+const { setMapping } = require('./whatsapp/user-map.service');
+
 // Register function handlers
 const symptomTracker = require('./functions/symptom-tracker');
 symptomTracker.register();
@@ -100,6 +106,66 @@ app.post('/api/user/create', async (req, res) => {
   } catch (err) {
     console.error('❌ Error creating user:', err.message);
     res.status(500).json({ error: 'Error creating user: ' + err.message });
+  }
+});
+
+// Link phone number - find WhatsApp user by phone and return their conversations
+app.post('/api/user/link-phone', async (req, res) => {
+  try {
+    const { phone, agentName } = req.body;
+    if (!phone) {
+      return res.status(400).json({ error: 'Phone number is required' });
+    }
+
+    // Normalize phone: keep only digits
+    const normalizedPhone = phone.replace(/[^0-9]/g, '');
+
+    // Find WhatsApp user by phone
+    const user = await conversationService.getUserByPhone(normalizedPhone);
+    if (!user) {
+      return res.status(404).json({ error: 'phone_not_found' });
+    }
+
+    // Get conversations for this user
+    const userConversations = await conversationService.getUserConversations(user.externalId, agentName || null);
+
+    res.json({
+      userId: user.externalId,
+      conversations: userConversations
+    });
+  } catch (err) {
+    console.error('❌ Error linking phone:', err.message);
+    res.status(500).json({ error: 'Error linking phone: ' + err.message });
+  }
+});
+
+// Go Mobile: link current conversation to a phone number
+app.post('/api/conversation/:conversationId/link-phone', async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { phone } = req.body;
+
+    if (!phone) {
+      return res.status(400).json({ error: 'Phone number is required' });
+    }
+    if (!conversationId) {
+      return res.status(400).json({ error: 'Conversation ID is required' });
+    }
+
+    const normalizedPhone = phone.replace(/[^0-9]/g, '');
+
+    const result = await conversationService.linkConversationToPhone(conversationId, normalizedPhone);
+
+    // Update in-memory WhatsApp mapping so bridge picks up this conversation
+    setMapping(normalizedPhone, result.user.externalId, result.newExternalId);
+
+    res.json({
+      userId: result.user.externalId,
+      conversationId: result.newExternalId
+    });
+  } catch (err) {
+    console.error('❌ Error linking conversation to phone:', err.message);
+    res.status(500).json({ error: 'Error linking conversation to phone: ' + err.message });
   }
 });
 
@@ -451,6 +517,14 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     // End thinking context and save to database
     await thinkingService.endContext(conversationId);
 
+    // Forward response to WhatsApp if user is a linked WhatsApp user
+    if (fullReply && userId && userId.startsWith('wa_')) {
+      const phone = userId.substring(3); // Remove 'wa_' prefix
+      whatsappService.splitAndSend(phone, fullReply)
+        .then(() => console.log(`📲 Forwarded web response to WhatsApp: ${phone}`))
+        .catch(err => console.error(`❌ Failed to forward to WhatsApp: ${err.message}`));
+    }
+
     // Send done signal
     res.write('data: [DONE]\n\n');
     res.flush && res.flush();
@@ -464,6 +538,60 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
     res.flush && res.flush();
     res.end();
+  }
+});
+
+// ========== WHATSAPP WEBHOOK ENDPOINTS ==========
+
+// Webhook verification (Meta sends GET to verify endpoint)
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+    console.log('✅ WhatsApp webhook verified');
+    return res.status(200).send(challenge);
+  }
+
+  console.warn('⚠️ WhatsApp webhook verification failed');
+  res.sendStatus(403);
+});
+
+// Webhook message receiver (Meta sends POST with incoming messages)
+app.post('/webhook', (req, res) => {
+  // Always respond 200 immediately — Meta requires this
+  res.sendStatus(200);
+
+  try {
+    const entry = req.body?.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+
+    // Skip status updates (delivery receipts, read receipts)
+    if (!value?.messages) return;
+
+    // Validate WABA ID
+    if (entry?.id !== process.env.WHATSAPP_WABA_ID) {
+      console.warn('⚠️ Ignoring message from unknown WABA:', entry?.id);
+      return;
+    }
+
+    const message = value.messages[0];
+    const phone = message.from;
+
+    // Handle text messages
+    if (message.type === 'text' && message.text?.body) {
+      const text = message.text.body;
+      console.log(`📩 WhatsApp incoming from ${phone}: "${text.substring(0, 80)}"`);
+
+      handleIncomingMessage(phone, text, message.id)
+        .catch(err => console.error('❌ WhatsApp bridge error:', err.message));
+    } else {
+      console.log(`ℹ️ Ignoring non-text WhatsApp message type: ${message.type} from ${phone}`);
+    }
+  } catch (err) {
+    console.error('❌ WhatsApp webhook parse error:', err.message);
   }
 });
 
