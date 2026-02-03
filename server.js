@@ -14,6 +14,7 @@ const thinkingService = require('./services/thinking.service');
 const feedbackService = require('./services/feedback.service');
 const crewService = require('./crew/services/crew.service');
 const dispatcherService = require('./crew/services/dispatcher.service');
+const adminService = require('./services/admin.service');
 
 // WhatsApp bridge
 const { handleIncomingMessage } = require('./whatsapp/bridge.service');
@@ -970,6 +971,124 @@ app.get('/api/agents/:agentName/feedback/stats', async (req, res) => {
   } catch (err) {
     console.error('❌ Error fetching feedback stats:', err.message);
     res.status(500).json({ error: 'Error fetching feedback stats: ' + err.message });
+  }
+});
+
+// ========== ADMIN ENDPOINTS ==========
+
+// Get all users with filters
+app.get('/api/admin/users', async (req, res) => {
+  try {
+    const { source, tenant, subscription, search, limit, offset } = req.query;
+    const filters = {
+      source,
+      tenant,
+      subscription,
+      search,
+      limit: limit ? parseInt(limit, 10) : 100,
+      offset: offset ? parseInt(offset, 10) : 0,
+    };
+
+    const result = await adminService.getUsers(filters);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error fetching users:', err.message);
+    res.status(500).json({ error: 'Error fetching users: ' + err.message });
+  }
+});
+
+// Get admin dashboard stats
+app.get('/api/admin/stats', async (req, res) => {
+  try {
+    const stats = await adminService.getStats();
+    res.json(stats);
+  } catch (err) {
+    console.error('❌ Error fetching stats:', err.message);
+    res.status(500).json({ error: 'Error fetching stats: ' + err.message });
+  }
+});
+
+// Get unique tenants for filter dropdown
+app.get('/api/admin/tenants', async (req, res) => {
+  try {
+    const tenants = await adminService.getTenants();
+    res.json({ tenants });
+  } catch (err) {
+    console.error('❌ Error fetching tenants:', err.message);
+    res.status(500).json({ error: 'Error fetching tenants: ' + err.message });
+  }
+});
+
+// Get single user by ID
+app.get('/api/admin/users/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    const user = await adminService.getUserById(userId);
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(user);
+  } catch (err) {
+    console.error('❌ Error fetching user:', err.message);
+    res.status(500).json({ error: 'Error fetching user: ' + err.message });
+  }
+});
+
+// Update user fields (inline editing)
+app.patch('/api/admin/users/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    const updates = req.body;
+
+    const updated = await adminService.updateUser(userId, updates);
+    res.json(updated);
+  } catch (err) {
+    console.error('❌ Error updating user:', err.message);
+    res.status(500).json({ error: 'Error updating user: ' + err.message });
+  }
+});
+
+// Create new user manually
+app.post('/api/admin/users', async (req, res) => {
+  try {
+    const userData = req.body;
+    const newUser = await adminService.createUser(userData);
+    res.status(201).json(newUser);
+  } catch (err) {
+    console.error('❌ Error creating user:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Link WhatsApp to user
+app.post('/api/admin/users/:userId/link', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    const { phone } = req.body;
+
+    if (!phone) {
+      return res.status(400).json({ error: 'Phone number is required' });
+    }
+
+    const updated = await adminService.linkWhatsApp(userId, phone);
+    res.json(updated);
+  } catch (err) {
+    console.error('❌ Error linking WhatsApp:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Unlink WhatsApp from user
+app.delete('/api/admin/users/:userId/link', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    const updated = await adminService.unlinkWhatsApp(userId);
+    res.json(updated);
+  } catch (err) {
+    console.error('❌ Error unlinking WhatsApp:', err.message);
+    res.status(500).json({ error: 'Error unlinking WhatsApp: ' + err.message });
   }
 });
 

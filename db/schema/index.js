@@ -29,9 +29,16 @@ const agents = pgTable('agents', {
 // Users table - platform users
 const users = pgTable('users', {
   id: serial('id').primaryKey(),
-  externalId: varchar('external_id', { length: 255 }).unique(), // Firebase UID, etc.
+  externalId: varchar('external_id', { length: 255 }).unique(), // Firebase UID, anon_xxx, wa_phone, etc.
   email: varchar('email', { length: 255 }),
   name: varchar('name', { length: 255 }),
+  phone: varchar('phone', { length: 50 }), // Phone number (for WhatsApp users or linked accounts)
+  role: varchar('role', { length: 20 }).default('user').notNull(), // user, admin (for future use)
+  source: varchar('source', { length: 20 }).default('web').notNull(), // web, whatsapp
+  subscription: varchar('subscription', { length: 20 }).default('demo').notNull(), // demo, pro
+  tenant: varchar('tenant', { length: 100 }), // Organization/company context
+  whatsappConversationId: integer('whatsapp_conversation_id'), // Reference to WhatsApp conversation (1 per user)
+  lastActiveAt: timestamp('last_active_at'), // Last activity timestamp
   metadata: jsonb('metadata'), // Additional user data
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -45,6 +52,7 @@ const conversations = pgTable('conversations', {
   externalId: varchar('external_id', { length: 255 }).unique(), // External conversation ID
   openaiConversationId: varchar('openai_conversation_id', { length: 255 }), // OpenAI conversation ID
   currentCrewMember: varchar('current_crew_member', { length: 100 }), // Current crew member handling this conversation
+  channel: varchar('channel', { length: 20 }).default('web').notNull(), // web, whatsapp
   status: varchar('status', { length: 50 }).default('active').notNull(), // active, archived, deleted
   metadata: jsonb('metadata'), // Additional conversation data (includes crew transition history)
   createdAt: timestamp('created_at').defaultNow().notNull(),
