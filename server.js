@@ -468,6 +468,8 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
           messageMetadata
         );
         thinkingService.setMessageId(conversationId, assistantMessage.id);
+        // Send message_saved event so client can get dbId for feedback
+        sendSSE({ type: 'message_saved', messageId: assistantMessage.id });
       }
 
     } else {
