@@ -11,6 +11,7 @@ const db = require('./services/db.pg');
 const conversationService = require('./services/conversation.service');
 const kbService = require('./services/kb.service');
 const thinkingService = require('./services/thinking.service');
+const feedbackService = require('./services/feedback.service');
 const crewService = require('./crew/services/crew.service');
 const dispatcherService = require('./crew/services/dispatcher.service');
 
@@ -37,7 +38,7 @@ const app = express();
 if (process.env.NODE_ENV === 'development') {
   app.use(cors({
     origin: '*',
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type']
   }));
 } else {
@@ -52,14 +53,14 @@ if (process.env.NODE_ENV === 'development') {
         'https://freeda-2b4af.web.app',
         'https://freeda-2b4af.firebaseapp.com'
       ];
-      
+
       if (!origin || ALLOWED_ORIGINS.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));
       }
     },
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type']
   }));
 }
@@ -511,6 +512,8 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         const assistantMessage = await conversationService.saveAssistantMessage(conversationId, fullReply);
         // Update thinking context with assistant message ID before saving
         thinkingService.setMessageId(conversationId, assistantMessage.id);
+        // Send message_saved event so client can get dbId for feedback
+        sendSSE({ type: 'message_saved', messageId: assistantMessage.id });
       }
     }
 
@@ -836,6 +839,137 @@ app.post('/api/kb/upload', upload.single('file'), async (req, res) => {
   } catch (err) {
     console.error('❌ Upload Error:', err.message);
     res.status(500).json({ error: 'Error uploading file: ' + err.message });
+  }
+});
+
+// ========== FEEDBACK ENDPOINTS ==========
+
+// Get all tags for an agent (for autocomplete)
+app.get('/api/agents/:agentName/feedback/tags', async (req, res) => {
+  const { agentName } = req.params;
+
+  try {
+    const agent = await conversationService.getAgentByName(agentName);
+    const tags = await feedbackService.getTagsForAgent(agent.id);
+    res.json({ agentName, tags });
+  } catch (err) {
+    console.error('❌ Error fetching tags:', err.message);
+    res.status(500).json({ error: 'Error fetching tags: ' + err.message });
+  }
+});
+
+// Search tags (autocomplete after 3 chars)
+app.get('/api/agents/:agentName/feedback/tags/search', async (req, res) => {
+  const { agentName } = req.params;
+  const { q } = req.query;
+
+  if (!q || q.length < 3) {
+    return res.json({ tags: [] });
+  }
+
+  try {
+    const agent = await conversationService.getAgentByName(agentName);
+    const tags = await feedbackService.searchTags(agent.id, q);
+    res.json({ tags });
+  } catch (err) {
+    console.error('❌ Error searching tags:', err.message);
+    res.status(500).json({ error: 'Error searching tags: ' + err.message });
+  }
+});
+
+// Create feedback on a message
+app.post('/api/messages/:messageId/feedback', async (req, res) => {
+  const { messageId } = req.params;
+  const { feedbackText, tags, userId } = req.body;
+
+  try {
+    const feedback = await feedbackService.createFeedback(
+      parseInt(messageId),
+      feedbackText,
+      tags,
+      userId ? parseInt(userId) : null
+    );
+    console.log(`✅ Feedback created for message ${messageId}`);
+    res.json({ success: true, feedback });
+  } catch (err) {
+    console.error('❌ Error creating feedback:', err.message);
+    res.status(500).json({ error: 'Error creating feedback: ' + err.message });
+  }
+});
+
+// Get feedback for a specific message
+app.get('/api/messages/:messageId/feedback', async (req, res) => {
+  const { messageId } = req.params;
+
+  try {
+    const feedback = await feedbackService.getFeedbackForMessage(parseInt(messageId));
+    res.json({ feedback });
+  } catch (err) {
+    console.error('❌ Error fetching feedback:', err.message);
+    res.status(500).json({ error: 'Error fetching feedback: ' + err.message });
+  }
+});
+
+// Update feedback
+app.patch('/api/feedback/:feedbackId', async (req, res) => {
+  const { feedbackId } = req.params;
+  const { feedbackText, tags } = req.body;
+
+  try {
+    const updates = {};
+    if (feedbackText !== undefined) updates.feedbackText = feedbackText;
+    if (tags !== undefined) updates.tags = tags;
+
+    const feedback = await feedbackService.updateFeedback(parseInt(feedbackId), updates);
+    console.log(`✅ Feedback ${feedbackId} updated`);
+    res.json({ success: true, feedback });
+  } catch (err) {
+    console.error('❌ Error updating feedback:', err.message);
+    res.status(500).json({ error: 'Error updating feedback: ' + err.message });
+  }
+});
+
+// Delete feedback
+app.delete('/api/feedback/:feedbackId', async (req, res) => {
+  const { feedbackId } = req.params;
+
+  try {
+    await feedbackService.deleteFeedback(parseInt(feedbackId));
+    console.log(`✅ Feedback ${feedbackId} deleted`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error deleting feedback:', err.message);
+    res.status(500).json({ error: 'Error deleting feedback: ' + err.message });
+  }
+});
+
+// Get all feedback for an agent (dashboard)
+app.get('/api/agents/:agentName/feedback', async (req, res) => {
+  const { agentName } = req.params;
+  const { limit } = req.query;
+
+  try {
+    const feedbackList = await feedbackService.getFeedbackForAgent(
+      agentName,
+      limit ? parseInt(limit) : 100
+    );
+    res.json({ agentName, feedback: feedbackList });
+  } catch (err) {
+    console.error('❌ Error fetching feedback:', err.message);
+    res.status(500).json({ error: 'Error fetching feedback: ' + err.message });
+  }
+});
+
+// Get feedback stats for an agent (dashboard)
+app.get('/api/agents/:agentName/feedback/stats', async (req, res) => {
+  const { agentName } = req.params;
+
+  try {
+    const stats = await feedbackService.getFeedbackStats(agentName);
+    res.json({ agentName, stats });
+  } catch (err) {
+    console.error('❌ Error fetching feedback stats:', err.message);
+    res.status(500).json({ error: 'Error fetching feedback stats: ' + err.message });
   }
 });
 

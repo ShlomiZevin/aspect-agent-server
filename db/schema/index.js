@@ -101,6 +101,29 @@ const thinkingSteps = pgTable('thinking_steps', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// Message feedback - stores feedback/comments on assistant messages
+const messageFeedback = pgTable('message_feedback', {
+  id: serial('id').primaryKey(),
+  assistantMessageId: integer('assistant_message_id').references(() => messages.id).notNull(),
+  userMessageId: integer('user_message_id').references(() => messages.id), // preceding user message (auto-resolved)
+  feedbackText: text('feedback_text'),
+  tags: jsonb('tags'), // Array of { name: string, color: string }
+  crewMember: varchar('crew_member', { length: 100 }), // denormalized from message metadata
+  createdBy: integer('created_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Feedback tags - for autocomplete in chat (simple name + color registry)
+const feedbackTags = pgTable('feedback_tags', {
+  id: serial('id').primaryKey(),
+  agentId: integer('agent_id').references(() => agents.id).notNull(),
+  name: varchar('name', { length: 100 }).notNull(),
+  color: varchar('color', { length: 20 }).notNull(), // hex color e.g. #10b981
+  usageCount: integer('usage_count').default(0).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -111,4 +134,6 @@ module.exports = {
   knowledgeBases,
   knowledgeBaseFiles,
   thinkingSteps,
+  messageFeedback,
+  feedbackTags,
 };
