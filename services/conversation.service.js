@@ -39,6 +39,10 @@ class ConversationService {
       return existing[0];
     }
 
+    // Extract source and phone from metadata if provided
+    const source = userData.metadata?.source || 'web';
+    const phone = userData.metadata?.phone || userData.phone || null;
+
     // Create new user
     const [newUser] = await this.drizzle
       .insert(users)
@@ -46,11 +50,13 @@ class ConversationService {
         externalId,
         email: userData.email || null,
         name: userData.name || null,
+        phone,
+        source,
         metadata: userData.metadata || null
       })
       .returning();
 
-    console.log(`✅ Created new user: ${newUser.id} (${externalId})`);
+    console.log(`✅ Created new user: ${newUser.id} (${externalId}), source=${source}`);
     return newUser;
   }
 
@@ -564,6 +570,27 @@ class ConversationService {
 
     console.log(`📱 Linked conversation ${externalConversationId} → ${newExternalId} (user: ${waExternalId})`);
     return { conversation: updated, user, newExternalId };
+  }
+
+  /**
+   * Update user's name
+   * @param {number} userId - User ID (database primary key)
+   * @param {string} name - New name to set
+   * @returns {Promise<Object>} - Updated user
+   */
+  async updateUserName(userId, name) {
+    if (!this.drizzle) this.initialize();
+
+    const [updated] = await this.drizzle
+      .update(users)
+      .set({
+        name,
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, userId))
+      .returning();
+
+    return updated;
   }
 }
 

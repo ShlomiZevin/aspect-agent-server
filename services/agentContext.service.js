@@ -35,6 +35,7 @@ class AgentContextService {
   /**
    * Update collected fields for a conversation
    * Merges new fields into existing ones, updates cache and persists to DB
+   * Also syncs important fields (like name) to the user record
    *
    * @param {string} conversationId - External conversation ID
    * @param {Object} newFields - Fields to merge { fieldName: value, ... }
@@ -57,7 +58,31 @@ class AgentContextService {
     // Persist to conversation metadata
     await this._persistToConversation(conversationId, updated);
 
+    // Sync important fields to user record
+    if (newFields.name) {
+      await this._syncUserName(conversationId, newFields.name);
+    }
+
     return { ...updated };
+  }
+
+  /**
+   * Sync user name from collected fields to user record
+   *
+   * @param {string} conversationId - External conversation ID
+   * @param {string} name - User's name to sync
+   * @private
+   */
+  async _syncUserName(conversationId, name) {
+    try {
+      const conversation = await conversationService.getConversationByExternalId(conversationId);
+      if (conversation && conversation.userId) {
+        await conversationService.updateUserName(conversation.userId, name);
+        console.log(`✅ Synced user name: "${name}" for user ${conversation.userId}`);
+      }
+    } catch (err) {
+      console.error(`❌ Failed to sync user name for ${conversationId}:`, err.message);
+    }
   }
 
   /**
