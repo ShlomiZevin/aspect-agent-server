@@ -253,9 +253,9 @@ class FeedbackService {
   async getFeedbackForAgent(agentName, limit = 100) {
     if (!this.drizzle) this.initialize();
 
-    // Get agent ID
+    // Get agent ID and urlSlug
     const [agent] = await this.drizzle
-      .select({ id: agents.id })
+      .select({ id: agents.id, urlSlug: agents.urlSlug })
       .from(agents)
       .where(eq(agents.name, agentName))
       .limit(1);
@@ -276,6 +276,8 @@ class FeedbackService {
         createdAt: messageFeedback.createdAt,
         // Join assistant message content
         messageContent: messages.content,
+        // Join conversation external ID for linking
+        conversationExternalId: conversations.externalId,
       })
       .from(messageFeedback)
       .innerJoin(messages, eq(messages.id, messageFeedback.assistantMessageId))
@@ -305,6 +307,8 @@ class FeedbackService {
         crewMember: fb.crewMember,
         messageContent: fb.messageContent,
         userMessage,
+        conversationId: fb.conversationExternalId,
+        agentUrlSlug: agent.urlSlug,
         createdAt: fb.createdAt,
       };
     }));

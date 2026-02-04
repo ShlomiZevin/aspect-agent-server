@@ -18,6 +18,7 @@ const connectionTest = pgTable('connection_test', {
 const agents = pgTable('agents', {
   id: serial('id').primaryKey(),
   name: varchar('name', { length: 255 }).notNull().unique(),
+  urlSlug: varchar('url_slug', { length: 50 }), // URL path slug (e.g., 'freeda', 'aspect')
   domain: varchar('domain', { length: 100 }).notNull(), // menopause, fitness, nutrition, etc.
   description: text('description'),
   config: jsonb('config'), // Agent-specific configuration (includes promptId, vectorStoreId, etc.)
