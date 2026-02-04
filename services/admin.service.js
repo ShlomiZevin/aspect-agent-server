@@ -1,6 +1,6 @@
 const db = require('./db.pg');
-const { users, conversations, messages } = require('../db/schema');
-const { eq, and, or, like, desc, asc, sql, count } = require('drizzle-orm');
+const { users, conversations, messages, thinkingSteps } = require('../db/schema');
+const { eq, and, or, like, desc, asc, sql, count, inArray } = require('drizzle-orm');
 
 /**
  * Admin Service
@@ -382,6 +382,73 @@ class AdminService {
 
     console.log(`📱 Unlinked WhatsApp from user ${userId}`);
     return updated;
+  }
+
+  /**
+   * Delete a user and all their conversations and messages
+   * @param {number} userId - User ID
+   * @returns {Promise<Object>} - Deletion summary
+   */
+  async deleteUser(userId) {
+    if (!this.drizzle) this.initialize();
+
+    // Get the user first
+    const user = await this.drizzle
+      .select()
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (user.length === 0) {
+      throw new Error(`User not found: ${userId}`);
+    }
+
+    // Get all conversations for this user
+    const userConversations = await this.drizzle
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(eq(conversations.userId, userId));
+
+    const conversationIds = userConversations.map(c => c.id);
+    let deletedMessagesCount = 0;
+    let deletedThinkingStepsCount = 0;
+
+    // Delete all thinking_steps and messages from user's conversations
+    if (conversationIds.length > 0) {
+      // First delete thinking_steps (they reference messages)
+      const deleteThinkingResult = await this.drizzle
+        .delete(thinkingSteps)
+        .where(inArray(thinkingSteps.conversationId, conversationIds));
+
+      deletedThinkingStepsCount = deleteThinkingResult.rowCount || 0;
+
+      // Then delete messages
+      const deleteMessagesResult = await this.drizzle
+        .delete(messages)
+        .where(inArray(messages.conversationId, conversationIds));
+
+      deletedMessagesCount = deleteMessagesResult.rowCount || 0;
+    }
+
+    // Delete all conversations
+    const deleteConversationsResult = await this.drizzle
+      .delete(conversations)
+      .where(eq(conversations.userId, userId));
+
+    const deletedConversationsCount = deleteConversationsResult.rowCount || conversationIds.length;
+
+    // Delete the user
+    await this.drizzle
+      .delete(users)
+      .where(eq(users.id, userId));
+
+    console.log(`🗑️ Deleted user ${userId}: ${deletedConversationsCount} conversations, ${deletedMessagesCount} messages`);
+
+    return {
+      userId,
+      deletedConversations: deletedConversationsCount,
+      deletedMessages: deletedMessagesCount,
+    };
   }
 
   /**

@@ -1094,6 +1094,18 @@ app.delete('/api/admin/users/:userId/link', async (req, res) => {
   }
 });
 
+// Delete user and all their conversations/messages
+app.delete('/api/admin/users/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    const result = await adminService.deleteUser(userId);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error deleting user:', err.message);
+    res.status(500).json({ error: 'Error deleting user: ' + err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 
 // Initialize database and start server
