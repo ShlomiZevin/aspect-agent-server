@@ -395,12 +395,11 @@ class ConversationService {
     const currentMetadata = conversation[0].metadata || {};
     const newMetadata = { ...currentMetadata, ...metadataUpdate };
 
-    // Update conversation
+    // Update conversation (don't update updatedAt - that should only change with new messages)
     const [updated] = await this.drizzle
       .update(conversations)
       .set({
-        metadata: newMetadata,
-        updatedAt: new Date()
+        metadata: newMetadata
       })
       .where(eq(conversations.id, conversation[0].id))
       .returning();
