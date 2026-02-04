@@ -509,10 +509,10 @@ class ConversationService {
 
   /**
    * Link an existing conversation to a phone number.
-   * Reassigns the conversation to the wa_<phone> user and updates its externalId.
+   * Updates the user's externalId to wa_<phone> format and updates conversation externalId.
    * @param {string} externalConversationId - Current external conversation ID
    * @param {string} phone - Phone number (digits only)
-   * @returns {Promise<Object>} - { conversation, user } with updated records
+   * @returns {Promise<Object>} - { conversation, user, newExternalId } with updated records
    */
   async linkConversationToPhone(externalConversationId, phone) {
     if (!this.drizzle) this.initialize();
@@ -528,48 +528,70 @@ class ConversationService {
       throw new Error(`Conversation not found: ${externalConversationId}`);
     }
 
-    // Check if this phone already has conversations
+    // Check if this phone already has a user with conversations
     const waExternalId = `wa_${phone}`;
-    const existingUser = await this.drizzle
+    const existingWaUser = await this.drizzle
       .select()
       .from(users)
       .where(eq(users.externalId, waExternalId))
       .limit(1);
 
-    if (existingUser.length > 0) {
+    if (existingWaUser.length > 0) {
       const existingConvs = await this.drizzle
         .select({ id: conversations.id })
         .from(conversations)
-        .where(eq(conversations.userId, existingUser[0].id))
+        .where(eq(conversations.userId, existingWaUser[0].id))
         .limit(1);
 
       if (existingConvs.length > 0) {
         throw new Error(`phone_has_history: Phone ${phone} already has conversation history. Use "Fetch History" instead.`);
       }
+      // If wa_user exists but has no conversations, delete it (we'll update current user instead)
+      await this.drizzle
+        .delete(users)
+        .where(eq(users.id, existingWaUser[0].id));
+      console.log(`🗑️ Deleted empty WhatsApp user ${waExternalId}`);
     }
 
-    // Get or create the WhatsApp user
-    const user = await this.getOrCreateUser(waExternalId, {
-      metadata: { phone, source: 'whatsapp' }
-    });
+    // Get the current user
+    const currentUser = await this.drizzle
+      .select()
+      .from(users)
+      .where(eq(users.id, conv[0].userId))
+      .limit(1);
 
-    // Generate new externalId in WhatsApp format
+    if (currentUser.length === 0) {
+      throw new Error(`User not found for conversation: ${externalConversationId}`);
+    }
+
+    // Update the user's externalId to WhatsApp format
+    const [updatedUser] = await this.drizzle
+      .update(users)
+      .set({
+        externalId: waExternalId,
+        phone: phone,
+        metadata: { ...currentUser[0].metadata, phone, source: 'whatsapp' },
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, currentUser[0].id))
+      .returning();
+
+    // Generate new conversation externalId in WhatsApp format
     const crypto = require('crypto');
     const newExternalId = `wa_${phone}_${crypto.randomUUID()}`;
 
-    // Update the conversation: reassign user and externalId
-    const [updated] = await this.drizzle
+    // Update the conversation externalId (userId stays the same)
+    const [updatedConv] = await this.drizzle
       .update(conversations)
       .set({
-        userId: user.id,
         externalId: newExternalId,
         updatedAt: new Date()
       })
       .where(eq(conversations.id, conv[0].id))
       .returning();
 
-    console.log(`📱 Linked conversation ${externalConversationId} → ${newExternalId} (user: ${waExternalId})`);
-    return { conversation: updated, user, newExternalId };
+    console.log(`📱 Linked user ${currentUser[0].externalId} → ${waExternalId}, conversation → ${newExternalId}`);
+    return { conversation: updatedConv, user: updatedUser, newExternalId };
   }
 
   /**
