@@ -317,6 +317,7 @@ class ConversationService {
         createdAt: conversations.createdAt,
         updatedAt: conversations.updatedAt,
         metadata: conversations.metadata,
+        channel: conversations.channel,
         agentName: agents.name,
         agentDomain: agents.domain
       })
