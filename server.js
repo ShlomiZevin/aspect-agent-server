@@ -15,6 +15,7 @@ const feedbackService = require('./services/feedback.service');
 const crewService = require('./crew/services/crew.service');
 const dispatcherService = require('./crew/services/dispatcher.service');
 const adminService = require('./services/admin.service');
+const promptService = require('./services/prompt.service');
 
 // WhatsApp bridge
 const { handleIncomingMessage } = require('./whatsapp/bridge.service');
@@ -89,6 +90,249 @@ app.get('/api/agents/:agentName/crew', async (req, res) => {
   } catch (err) {
     console.error('❌ Error fetching crew:', err.message);
     res.status(500).json({ error: 'Error fetching crew: ' + err.message });
+  }
+});
+
+// ========== PROMPT MANAGEMENT ENDPOINTS (Debug Mode) ==========
+
+// Get all prompts for all crew members of an agent
+app.get('/api/agents/:agentName/prompts', async (req, res) => {
+  const { agentName } = req.params;
+
+  try {
+    // Get prompts from DB
+    const dbPrompts = await promptService.getAllCrewPrompts(agentName);
+
+    // Get crew members from code for display names
+    const crewList = await crewService.listCrew(agentName);
+    const crewMap = new Map(crewList.map(c => [c.name, c]));
+
+    // Merge: add display name, and fallback to code prompts for crew without DB versions
+    const result = [];
+
+    // First, add all crew members from code
+    for (const crew of crewList) {
+      const dbData = dbPrompts.find(p => p.crewMemberId === crew.name);
+      if (dbData) {
+        // Has DB versions - use them
+        result.push({
+          crewMemberId: crew.name,
+          crewMemberName: crew.name,
+          displayName: crew.displayName,
+          versions: dbData.versions,
+          currentVersion: dbData.currentVersion,
+        });
+      } else {
+        // No DB versions - get from code and show as v0
+        const crewMember = await crewService.getCrewMember(agentName, crew.name);
+        if (crewMember && crewMember.guidance) {
+          result.push({
+            crewMemberId: crew.name,
+            crewMemberName: crew.name,
+            displayName: crew.displayName,
+            versions: [{
+              id: `code-${crew.name}`,
+              version: 0,
+              name: 'Code default',
+              prompt: crewMember.guidance,
+              isActive: true,
+              createdAt: null,
+              updatedAt: null,
+            }],
+            currentVersion: {
+              id: `code-${crew.name}`,
+              version: 0,
+              name: 'Code default',
+              prompt: crewMember.guidance,
+              isActive: true,
+              createdAt: null,
+              updatedAt: null,
+            },
+          });
+        }
+      }
+    }
+
+    res.json({
+      agentName,
+      prompts: result,
+    });
+  } catch (err) {
+    console.error('❌ Error fetching prompts:', err.message);
+    res.status(500).json({ error: 'Error fetching prompts: ' + err.message });
+  }
+});
+
+// Get prompt versions for a specific crew member
+app.get('/api/agents/:agentName/crew/:crewName/prompts', async (req, res) => {
+  const { agentName, crewName } = req.params;
+
+  try {
+    const versions = await promptService.getPromptVersions(agentName, crewName);
+
+    // If no DB versions, get from code
+    if (versions.length === 0) {
+      const crewMember = await crewService.getCrewMember(agentName, crewName);
+      if (crewMember && crewMember.guidance) {
+        return res.json({
+          crewMemberId: crewName,
+          versions: [{
+            id: `code-${crewName}`,
+            version: 0,
+            name: 'Code default',
+            prompt: crewMember.guidance,
+            isActive: true,
+            createdAt: null,
+            updatedAt: null,
+          }],
+        });
+      }
+    }
+
+    res.json({
+      crewMemberId: crewName,
+      versions,
+    });
+  } catch (err) {
+    console.error('❌ Error fetching prompt versions:', err.message);
+    res.status(500).json({ error: 'Error fetching prompt versions: ' + err.message });
+  }
+});
+
+// Get active prompt for a crew member
+app.get('/api/agents/:agentName/crew/:crewName/prompts/active', async (req, res) => {
+  const { agentName, crewName } = req.params;
+
+  try {
+    const activePrompt = await promptService.getActivePrompt(agentName, crewName);
+
+    // If no DB version, get from code
+    if (!activePrompt) {
+      const crewMember = await crewService.getCrewMember(agentName, crewName);
+      if (crewMember && crewMember.guidance) {
+        return res.json({
+          crewMemberId: crewName,
+          prompt: {
+            id: `code-${crewName}`,
+            version: 0,
+            name: 'Code default',
+            prompt: crewMember.guidance,
+            isActive: true,
+            createdAt: null,
+            updatedAt: null,
+          },
+          source: 'code',
+        });
+      }
+    }
+
+    res.json({
+      crewMemberId: crewName,
+      prompt: activePrompt,
+      source: 'database',
+    });
+  } catch (err) {
+    console.error('❌ Error fetching active prompt:', err.message);
+    res.status(500).json({ error: 'Error fetching active prompt: ' + err.message });
+  }
+});
+
+// Create new prompt version (Save as New Version)
+app.post('/api/agents/:agentName/crew/:crewName/prompts', async (req, res) => {
+  const { agentName, crewName } = req.params;
+  const { prompt, name } = req.body;
+
+  if (!prompt) {
+    return res.status(400).json({ error: 'Prompt text is required' });
+  }
+
+  try {
+    const newVersion = await promptService.createPromptVersion(
+      agentName,
+      crewName,
+      prompt,
+      name || null
+    );
+
+    console.log(`✅ Created new prompt version: ${crewName} v${newVersion.version}`);
+    res.json({
+      success: true,
+      version: newVersion,
+    });
+  } catch (err) {
+    console.error('❌ Error creating prompt version:', err.message);
+    res.status(500).json({ error: 'Error creating prompt version: ' + err.message });
+  }
+});
+
+// Update existing prompt version (Save/Overwrite)
+app.patch('/api/agents/:agentName/crew/:crewName/prompts/:versionId', async (req, res) => {
+  const { agentName, crewName, versionId } = req.params;
+  const { prompt } = req.body;
+
+  if (!prompt) {
+    return res.status(400).json({ error: 'Prompt text is required' });
+  }
+
+  try {
+    const updated = await promptService.updatePromptVersion(
+      agentName,
+      crewName,
+      parseInt(versionId),
+      prompt
+    );
+
+    console.log(`✅ Updated prompt version: ${crewName} v${updated.version}`);
+    res.json({
+      success: true,
+      version: updated,
+    });
+  } catch (err) {
+    console.error('❌ Error updating prompt version:', err.message);
+    res.status(500).json({ error: 'Error updating prompt version: ' + err.message });
+  }
+});
+
+// Activate a specific prompt version
+app.post('/api/agents/:agentName/crew/:crewName/prompts/:versionId/activate', async (req, res) => {
+  const { agentName, crewName, versionId } = req.params;
+
+  try {
+    const activated = await promptService.activateVersion(
+      agentName,
+      crewName,
+      parseInt(versionId)
+    );
+
+    console.log(`✅ Activated prompt version: ${crewName} v${activated.version}`);
+    res.json({
+      success: true,
+      version: activated,
+    });
+  } catch (err) {
+    console.error('❌ Error activating prompt version:', err.message);
+    res.status(500).json({ error: 'Error activating prompt version: ' + err.message });
+  }
+});
+
+// Delete a prompt version
+app.delete('/api/agents/:agentName/crew/:crewName/prompts/:versionId', async (req, res) => {
+  const { agentName, crewName, versionId } = req.params;
+
+  try {
+    await promptService.deleteVersion(
+      agentName,
+      crewName,
+      parseInt(versionId)
+    );
+
+    console.log(`✅ Deleted prompt version: ${crewName} #${versionId}`);
+    res.json({
+      success: true,
+    });
+  } catch (err) {
+    console.error('❌ Error deleting prompt version:', err.message);
+    res.status(500).json({ error: 'Error deleting prompt version: ' + err.message });
   }
 });
 
@@ -285,7 +529,7 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, useKnowledgeBase, userId, agentName, overrideCrewMember, debug } = req.body;
+  const { message, conversationId, useKnowledgeBase, userId, agentName, overrideCrewMember, debug, promptOverrides } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -370,7 +614,8 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         overrideCrewMember,
         useKnowledgeBase,
         agentConfig,
-        debug
+        debug,
+        promptOverrides: promptOverrides || {}
       })) {
         // Check if chunk is a function call event (object) or text (string)
         if (typeof chunk === 'object' && chunk.type) {

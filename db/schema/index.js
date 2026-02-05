@@ -133,6 +133,20 @@ const feedbackTags = pgTable('feedback_tags', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// Crew member prompts - versioned prompts for crew members
+const crewPrompts = pgTable('crew_prompts', {
+  id: serial('id').primaryKey(),
+  agentId: integer('agent_id').references(() => agents.id).notNull(),
+  crewMemberName: varchar('crew_member_name', { length: 100 }).notNull(), // e.g., "receptionist", "general"
+  version: integer('version').notNull(), // Version number (1, 2, 3, ...)
+  name: varchar('name', { length: 255 }), // Version name/tag (e.g., "Added empathy guidelines")
+  prompt: text('prompt').notNull(), // The actual prompt text
+  isActive: boolean('is_active').default(false).notNull(), // Only one version should be active per crew member
+  createdBy: integer('created_by').references(() => users.id), // Who created this version
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -145,4 +159,5 @@ module.exports = {
   thinkingSteps,
   messageFeedback,
   feedbackTags,
+  crewPrompts,
 };

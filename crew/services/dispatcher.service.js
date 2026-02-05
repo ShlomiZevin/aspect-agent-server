@@ -18,6 +18,7 @@ const conversationService = require('../../services/conversation.service');
 const agentContextService = require('../../services/agentContext.service');
 const llmService = require('../../services/llm');
 const fieldsExtractor = require('../micro-agents/FieldsExtractorAgent');
+const promptService = require('../../services/prompt.service');
 
 class DispatcherService {
   constructor() {
@@ -290,8 +291,10 @@ class DispatcherService {
     const {
       message,
       conversationId,
+      agentName,
       useKnowledgeBase = false,
-      agentConfig = {}
+      agentConfig = {},
+      promptOverrides = {} // Session overrides: { crewName: prompt }
     } = params;
 
     // Get conversation for context
@@ -312,6 +315,31 @@ class DispatcherService {
 
     // Pre-process message
     const processedMessage = await crew.preProcess(message, context);
+
+    // ========== RESOLVE PROMPT ==========
+    // Priority: 1. Session override → 2. DB active → 3. Code default
+    let resolvedPrompt = crew.guidance;
+    let promptSource = 'code';
+
+    // Check for session override
+    if (promptOverrides[crew.name]) {
+      resolvedPrompt = promptOverrides[crew.name];
+      promptSource = 'session_override';
+      console.log(`📝 Using session override prompt for ${crew.name}`);
+    } else {
+      // Try to get active prompt from database
+      try {
+        const dbPrompt = await promptService.getActivePrompt(agentName, crew.name);
+        if (dbPrompt) {
+          resolvedPrompt = dbPrompt.prompt;
+          promptSource = 'database';
+          console.log(`📝 Using DB prompt for ${crew.name} (v${dbPrompt.version})`);
+        }
+      } catch (err) {
+        // DB not available or error - use code default
+        console.log(`📝 Using code-defined prompt for ${crew.name} (DB unavailable)`);
+      }
+    }
 
     // Resolve knowledge base: crew config + client toggle
     const crewKBEnabled = crew.knowledgeBase?.enabled !== false;
@@ -335,7 +363,7 @@ class DispatcherService {
 
     // Build LLM config from crew member (provider-agnostic)
     const llmConfig = {
-      prompt: crew.guidance,
+      prompt: resolvedPrompt,
       model: crew.model,
       maxTokens: crew.maxTokens,
       tools: crew.getToolSchemas(),
@@ -348,7 +376,7 @@ class DispatcherService {
     // Emit debug data if requested (before LLM call)
     if (params.debug) {
       // Build fullInstructions exactly as llm.openai.js does
-      let fullInstructions = crew.guidance;
+      let fullInstructions = resolvedPrompt;
       if (context && Object.keys(context).length > 0) {
         fullInstructions += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
       }
@@ -359,6 +387,7 @@ class DispatcherService {
           crewName: crew.name,
           crewDisplayName: crew.displayName,
           fullInstructions,
+          promptSource,
           model: crew.model,
           maxTokens: crew.maxTokens,
           tools: crew.getToolSchemas(),
