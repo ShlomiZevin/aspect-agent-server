@@ -14,8 +14,8 @@ class FreedaWelcomeCrew extends CrewMember {
     super({
       name: 'welcome',
       displayName: 'Welcome',
-      description: 'Warm welcome and initial profile collection',
-      isDefault: true,
+      description: 'Warm welcome and initial profile collection (legacy - not in active flow)',
+      isDefault: false,
 
       fieldsToCollect: [
         { name: 'name', description: "The user's first name or preferred name" },

@@ -13,11 +13,17 @@ const llmService = require('../../services/llm');
 const EXTRACTOR_SYSTEM_PROMPT = `You are a field extraction agent. Your ONLY job is to extract specific fields from a conversation.
 
 RULES:
-- Only extract fields that are clearly and explicitly stated by the user
-- Do not infer, guess, or assume values
-- If a field value is ambiguous, do not extract it
-- Only look at user messages for field values (ignore assistant messages)
+- Extract field values from USER messages only
+- Use ASSISTANT messages for CONTEXT to understand what the user is responding to
+- Do not infer or guess values - but DO understand conversational context
+- For acknowledgement/confirmation fields: if the assistant asks a yes/no question and the user responds affirmatively (yes, okay, sure, כן, בסדר, etc.), that counts as acknowledgement
 - If a field was already collected, only update it if the user explicitly provides a new value
+- Support multiple languages (Hebrew, English, etc.)
+
+CONTEXTUAL EXTRACTION:
+When extracting fields like "tos_acknowledged" or similar confirmation fields:
+- Look at what the assistant said/asked immediately before the user's response
+- If the assistant presented terms/disclaimer and asked for confirmation, and the user responds with ANY affirmative response (yes, okay, sure, I understand, כן, בסדר, מתאים לי, etc.), extract as "true"
 
 You MUST respond with a JSON object in this exact format:
 {
