@@ -485,6 +485,46 @@ app.delete('/api/conversation/:conversationId', async (req, res) => {
   }
 });
 
+// Delete a single message
+app.delete('/api/conversation/:conversationId/message/:messageId', async (req, res) => {
+  const { conversationId, messageId } = req.params;
+
+  try {
+    const deleted = await conversationService.deleteMessage(parseInt(messageId, 10));
+    res.json({ success: true, deleted });
+  } catch (err) {
+    console.error('❌ Error deleting message:', err.message);
+    res.status(500).json({ error: 'Error deleting message: ' + err.message });
+  }
+});
+
+// Delete multiple messages
+app.delete('/api/conversation/:conversationId/messages', async (req, res) => {
+  const { conversationId } = req.params;
+  const { messageIds } = req.body;
+
+  try {
+    const result = await conversationService.deleteMessages(messageIds);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('❌ Error deleting messages:', err.message);
+    res.status(500).json({ error: 'Error deleting messages: ' + err.message });
+  }
+});
+
+// Delete messages from a specific point onwards (for "regenerate from here")
+app.delete('/api/conversation/:conversationId/messages-from/:messageId', async (req, res) => {
+  const { conversationId, messageId } = req.params;
+
+  try {
+    const result = await conversationService.deleteMessagesFrom(conversationId, parseInt(messageId, 10));
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('❌ Error deleting messages from point:', err.message);
+    res.status(500).json({ error: 'Error deleting messages: ' + err.message });
+  }
+});
+
 app.post('/api/finance-assistant', async (req, res) => {
   const { message, conversationId, userId, agentName } = req.body;
 
@@ -567,12 +607,14 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     thinkingService.addMessageReceivedStep(conversationId, message);
 
     // Save user message to database
-    await conversationService.saveUserMessage(
+    const { message: userMsg } = await conversationService.saveUserMessage(
       conversationId,
       agentNameToUse,
       message,
       userId || null
     );
+    // Send user message ID to client so it can be deleted later
+    sendSSE({ type: 'user_message_saved', messageId: userMsg.id });
 
     // Build agent config from config JSON (includes promptId, vectorStoreId, etc.)
     const agentConfig = agent.config || {};

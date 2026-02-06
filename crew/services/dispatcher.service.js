@@ -321,11 +321,18 @@ class DispatcherService {
     let resolvedPrompt = crew.guidance;
     let promptSource = 'code';
 
+    // Debug: log received overrides and current crew
+    console.log(`🔍 Prompt resolution for crew: "${crew.name}"`);
+    console.log(`🔍 Received promptOverrides keys:`, Object.keys(promptOverrides));
+    if (Object.keys(promptOverrides).length > 0) {
+      console.log(`🔍 Override for "${crew.name}" exists:`, crew.name in promptOverrides);
+    }
+
     // Check for session override
     if (promptOverrides[crew.name]) {
       resolvedPrompt = promptOverrides[crew.name];
       promptSource = 'session_override';
-      console.log(`📝 Using session override prompt for ${crew.name}`);
+      console.log(`📝 Using session override prompt for ${crew.name} (${resolvedPrompt.substring(0, 50)}...)`);
     } else {
       // Try to get active prompt from database
       try {

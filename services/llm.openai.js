@@ -2,6 +2,7 @@ const { OpenAI } = require('openai');
 const { toFile } = require('openai/uploads');
 const { File } = require('node:buffer');
 const functionRegistry = require('./function-registry');
+const conversationService = require('./conversation.service');
 
 // Polyfill for File in Node.js < 20
 if (typeof globalThis.File === 'undefined') {
@@ -410,6 +411,226 @@ class OpenAIService {
    * @returns {AsyncGenerator} - Stream of text chunks or function call events
    */
   async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
+    try {
+      // Extract config
+      const {
+        prompt = '',
+        model = this.model,
+        maxTokens = 2048,
+        tools: crewTools = [],
+        toolHandlers = {},
+        knowledgeBase = null,
+        context = {}
+      } = config;
+
+      // Build full instructions with context
+      let fullInstructions = prompt;
+      if (Object.keys(context).length > 0) {
+        fullInstructions += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
+      }
+
+      // Build tools array
+      const tools = [];
+
+      // Resolve knowledge base: crew's knowledgeBase.storeId → OpenAI file_search
+      // storeId is configured directly in the crew member file
+      if (knowledgeBase?.enabled && knowledgeBase.storeId) {
+        tools.push({
+          type: 'file_search',
+          vector_store_ids: [knowledgeBase.storeId]
+        });
+      }
+
+      // Add crew-specific tools (crew members define their own tools)
+      // No global function registry injection - crew tools are self-contained
+      if (crewTools && crewTools.length > 0) {
+        tools.push(...crewTools);
+      }
+
+      // Fetch conversation history from our DB (not OpenAI)
+      let historyMessages = [];
+      try {
+        const history = await conversationService.getConversationHistory(conversationId, 50);
+        historyMessages = history.map(m => ({
+          role: m.role,
+          content: [{ type: m.role === 'user' ? 'input_text' : 'output_text', text: m.content }]
+        }));
+      } catch (err) {
+        console.warn('⚠️ Could not load conversation history from DB:', err.message);
+      }
+
+      // Build input: history + current message
+      const currentUserMessage = {
+        role: 'user',
+        content: [{ type: 'input_text', text: message }]
+      };
+
+      console.log(`🤖 Crew streaming with inline prompt (${fullInstructions.length} chars), ${tools.length} tools, ${historyMessages.length} history messages`);
+
+      let maxIterations = 10;
+      let currentInput = [...historyMessages, currentUserMessage];
+
+      while (maxIterations > 0) {
+        maxIterations--;
+
+        // Use Responses API with inline instructions - stateless (no conversation object)
+        const stream = await this.client.responses.create({
+          model: model,
+          instructions: fullInstructions,
+          input: currentInput,
+          text: {
+            format: {
+              type: 'text'
+            }
+          },
+          reasoning: {},
+          tools: tools.length > 0 ? tools : undefined,
+          max_output_tokens: maxTokens,
+          store: false,
+          include: ['file_search_call.results'],
+          stream: true
+        });
+
+        let fullReply = '';
+        const pendingFunctionCalls = [];
+        let currentFunctionCall = null;
+
+        // Yield each chunk as it arrives
+        for await (const chunk of stream) {
+          // Handle text delta events
+          if (chunk.type === 'response.output_text.delta') {
+            const delta = chunk.delta;
+            if (delta) {
+              fullReply += delta;
+              yield delta;
+            }
+          }
+
+          // Handle function call events
+          if (chunk.type === 'response.function_call_arguments.start') {
+            currentFunctionCall = {
+              name: chunk.name,
+              call_id: chunk.call_id,
+              arguments: ''
+            };
+          }
+
+          if (chunk.type === 'response.function_call_arguments.delta' && currentFunctionCall) {
+            currentFunctionCall.arguments += chunk.delta || '';
+          }
+
+          if (chunk.type === 'response.function_call_arguments.done' && currentFunctionCall) {
+            pendingFunctionCalls.push({ ...currentFunctionCall });
+            currentFunctionCall = null;
+          }
+
+          if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'function_call') {
+            pendingFunctionCalls.push({
+              name: chunk.item.name,
+              call_id: chunk.item.call_id,
+              arguments: chunk.item.arguments
+            });
+          }
+
+          // Handle file_search_call results - yield file names found in KB
+          if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'file_search_call') {
+            const results = chunk.item.results || [];
+            const files = results
+              .filter(r => r.score > 0.3)
+              .map(r => ({
+                name: r.file_name || r.filename || 'Unknown',
+                score: r.score
+              }));
+
+            if (files.length > 0) {
+              yield {
+                type: 'file_search_results',
+                files: files.slice(0, 8)
+              };
+            }
+          }
+        }
+
+        // Handle function calls
+        if (pendingFunctionCalls.length > 0) {
+          // In stateless mode, we need to append function_call + function_call_output to the input
+          // so OpenAI can match the outputs to their calls
+          for (const funcCall of pendingFunctionCalls) {
+            const params = JSON.parse(funcCall.arguments || '{}');
+            yield {
+              type: 'function_call',
+              name: funcCall.name,
+              params
+            };
+
+            // Add the function_call to input (required for stateless mode)
+            currentInput.push({
+              type: 'function_call',
+              call_id: funcCall.call_id,
+              name: funcCall.name,
+              arguments: funcCall.arguments
+            });
+
+            try {
+              let result;
+
+              // Use crew tool handler if available, otherwise fall back to global registry
+              const crewHandler = toolHandlers[funcCall.name];
+              if (crewHandler) {
+                console.log(`🔧 Executing crew tool handler: ${funcCall.name}`);
+                result = await crewHandler(params);
+              } else {
+                result = await this.handleFunctionCall({
+                  name: funcCall.name,
+                  arguments: funcCall.arguments
+                });
+              }
+
+              yield {
+                type: 'function_result',
+                name: funcCall.name,
+                result
+              };
+
+              // Add the function_call_output to input
+              currentInput.push({
+                type: 'function_call_output',
+                call_id: funcCall.call_id,
+                output: JSON.stringify(result)
+              });
+            } catch (error) {
+              console.error(`❌ Function call failed: ${funcCall.name}`, error.message);
+
+              yield {
+                type: 'function_error',
+                name: funcCall.name,
+                error: error.message
+              };
+
+              // Add error result to input
+              currentInput.push({
+                type: 'function_call_output',
+                call_id: funcCall.call_id,
+                output: JSON.stringify({ error: error.message })
+              });
+            }
+          }
+
+          // currentInput now has history + user message + function_call + function_call_output
+          // Continue to next iteration
+        } else {
+          console.log(`✅ Crew streaming complete. Total reply length: ${fullReply.length}`);
+          break;
+        }
+      }
+    } catch (error) {
+      console.error('❌ OpenAI Crew Streaming Error:', error.message);
+      console.error('Error details:', error);
+      throw new Error(`Failed to stream crew response: ${error.message}`);
+    }
+  }
+
+  async *sendMessageStreamWithPromptOldWithConvId(message, conversationId, config = {}) {
     try {
       // Get or create OpenAI conversation
       const openaiConversationId = await this.getOrCreateConversation(conversationId);

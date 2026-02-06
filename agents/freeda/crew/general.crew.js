@@ -56,7 +56,7 @@ WHEN DISCUSSING TREATMENTS, ALWAYS DISCUSS THE 2 TYPES OF TREATMENTS: MEDICAL (i
 - If the user's name is available in the context, use it naturally in your responses to create a personal connection.
 - Dont mention anything about files that you have or looking in, even if you do.`,
 
-      model: 'gpt-4o',
+      model: 'gpt-5-chat-latest',
       maxTokens: 2048,
 
       tools: [

@@ -614,6 +614,109 @@ class ConversationService {
 
     return updated;
   }
+
+  /**
+   * Delete a message and its associated thinking steps
+   * @param {number} messageId - Database message ID
+   * @returns {Promise<Object>} - Deletion result
+   */
+  async deleteMessage(messageId) {
+    if (!this.drizzle) this.initialize();
+
+    // First delete associated thinking steps
+    await this.drizzle
+      .delete(thinkingSteps)
+      .where(eq(thinkingSteps.messageId, messageId));
+
+    // Then delete the message
+    const [deleted] = await this.drizzle
+      .delete(messages)
+      .where(eq(messages.id, messageId))
+      .returning();
+
+    if (!deleted) {
+      throw new Error(`Message not found: ${messageId}`);
+    }
+
+    console.log(`🗑️ Deleted message ${messageId}`);
+    return deleted;
+  }
+
+  /**
+   * Delete multiple messages by IDs
+   * @param {number[]} messageIds - Array of message IDs to delete
+   * @returns {Promise<Object>} - Deletion result with count
+   */
+  async deleteMessages(messageIds) {
+    if (!this.drizzle) this.initialize();
+    if (!messageIds || messageIds.length === 0) {
+      return { deletedCount: 0 };
+    }
+
+    const { inArray } = require('drizzle-orm');
+
+    // First delete associated thinking steps
+    await this.drizzle
+      .delete(thinkingSteps)
+      .where(inArray(thinkingSteps.messageId, messageIds));
+
+    // Then delete the messages
+    const result = await this.drizzle
+      .delete(messages)
+      .where(inArray(messages.id, messageIds))
+      .returning();
+
+    console.log(`🗑️ Deleted ${result.length} messages`);
+    return { deletedCount: result.length, deleted: result };
+  }
+
+  /**
+   * Delete messages from a specific point onwards in a conversation
+   * Useful for "regenerate from here" functionality
+   * @param {string} externalConversationId - External conversation ID
+   * @param {number} fromMessageId - Delete this message and all after it
+   * @returns {Promise<Object>} - Deletion result
+   */
+  async deleteMessagesFrom(externalConversationId, fromMessageId) {
+    if (!this.drizzle) this.initialize();
+    const { gte } = require('drizzle-orm');
+
+    // Get conversation
+    const conversation = await this.getConversationByExternalId(externalConversationId);
+    if (!conversation) {
+      throw new Error(`Conversation not found: ${externalConversationId}`);
+    }
+
+    // Get the message to find its createdAt timestamp
+    const [targetMessage] = await this.drizzle
+      .select()
+      .from(messages)
+      .where(eq(messages.id, fromMessageId))
+      .limit(1);
+
+    if (!targetMessage) {
+      throw new Error(`Message not found: ${fromMessageId}`);
+    }
+
+    // Get all messages from this point onwards
+    const messagesToDelete = await this.drizzle
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversation.id),
+          gte(messages.createdAt, targetMessage.createdAt)
+        )
+      );
+
+    const messageIds = messagesToDelete.map(m => m.id);
+
+    if (messageIds.length === 0) {
+      return { deletedCount: 0 };
+    }
+
+    return this.deleteMessages(messageIds);
+  }
 }
 
 // Export singleton instance
