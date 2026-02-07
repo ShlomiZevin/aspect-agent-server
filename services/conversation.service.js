@@ -82,6 +82,23 @@ class ConversationService {
   }
 
   /**
+   * Get agent by ID
+   * @param {number} agentId - Agent ID
+   * @returns {Promise<Object|null>} - Agent object or null
+   */
+  async getAgentById(agentId) {
+    if (!this.drizzle) this.initialize();
+
+    const result = await this.drizzle
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .limit(1);
+
+    return result.length > 0 ? result[0] : null;
+  }
+
+  /**
    * Get or create a conversation
    * @param {string} externalId - External conversation ID (from client)
    * @param {number} agentId - Agent ID

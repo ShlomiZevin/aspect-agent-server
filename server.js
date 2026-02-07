@@ -525,6 +525,151 @@ app.delete('/api/conversation/:conversationId/messages-from/:messageId', async (
   }
 });
 
+// ========== COLLECTED FIELDS ENDPOINTS (for Fields Editor Panel) ==========
+const agentContextService = require('./services/agentContext.service');
+
+// Get collected fields for a conversation
+app.get('/api/conversation/:conversationId/fields', async (req, res) => {
+  const { conversationId } = req.params;
+
+  try {
+    // Get conversation to find agent name and current crew member
+    const conversation = await conversationService.getConversationByExternalId(conversationId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    // Get collected fields
+    const collectedFields = await agentContextService.getCollectedFields(conversationId);
+
+    // Get current crew member info (for field definitions)
+    const currentCrewName = conversation.currentCrewMember || conversation.metadata?.currentCrewMember;
+    let crewInfo = null;
+    let fieldDefinitions = [];
+    let totalFieldsToCurrentCrew = 0;
+
+    if (currentCrewName && conversation.agentId) {
+      // Get agent name from conversation
+      const agent = await conversationService.getAgentById(conversation.agentId);
+      if (agent) {
+        const crew = await crewService.getCrewMember(agent.name, currentCrewName);
+        if (crew) {
+          crewInfo = {
+            name: crew.name,
+            displayName: crew.displayName,
+            extractionMode: crew.extractionMode || 'conversational'
+          };
+          fieldDefinitions = crew.fieldsToCollect || [];
+
+          // Calculate total fields from journey start to current crew
+          const allCrewMembers = await crewService.listCrew(agent.name);
+          const crewByName = new Map(allCrewMembers.map(c => [c.name, c]));
+
+          // Build the journey order by following transitionTo chain
+          const journeyOrder = [];
+          const defaultCrew = allCrewMembers.find(c => c.isDefault) || allCrewMembers[0];
+          if (defaultCrew) {
+            const visited = new Set();
+            let cursor = defaultCrew;
+
+            while (cursor && !visited.has(cursor.name)) {
+              visited.add(cursor.name);
+              journeyOrder.push(cursor);
+
+              if (cursor.transitionTo) {
+                cursor = crewByName.get(cursor.transitionTo);
+              } else {
+                break;
+              }
+            }
+          }
+
+          // Find current crew position in journey and sum fields up to it
+          const currentIndex = journeyOrder.findIndex(c => c.name === currentCrewName);
+          if (currentIndex >= 0) {
+            // Sum fields from start to current (inclusive)
+            for (let i = 0; i <= currentIndex; i++) {
+              totalFieldsToCurrentCrew += (journeyOrder[i].fieldsToCollect?.length || 0);
+            }
+          } else {
+            // Current crew not in chain - just count current crew's fields
+            totalFieldsToCurrentCrew = fieldDefinitions.length;
+          }
+        }
+      }
+    }
+
+    res.json({
+      conversationId,
+      collectedFields,
+      currentCrewMember: crewInfo,
+      fieldDefinitions,
+      totalFieldsToCurrentCrew
+    });
+  } catch (err) {
+    console.error('❌ Error fetching collected fields:', err.message);
+    res.status(500).json({ error: 'Error fetching collected fields: ' + err.message });
+  }
+});
+
+// Update collected fields for a conversation
+app.patch('/api/conversation/:conversationId/fields', async (req, res) => {
+  const { conversationId } = req.params;
+  const { fields } = req.body;
+
+  if (!fields || typeof fields !== 'object') {
+    return res.status(400).json({ error: 'Fields object is required' });
+  }
+
+  try {
+    const updatedFields = await agentContextService.updateCollectedFields(conversationId, fields);
+    console.log(`✅ Updated fields for ${conversationId}:`, Object.keys(fields).join(', '));
+    res.json({
+      success: true,
+      collectedFields: updatedFields
+    });
+  } catch (err) {
+    console.error('❌ Error updating collected fields:', err.message);
+    res.status(500).json({ error: 'Error updating collected fields: ' + err.message });
+  }
+});
+
+// Delete specific collected fields
+app.delete('/api/conversation/:conversationId/fields', async (req, res) => {
+  const { conversationId } = req.params;
+  const { fieldNames } = req.body;
+
+  if (!fieldNames || !Array.isArray(fieldNames)) {
+    return res.status(400).json({ error: 'fieldNames array is required' });
+  }
+
+  try {
+    // Get current fields
+    const currentFields = await agentContextService.getCollectedFields(conversationId);
+
+    // Remove specified fields
+    const fieldsToKeep = {};
+    for (const [key, value] of Object.entries(currentFields)) {
+      if (!fieldNames.includes(key)) {
+        fieldsToKeep[key] = value;
+      }
+    }
+
+    // Update conversation metadata and clear cache
+    await conversationService.updateConversationMetadata(conversationId, { collectedFields: fieldsToKeep });
+    agentContextService.clearCache(conversationId);
+
+    console.log(`✅ Deleted fields for ${conversationId}:`, fieldNames.join(', '));
+    res.json({
+      success: true,
+      collectedFields: fieldsToKeep
+    });
+  } catch (err) {
+    console.error('❌ Error deleting collected fields:', err.message);
+    res.status(500).json({ error: 'Error deleting collected fields: ' + err.message });
+  }
+});
+
 app.post('/api/finance-assistant', async (req, res) => {
   const { message, conversationId, userId, agentName } = req.body;
 
