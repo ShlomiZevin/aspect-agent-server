@@ -27,6 +27,7 @@ class CrewMember {
    * @param {Object} options.knowledgeBase - Knowledge base config { enabled: boolean, storeId?: string }
    * @param {Array} options.collectFields - Fields to collect from user (legacy, string array)
    * @param {Array} options.fieldsToCollect - Structured fields for extraction [{name, description}]
+   * @param {string} options.extractionMode - Field extraction mode: 'conversational' (default) or 'form' (strict, last message only)
    * @param {string} options.transitionTo - Target crew member name for automatic transitions
    * @param {boolean} options.isDefault - Whether this is the default crew member
    */
@@ -58,6 +59,11 @@ class CrewMember {
     // Structured fields for micro-agent extraction
     // Each entry: { name: string, description: string }
     this.fieldsToCollect = options.fieldsToCollect || [];
+
+    // Field extraction mode:
+    // - 'conversational' (default): Uses recent messages, contextual extraction
+    // - 'form': Strict mode, only extracts from last user message, better for form-like data collection
+    this.extractionMode = options.extractionMode || 'conversational';
 
     // Target crew member for automatic transitions
     this.transitionTo = options.transitionTo || null;
@@ -176,6 +182,7 @@ class CrewMember {
       isDefault: this.isDefault,
       collectFields: this.collectFields,
       fieldsToCollect: this.fieldsToCollect,
+      extractionMode: this.extractionMode,
       transitionTo: this.transitionTo,
       toolCount: this.tools.length,
       hasKnowledgeBase: this.knowledgeBase?.enabled || false

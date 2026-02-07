@@ -68,6 +68,33 @@ async function seed() {
       console.log('✅ Aspect created successfully (ID:', inserted.id, ')');
     }
 
+    // Create Byline Bank RDDA agent
+    console.log('Creating Byline agent...');
+
+    const bylineAgent = {
+      name: 'Byline',
+      domain: 'banking',
+      description: 'AI-powered Risk Due Diligence Assessment (RDDA) agent for Byline Bank, guiding Third Party Payment Processors through comprehensive compliance assessment.',
+      promptId: null,
+      config: {
+        model: process.env.OPENAI_MODEL || 'gpt-4o',
+        vectorStoreId: null,
+        features: ['rdda_assessment', 'compliance', 'document_collection', 'full_journey_view'],
+        supportedLanguages: ['en']
+      },
+      isActive: true
+    };
+
+    // Check if Byline already exists
+    const existingByline = await drizzle.select().from(agents).where(eq(agents.name, 'Byline'));
+
+    if (existingByline.length > 0) {
+      console.log('✅ Byline already exists (ID:', existingByline[0].id, ')');
+    } else {
+      const [inserted] = await drizzle.insert(agents).values(bylineAgent).returning();
+      console.log('✅ Byline created successfully (ID:', inserted.id, ')');
+    }
+
     console.log('');
     console.log('🎉 Seed completed successfully!');
     process.exit(0);

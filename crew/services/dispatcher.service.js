@@ -449,12 +449,16 @@ class DispatcherService {
     // Add the current message (not yet in DB history)
     recentMessages.push({ role: 'user', content: message });
 
+    // Only send fields that haven't been collected yet (prevents re-extraction)
+    const fieldsStillNeeded = crew.fieldsToCollect.filter(f => !collectedFields[f.name]);
+
     // Run extractor
-    console.log(`🔍 Running fields extractor for ${missingFields.length} missing fields`);
+    console.log(`🔍 Running fields extractor for ${fieldsStillNeeded.length} missing fields (mode: ${crew.extractionMode || 'conversational'})`);
     const result = await fieldsExtractor.extract({
       recentMessages,
-      fieldsToCollect: crew.fieldsToCollect,
-      collectedFields
+      fieldsToCollect: fieldsStillNeeded,
+      collectedFields,
+      extractionMode: crew.extractionMode
     });
 
     // Identify newly extracted fields (not previously collected)
@@ -465,15 +469,26 @@ class DispatcherService {
       }
     }
 
+    // Handle corrections (form mode only - fields user explicitly corrected)
+    const corrections = result.corrections || {};
+    if (Object.keys(corrections).length > 0) {
+      console.log(`✏️ User corrected ${Object.keys(corrections).length} fields:`, Object.keys(corrections).join(', '));
+    }
+
+    // Merge new fields and corrections
+    const fieldsToUpdate = { ...newFields, ...corrections };
+
     // Update collected fields in context service
     let allCollected = collectedFields;
-    if (Object.keys(newFields).length > 0) {
-      allCollected = await agentContextService.updateCollectedFields(conversationId, newFields);
-      console.log(`📝 Extracted ${Object.keys(newFields).length} new fields:`, Object.keys(newFields).join(', '));
+    if (Object.keys(fieldsToUpdate).length > 0) {
+      allCollected = await agentContextService.updateCollectedFields(conversationId, fieldsToUpdate);
+      if (Object.keys(newFields).length > 0) {
+        console.log(`📝 Extracted ${Object.keys(newFields).length} new fields:`, Object.keys(newFields).join(', '));
+      }
     }
 
     return {
-      newFields,
+      newFields: fieldsToUpdate,
       allCollected,
       remainingFields: result.remainingFields
     };
