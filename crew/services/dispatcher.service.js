@@ -294,7 +294,8 @@ class DispatcherService {
       agentName,
       useKnowledgeBase = false,
       agentConfig = {},
-      promptOverrides = {} // Session overrides: { crewName: prompt }
+      promptOverrides = {}, // Session overrides: { crewName: prompt }
+      modelOverrides = {}   // Session overrides: { crewName: modelName }
     } = params;
 
     // Get conversation for context
@@ -351,6 +352,14 @@ class DispatcherService {
       }
     }
 
+    // ========== RESOLVE MODEL ==========
+    // Priority: 1. Session override → 2. Crew default
+    let resolvedModel = crew.model;
+    if (modelOverrides[crew.name]) {
+      resolvedModel = modelOverrides[crew.name];
+      console.log(`📝 Using session override model for ${crew.name}: ${resolvedModel}`);
+    }
+
     // ========== RESOLVE TRANSITION SYSTEM PROMPT ==========
     // Priority: DB value > code value (same as regular prompt)
     let resolvedTransitionPrompt = crew.transitionSystemPrompt || null;
@@ -389,7 +398,7 @@ class DispatcherService {
     // Build LLM config from crew member (provider-agnostic)
     const llmConfig = {
       prompt: resolvedPrompt,
-      model: crew.model,
+      model: resolvedModel,
       maxTokens: crew.maxTokens,
       tools: crew.getToolSchemas(),
       toolHandlers,
@@ -415,7 +424,7 @@ class DispatcherService {
           crewDisplayName: crew.displayName,
           fullInstructions,
           promptSource,
-          model: crew.model,
+          model: resolvedModel,
           maxTokens: crew.maxTokens,
           tools: crew.getToolSchemas(),
           knowledgeBase: resolvedKB,

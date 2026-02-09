@@ -185,6 +185,7 @@ class CrewMember {
       displayName: this.displayName,
       description: this.description,
       isDefault: this.isDefault,
+      model: this.model,
       collectFields: this.collectFields,
       fieldsToCollect: this.fieldsToCollect,
       extractionMode: this.extractionMode,
