@@ -453,7 +453,8 @@ class OpenAIService {
         const history = await conversationService.getConversationHistory(conversationId, 50);
         historyMessages = history.map(m => ({
           role: m.role,
-          content: [{ type: m.role === 'user' ? 'input_text' : 'output_text', text: m.content }]
+          // user and developer roles use input_text, assistant uses output_text
+          content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.content }]
         }));
       } catch (err) {
         console.warn('⚠️ Could not load conversation history from DB:', err.message);
@@ -464,6 +465,16 @@ class OpenAIService {
         role: 'user',
         content: [{ type: 'input_text', text: message }]
       };
+
+      // Inject transition system prompt if this is a new crew transition
+      // This signals to the model that the context has changed and it should follow new instructions
+      if (config.transitionSystemPrompt && config.isNewCrewTransition) {
+        historyMessages.push({
+          role: 'developer',
+          content: [{ type: 'input_text', text: config.transitionSystemPrompt }]
+        });
+        console.log(`🔄 Injected transition system prompt (${config.transitionSystemPrompt.length} chars) as developer message`);
+      }
 
       console.log(`🤖 Crew streaming with inline prompt (${fullInstructions.length} chars), ${tools.length} tools, ${historyMessages.length} history messages`);
 

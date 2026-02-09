@@ -328,6 +328,9 @@ class DispatcherService {
       console.log(`🔍 Override for "${crew.name}" exists:`, crew.name in promptOverrides);
     }
 
+    // Variables to track DB prompt for transition system prompt resolution
+    let dbPrompt = null;
+
     // Check for session override
     if (promptOverrides[crew.name]) {
       resolvedPrompt = promptOverrides[crew.name];
@@ -336,7 +339,7 @@ class DispatcherService {
     } else {
       // Try to get active prompt from database
       try {
-        const dbPrompt = await promptService.getActivePrompt(agentName, crew.name);
+        dbPrompt = await promptService.getActivePrompt(agentName, crew.name);
         if (dbPrompt) {
           resolvedPrompt = dbPrompt.prompt;
           promptSource = 'database';
@@ -346,6 +349,21 @@ class DispatcherService {
         // DB not available or error - use code default
         console.log(`📝 Using code-defined prompt for ${crew.name} (DB unavailable)`);
       }
+    }
+
+    // ========== RESOLVE TRANSITION SYSTEM PROMPT ==========
+    // Priority: DB value > code value (same as regular prompt)
+    let resolvedTransitionPrompt = crew.transitionSystemPrompt || null;
+    if (dbPrompt?.transitionSystemPrompt) {
+      resolvedTransitionPrompt = dbPrompt.transitionSystemPrompt;
+    }
+
+    // Detect if this is a new crew transition (need to inject system prompt)
+    const lastCrewWithPrompt = conversation?.metadata?.lastCrewWithTransitionPrompt;
+    const isNewCrewTransition = resolvedTransitionPrompt && lastCrewWithPrompt !== crew.name;
+
+    if (isNewCrewTransition) {
+      console.log(`🔄 Transition system prompt will be injected for ${crew.name} (previous: ${lastCrewWithPrompt || 'none'})`);
     }
 
     // Resolve knowledge base: crew config + client toggle
@@ -377,7 +395,9 @@ class DispatcherService {
       toolHandlers,
       knowledgeBase: resolvedKB,
       agentConfig,
-      context
+      context,
+      transitionSystemPrompt: resolvedTransitionPrompt,
+      isNewCrewTransition
     };
 
     // Emit debug data if requested (before LLM call)
@@ -400,6 +420,8 @@ class DispatcherService {
           tools: crew.getToolSchemas(),
           knowledgeBase: resolvedKB,
           processedMessage,
+          transitionSystemPrompt: resolvedTransitionPrompt,
+          transitionPromptInjected: isNewCrewTransition,
         }
       };
     }
@@ -413,6 +435,18 @@ class DispatcherService {
 
     for await (const chunk of stream) {
       yield chunk;
+    }
+
+    // Update metadata after successful streaming if transition prompt was injected
+    if (isNewCrewTransition) {
+      try {
+        await conversationService.updateConversationMetadata(conversationId, {
+          lastCrewWithTransitionPrompt: crew.name
+        });
+        console.log(`✅ Updated lastCrewWithTransitionPrompt to ${crew.name}`);
+      } catch (err) {
+        console.warn('⚠️ Could not update transition prompt metadata:', err.message);
+      }
     }
   }
 

@@ -141,6 +141,7 @@ const crewPrompts = pgTable('crew_prompts', {
   version: integer('version').notNull(), // Version number (1, 2, 3, ...)
   name: varchar('name', { length: 255 }), // Version name/tag (e.g., "Added empathy guidelines")
   prompt: text('prompt').notNull(), // The actual prompt text
+  transitionSystemPrompt: text('transition_system_prompt'), // System prompt injected once when transitioning to this crew
   isActive: boolean('is_active').default(false).notNull(), // Only one version should be active per crew member
   createdBy: integer('created_by').references(() => users.id), // Who created this version
   createdAt: timestamp('created_at').defaultNow().notNull(),

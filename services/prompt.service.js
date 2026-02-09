@@ -53,6 +53,7 @@ class PromptService {
         version: crewPrompts.version,
         name: crewPrompts.name,
         prompt: crewPrompts.prompt,
+        transitionSystemPrompt: crewPrompts.transitionSystemPrompt,
         isActive: crewPrompts.isActive,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
@@ -82,6 +83,7 @@ class PromptService {
         version: crewPrompts.version,
         name: crewPrompts.name,
         prompt: crewPrompts.prompt,
+        transitionSystemPrompt: crewPrompts.transitionSystemPrompt,
         isActive: crewPrompts.isActive,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
@@ -113,6 +115,7 @@ class PromptService {
         version: crewPrompts.version,
         name: crewPrompts.name,
         prompt: crewPrompts.prompt,
+        transitionSystemPrompt: crewPrompts.transitionSystemPrompt,
         isActive: crewPrompts.isActive,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
@@ -138,6 +141,7 @@ class PromptService {
         version: prompt.version,
         name: prompt.name,
         prompt: prompt.prompt,
+        transitionSystemPrompt: prompt.transitionSystemPrompt,
         isActive: prompt.isActive,
         createdAt: prompt.createdAt?.toISOString(),
         updatedAt: prompt.updatedAt?.toISOString(),
@@ -152,8 +156,14 @@ class PromptService {
 
   /**
    * Create a new prompt version
+   * @param {string} agentName - Agent name
+   * @param {string} crewMemberName - Crew member name
+   * @param {string} prompt - Main prompt text
+   * @param {string} name - Version name/tag
+   * @param {number} createdBy - User ID who created this version
+   * @param {string} transitionSystemPrompt - System prompt injected on crew transition
    */
-  async createPromptVersion(agentName, crewMemberName, prompt, name = null, createdBy = null) {
+  async createPromptVersion(agentName, crewMemberName, prompt, name = null, createdBy = null, transitionSystemPrompt = null) {
     if (!this.drizzle) this.initialize();
 
     const agent = await this.getAgentByName(agentName);
@@ -180,6 +190,7 @@ class PromptService {
         version: nextVersion,
         name,
         prompt,
+        transitionSystemPrompt,
         isActive: true,
         createdBy,
       })
@@ -190,6 +201,7 @@ class PromptService {
       version: newVersion.version,
       name: newVersion.name,
       prompt: newVersion.prompt,
+      transitionSystemPrompt: newVersion.transitionSystemPrompt,
       isActive: newVersion.isActive,
       createdAt: newVersion.createdAt?.toISOString(),
       updatedAt: newVersion.updatedAt?.toISOString(),
@@ -198,18 +210,30 @@ class PromptService {
 
   /**
    * Update an existing prompt version (overwrite)
+   * @param {string} agentName - Agent name
+   * @param {string} crewMemberName - Crew member name
+   * @param {string} versionId - Version ID to update
+   * @param {string} prompt - Main prompt text
+   * @param {string} transitionSystemPrompt - System prompt injected on crew transition (optional)
    */
-  async updatePromptVersion(agentName, crewMemberName, versionId, prompt) {
+  async updatePromptVersion(agentName, crewMemberName, versionId, prompt, transitionSystemPrompt = undefined) {
     if (!this.drizzle) this.initialize();
 
     const agent = await this.getAgentByName(agentName);
 
+    const updateData = {
+      prompt,
+      updatedAt: new Date(),
+    };
+
+    // Only update transitionSystemPrompt if explicitly provided (allows setting to null)
+    if (transitionSystemPrompt !== undefined) {
+      updateData.transitionSystemPrompt = transitionSystemPrompt;
+    }
+
     const [updated] = await this.drizzle
       .update(crewPrompts)
-      .set({
-        prompt,
-        updatedAt: new Date(),
-      })
+      .set(updateData)
       .where(and(
         eq(crewPrompts.id, versionId),
         eq(crewPrompts.agentId, agent.id),
@@ -226,6 +250,7 @@ class PromptService {
       version: updated.version,
       name: updated.name,
       prompt: updated.prompt,
+      transitionSystemPrompt: updated.transitionSystemPrompt,
       isActive: updated.isActive,
       createdAt: updated.createdAt?.toISOString(),
       updatedAt: updated.updatedAt?.toISOString(),
@@ -269,6 +294,7 @@ class PromptService {
       version: activated.version,
       name: activated.name,
       prompt: activated.prompt,
+      transitionSystemPrompt: activated.transitionSystemPrompt,
       isActive: activated.isActive,
       createdAt: activated.createdAt?.toISOString(),
       updatedAt: activated.updatedAt?.toISOString(),
@@ -329,12 +355,14 @@ class PromptService {
       return null;
     }
 
-    // Create first version from code
+    // Create first version from code (including transition system prompt if defined)
     const version = await this.createPromptVersion(
       agentName,
       crewMember.name,
       crewMember.guidance,
-      'Initial version (from code)'
+      'Initial version (from code)',
+      null,
+      crewMember.transitionSystemPrompt || null
     );
 
     console.log(`   ✅ Seeded prompt for ${crewMember.name} v${version.version}`);

@@ -30,6 +30,7 @@ class CrewMember {
    * @param {string} options.extractionMode - Field extraction mode: 'conversational' (default) or 'form' (strict, last message only)
    * @param {string} options.transitionTo - Target crew member name for automatic transitions
    * @param {boolean} options.isDefault - Whether this is the default crew member
+   * @param {string} options.transitionSystemPrompt - System prompt injected once when transitioning to this crew
    */
   constructor(options = {}) {
     // Identity
@@ -70,6 +71,10 @@ class CrewMember {
 
     // Whether this is the default crew member for the agent
     this.isDefault = options.isDefault || false;
+
+    // System prompt injected once when transitioning to this crew member
+    // Used to override historical conversation patterns when switching personas
+    this.transitionSystemPrompt = options.transitionSystemPrompt || null;
   }
 
   /**
@@ -185,7 +190,8 @@ class CrewMember {
       extractionMode: this.extractionMode,
       transitionTo: this.transitionTo,
       toolCount: this.tools.length,
-      hasKnowledgeBase: this.knowledgeBase?.enabled || false
+      hasKnowledgeBase: this.knowledgeBase?.enabled || false,
+      hasTransitionPrompt: !!this.transitionSystemPrompt
     };
   }
 }

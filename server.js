@@ -240,7 +240,7 @@ app.get('/api/agents/:agentName/crew/:crewName/prompts/active', async (req, res)
 // Create new prompt version (Save as New Version)
 app.post('/api/agents/:agentName/crew/:crewName/prompts', async (req, res) => {
   const { agentName, crewName } = req.params;
-  const { prompt, name } = req.body;
+  const { prompt, name, transitionSystemPrompt } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: 'Prompt text is required' });
@@ -251,7 +251,9 @@ app.post('/api/agents/:agentName/crew/:crewName/prompts', async (req, res) => {
       agentName,
       crewName,
       prompt,
-      name || null
+      name || null,
+      null, // createdBy
+      transitionSystemPrompt || null
     );
 
     console.log(`✅ Created new prompt version: ${crewName} v${newVersion.version}`);
@@ -268,7 +270,7 @@ app.post('/api/agents/:agentName/crew/:crewName/prompts', async (req, res) => {
 // Update existing prompt version (Save/Overwrite)
 app.patch('/api/agents/:agentName/crew/:crewName/prompts/:versionId', async (req, res) => {
   const { agentName, crewName, versionId } = req.params;
-  const { prompt } = req.body;
+  const { prompt, transitionSystemPrompt } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: 'Prompt text is required' });
@@ -279,7 +281,8 @@ app.patch('/api/agents/:agentName/crew/:crewName/prompts/:versionId', async (req
       agentName,
       crewName,
       parseInt(versionId),
-      prompt
+      prompt,
+      transitionSystemPrompt // Can be undefined (not updated) or string/null (update)
     );
 
     console.log(`✅ Updated prompt version: ${crewName} v${updated.version}`);
@@ -522,6 +525,53 @@ app.delete('/api/conversation/:conversationId/messages-from/:messageId', async (
   } catch (err) {
     console.error('❌ Error deleting messages from point:', err.message);
     res.status(500).json({ error: 'Error deleting messages: ' + err.message });
+  }
+});
+
+// ========== DEBUG: INJECT DEVELOPER MESSAGE (for testing transition prompts) ==========
+// Injects a developer-role message into conversation history for testing
+app.post('/api/conversation/:conversationId/inject-developer-message', async (req, res) => {
+  const { conversationId } = req.params;
+  const { content, crewMemberName } = req.body;
+
+  if (!content || typeof content !== 'string' || !content.trim()) {
+    return res.status(400).json({ error: 'Content is required' });
+  }
+
+  try {
+    // Get the conversation
+    const conversation = await conversationService.getConversationByExternalId(conversationId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    // Save the message as 'developer' role
+    const message = await conversationService.saveMessage(
+      conversation.id,
+      'developer',
+      content.trim(),
+      {
+        injectedForTesting: true,
+        crewMemberName: crewMemberName || null,
+        injectedAt: new Date().toISOString()
+      }
+    );
+
+    console.log(`🔧 DEBUG: Injected developer message into conversation ${conversationId}`);
+
+    res.json({
+      success: true,
+      message: {
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        metadata: message.metadata,
+        createdAt: message.createdAt
+      }
+    });
+  } catch (err) {
+    console.error('❌ Error injecting developer message:', err.message);
+    res.status(500).json({ error: 'Error injecting message: ' + err.message });
   }
 });
 

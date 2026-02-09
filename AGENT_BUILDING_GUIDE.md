@@ -250,6 +250,7 @@ Pass these to `super({...})` in the constructor:
 | `knowledgeBase` | `object\|null` | No | `{ enabled: true, storeId: "vs_..." }` or `null` |
 | `fieldsToCollect` | `array` | No | Fields to extract from conversation: `[{ name: "age", description: "User's age" }]` |
 | `transitionTo` | `string` | No | Target crew name for automatic transition after all fields are collected |
+| `transitionSystemPrompt` | `string` | No | System prompt injected once when transitioning TO this crew (see 3.7) |
 
 ### 3.2 Overridable Methods
 
@@ -494,6 +495,50 @@ module.exports = {
   BankingAdvisorCrew
 };
 ```
+
+### 3.7 Transition System Prompt
+
+When transitioning between crew members mid-conversation, historical messages can establish patterns so strong that the new crew's prompt gets partially ignored. The **transition system prompt** solves this by injecting a one-time `developer` role message into the conversation history at the moment of transition.
+
+**Why `developer` role?** OpenAI's message hierarchy gives `developer` messages highest authority over `system` and `user` messages. This ensures the transition instruction overrides conflicting patterns from history.
+
+**How it works:**
+1. Define `transitionSystemPrompt` on the target crew member (in code or via prompt editor DB)
+2. When a user transitions TO that crew, the dispatcher checks if this crew was the last one that had a transition prompt injected
+3. If not (new transition), the `transitionSystemPrompt` is injected as a `developer` message just before the current user message
+4. The crew's name is stored in `conversation.metadata.lastCrewWithTransitionPrompt` to prevent re-injection
+5. On subsequent messages with the same crew, the prompt is NOT re-injected
+
+**Example:**
+
+```js
+// aspect-agent-server/agents/finance/crew/advisor.crew.js
+class FinanceAdvisorCrew extends CrewMember {
+  constructor() {
+    super({
+      name: 'advisor',
+      displayName: 'Finance Advisor',
+      description: 'Personal finance advisor',
+      isDefault: false,
+
+      guidance: `You are a professional finance advisor...`,
+
+      // Injected once when user transitions from another crew to this one
+      transitionSystemPrompt: `CRITICAL ROLE CHANGE: You are now the Finance Advisor.
+Your previous responses in this conversation were from a different assistant role.
+From this point forward, respond ONLY as the Finance Advisor. Do not reference
+your previous persona. The user is now speaking with you, the finance expert.
+Introduce yourself briefly and ask how you can help with their finances.`,
+
+      model: 'gpt-4o',
+    });
+  }
+}
+```
+
+**Hierarchy:** Database value > code value. If a `transitionSystemPrompt` is saved in the prompt editor (DB), it takes precedence over the code-defined value.
+
+**Testing:** In debug mode, the PromptEditorPanel shows a "Transition System Prompt" section. You can edit it there and use the "Fire Now" button to manually inject it into the current conversation for testing without requiring an actual crew transition.
 
 ---
 
