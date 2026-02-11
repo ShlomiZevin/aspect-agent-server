@@ -13,7 +13,14 @@
  * - fieldsToCollect: Structured field definitions for micro-agent extraction
  * - transitionTo: Target crew member for automatic transitions
  * - isDefault: Whether this is the default crew member for the agent
+ *
+ * Context methods (available after dispatcher sets _userId):
+ * - getContext(namespace): Read context data from DB
+ * - writeContext(namespace, data): Write context data to DB
+ * - mergeContext(namespace, data): Merge data into existing context
  */
+const contextService = require('../../services/context.service');
+
 class CrewMember {
   /**
    * @param {Object} options - Crew member configuration
@@ -75,6 +82,75 @@ class CrewMember {
     // System prompt injected once when transitioning to this crew member
     // Used to override historical conversation patterns when switching personas
     this.transitionSystemPrompt = options.transitionSystemPrompt || null;
+
+    // Context service state (set by dispatcher before use)
+    this._userId = null;
+    this._conversationId = null;
+  }
+
+  /**
+   * Set the user context for context service operations.
+   * Called by dispatcher before buildContext.
+   *
+   * @param {number} userId - User ID
+   * @param {number|null} conversationId - Conversation ID (for conversation-level context)
+   */
+  setContextUser(userId, conversationId = null) {
+    this._userId = userId;
+    this._conversationId = conversationId;
+  }
+
+  /**
+   * Get context data from the database by namespace.
+   * Use in buildContext() to load persisted context.
+   *
+   * @param {string} namespace - Context namespace (e.g., 'journey', 'preferences')
+   * @param {boolean} conversationLevel - If true, get conversation-level context instead of user-level
+   * @returns {Promise<Object|null>} - Context data or null
+   */
+  async getContext(namespace, conversationLevel = false) {
+    if (!this._userId) {
+      console.warn(`⚠️ getContext called without userId set for crew: ${this.name}`);
+      return null;
+    }
+    const convId = conversationLevel ? this._conversationId : null;
+    return await contextService.getContext(this._userId, namespace, convId);
+  }
+
+  /**
+   * Write context data to the database.
+   * Use to persist data that should be available across sessions.
+   *
+   * @param {string} namespace - Context namespace (e.g., 'journey', 'preferences')
+   * @param {Object} data - Data to save
+   * @param {boolean} conversationLevel - If true, save as conversation-level context
+   * @returns {Promise<boolean>} - Success status
+   */
+  async writeContext(namespace, data, conversationLevel = false) {
+    if (!this._userId) {
+      console.warn(`⚠️ writeContext called without userId set for crew: ${this.name}`);
+      return false;
+    }
+    const convId = conversationLevel ? this._conversationId : null;
+    return await contextService.saveContext(this._userId, namespace, data, convId);
+  }
+
+  /**
+   * Merge data into existing context (shallow merge).
+   * Useful for updating specific fields without overwriting the entire context.
+   *
+   * @param {string} namespace - Context namespace
+   * @param {Object} data - Data to merge
+   * @param {boolean} conversationLevel - If true, merge into conversation-level context
+   * @returns {Promise<boolean>} - Success status
+   */
+  async mergeContext(namespace, data, conversationLevel = false) {
+    if (!this._userId) {
+      console.warn(`⚠️ mergeContext called without userId set for crew: ${this.name}`);
+      return false;
+    }
+    const convId = conversationLevel ? this._conversationId : null;
+    return await contextService.mergeContext(this._userId, namespace, data, convId);
   }
 
   /**

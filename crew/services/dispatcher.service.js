@@ -119,6 +119,12 @@ class DispatcherService {
     // If all fields were already collected (from previous messages),
     // transition immediately without starting the crew stream or extractor.
     if (crew.transitionTo) {
+      // Set context user early for crews that may use getContext in preMessageTransfer
+      const conversation = await conversationService.getConversationByExternalId(conversationId);
+      if (conversation?.userId) {
+        crew.setContextUser(conversation.userId, conversation.id);
+      }
+
       const existingFields = await agentContextService.getCollectedFields(conversationId);
       const missingFields = await agentContextService.getMissingFields(conversationId, crew.fieldsToCollect);
 
@@ -304,6 +310,11 @@ class DispatcherService {
 
     // Get collected fields from context service
     const collectedFields = await agentContextService.getCollectedFields(conversationId);
+
+    // Set context user for crew's getContext/writeContext methods
+    if (conversation?.userId) {
+      crew.setContextUser(conversation.userId, conversation.id);
+    }
 
     // Build context from crew member
     const context = await crew.buildContext({
