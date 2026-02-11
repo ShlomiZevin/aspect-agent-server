@@ -2,10 +2,16 @@
  * Crew Service
  *
  * Loads and manages crew member classes for agents.
- * Crew members are loaded from /agents/<agentName>/crew/ folders.
+ * Crew members are loaded from two sources:
+ * 1. File-based: /agents/<agentName>/crew/ folders (custom logic, production)
+ * 2. DB-based: crew_members table (dashboard-created, quick iteration)
+ *
+ * File-based crews take precedence over DB crews with the same name.
  */
 const path = require('path');
 const fs = require('fs');
+const DynamicCrewMember = require('../base/DynamicCrewMember');
+const crewMembersService = require('../../services/crewMembers.service');
 
 class CrewService {
   constructor() {
@@ -48,7 +54,8 @@ class CrewService {
   }
 
   /**
-   * Load all crew members for an agent
+   * Load all crew members for an agent from both files and database.
+   * File-based crews take precedence over DB crews with the same name.
    *
    * @param {string} agentName - Name of the agent (folder name)
    * @returns {Map} - Map of crew name to CrewMember instance
@@ -60,45 +67,67 @@ class CrewService {
     }
 
     const crewMap = new Map();
+
+    // Step 1: Load DB-based crews first (lower precedence)
+    try {
+      const dbCrews = await crewMembersService.getByAgentName(agentName);
+      for (const config of dbCrews) {
+        try {
+          const instance = new DynamicCrewMember(config);
+          crewMap.set(instance.name, instance);
+          console.log(`   📦 Loaded DB crew member: ${instance.name} (${instance.displayName})`);
+        } catch (err) {
+          console.warn(`   ⚠️ Failed to instantiate DB crew ${config.name}:`, err.message);
+        }
+      }
+      if (dbCrews.length > 0) {
+        console.log(`📦 Loaded ${dbCrews.length} DB crew members for agent: ${agentName}`);
+      }
+    } catch (error) {
+      console.warn(`⚠️ Error loading DB crews for agent ${agentName}:`, error.message);
+    }
+
+    // Step 2: Load file-based crews (higher precedence - will overwrite DB crews with same name)
     const crewPath = this.resolveCrewPath(agentName);
 
     try {
-      // Check if crew folder exists
-      if (!crewPath) {
-        console.log(`ℹ️ No crew folder found for agent: ${agentName}`);
-        this.crews.set(agentName, crewMap);
-        return crewMap;
-      }
+      if (crewPath) {
+        // Load crew module
+        const crewModule = require(crewPath);
 
-      // Load crew module
-      const crewModule = require(crewPath);
-
-      // Iterate through exported crew classes
-      for (const [exportName, CrewClass] of Object.entries(crewModule)) {
-        // Skip non-class exports
-        if (typeof CrewClass !== 'function') {
-          continue;
-        }
-
-        try {
-          // Instantiate the crew member
-          const instance = new CrewClass();
-
-          // Verify it has required properties
-          if (instance.name) {
-            crewMap.set(instance.name, instance);
-            console.log(`   ✅ Loaded crew member: ${instance.name} (${instance.displayName})`);
+        // Iterate through exported crew classes
+        for (const [exportName, CrewClass] of Object.entries(crewModule)) {
+          // Skip non-class exports
+          if (typeof CrewClass !== 'function') {
+            continue;
           }
-        } catch (err) {
-          console.warn(`   ⚠️ Failed to instantiate crew class ${exportName}:`, err.message);
-        }
-      }
 
-      console.log(`✅ Loaded ${crewMap.size} crew members for agent: ${agentName}`);
+          try {
+            // Instantiate the crew member
+            const instance = new CrewClass();
+            instance.source = 'file'; // Mark as file-sourced
+
+            // Verify it has required properties
+            if (instance.name) {
+              // Check if we're overwriting a DB crew
+              if (crewMap.has(instance.name)) {
+                console.log(`   🔄 File crew "${instance.name}" overrides DB crew`);
+              }
+              crewMap.set(instance.name, instance);
+              console.log(`   📁 Loaded file crew member: ${instance.name} (${instance.displayName})`);
+            }
+          } catch (err) {
+            console.warn(`   ⚠️ Failed to instantiate crew class ${exportName}:`, err.message);
+          }
+        }
+      } else {
+        console.log(`ℹ️ No crew folder found for agent: ${agentName}`);
+      }
     } catch (error) {
-      console.warn(`⚠️ Error loading crew for agent ${agentName}:`, error.message);
+      console.warn(`⚠️ Error loading file crews for agent ${agentName}:`, error.message);
     }
 
+    console.log(`✅ Total ${crewMap.size} crew members loaded for agent: ${agentName}`);
     this.crews.set(agentName, crewMap);
     return crewMap;
   }

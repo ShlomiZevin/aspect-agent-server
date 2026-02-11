@@ -268,7 +268,8 @@ class CrewMember {
       transitionTo: this.transitionTo,
       toolCount: this.tools.length,
       hasKnowledgeBase: this.knowledgeBase?.enabled || false,
-      hasTransitionPrompt: !!this.transitionSystemPrompt
+      hasTransitionPrompt: !!this.transitionSystemPrompt,
+      source: this.source || 'file'
     };
   }
 }

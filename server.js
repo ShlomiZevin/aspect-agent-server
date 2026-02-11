@@ -16,6 +16,7 @@ const crewService = require('./crew/services/crew.service');
 const dispatcherService = require('./crew/services/dispatcher.service');
 const adminService = require('./services/admin.service');
 const promptService = require('./services/prompt.service');
+const crewMembersService = require('./services/crewMembers.service');
 
 // WhatsApp bridge
 const { handleIncomingMessage } = require('./whatsapp/bridge.service');
@@ -77,7 +78,7 @@ app.get('/health', async (req, res) => {
 
 // ========== CREW MANAGEMENT ENDPOINTS ==========
 
-// Get all crew members for an agent
+// Get all crew members for an agent (includes both file and DB crews)
 app.get('/api/agents/:agentName/crew', async (req, res) => {
   const { agentName } = req.params;
 
@@ -90,6 +91,183 @@ app.get('/api/agents/:agentName/crew', async (req, res) => {
   } catch (err) {
     console.error('❌ Error fetching crew:', err.message);
     res.status(500).json({ error: 'Error fetching crew: ' + err.message });
+  }
+});
+
+// ========== CREW MEMBERS CRUD (DB-based crews) ==========
+
+// Get a single crew member by name (checks both file and DB crews)
+app.get('/api/agents/:agentName/crew-members/:crewName', async (req, res) => {
+  const { agentName, crewName } = req.params;
+
+  try {
+    // Use crewService which loads both file and DB crews
+    const crew = await crewService.getCrewMember(agentName, crewName);
+    if (!crew) {
+      return res.status(404).json({ error: 'Crew member not found' });
+    }
+
+    // Return full config (toJSON for file-based, direct for DB-based)
+    const crewMember = typeof crew.toJSON === 'function' ? crew.toJSON() : crew;
+
+    // Extract tool names (getToolNames returns objects with {name, description, parameters})
+    let toolNames = [];
+    if (crew.getToolNames) {
+      const tools = crew.getToolNames();
+      toolNames = tools.map(t => typeof t === 'string' ? t : t.name);
+    } else if (crew.tools) {
+      toolNames = crew.tools.map(t => typeof t === 'string' ? t : t.name);
+    }
+
+    // Add source and guidance for the editor
+    res.json({
+      crewMember: {
+        ...crewMember,
+        source: crew.source || 'file',
+        guidance: crew.guidance || '',
+        maxTokens: crew.maxTokens || 2048,
+        knowledgeBase: crew.knowledgeBase || null,
+        transitionTo: crew.transitionTo || null,
+        transitionSystemPrompt: crew.transitionSystemPrompt || null,
+        tools: toolNames,
+        fieldsToCollect: crew.fieldsToCollect || [],
+      }
+    });
+  } catch (err) {
+    console.error('❌ Error fetching crew member:', err.message);
+    res.status(500).json({ error: 'Error fetching crew member: ' + err.message });
+  }
+});
+
+// Create a new crew member (DB-based)
+app.post('/api/agents/:agentName/crew-members', async (req, res) => {
+  const { agentName } = req.params;
+  const config = req.body;
+
+  try {
+    // Get agent ID
+    const agentId = await crewMembersService.getAgentId(agentName);
+    if (!agentId) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    // Validate required fields
+    if (!config.name || !config.displayName || !config.guidance) {
+      return res.status(400).json({ error: 'Missing required fields: name, displayName, guidance' });
+    }
+
+    const crewMember = await crewMembersService.create(agentId, config);
+    if (!crewMember) {
+      return res.status(400).json({ error: 'Failed to create crew member (may already exist)' });
+    }
+
+    // Clear crew cache so new member is loaded
+    crewService.crews.delete(agentName);
+
+    res.status(201).json({ crewMember });
+  } catch (err) {
+    console.error('❌ Error creating crew member:', err.message);
+    res.status(500).json({ error: 'Error creating crew member: ' + err.message });
+  }
+});
+
+// Update a crew member (DB-based only)
+app.patch('/api/agents/:agentName/crew-members/:crewName', async (req, res) => {
+  const { agentName, crewName } = req.params;
+  const updates = req.body;
+
+  try {
+    // Get agent ID
+    const agentId = await crewMembersService.getAgentId(agentName);
+    if (!agentId) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    const crewMember = await crewMembersService.update(agentId, crewName, updates);
+    if (!crewMember) {
+      return res.status(404).json({ error: 'Crew member not found (or is file-based)' });
+    }
+
+    // Clear crew cache so changes are reflected
+    crewService.crews.delete(agentName);
+
+    res.json({ crewMember });
+  } catch (err) {
+    console.error('❌ Error updating crew member:', err.message);
+    res.status(500).json({ error: 'Error updating crew member: ' + err.message });
+  }
+});
+
+// Delete a crew member (DB-based only, soft delete)
+app.delete('/api/agents/:agentName/crew-members/:crewName', async (req, res) => {
+  const { agentName, crewName } = req.params;
+
+  try {
+    // Get agent ID
+    const agentId = await crewMembersService.getAgentId(agentName);
+    if (!agentId) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    const success = await crewMembersService.delete(agentId, crewName);
+    if (!success) {
+      return res.status(404).json({ error: 'Crew member not found (or is file-based)' });
+    }
+
+    // Clear crew cache
+    crewService.crews.delete(agentName);
+
+    res.json({ success: true, message: `Crew member "${crewName}" deleted` });
+  } catch (err) {
+    console.error('❌ Error deleting crew member:', err.message);
+    res.status(500).json({ error: 'Error deleting crew member: ' + err.message });
+  }
+});
+
+// Generate a crew member from description (uses Claude)
+app.post('/api/agents/:agentName/crew-members/generate', async (req, res) => {
+  const { agentName } = req.params;
+  const { description, existingCrews, availableTools, knowledgeBases } = req.body;
+
+  if (!description) {
+    return res.status(400).json({ error: 'Missing required field: description' });
+  }
+
+  try {
+    const config = await llmService.generateCrewFromDescription(description, agentName, {
+      existingCrews: existingCrews || [],
+      availableTools: availableTools || [],
+      knowledgeBases: knowledgeBases || []
+    });
+
+    res.json({ success: true, config });
+  } catch (err) {
+    console.error('❌ Error generating crew member:', err.message);
+    res.status(500).json({ error: 'Error generating crew member: ' + err.message });
+  }
+});
+
+// Export crew member as .crew.js file code
+app.post('/api/agents/:agentName/crew-members/:crewName/export', async (req, res) => {
+  const { agentName, crewName } = req.params;
+
+  try {
+    // Get the crew member config (from DB)
+    const config = await crewMembersService.getOneByAgentName(agentName, crewName);
+    if (!config) {
+      return res.status(404).json({ error: 'Crew member not found' });
+    }
+
+    // Generate the file code
+    const fileCode = llmService.generateCrewFileCode(config, agentName);
+
+    res.json({
+      fileName: `${crewName}.crew.js`,
+      code: fileCode
+    });
+  } catch (err) {
+    console.error('❌ Error exporting crew member:', err.message);
+    res.status(500).json({ error: 'Error exporting crew member: ' + err.message });
   }
 });
 

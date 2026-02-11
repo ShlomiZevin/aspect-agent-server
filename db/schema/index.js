@@ -172,6 +172,45 @@ const userSymptoms = pgTable('user_symptoms', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Crew members - DB-based crew member definitions (for dashboard-created crews)
+// These work alongside file-based crews. File crews take precedence over DB crews with same name.
+const crewMembers = pgTable('crew_members', {
+  id: serial('id').primaryKey(),
+  agentId: integer('agent_id').references(() => agents.id).notNull(),
+
+  // Identity
+  name: varchar('name', { length: 100 }).notNull(), // Unique per agent, snake_case (e.g., 'billing_support')
+  displayName: varchar('display_name', { length: 200 }).notNull(),
+  description: text('description'),
+  isDefault: boolean('is_default').default(false).notNull(),
+
+  // LLM config
+  guidance: text('guidance').notNull(), // The main prompt/instructions
+  model: varchar('model', { length: 50 }).default('gpt-4o').notNull(),
+  maxTokens: integer('max_tokens').default(2048).notNull(),
+
+  // Knowledge base (optional) - { enabled: boolean, storeId: string }
+  knowledgeBase: jsonb('knowledge_base'),
+
+  // Fields to collect (optional) - [{ name: string, description: string }]
+  fieldsToCollect: jsonb('fields_to_collect'),
+
+  // Transitions (optional)
+  transitionTo: varchar('transition_to', { length: 100 }), // Target crew name
+  transitionSystemPrompt: text('transition_system_prompt'), // System message on transition
+
+  // Tools (by reference name) - ["tool_name", ...]
+  tools: jsonb('tools'),
+
+  // Status
+  isActive: boolean('is_active').default(true).notNull(),
+
+  // Metadata
+  createdBy: integer('created_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -187,4 +226,5 @@ module.exports = {
   crewPrompts,
   contextData,
   userSymptoms,
+  crewMembers,
 };

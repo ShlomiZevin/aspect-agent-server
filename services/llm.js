@@ -1,15 +1,17 @@
 const openaiService = require('./llm.openai');
+const claudeService = require('./llm.claude');
 const functionRegistry = require('./function-registry');
 
 /**
  * Main LLM service that routes requests to specific providers
- * Currently only supports OpenAI, but designed for future extensibility
+ * Supports OpenAI (primary for chat) and Claude (for crew generation)
  *
  * Function calls are handled at this layer (provider-agnostic)
  */
 class LLMService {
   constructor() {
-    this.provider = openaiService;
+    this.provider = openaiService;  // Default provider for chat
+    this.claude = claudeService;     // Claude provider for generation tasks
     this.functionRegistry = functionRegistry;
   }
 
@@ -115,6 +117,47 @@ class LLMService {
    */
   async addFileToKnowledgeBase(fileContent, fileName) {
     return this.provider.addFileToKnowledgeBase(fileContent, fileName);
+  }
+
+  // ============================================
+  // Claude-specific methods (for crew generation)
+  // ============================================
+
+  /**
+   * Generate a crew member configuration from a natural language description.
+   * Uses Claude to interpret the description and generate a valid crew config.
+   *
+   * @param {string} description - Natural language description of the crew member
+   * @param {string} agentName - The agent this crew will belong to
+   * @param {Object} options - Additional options (existingCrews, availableTools, knowledgeBases)
+   * @returns {Promise<Object>} - The generated crew configuration object
+   */
+  async generateCrewFromDescription(description, agentName, options = {}) {
+    return this.claude.generateCrewFromDescription(description, agentName, options);
+  }
+
+  /**
+   * Generate the .crew.js file code from a config object.
+   * Used for "Export to File" feature.
+   *
+   * @param {Object} config - The crew configuration object
+   * @param {string} agentName - The agent name (for class naming)
+   * @returns {string} - The generated JavaScript code
+   */
+  generateCrewFileCode(config, agentName) {
+    return this.claude.generateCrewFileCode(config, agentName);
+  }
+
+  /**
+   * Send a one-shot request to Claude (for custom generation tasks)
+   *
+   * @param {string} systemPrompt - System instructions
+   * @param {string} message - User message
+   * @param {Object} options - { model, maxTokens, jsonOutput }
+   * @returns {Promise<string>} - The response text
+   */
+  async claudeOneShot(systemPrompt, message, options = {}) {
+    return this.claude.sendOneShot(systemPrompt, message, options);
   }
 
   /**
