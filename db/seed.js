@@ -101,6 +101,7 @@ async function seed() {
     const bankingOnboarderAgent = {
       name: 'Banking Onboarder',
       domain: 'banking',
+      urlSlug: 'banking',
       description: 'AI-powered banking onboarding assistant that guides new customers through the complete account opening process with personalized support and compliance checks.',
       promptId: null,
       config: {
