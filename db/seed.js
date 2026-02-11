@@ -95,6 +95,33 @@ async function seed() {
       console.log('✅ Byline created successfully (ID:', inserted.id, ')');
     }
 
+    // Create Banking Onboarder agent
+    console.log('Creating Banking Onboarder agent...');
+
+    const bankingOnboarderAgent = {
+      name: 'Banking Onboarder',
+      domain: 'banking',
+      description: 'AI-powered banking onboarding assistant that guides new customers through the complete account opening process with personalized support and compliance checks.',
+      promptId: null,
+      config: {
+        model: process.env.OPENAI_MODEL || 'gpt-4o',
+        vectorStoreId: null,
+        features: ['customer_onboarding', 'kyc_verification', 'account_setup', 'compliance'],
+        supportedLanguages: ['en']
+      },
+      isActive: true
+    };
+
+    // Check if Banking Onboarder already exists
+    const existingOnboarder = await drizzle.select().from(agents).where(eq(agents.name, 'Banking Onboarder'));
+
+    if (existingOnboarder.length > 0) {
+      console.log('✅ Banking Onboarder already exists (ID:', existingOnboarder[0].id, ')');
+    } else {
+      const [inserted] = await drizzle.insert(agents).values(bankingOnboarderAgent).returning();
+      console.log('✅ Banking Onboarder created successfully (ID:', inserted.id, ')');
+    }
+
     console.log('');
     console.log('🎉 Seed completed successfully!');
     process.exit(0);
