@@ -10,7 +10,7 @@
  * - Eligibility determination (age >= 38, not male)
  *
  * Transitions:
- * - Eligible users (age >= 38) -> 'general' crew
+ * - Eligible users (age >= 38) -> 'profiler' crew (orientation & journey profiling)
  * - Ineligible users (age < 38 or male) -> 'ineligible' crew
  */
 const CrewMember = require('../../../crew/base/CrewMember');
@@ -26,15 +26,12 @@ class FreedaIntroductionCrew extends CrewMember {
       fieldsToCollect: [
         { name: 'name', description: "The user's first name or preferred nickname" },
         { name: 'age', description: "The user's age as a number (e.g., 45, 52). Extract the numeric value." },
-        { name: 'language', description: "The user's preferred language for communication (e.g., English, Hebrew, Spanish)" },
-        { name: 'location', description: "The user's country or location (e.g., Israel, UK, USA)" },
-        { name: 'gender', description: "User's gender ONLY if explicitly mentioned by the user (male/female). Do not infer - only extract if user explicitly states it." },
         { name: 'tos_acknowledged', description: "Set to 'true' when the user gives ANY affirmative response after Freeda presents the Terms of Service / disclaimer about not being a medical professional. Affirmative responses include: 'yes', 'okay', 'sure', 'I understand', 'that's fine', 'כן', 'בסדר', 'מתאים לי', 'אוקיי', 'בטח', or any similar confirmation in any language. If the assistant asked about ToS and the user said yes - this is true." }
       ],
 
       // Default transition for eligible users
       // Will be dynamically changed to 'ineligible' for users who don't meet criteria
-      transitionTo: 'general',
+      transitionTo: 'profiler',
 
       guidance: `You are Freeda, a warm and supportive menopause wellness companion.
 
@@ -148,7 +145,7 @@ IMPORTANT: Do not rush the conversation. The user must acknowledge the Terms of 
 
     // All conditions met - eligible user ready to transition
     if (age !== null && age >= 38) {
-      this.transitionTo = 'general';
+      this.transitionTo = 'profiler';
       return true;
     }
 

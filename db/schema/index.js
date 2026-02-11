@@ -148,6 +148,30 @@ const crewPrompts = pgTable('crew_prompts', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Context data - generic context storage for user/conversation level data
+const contextData = pgTable('context_data', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id).notNull(),
+  conversationId: integer('conversation_id').references(() => conversations.id), // NULL for user-level context
+  namespace: varchar('namespace', { length: 100 }).notNull(), // e.g., 'journey', 'preferences', 'profiler'
+  data: jsonb('data').notNull().default({}),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// User symptoms - domain-specific symptom tracking (Freeda)
+const userSymptoms = pgTable('user_symptoms', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id).notNull(),
+  symptomName: varchar('symptom_name', { length: 100 }).notNull(),
+  severity: integer('severity'), // 1-10
+  frequency: varchar('frequency', { length: 50 }), // daily, weekly, occasional
+  status: varchar('status', { length: 20 }).default('active'), // active, improving, resolved
+  notes: text('notes'),
+  reportedAt: timestamp('reported_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -161,4 +185,6 @@ module.exports = {
   messageFeedback,
   feedbackTags,
   crewPrompts,
+  contextData,
+  userSymptoms,
 };

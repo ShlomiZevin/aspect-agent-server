@@ -84,21 +84,36 @@ WHEN DISCUSSING TREATMENTS, ALWAYS DISCUSS THE 2 TYPES OF TREATMENTS: MEDICAL (i
   }
 
   /**
-   * Build context for the LLM call
+   * Build context for the LLM call.
+   * Loads journey profile from context to adapt approach based on profiler's analysis.
    */
   async buildContext(params) {
     const baseContext = await super.buildContext(params);
     const collectedFields = params.collectedFields || {};
+
+    // Load journey profile from profiler crew (if available)
+    const journeyProfile = await this.getContext('journey');
 
     // Build user profile from collected fields
     const userProfile = {};
     if (collectedFields.name) userProfile.userName = collectedFields.name;
     if (collectedFields.age) userProfile.userAge = collectedFields.age;
 
+    // Add journey info to user profile
+    if (journeyProfile) {
+      userProfile.menstrualStatus = journeyProfile.menstrualStatus;
+      userProfile.treatmentHistory = journeyProfile.treatmentHistory;
+      userProfile.journeyPosition = journeyProfile.analysis?.estimatedPosition;
+    }
+
+    // Adapt conversation approach based on journey analysis
+    const journeyGuidance = this._buildJourneyGuidance(journeyProfile);
+
     return {
       ...baseContext,
       role: 'Menopause wellness expert and personal guide',
       userProfile,
+      journeyGuidance,
       conversationGoals: [
         'Build symptom profile',
         'Discuss treatment options (medical and non-medical)',
@@ -106,6 +121,44 @@ WHEN DISCUSSING TREATMENTS, ALWAYS DISCUSS THE 2 TYPES OF TREATMENTS: MEDICAL (i
         'Provide actionable wellness tips'
       ]
     };
+  }
+
+  /**
+   * Build guidance based on journey profile analysis.
+   * Helps adapt tone, depth, and focus areas.
+   */
+  _buildJourneyGuidance(journeyProfile) {
+    if (!journeyProfile?.analysis) {
+      return null;
+    }
+
+    const { estimatedPosition, symptomGroupPriority, recommendedDepth, toneAdjustment } = journeyProfile.analysis;
+
+    const guidance = {
+      approachNote: '',
+      symptomPriority: symptomGroupPriority || ['emotional', 'physical', 'cognitive'],
+      depth: recommendedDepth || 'moderate'
+    };
+
+    // Set approach note based on journey position
+    switch (estimatedPosition) {
+      case 'early_awareness':
+        guidance.approachNote = 'User is early in their journey. Be educational and reassuring. Explain concepts clearly without overwhelming.';
+        break;
+      case 'active_transition':
+        guidance.approachNote = 'User is actively experiencing transition. Focus on practical support and validation. They likely have specific concerns.';
+        break;
+      case 'post_diagnostic':
+        guidance.approachNote = 'User is experienced with menopause. Can be more detailed and collaborative. They may want specific information.';
+        break;
+    }
+
+    // Adjust for tone
+    if (toneAdjustment === 'extra_gentle_validating') {
+      guidance.approachNote += ' User indicated feeling overwhelmed - be extra gentle and validating.';
+    }
+
+    return guidance;
   }
 }
 
