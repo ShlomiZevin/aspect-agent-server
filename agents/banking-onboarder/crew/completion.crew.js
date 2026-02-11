@@ -180,6 +180,24 @@ This is where onboarding ends and daily banking begins. The tone shifts from "pr
     // Simulate account number if not generated
     const simulatedAccountNumber = accountNumber || `****${Math.floor(1000 + Math.random() * 9000)}`;
 
+    // Save completion status to context (if account was opened)
+    if (accountOpened) {
+      await this.writeContext('onboarding_completion', {
+        completed: true,
+        completedAt: new Date().toISOString(),
+        accountNumber: simulatedAccountNumber,
+        accountStatus: accountStatus
+      });
+
+      // Update onboarding profile
+      await this.mergeContext('onboarding_profile', {
+        currentStep: 'completed',
+        completedAt: new Date().toISOString()
+      });
+
+      console.log(`   🎉 Onboarding completed for user: ${userName}`);
+    }
+
     return {
       ...baseContext,
       role: 'Onboarding Completion',

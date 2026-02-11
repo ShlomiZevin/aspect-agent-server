@@ -143,12 +143,46 @@ In this demo environment:
     // Only transition if KYC checks are complete and approved
     const kycDecision = collectedFields.kyc_decision;
 
+    // Save KYC results to context for future reference
+    if (kycDecision === 'approved') {
+      await this.writeContext('kyc_results', {
+        approved: true,
+        completedAt: new Date().toISOString(),
+        checks: {
+          sanctions: collectedFields.sanctions_check || 'pass',
+          pep: collectedFields.pep_check || 'pass',
+          risk: collectedFields.risk_assessment || 'low'
+        },
+        decision: kycDecision
+      });
+
+      // Update onboarding progress
+      await this.mergeContext('onboarding_profile', {
+        kycCompleted: true,
+        currentStep: 'profile-enrichment'
+      });
+
+      console.log('   ✅ KYC checks passed and saved to context');
+    } else if (kycDecision === 'declined') {
+      await this.writeContext('kyc_results', {
+        approved: false,
+        completedAt: new Date().toISOString(),
+        decision: kycDecision,
+        reason: 'Compliance checks did not pass'
+      });
+
+      console.log('   ❌ KYC checks failed and saved to context');
+    }
+
     return kycDecision === 'approved';
   }
 
   async buildContext(params) {
     const baseContext = await super.buildContext(params);
     const collectedFields = params.collectedFields || {};
+
+    // Check for existing KYC results (skip if already completed)
+    const existingKYC = await this.getContext('kyc_results');
 
     const checksInitiated = collectedFields.kyc_checks_initiated === 'yes';
     const sanctionsCheck = collectedFields.sanctions_check || 'pending';
@@ -180,6 +214,8 @@ In this demo environment:
       role: 'KYC Compliance Verification',
       stage: 'Know Your Customer Checks',
       customerName: userName,
+      existingKYCResults: existingKYC,
+      kycAlreadyCompleted: existingKYC?.approved === true,
       kycStatus: {
         initiated: checksInitiated,
         sanctionsCheck: sanctionsCheck,
@@ -188,7 +224,9 @@ In this demo environment:
         finalDecision: kycDecision
       },
       simulatedDecision: simulatedDecision,
-      nextSteps: !checksInitiated
+      nextSteps: existingKYC?.approved
+        ? 'KYC was already completed successfully in a previous session. Skip checks and proceed to next step.'
+        : !checksInitiated
         ? 'Explain KYC process and initiate checks.'
         : !allChecksComplete
         ? 'Simulate running checks (brief pause for realism), then mark as complete.'
@@ -197,7 +235,9 @@ In this demo environment:
         : kycDecision === 'declined' || anyCheckFailed
         ? 'KYC checks did not pass. Explain limitation clearly and provide alternative channels. End journey.'
         : 'Process KYC results and communicate outcome.',
-      instruction: !checksInitiated
+      instruction: existingKYC?.approved
+        ? 'KYC already completed. Inform user: "Your identity verification is already complete. Let\'s continue with your profile."'
+        : !checksInitiated
         ? 'Explain that automated compliance checks will now run. This is standard for all accounts. Make it sound routine and quick.'
         : !allChecksComplete
         ? 'Simulate processing (you can say "running checks..."). Then mark all checks as complete based on simulation logic.'

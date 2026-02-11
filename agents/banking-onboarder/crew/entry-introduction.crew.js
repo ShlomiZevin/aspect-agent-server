@@ -104,6 +104,17 @@ To open an account through this digital service, customers must be **at least 16
       return false;
     }
 
+    // Save user profile to context for future sessions
+    await this.writeContext('onboarding_profile', {
+      name: collectedFields.user_name,
+      age: age,
+      eligibleForOnboarding: true,
+      startedAt: new Date().toISOString(),
+      currentStep: 'account-type'
+    });
+
+    console.log(`   💾 Saved onboarding profile for user: ${collectedFields.user_name}`);
+
     // Age is valid (≥ 16), proceed to next step
     return true;
   }
@@ -112,16 +123,24 @@ To open an account through this digital service, customers must be **at least 16
     const baseContext = await super.buildContext(params);
     const collectedFields = params.collectedFields || {};
 
+    // Check for existing onboarding profile (returning user)
+    const existingProfile = await this.getContext('onboarding_profile');
+
     const hasName = !!collectedFields.user_name;
     const hasAge = !!collectedFields.age;
     const age = hasAge ? parseInt(collectedFields.age, 10) : null;
     const isEligible = age !== null && !isNaN(age) && age >= 16;
     const isTooYoung = age !== null && !isNaN(age) && age < 16;
 
+    // Determine if this is a returning user
+    const isReturningUser = !!existingProfile?.name;
+
     return {
       ...baseContext,
       role: 'Welcome & Eligibility Check',
       stage: 'Entry & Introduction',
+      isReturningUser: isReturningUser,
+      existingProfile: existingProfile,
       collectedData: {
         name: collectedFields.user_name || 'Not collected',
         age: collectedFields.age || 'Not collected',
@@ -138,7 +157,9 @@ To open an account through this digital service, customers must be **at least 16
           ? 'Customer is under 16. Explain limitation respectfully and end journey.'
           : 'Age validation pending.'
         : 'Still collecting basic information (name and age).',
-      instruction: !hasName
+      instruction: isReturningUser && !hasName
+        ? `This is a returning user (${existingProfile.name}). Greet them warmly: "Welcome back, ${existingProfile.name}! Ready to continue your account setup?"`
+        : !hasName
         ? 'Start by greeting warmly and asking for their name.'
         : !hasAge
         ? 'Now ask for their age to verify eligibility (must be 16+).'
