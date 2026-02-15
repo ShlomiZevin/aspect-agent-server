@@ -211,6 +211,32 @@ const crewMembers = pgTable('crew_members', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// =============================================================================
+// TASK BOARD MODULE (Separate from agent system)
+// =============================================================================
+
+// Task board assignees
+const taskAssignees = pgTable('task_assignees', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 100 }).notNull().unique(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// Tasks
+const tasks = pgTable('tasks', {
+  id: serial('id').primaryKey(),
+  title: varchar('title', { length: 255 }).notNull(),
+  description: text('description'),
+  status: varchar('status', { length: 50 }).notNull().default('todo'), // todo, in_progress, done
+  priority: varchar('priority', { length: 20 }).notNull().default('medium'), // low, medium, high, critical
+  type: varchar('type', { length: 20 }).notNull().default('feature'), // bug, feature, idea
+  domain: varchar('domain', { length: 50 }).notNull().default('general'), // general, freeda, aspect, etc.
+  assignee: varchar('assignee', { length: 100 }), // assignee name
+  tags: jsonb('tags').default([]), // array of strings
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -227,4 +253,6 @@ module.exports = {
   contextData,
   userSymptoms,
   crewMembers,
+  taskAssignees,
+  tasks,
 };

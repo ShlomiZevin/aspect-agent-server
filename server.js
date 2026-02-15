@@ -17,6 +17,7 @@ const dispatcherService = require('./crew/services/dispatcher.service');
 const adminService = require('./services/admin.service');
 const promptService = require('./services/prompt.service');
 const crewMembersService = require('./services/crewMembers.service');
+const taskService = require('./services/task.service');
 
 // WhatsApp bridge
 const { handleIncomingMessage } = require('./whatsapp/bridge.service');
@@ -1767,6 +1768,88 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
   }
 });
 
+// ========== TASK BOARD ENDPOINTS (Internal Tool) ==========
+
+// Get all tasks (with optional filters)
+app.get('/api/tasks', async (req, res) => {
+  try {
+    const { status, assignee, type, priority } = req.query;
+    const filters = {};
+    if (status) filters.status = status;
+    if (assignee) filters.assignee = assignee;
+    if (type) filters.type = type;
+    if (priority) filters.priority = priority;
+
+    const tasks = await taskService.getTasks(filters);
+    res.json({ tasks });
+  } catch (err) {
+    console.error('❌ Error fetching tasks:', err.message);
+    res.status(500).json({ error: 'Error fetching tasks: ' + err.message });
+  }
+});
+
+// Create a new task
+app.post('/api/tasks', async (req, res) => {
+  try {
+    const task = await taskService.createTask(req.body);
+    res.status(201).json({ task });
+  } catch (err) {
+    console.error('❌ Error creating task:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Update a task
+app.patch('/api/tasks/:id', async (req, res) => {
+  try {
+    const task = await taskService.updateTask(parseInt(req.params.id), req.body);
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    res.json({ task });
+  } catch (err) {
+    console.error('❌ Error updating task:', err.message);
+    res.status(500).json({ error: 'Error updating task: ' + err.message });
+  }
+});
+
+// Delete a task
+app.delete('/api/tasks/:id', async (req, res) => {
+  try {
+    await taskService.deleteTask(parseInt(req.params.id));
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error deleting task:', err.message);
+    res.status(500).json({ error: 'Error deleting task: ' + err.message });
+  }
+});
+
+// Get all assignees
+app.get('/api/assignees', async (req, res) => {
+  try {
+    const assignees = await taskService.getAssignees();
+    res.json({ assignees });
+  } catch (err) {
+    console.error('❌ Error fetching assignees:', err.message);
+    res.status(500).json({ error: 'Error fetching assignees: ' + err.message });
+  }
+});
+
+// Add a new assignee
+app.post('/api/assignees', async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+    const assignee = await taskService.addAssignee(name);
+    res.status(201).json({ assignee });
+  } catch (err) {
+    console.error('❌ Error adding assignee:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 
 // Initialize database and start server
@@ -1776,6 +1859,9 @@ async function startServer() {
     console.log('🔄 Initializing database connection...');
     await db.initialize();
     console.log('✅ Database connected successfully');
+
+    // Seed default assignees for task board
+    await taskService.seedDefaultAssignees();
 
     // Start Express server
     app.listen(PORT, () => {
