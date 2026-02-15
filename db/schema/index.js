@@ -163,13 +163,23 @@ const contextData = pgTable('context_data', {
 const userSymptoms = pgTable('user_symptoms', {
   id: serial('id').primaryKey(),
   userId: integer('user_id').references(() => users.id).notNull(),
-  symptomName: varchar('symptom_name', { length: 100 }).notNull(),
-  severity: integer('severity'), // 1-10
-  frequency: varchar('frequency', { length: 50 }), // daily, weekly, occasional
-  status: varchar('status', { length: 20 }).default('active'), // active, improving, resolved
-  notes: text('notes'),
+  conversationId: integer('conversation_id').references(() => conversations.id),
+
+  // What the user said (their exact words)
+  userProvidedName: text('user_provided_name').notNull(),
+
+  // System-mapped standard symptom (filled later by categorization process)
+  systemSymptomName: varchar('system_symptom_name', { length: 100 }),
+
+  // Classification
+  symptomGroup: varchar('symptom_group', { length: 50 }), // emotional, cognitive, physical
+  crewMember: varchar('crew_member', { length: 100 }),    // Which crew collected it
+
+  // Impact & timing (nullable - collected when user provides)
+  impact: varchar('impact', { length: 20 }),   // low, medium, high
+  timing: varchar('timing', { length: 50 }),   // recent, ongoing, fluctuating
+
   reportedAt: timestamp('reported_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
 // Crew members - DB-based crew member definitions (for dashboard-created crews)

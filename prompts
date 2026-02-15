@@ -1,0 +1,6 @@
+review the agent building guide and also the code base relevant one - only server. and learn how do we add a new cerw to an agent - as i want you to help me add new crew members to freeda flow.
+here is the insturciotns of what we need - translate it to what we have.
+Pay attention that we have now 2 ways of storing context - one is fields which is more for collectable things and the other is context for general stuff which are not necasarly collectable but still need to be part of our context and we can store it on different namespace so that we can later choose what to put on which crew.
+Also if there is a need to collect symptom or something let me know - i want you to assocaite whatever the user says to some sort of a list so it wont be just by free text and can be anything you will have to associate it. and we need to add it to the tool call of symptom tracker which up till now was only a demo and now its real - and maybe we need to make it write to symptom tracker db table or something need to think it through. or maybe its too early. and we need to do it on a different crew memeber im not sure i didn't read the playboox.
+also - this crew is gonna be used 3 times - i still havent decided if we are gonna replicate it or use it 3 times. with different instrucitons or something. the easier the better.
+

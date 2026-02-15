@@ -56,7 +56,7 @@ class FreedaProfilerCrew extends CrewMember {
         }
       ],
 
-      transitionTo: 'general',
+      transitionTo: 'symptom_assessment',
 
       guidance: `You are Freeda, continuing your warm conversation with the user who has just completed the introduction stage.
 

@@ -468,6 +468,39 @@ class DispatcherService {
         console.warn('⚠️ Could not update transition prompt metadata:', err.message);
       }
     }
+
+    // ========== POST-MESSAGE TRANSFER CHECK ==========
+    // For crews that use tools/context instead of fieldsToCollect,
+    // check postMessageTransfer after streaming completes
+    if (crew.transitionTo && typeof crew.postMessageTransfer === 'function') {
+      const shouldTransfer = await crew.postMessageTransfer(collectedFields);
+
+      if (shouldTransfer) {
+        console.log(`🔄 postMessageTransfer triggered: ${crew.name} → ${crew.transitionTo}`);
+
+        // Yield transition event
+        yield {
+          type: 'crew_transition',
+          transition: {
+            from: crew.name,
+            to: crew.transitionTo,
+            reason: 'Post-message transfer condition met',
+            timestamp: new Date().toISOString()
+          }
+        };
+
+        // Update conversation's current crew member
+        await conversationService.updateCurrentCrewMember(conversationId, crew.transitionTo);
+
+        // Get target crew and stream its response
+        const targetCrew = await crewService.getCrewMember(agentName, crew.transitionTo);
+        if (targetCrew) {
+          console.log(`🎯 Streaming response from target crew: ${targetCrew.name}`);
+          yield { type: 'crew_info', crew: targetCrew.toJSON() };
+          yield* this._streamCrew(targetCrew, params);
+        }
+      }
+    }
   }
 
   /**

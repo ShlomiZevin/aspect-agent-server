@@ -1,48 +1,95 @@
 /**
  * Symptom Tracker Function
- * Called when user mentions a symptom during conversation
+ * Called when user mentions a symptom during assessment
  *
  * OpenAI function name: call_report_symptom
  * Registered as: report_symptom
  */
 
 const llmService = require('../services/llm');
+const symptomService = require('../services/symptom.service');
 
 // Schema matching OpenAI function definition
 const symptomTrackerSchema = {
-  description: 'Everytime a user mentioning any symptom he has',
+  description: 'Record a symptom the user mentions during assessment. Call this for each symptom identified.',
   parameters: {
     type: 'object',
     properties: {
-      symptom_name: {
+      user_description: {
         type: 'string',
-        description: 'Name or description of the symptom or health issue reported by the user.'
+        description: 'What the user said about the symptom (their exact words)'
+      },
+      symptom_group: {
+        type: 'string',
+        enum: ['emotional', 'cognitive', 'physical'],
+        description: 'Which symptom group this belongs to'
+      },
+      impact: {
+        type: 'string',
+        enum: ['low', 'medium', 'high'],
+        description: 'Impact on daily life (only include if user mentioned it)'
+      },
+      timing: {
+        type: 'string',
+        enum: ['recent', 'ongoing', 'fluctuating'],
+        description: 'Temporal pattern (only include if user mentioned it)'
       }
     },
-    required: ['symptom_name'],
+    required: ['user_description', 'symptom_group'],
     additionalProperties: false
   }
 };
 
 /**
  * Handler function for symptom tracking
- * Matches OpenAI schema: { symptom_name: string }
- * @param {Object} params - The symptom parameters from OpenAI
+ * @param {Object} params - The symptom parameters from LLM
+ * @param {Object} context - Context from crew member { userId, conversationId, crewMember }
  * @returns {Promise<Object>} - Confirmation and any relevant info
  */
-async function handleSymptomReport(params) {
-  const { symptom_name } = params;
+async function handleSymptomReport(params, context = {}) {
+  const { user_description, symptom_group, impact, timing } = params;
+  const { userId, conversationId, crewMember } = context;
 
-  console.log(`📋 Symptom reported: ${symptom_name}`);
+  console.log(`📋 Symptom reported: "${user_description}" (${symptom_group})`);
 
-  // TODO: Save to database, trigger notifications, etc.
-  // This is where you'd integrate with your symptom tracking system
+  // If we have DB context, persist to database
+  if (userId && conversationId) {
+    try {
+      const symptom = await symptomService.recordSymptom({
+        userId,
+        conversationId,
+        userProvidedName: user_description,
+        symptomGroup: symptom_group,
+        crewMember: crewMember || 'unknown',
+        impact: impact || null,
+        timing: timing || null
+      });
 
+      return {
+        recorded: true,
+        symptomId: symptom.id,
+        symptom: user_description,
+        group: symptom_group,
+        impact: impact || null,
+        timing: timing || null,
+        timestamp: new Date().toISOString(),
+        message: `Symptom "${user_description}" has been recorded.`
+      };
+    } catch (error) {
+      console.error('❌ Failed to record symptom to DB:', error.message);
+      // Fall through to return basic confirmation
+    }
+  }
+
+  // Basic confirmation (no DB context or DB error)
   return {
     recorded: true,
-    symptom: symptom_name,
+    symptom: user_description,
+    group: symptom_group,
+    impact: impact || null,
+    timing: timing || null,
     timestamp: new Date().toISOString(),
-    message: `Symptom "${symptom_name}" has been recorded.`
+    message: `Symptom "${user_description}" has been recorded.`
   };
 }
 
@@ -52,7 +99,7 @@ async function handleSymptomReport(params) {
  */
 function registerSymptomTracker() {
   llmService.registerFunction(
-    'report_symptom',  // Matches "call_report_symptom" from OpenAI
+    'report_symptom',
     handleSymptomReport,
     symptomTrackerSchema
   );
