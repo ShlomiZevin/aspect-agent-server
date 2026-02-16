@@ -243,6 +243,7 @@ const tasks = pgTable('tasks', {
   domain: varchar('domain', { length: 50 }).notNull().default('general'), // general, freeda, aspect, etc.
   assignee: varchar('assignee', { length: 100 }), // assignee name
   dueDate: date('due_date'),
+  atRisk: boolean('at_risk').default(false).notNull(), // Flag for tasks at risk of missing deadline
   tags: jsonb('tags').default([]), // array of strings
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
