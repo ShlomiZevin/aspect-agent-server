@@ -1,6 +1,21 @@
-# Agent Building Guide
+# Agent Building Guide v2.0
 
 This guide explains how to add new agents and crew members to the Aspect platform. It is intended to be read by an AI assistant (e.g., Claude Code) so it can build the actual code files from a description.
+
+---
+
+## Table of Contents
+
+1. [Architecture Overview](#architecture-overview)
+2. [Part 1: Adding a New Agent (Full End-to-End)](#part-1-adding-a-new-agent-full-end-to-end)
+3. [Part 2: Adding a Crew Member to an Existing Agent](#part-2-adding-a-crew-member-to-an-existing-agent)
+4. [Part 3: CrewMember Class Reference](#part-3-crewmember-class-reference)
+5. [Part 4: Transfer Methods (preMessageTransfer vs postMessageTransfer)](#part-4-transfer-methods-premessagetransfer-vs-postmessagetransfer)
+6. [Part 5: Tool-Based State Management](#part-5-tool-based-state-management)
+7. [Part 6: Context System](#part-6-context-system)
+8. [Part 7: Client-Side SSE Callbacks](#part-7-client-side-sse-callbacks)
+9. [Part 8: Tool Design Patterns](#part-8-tool-design-patterns)
+10. [Quick Reference: File Locations](#quick-reference-file-locations)
 
 ---
 
@@ -9,6 +24,13 @@ This guide explains how to add new agents and crew members to the Aspect platfor
 Each **agent** is a self-contained AI assistant (e.g., Freeda for menopause, Aspect for business intelligence). Agents can optionally have **crew members** — specialized sub-agents that handle different phases or topics in a conversation. A **dispatcher** routes messages to the correct crew member and handles transitions between them.
 
 **Key flow:** `Client → Server endpoint → Dispatcher → Crew Member → LLM → Streaming response back to client`
+
+### Two Approaches to Crew Transitions
+
+| Approach | Use Case | Transfer Method | State Storage |
+|----------|----------|-----------------|---------------|
+| **Field-based** | Collect data, transition when complete | `preMessageTransfer` | `fieldsToCollect` + DB |
+| **Tool-based** | Interactive state via tool calls | `postMessageTransfer` | Context system |
 
 ---
 
@@ -244,12 +266,12 @@ Pass these to `super({...})` in the constructor:
 | `description` | `string` | Yes | Brief role description |
 | `isDefault` | `boolean` | Yes | `true` for the entry-point crew member. Exactly one per agent must be default. |
 | `guidance` | `string` | Yes | **The system prompt.** This is the main instruction text sent to the LLM. |
-| `model` | `string` | No | LLM model (default: `"gpt-4o"`). Options: `"gpt-4o"`, `"gpt-4o-mini"`, etc. |
+| `model` | `string` | No | LLM model (default: `"gpt-4o"`). Options: `"gpt-4o"`, `"gpt-4o-mini"`, `"gpt-5-chat-latest"`, etc. |
 | `maxTokens` | `number` | No | Max response tokens (default: `2048`) |
 | `tools` | `array` | No | Tool definitions. Each: `{ name, description, parameters, handler }` |
 | `knowledgeBase` | `object\|null` | No | `{ enabled: true, storeId: "vs_..." }` or `null` |
 | `fieldsToCollect` | `array` | No | Fields to extract from conversation: `[{ name: "age", description: "User's age" }]` |
-| `transitionTo` | `string` | No | Target crew name for automatic transition after all fields are collected |
+| `transitionTo` | `string` | No | Target crew name for automatic transition |
 | `transitionSystemPrompt` | `string` | No | System prompt injected once when transitioning TO this crew (see 3.7) |
 
 ### 3.2 Overridable Methods
@@ -266,11 +288,15 @@ async buildContext(params) {
   const baseContext = await super.buildContext(params);
   const collectedFields = params.collectedFields || {};
 
+  // Load persisted context from previous crews
+  const journeyProfile = await this.getContext('journey');
+
   return {
     ...baseContext,
     role: 'Your role description',
     userProfile: {
       userName: collectedFields.name || null,
+      journeyData: journeyProfile,
     },
     customData: 'anything useful for the LLM',
   };
@@ -294,21 +320,6 @@ async preProcess(message, context) {
   return `[User: ${context.userProfile?.userName || 'Unknown'}] ${message}`;
 }
 ```
-
-#### `async preMessageTransfer(collectedFields)`
-Called BEFORE the crew's response is sent. Return `true` to discard the response and transition to `transitionTo`. Used when you want to transfer as soon as certain fields are collected, without showing the current crew's response.
-
-```js
-async preMessageTransfer(collectedFields) {
-  return !!collectedFields.name && !!collectedFields.age;
-}
-```
-
-#### `async postMessageTransfer(collectedFields)`
-Called AFTER the crew's response is sent. Return `true` to transition on the next message. The current response is still delivered.
-
-#### `async checkTransition(params)`
-General-purpose transition check. Can return a transition object `{ to: 'crewName', reason: 'why' }` or `null`.
 
 ### 3.3 Tools
 
@@ -374,129 +385,7 @@ The dispatcher auto-injects a `knowledgeBaseNote` into the context telling the L
 
 The client must also have `features.hasKnowledgeBase: true` in the agent config for the KB toggle to appear.
 
-### 3.6 Complete Example: Two-Crew Agent
-
-```js
-// aspect-agent-server/agents/banking/crew/onboarding.crew.js
-const CrewMember = require('../../../crew/base/CrewMember');
-
-class BankingOnboardingCrew extends CrewMember {
-  constructor() {
-    super({
-      name: 'onboarding',
-      displayName: 'Banking - Onboarding',
-      description: 'Collects user financial profile',
-      isDefault: true,
-
-      fieldsToCollect: [
-        { name: 'name', description: "User's name" },
-        { name: 'financial_goal', description: "Primary financial goal (saving, investing, debt)" }
-      ],
-      transitionTo: 'advisor',
-
-      guidance: `You are a friendly banking onboarding assistant.
-
-## YOUR PURPOSE
-Collect the user's name and primary financial goal through natural conversation.
-
-## RULES
-- Keep responses to 2-3 sentences
-- Be warm and professional
-- Do not give financial advice yet - just collect info`,
-
-      model: 'gpt-4o',
-      maxTokens: 1024,
-      tools: [],
-      knowledgeBase: null
-    });
-  }
-
-  async preMessageTransfer(collectedFields) {
-    return !!collectedFields.name && !!collectedFields.financial_goal;
-  }
-
-  async buildContext(params) {
-    const baseContext = await super.buildContext(params);
-    const collectedFields = params.collectedFields || {};
-    const missing = this.fieldsToCollect.filter(f => !collectedFields[f.name]);
-    const collected = this.fieldsToCollect.filter(f => !!collectedFields[f.name]);
-
-    return {
-      ...baseContext,
-      role: 'Onboarding and profile collection',
-      fieldsAlreadyCollected: collected.map(f => `${f.name}: ${collectedFields[f.name]}`),
-      fieldsStillNeeded: missing.map(f => `${f.name} - ${f.description}`),
-      instruction: missing.length > 0
-        ? `You still need to ask for: ${missing.map(f => f.name).join(', ')}.`
-        : 'All fields collected. The system will transition automatically.',
-      note: 'The fields above reflect state from previous messages. The user\'s current message may contain new field values - check it directly and do not re-ask for information already provided in this message.'
-    };
-  }
-}
-
-module.exports = BankingOnboardingCrew;
-```
-
-```js
-// aspect-agent-server/agents/banking/crew/advisor.crew.js
-const CrewMember = require('../../../crew/base/CrewMember');
-
-class BankingAdvisorCrew extends CrewMember {
-  constructor() {
-    super({
-      name: 'advisor',
-      displayName: 'Banking - Advisor',
-      description: 'Personal finance advisor',
-      isDefault: false,
-
-      guidance: `You are a professional personal finance advisor.
-
-## PURPOSE
-Provide personalized financial guidance based on the user's profile and goals.
-
-## RULES
-- Use the user's name from context
-- Tailor advice to their stated financial goal
-- Keep responses concise (3-4 sentences)
-- Always end with a follow-up question`,
-
-      model: 'gpt-4o',
-      maxTokens: 2048,
-      tools: [],
-      knowledgeBase: null
-    });
-  }
-
-  async buildContext(params) {
-    const baseContext = await super.buildContext(params);
-    const collectedFields = params.collectedFields || {};
-
-    return {
-      ...baseContext,
-      role: 'Personal finance advisor',
-      userProfile: {
-        userName: collectedFields.name || null,
-        financialGoal: collectedFields.financial_goal || null,
-      }
-    };
-  }
-}
-
-module.exports = BankingAdvisorCrew;
-```
-
-```js
-// aspect-agent-server/agents/banking/crew/index.js
-const BankingOnboardingCrew = require('./onboarding.crew');
-const BankingAdvisorCrew = require('./advisor.crew');
-
-module.exports = {
-  BankingOnboardingCrew,
-  BankingAdvisorCrew
-};
-```
-
-### 3.7 Transition System Prompt
+### 3.6 Transition System Prompt
 
 When transitioning between crew members mid-conversation, historical messages can establish patterns so strong that the new crew's prompt gets partially ignored. The **transition system prompt** solves this by injecting a one-time `developer` role message into the conversation history at the moment of transition.
 
@@ -509,36 +398,566 @@ When transitioning between crew members mid-conversation, historical messages ca
 4. The crew's name is stored in `conversation.metadata.lastCrewWithTransitionPrompt` to prevent re-injection
 5. On subsequent messages with the same crew, the prompt is NOT re-injected
 
-**Example:**
+---
+
+## Part 4: Transfer Methods (preMessageTransfer vs postMessageTransfer)
+
+This is one of the most critical concepts for building crews with complex transition logic.
+
+### 4.1 The Timing Difference
+
+| Method | When It Runs | Use Case |
+|--------|--------------|----------|
+| `preMessageTransfer` | **BEFORE** the LLM response is sent to the client | Field-based collection (data extracted in parallel) |
+| `postMessageTransfer` | **AFTER** the full LLM response (including tool calls) completes | Tool-based state management |
+
+### 4.2 preMessageTransfer (Field-Based)
+
+Use when you're collecting data via `fieldsToCollect` and want to transition **before** showing the current crew's response.
 
 ```js
-// aspect-agent-server/agents/finance/crew/advisor.crew.js
-class FinanceAdvisorCrew extends CrewMember {
+class OnboardingCrew extends CrewMember {
   constructor() {
     super({
-      name: 'advisor',
-      displayName: 'Finance Advisor',
-      description: 'Personal finance advisor',
-      isDefault: false,
-
-      guidance: `You are a professional finance advisor...`,
-
-      // Injected once when user transitions from another crew to this one
-      transitionSystemPrompt: `CRITICAL ROLE CHANGE: You are now the Finance Advisor.
-Your previous responses in this conversation were from a different assistant role.
-From this point forward, respond ONLY as the Finance Advisor. Do not reference
-your previous persona. The user is now speaking with you, the finance expert.
-Introduce yourself briefly and ask how you can help with their finances.`,
-
-      model: 'gpt-4o',
+      name: 'onboarding',
+      isDefault: true,
+      fieldsToCollect: [
+        { name: 'name', description: "User's name" },
+        { name: 'goal', description: "User's goal" }
+      ],
+      transitionTo: 'main',
+      // ...
     });
+  }
+
+  // Called BEFORE the response is sent to client
+  async preMessageTransfer(collectedFields) {
+    if (collectedFields.name && collectedFields.goal) {
+      // Save context before transitioning
+      await this.writeContext('profile', {
+        name: collectedFields.name,
+        goal: collectedFields.goal
+      });
+      return true;  // Transition NOW, discard current response
+    }
+    return false;  // Keep showing this crew's response
   }
 }
 ```
 
-**Hierarchy:** Database value > code value. If a `transitionSystemPrompt` is saved in the prompt editor (DB), it takes precedence over the code-defined value.
+**Flow:**
+```
+User message → Extractor runs in parallel → preMessageTransfer() →
+  if true:  discard response, transition
+  if false: send response to client
+```
 
-**Testing:** In debug mode, the PromptEditorPanel shows a "Transition System Prompt" section. You can edit it there and use the "Fire Now" button to manually inject it into the current conversation for testing without requiring an actual crew transition.
+### 4.3 postMessageTransfer (Tool-Based)
+
+Use when the LLM's **tool calls** update state that determines whether to transition. The tools run as part of the LLM response, so you must check state AFTER they complete.
+
+```js
+class SymptomAssessmentCrew extends CrewMember {
+  constructor() {
+    super({
+      name: 'symptom_assessment',
+      transitionTo: 'general',
+      tools: [
+        // Tools that update state during the response
+        { name: 'complete_symptom_group', /* ... */ },
+        { name: 'skip_symptom_group', /* ... */ }
+      ],
+      // NO fieldsToCollect - state managed by tools
+    });
+  }
+
+  // Called AFTER the LLM response (including tool calls) completes
+  async postMessageTransfer(collectedFields) {
+    const state = await this.getContext('symptom_assessment', true);
+
+    if (state?.groupsCompleted?.length >= 3) {
+      console.log('✅ All groups complete, transitioning');
+
+      // Save summary for the next crew
+      await this.writeContext('symptom_summary', {
+        outcomes: state.groupOutcomes,
+        completedAt: new Date().toISOString()
+      });
+
+      return true;  // Trigger transition to 'general'
+    }
+    return false;
+  }
+}
+```
+
+**Flow:**
+```
+User message → LLM streams response → Tool calls run (update state) →
+  Response sent → postMessageTransfer() →
+  if true:  transition to next crew, stream their response too
+  if false: done
+```
+
+### 4.4 Key Insight: Why postMessageTransfer Exists
+
+The dispatcher originally only supported `preMessageTransfer`, which works well for field extraction because the extractor runs in parallel before the LLM response.
+
+But for **tool-based crews**, the state is updated by tool calls **during** the LLM response. If you check state before the response (preMessageTransfer), the tools haven't run yet—the state is stale.
+
+**Solution:** The dispatcher now also checks `postMessageTransfer` after streaming completes, for crews that have `transitionTo` and a `postMessageTransfer` method:
+
+```js
+// In dispatcher.service.js, at the end of _streamCrew():
+if (crew.transitionTo && typeof crew.postMessageTransfer === 'function') {
+  const shouldTransfer = await crew.postMessageTransfer(collectedFields);
+  if (shouldTransfer) {
+    yield { type: 'crew_transition', transition: { from, to, reason } };
+    await conversationService.updateCurrentCrewMember(conversationId, crew.transitionTo);
+    const targetCrew = await crewService.getCrewMember(agentName, crew.transitionTo);
+    if (targetCrew) {
+      yield* this._streamCrew(targetCrew, params);  // Stream target crew's response too
+    }
+  }
+}
+```
+
+### 4.5 Decision Guide
+
+| Scenario | Use This |
+|----------|----------|
+| Collecting structured data (name, age, preferences) | `fieldsToCollect` + `preMessageTransfer` |
+| Tool calls update state that determines transition | `postMessageTransfer` (no fieldsToCollect) |
+| Need to transition based on conversation content | Either, depending on extraction timing |
+| Multi-phase assessment with explicit "done" signals | `postMessageTransfer` with state-updating tools |
+
+---
+
+## Part 5: Tool-Based State Management
+
+When a crew uses tools to manage state (instead of `fieldsToCollect`), follow this pattern.
+
+### 5.1 State in Context
+
+Store crew-specific state in the context system:
+
+```js
+// Initialize state in buildContext()
+async buildContext(params) {
+  let state = await this.getContext('assessment_state', true);  // conversation-level
+
+  if (!state) {
+    state = {
+      currentPhase: 'phase1',
+      phasesCompleted: [],
+      startedAt: new Date().toISOString()
+    };
+    await this.writeContext('assessment_state', state, true);
+  }
+
+  return {
+    ...baseContext,
+    currentPhase: state.currentPhase,
+    phasesCompleted: state.phasesCompleted
+  };
+}
+```
+
+### 5.2 Tools Update State
+
+Tools should update the context and return useful information for the LLM:
+
+```js
+{
+  name: 'complete_phase',
+  description: 'Call when the current phase is complete',
+  parameters: {
+    type: 'object',
+    properties: {
+      phase: { type: 'string', enum: ['phase1', 'phase2', 'phase3'] }
+    },
+    required: ['phase']
+  },
+  handler: async (params) => {
+    const state = await this.getContext('assessment_state', true);
+
+    if (!state.phasesCompleted.includes(params.phase)) {
+      state.phasesCompleted.push(params.phase);
+    }
+
+    // Determine next phase
+    const allPhases = ['phase1', 'phase2', 'phase3'];
+    const nextPhase = allPhases.find(p => !state.phasesCompleted.includes(p));
+    state.currentPhase = nextPhase || null;
+
+    await this.writeContext('assessment_state', state, true);
+
+    return {
+      recorded: true,
+      completedPhase: params.phase,
+      nextPhase,
+      allComplete: state.phasesCompleted.length >= 3,
+      message: nextPhase
+        ? `Phase ${params.phase} complete. Moving to ${nextPhase}.`
+        : 'All phases complete!'
+    };
+  }
+}
+```
+
+### 5.3 postMessageTransfer Checks State
+
+After the LLM's tool calls run, check if it's time to transition:
+
+```js
+async postMessageTransfer(collectedFields) {
+  const state = await this.getContext('assessment_state', true);
+
+  if (state?.phasesCompleted?.length >= 3) {
+    // Save summary for next crew
+    await this.writeContext('assessment_summary', {
+      phasesCompleted: state.phasesCompleted,
+      completedAt: new Date().toISOString()
+    });
+    return true;  // Transition
+  }
+  return false;
+}
+```
+
+---
+
+## Part 6: Context System
+
+The context system allows crews to persist and share data across conversations.
+
+### 6.1 Two Levels
+
+| Level | Storage Key | Use Case |
+|-------|-------------|----------|
+| **User-level** | `(userId, namespace)` | Persists across all conversations (journey profile, preferences) |
+| **Conversation-level** | `(userId, conversationId, namespace)` | Specific to one conversation (session state, assessment progress) |
+
+### 6.2 Context Methods
+
+Available on all crew members (injected by dispatcher):
+
+```js
+// Read context (default: user-level)
+const data = await this.getContext('namespace');
+
+// Read conversation-level context
+const convData = await this.getContext('namespace', true);
+
+// Write context (replaces entire namespace)
+await this.writeContext('namespace', { key: 'value' });
+await this.writeContext('namespace', data, true);  // conversation-level
+
+// Merge context (shallow merge into existing)
+await this.mergeContext('namespace', { newKey: 'value' });
+```
+
+### 6.3 Pattern: Profiler Saves, General Reads
+
+```js
+// Profiler crew saves journey data
+class ProfilerCrew extends CrewMember {
+  async preMessageTransfer(collectedFields) {
+    if (collectedFields.menstrual_status) {
+      const analysis = this._analyzeJourney(collectedFields);
+
+      await this.writeContext('journey', {
+        menstrualStatus: collectedFields.menstrual_status,
+        analysis,
+        profiledAt: new Date().toISOString()
+      });
+
+      return true;  // Transition to next crew
+    }
+    return false;
+  }
+}
+
+// General crew reads journey data
+class GeneralCrew extends CrewMember {
+  async buildContext(params) {
+    const journeyProfile = await this.getContext('journey');
+
+    return {
+      ...baseContext,
+      journeyPosition: journeyProfile?.analysis?.estimatedPosition,
+      toneAdjustment: journeyProfile?.analysis?.toneAdjustment
+    };
+  }
+}
+```
+
+---
+
+## Part 7: Client-Side SSE Callbacks
+
+The client's `useChat` hook accepts callbacks for events streamed from the server.
+
+### 7.1 Available Callbacks
+
+```tsx
+const chat = useChat({
+  config,
+  conversationId,
+  userId,
+
+  // Called when crew transitions
+  onCrewTransition: (transition) => {
+    console.log(`Transition: ${transition.from} → ${transition.to}`);
+    // Update UI, record visited crews, etc.
+  },
+
+  // Called when a field is extracted
+  onFieldExtracted: () => {
+    // Trigger refresh of fields panel
+    setFieldsRefreshKey(prev => prev + 1);
+  },
+});
+```
+
+### 7.2 ChatContext Integration
+
+The `ChatProvider` connects these callbacks to state updates:
+
+```tsx
+// In ChatContext.tsx
+const [fieldsRefreshKey, setFieldsRefreshKey] = useState(0);
+
+const chat = useChat({
+  // ...
+  onCrewTransition: (transition) => {
+    crew.addVisitedCrew(transition.from);
+    const newCrew = crew.crewMembers.find(c => c.name === transition.to);
+    if (newCrew) {
+      crew.setCurrentCrew(newCrew);
+    }
+  },
+  onFieldExtracted: () => {
+    setFieldsRefreshKey(prev => prev + 1);
+  },
+});
+```
+
+### 7.3 Using refreshKey for Panel Reload
+
+Components can use `refreshKey` to trigger data reload:
+
+```tsx
+function FieldsEditorPanel({ refreshKey }) {
+  const [fields, setFields] = useState({});
+
+  useEffect(() => {
+    loadFields();  // Reload when refreshKey changes
+  }, [loadFields, refreshKey]);
+}
+```
+
+---
+
+## Part 8: Tool Design Patterns
+
+### 8.1 Split Tools for Different Outcomes
+
+Instead of one tool with multiple outcomes, create separate tools with explicit descriptions. This helps the LLM understand exactly when to call each.
+
+**Bad: Single confusing tool**
+```js
+{
+  name: 'complete_group',
+  description: 'Complete a symptom group',
+  parameters: {
+    outcome: { enum: ['symptoms_found', 'no_symptoms', 'skipped'] }
+  }
+}
+```
+
+**Good: Separate tools with clear triggers**
+```js
+// Tool 1: For when symptoms WERE found
+{
+  name: 'complete_symptom_group',
+  description: `Call this AFTER you have recorded symptoms using report_symptom
+    and finished exploring this group. Use when user says "that covers it", etc.`,
+  parameters: { symptom_group: { enum: ['emotional', 'cognitive', 'physical'] } }
+}
+
+// Tool 2: For when NO symptoms
+{
+  name: 'skip_symptom_group',
+  description: `Call this when user confirms they have NO symptoms in this group.
+    IMPORTANT: Call immediately when user says:
+    - "I don't have any of those"
+    - "None apply to me"
+    - "אין לי" / "לא"
+    Do NOT wait - call this immediately!`,
+  parameters: { symptom_group, user_statement }
+}
+```
+
+### 8.2 Tool Descriptions Are Prompts
+
+The tool `description` is essentially a prompt for when to use the tool. Be explicit:
+
+```js
+{
+  name: 'report_symptom',
+  description: `Record a symptom the user mentions during assessment.
+
+    Call this tool for EACH symptom identified, not once for multiple.
+
+    Examples of when to call:
+    - User says "I've been having hot flashes" → call with symptom "hot flashes"
+    - User says "my sleep has been terrible" → call with symptom "sleep disturbance"
+
+    Do NOT call if:
+    - User is just asking a question about symptoms
+    - User denies having a symptom`,
+  parameters: { /* ... */ }
+}
+```
+
+### 8.3 Tools Should Return Guidance
+
+Return information that helps the LLM continue appropriately:
+
+```js
+handler: async (params) => {
+  // ... update state ...
+
+  return {
+    recorded: true,
+    nextStep: nextPhase ? `explore ${nextPhase}` : 'transition',
+    message: 'Symptom recorded. Ask about impact and timing.',
+    suggestedFollowUp: 'How much does this affect your daily life?'
+  };
+}
+```
+
+---
+
+## Part 9: Complete Example: Tool-Based Crew
+
+Here's a full example of a crew that uses tools for state management and `postMessageTransfer` for transitions.
+
+```js
+// aspect-agent-server/agents/myagent/crew/assessment.crew.js
+const CrewMember = require('../../../crew/base/CrewMember');
+
+class MyAgentAssessmentCrew extends CrewMember {
+  constructor() {
+    super({
+      name: 'assessment',
+      displayName: 'Assessment',
+      description: 'Multi-phase assessment with tool-based state',
+      isDefault: false,
+      transitionTo: 'main',
+
+      guidance: `You are conducting a 3-phase assessment.
+
+## CONTEXT VARIABLES
+- currentPhase: Which phase to explore now
+- phasesCompleted: Which phases are done
+
+## YOUR TASK
+1. Explore the current phase with the user
+2. When the user indicates completion, call complete_phase
+3. The system will tell you the next phase
+
+## TOOLS
+- complete_phase: Call when user confirms current phase is done`,
+
+      model: 'gpt-4o',
+      maxTokens: 1536,
+      tools: [],  // Set below with context access
+      knowledgeBase: null
+    });
+
+    // Set up tools with context wrappers
+    this.tools = [
+      {
+        name: 'complete_phase',
+        description: `Call when user confirms the current phase is complete.
+          Triggers: "that's all", "I'm done with this", "nothing else"`,
+        parameters: {
+          type: 'object',
+          properties: {
+            phase: {
+              type: 'string',
+              enum: ['phase1', 'phase2', 'phase3'],
+              description: 'The phase that was just completed'
+            }
+          },
+          required: ['phase']
+        },
+        handler: async (params) => {
+          let state = await this.getContext('assessment', true) || {
+            currentPhase: 'phase1',
+            phasesCompleted: []
+          };
+
+          if (!state.phasesCompleted.includes(params.phase)) {
+            state.phasesCompleted.push(params.phase);
+          }
+
+          const allPhases = ['phase1', 'phase2', 'phase3'];
+          const nextPhase = allPhases.find(p => !state.phasesCompleted.includes(p));
+          state.currentPhase = nextPhase;
+
+          await this.writeContext('assessment', state, true);
+
+          return {
+            recorded: true,
+            nextPhase,
+            allComplete: state.phasesCompleted.length >= 3,
+            message: nextPhase
+              ? `Moving to ${nextPhase}`
+              : 'Assessment complete!'
+          };
+        }
+      }
+    ];
+  }
+
+  async buildContext(params) {
+    const baseContext = await super.buildContext(params);
+
+    let state = await this.getContext('assessment', true);
+    if (!state) {
+      state = { currentPhase: 'phase1', phasesCompleted: [] };
+      await this.writeContext('assessment', state, true);
+    }
+
+    return {
+      ...baseContext,
+      currentPhase: state.currentPhase,
+      phasesCompleted: state.phasesCompleted,
+      instruction: `Explore ${state.currentPhase}. ${state.phasesCompleted.length}/3 complete.`
+    };
+  }
+
+  // MUST be postMessageTransfer because tools update state during response
+  async postMessageTransfer(collectedFields) {
+    const state = await this.getContext('assessment', true);
+
+    if (state?.phasesCompleted?.length >= 3) {
+      // Save summary for next crew
+      await this.writeContext('assessment_summary', {
+        phasesCompleted: state.phasesCompleted,
+        completedAt: new Date().toISOString()
+      });
+      return true;  // Transition to 'main'
+    }
+    return false;
+  }
+}
+
+module.exports = MyAgentAssessmentCrew;
+```
 
 ---
 
@@ -547,26 +966,50 @@ Introduce yourself briefly and ask how you can help with their finances.`,
 ### Server
 | File | Purpose |
 |------|---------|
-| `aspect-agent-server/crew/base/CrewMember.js` | **Base class** - read this for all available properties and methods |
-| `aspect-agent-server/crew/services/crew.service.js` | Crew loading and discovery (auto-loads from agents folder) |
-| `aspect-agent-server/crew/services/dispatcher.service.js` | Message routing, field extraction, crew transitions |
-| `aspect-agent-server/agents/<name>/crew/index.js` | Crew member exports for an agent |
-| `aspect-agent-server/agents/<name>/crew/*.crew.js` | Individual crew member files |
-| `aspect-agent-server/db/seed.js` | Database seed for agent records |
-| `aspect-agent-server/db/schema/index.js` | Database schema (agents, conversations, messages tables) |
-| `aspect-agent-server/server.js` | API endpoints (streaming at `/api/finance-assistant/stream`) |
-| `aspect-agent-server/functions/` | Reusable tool implementations |
-| `aspect-agent-server/agents/freeda/crew/welcome.crew.js` | Example: fields collection crew with transitions |
-| `aspect-agent-server/agents/freeda/crew/general.crew.js` | Example: main crew with tools and knowledge base |
+| `crew/base/CrewMember.js` | **Base class** - read this for all available properties and methods |
+| `crew/services/crew.service.js` | Crew loading and discovery (auto-loads from agents folder) |
+| `crew/services/dispatcher.service.js` | Message routing, field extraction, crew transitions |
+| `services/context.service.js` | Context CRUD operations |
+| `agents/<name>/crew/index.js` | Crew member exports for an agent |
+| `agents/<name>/crew/*.crew.js` | Individual crew member files |
+| `functions/` | Reusable tool implementations |
+| `db/seed.js` | Database seed for agent records |
+| `db/schema/index.js` | Database schema |
+| `server.js` | API endpoints (streaming at `/api/finance-assistant/stream`) |
 
 ### Client
 | File | Purpose |
 |------|---------|
-| `aspect-react-client/src/types/agent.ts` | **AgentConfig interface** - read this for all config fields |
-| `aspect-react-client/src/agents/*.config.ts` | Agent configuration files |
-| `aspect-react-client/src/pages/*Page.tsx` | Agent page components |
-| `aspect-react-client/src/App.tsx` | Router - add new routes here |
-| `aspect-react-client/src/styles/themes/` | Theme CSS files per agent |
-| `aspect-react-client/src/styles/global.css` | Import new theme files here |
-| `aspect-react-client/src/agents/freeda.config.ts` | Example: full agent config with KB and crew |
-| `aspect-react-client/src/agents/aspect.config.ts` | Example: simpler agent config without crew |
+| `src/types/agent.ts` | **AgentConfig interface** - read this for all config fields |
+| `src/agents/*.config.ts` | Agent configuration files |
+| `src/pages/*Page.tsx` | Agent page components |
+| `src/context/ChatContext.tsx` | Chat state management with SSE callbacks |
+| `src/hooks/useChat.ts` | Chat hook with streaming |
+| `src/services/chatService.ts` | SSE streaming service |
+| `src/App.tsx` | Router - add new routes here |
+| `src/styles/themes/` | Theme CSS files per agent |
+
+### Key Examples
+| Pattern | Example File |
+|---------|--------------|
+| Field-based crew | `agents/freeda/crew/introduction.crew.js` |
+| Tool-based crew with postMessageTransfer | `agents/freeda/crew/symptom-assessment.crew.js` |
+| Split tools for clarity | `functions/symptom-group-completion.js` |
+| Context persistence | `agents/freeda/crew/profiler.crew.js` |
+
+---
+
+## Changelog
+
+### v2.0 (2025-02)
+- Added **Part 4: Transfer Methods** - detailed explanation of `preMessageTransfer` vs `postMessageTransfer`
+- Added **Part 5: Tool-Based State Management** - pattern for crews without fieldsToCollect
+- Added **Part 6: Context System** - getContext/writeContext for persisting state
+- Added **Part 7: Client-Side SSE Callbacks** - onCrewTransition, onFieldExtracted
+- Added **Part 8: Tool Design Patterns** - split tools, descriptive prompts
+- Added complete example of tool-based crew with postMessageTransfer
+
+### v1.0 (2024-12)
+- Initial guide with basic agent and crew creation
+- Field-based collection and preMessageTransfer
+- Transition system prompts
