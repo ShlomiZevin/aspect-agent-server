@@ -1,4 +1,4 @@
-const { pgTable, serial, text, timestamp, varchar, jsonb, boolean, integer } = require('drizzle-orm/pg-core');
+const { pgTable, serial, text, timestamp, varchar, jsonb, boolean, integer, date } = require('drizzle-orm/pg-core');
 
 /**
  * Multi-Agent Platform Database Schema
@@ -242,6 +242,7 @@ const tasks = pgTable('tasks', {
   type: varchar('type', { length: 20 }).notNull().default('feature'), // bug, feature, idea
   domain: varchar('domain', { length: 50 }).notNull().default('general'), // general, freeda, aspect, etc.
   assignee: varchar('assignee', { length: 100 }), // assignee name
+  dueDate: date('due_date'),
   tags: jsonb('tags').default([]), // array of strings
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
