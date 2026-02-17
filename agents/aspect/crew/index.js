@@ -8,9 +8,11 @@
 const AspectTechnologyCrew = require('./technology.crew');
 const AspectFashionCrew = require('./fashion.crew');
 const AspectFMCGCrew = require('./fmcg.crew');
+const Zer4UCrew = require('./zer4u.crew');
 
 module.exports = {
   AspectTechnologyCrew,
   AspectFashionCrew,
-  AspectFMCGCrew
+  AspectFMCGCrew,
+  Zer4UCrew
 };
