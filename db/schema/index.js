@@ -244,6 +244,7 @@ const tasks = pgTable('tasks', {
   assignee: varchar('assignee', { length: 100 }), // assignee name
   dueDate: date('due_date'),
   atRisk: boolean('at_risk').default(false).notNull(), // Flag for tasks at risk of missing deadline
+  isCompleted: boolean('is_completed').default(false).notNull(), // PM approval - task fully completed and reviewed
   tags: jsonb('tags').default([]), // array of strings
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
