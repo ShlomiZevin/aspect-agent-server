@@ -1086,13 +1086,32 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
 
           // Handle inline crew transition (pre-transfer from dispatcher)
           if (chunk.type === 'crew_transition' && chunk.transition) {
+            // Save the first crew's message before transitioning
+            // This ensures the second crew can see it in conversation history
+            if (fullReply) {
+              const firstCrewMetadata = {
+                crewMember: currentCrewDisplayName || currentCrewName,
+                transitionTo: chunk.transition.to,
+                transitionReason: chunk.transition.reason
+              };
+              const firstMessage = await conversationService.saveAssistantMessage(
+                conversationId,
+                fullReply,
+                firstCrewMetadata
+              );
+              thinkingService.setMessageId(conversationId, firstMessage.id);
+              sendSSE({ type: 'message_saved', messageId: firstMessage.id });
+
+              // Start a new thinking context for the second crew (without SSE callback)
+              await thinkingService.endContext(conversationId);
+              thinkingService.startContext(conversationId);
+            } else {
+              // For early pre-transfer, clear the SSE callback to prevent addStep from auto-sending
+              thinkingService.setSendCallback(conversationId, null);
+            }
+
             inlineTransition = chunk.transition;
-            thinkingService.addStep(
-              conversationId,
-              'crew_transition',
-              `Transitioning to: ${chunk.transition.to} (${chunk.transition.reason})`,
-              chunk.transition
-            );
+
             // Reset fullReply - target crew's response will follow
             fullReply = '';
           }
@@ -1103,7 +1122,39 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             currentCrewDisplayName = chunk.crew.displayName;
           }
 
+          // Send the chunk FIRST (including crew_info which triggers CREW_TRANSITION)
           sendSSE(chunk);
+
+          // If there's a pending transition, add and send thinking step AFTER crew_info
+          // This ensures it arrives AFTER client processes CREW_TRANSITION
+          if (chunk.type === 'crew_info' && inlineTransition) {
+            const transitionDescription = `Transitioning to: ${currentCrewDisplayName} - ${inlineTransition.reason}`;
+
+            // Add to DB (callback was cleared earlier, so this won't auto-send)
+            thinkingService.addStep(
+              conversationId,
+              'crew_transition',
+              transitionDescription,
+              inlineTransition
+            );
+
+            // Send via SSE manually
+            sendSSE({
+              type: 'thinking_step',
+              step: {
+                stepType: 'crew_transition',
+                description: transitionDescription,
+                stepOrder: 0,
+                metadata: inlineTransition
+              }
+            });
+
+            // Set the SSE callback for subsequent thinking steps from second crew
+            thinkingService.setSendCallback(conversationId, sendSSE);
+
+            // Clear inlineTransition after sending to prevent duplicate sends
+            inlineTransition = null;
+          }
         } else {
           fullReply += chunk;
           sendSSE({ chunk });
@@ -1121,9 +1172,37 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
           currentCrewName
         });
 
-        // Send transition info to client if transition occurred
+        // Send transition info to client if transition occurred (handlePostResponse path)
         if (transition) {
+          const transitionDescription = `Transitioning to: ${transition.to} - ${transition.reason}`;
+
+          // Clear callback to prevent addStep from auto-sending (we'll send manually)
+          thinkingService.setSendCallback(conversationId, null);
+
+          // Add thinking step to DB (won't auto-send because callback is cleared)
+          thinkingService.addStep(
+            conversationId,
+            'crew_transition',
+            transitionDescription,
+            transition
+          );
+
+          // Send crew_transition event FIRST so client creates the new message
           sendSSE({ type: 'crew_transition', transition });
+
+          // Then send thinking_step event so it attaches to the new message
+          sendSSE({
+            type: 'thinking_step',
+            step: {
+              stepType: 'crew_transition',
+              description: transitionDescription,
+              stepOrder: 0,
+              metadata: transition
+            }
+          });
+
+          // Restore callback for any subsequent events
+          thinkingService.setSendCallback(conversationId, sendSSE);
         }
       }
 
