@@ -99,8 +99,12 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
             },
             required: ['question']
           },
-          handler: async (params, context) => {
-            return await this.handleDataFetch(params, context);
+          handler: async (params) => {
+            return await this.handleDataFetch(params, {
+              userId: this._userId,
+              conversationId: this._conversationId,
+              crewMember: this.name
+            });
           }
         }
       ],
