@@ -1,5 +1,5 @@
 const db = require('./db.pg');
-const { agents, users, conversations, messages, thinkingSteps } = require('../db/schema');
+const { agents, users, conversations, messages, thinkingSteps, messageFeedback } = require('../db/schema');
 const { eq, and, desc, asc } = require('drizzle-orm');
 
 /**
@@ -522,6 +522,98 @@ class ConversationService {
     }
 
     return deleted;
+  }
+
+  /**
+   * Delete all conversations for a user (by agent)
+   * Performs hard delete of messages and thinking steps, soft delete of conversations
+   * @param {string} userExternalId - External user ID
+   * @param {string} agentName - Agent name to filter conversations
+   * @returns {Promise<Object>} - { deletedCount, conversationIds }
+   */
+  async deleteAllConversations(userExternalId, agentName) {
+    if (!this.drizzle) this.initialize();
+    const { inArray } = require('drizzle-orm');
+
+    // Find user
+    const user = await this.drizzle
+      .select()
+      .from(users)
+      .where(eq(users.externalId, userExternalId))
+      .limit(1);
+
+    if (user.length === 0) {
+      return { deletedCount: 0, conversationIds: [] };
+    }
+
+    // Find agent
+    const agent = await this.drizzle
+      .select()
+      .from(agents)
+      .where(eq(agents.name, agentName))
+      .limit(1);
+
+    if (agent.length === 0) {
+      return { deletedCount: 0, conversationIds: [] };
+    }
+
+    // Get all non-deleted conversations for this user and agent
+    const convs = await this.drizzle
+      .select({ id: conversations.id, externalId: conversations.externalId })
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.userId, user[0].id),
+          eq(conversations.agentId, agent[0].id),
+          eq(conversations.status, 'active')
+        )
+      );
+
+    if (convs.length === 0) {
+      return { deletedCount: 0, conversationIds: [] };
+    }
+
+    const conversationIds = convs.map(c => c.id);
+    const externalIds = convs.map(c => c.externalId);
+
+    // Delete thinking steps and feedback for all messages in these conversations
+    const messageIds = await this.drizzle
+      .select({ id: messages.id })
+      .from(messages)
+      .where(inArray(messages.conversationId, conversationIds));
+
+    if (messageIds.length > 0) {
+      const msgIds = messageIds.map(m => m.id);
+      const { or } = require('drizzle-orm');
+
+      // Delete message feedback (has FK to messages via assistantMessageId and userMessageId)
+      await this.drizzle
+        .delete(messageFeedback)
+        .where(or(
+          inArray(messageFeedback.assistantMessageId, msgIds),
+          inArray(messageFeedback.userMessageId, msgIds)
+        ));
+
+      // Delete thinking steps
+      await this.drizzle
+        .delete(thinkingSteps)
+        .where(inArray(thinkingSteps.messageId, msgIds));
+    }
+
+    // Delete all messages
+    await this.drizzle
+      .delete(messages)
+      .where(inArray(messages.conversationId, conversationIds));
+
+    // Soft delete all conversations
+    await this.drizzle
+      .update(conversations)
+      .set({ status: 'deleted', updatedAt: new Date() })
+      .where(inArray(conversations.id, conversationIds));
+
+    console.log(`🗑️ Deleted ${convs.length} conversations for user ${userExternalId}`);
+
+    return { deletedCount: convs.length, conversationIds: externalIds };
   }
 
   /**

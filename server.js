@@ -673,6 +673,24 @@ app.delete('/api/conversation/:conversationId', async (req, res) => {
   }
 });
 
+// Delete all conversations for a user (by agent)
+app.delete('/api/user/:userId/conversations', async (req, res) => {
+  const { userId } = req.params;
+  const { agentName } = req.query;
+
+  if (!agentName) {
+    return res.status(400).json({ error: 'agentName query parameter is required' });
+  }
+
+  try {
+    const result = await conversationService.deleteAllConversations(userId, agentName);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('❌ Error deleting all conversations:', err.message);
+    res.status(500).json({ error: 'Error deleting all conversations: ' + err.message });
+  }
+});
+
 // Delete a single message
 app.delete('/api/conversation/:conversationId/message/:messageId', async (req, res) => {
   const { conversationId, messageId } = req.params;

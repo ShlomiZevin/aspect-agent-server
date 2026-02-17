@@ -115,8 +115,18 @@ After either tool, naturally transition to the next group.
 - Do NOT push if user says "none apply" - accept and move on
 
 ## ASSESSMENT COMPLETION
-After all three groups are explored, the system will automatically transition to the next phase.
-You don't need to announce this - just complete the final group naturally.`,
+When completing the LAST (3rd) group, keep your response very brief and subtle:
+- Give a warm 1-2 sentence acknowledgment ("Great to hear" / "Thanks for sharing")
+- Do NOT ask any questions
+- Do NOT announce a transition or "next step"
+- Do NOT summarize what was discussed
+- The next crew member will provide the main response
+- Simply close your part gently, like a natural pause in conversation
+
+Example for final group when user confirms no symptoms:
+"מעולה שלומית 🌺 טוב לדעת שאת מרגישה טוב גם מהבחינה הקוגניטיבית."
+
+That's it - short, warm, done. Another crew will continue.`,
 
       model: 'gpt-5-chat-latest',
       maxTokens: 1536,
@@ -239,7 +249,10 @@ You don't need to announce this - just complete the final group naturally.`,
       journeyPosition: journeyProfile?.analysis?.estimatedPosition || 'unknown',
       toneAdjustment: journeyProfile?.analysis?.toneAdjustment || 'warm_exploratory',
 
-      instruction: `You are exploring the "${currentGroup}" symptom group. ${assessmentState.groupsCompleted.length} of 3 groups complete.`
+      isLastGroup: assessmentState.groupsCompleted.length === 2,
+      instruction: assessmentState.groupsCompleted.length === 2
+        ? `You are exploring the FINAL symptom group ("${currentGroup}"). When this group is complete, give only a brief warm acknowledgment - no questions, no summary.`
+        : `You are exploring the "${currentGroup}" symptom group. ${assessmentState.groupsCompleted.length} of 3 groups complete.`
     };
   }
 
