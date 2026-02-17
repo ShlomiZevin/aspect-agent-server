@@ -69,32 +69,68 @@ class ClaudeService {
    * Similar to OpenAI's sendMessageStreamWithPrompt.
    *
    * @param {string} message - The user message
-   * @param {Array} history - Previous messages [{role, content}, ...]
+   * @param {string} conversationId - Conversation ID to fetch history from
    * @param {Object} config - Configuration object
-   * @param {string} config.systemPrompt - System instructions
+   * @param {string} config.prompt - System instructions
    * @param {string} config.model - Model to use
    * @param {number} config.maxTokens - Max tokens
-   * @param {Array} config.tools - Tool definitions (Claude format)
+   * @param {Array} config.tools - Tool definitions (crew member tools)
    * @param {Object} config.toolHandlers - Map of tool name -> handler function
+   * @param {Object} config.context - Additional context to inject
    * @returns {AsyncGenerator} - Stream of text chunks or tool events
    */
-  async *sendMessageStreamWithPrompt(message, history = [], config = {}) {
+  async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
     const {
-      systemPrompt = '',
+      prompt = '',
       model = this.model,
       maxTokens = 4096,
-      tools = [],
-      toolHandlers = {}
+      tools: crewTools = [],
+      toolHandlers = {},
+      context = {}
     } = config;
 
     try {
+      // Build system prompt with context
+      let systemPrompt = prompt;
+      if (Object.keys(context).length > 0) {
+        systemPrompt += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
+      }
+
+      // Build tools array (like OpenAI does)
+      const tools = [];
+      if (crewTools && crewTools.length > 0) {
+        tools.push(...crewTools);
+      }
+
+      // Ensure message is a string
+      const messageText = typeof message === 'string' ? message : String(message);
+
+      // Ensure system prompt is a string
+      const systemText = typeof systemPrompt === 'string' ? systemPrompt : String(systemPrompt);
+
+      // Fetch conversation history from DB
+      const conversationService = require('./conversation.service');
+      let historyMessages = [];
+      try {
+        const history = await conversationService.getConversationHistory(conversationId, 50);
+        historyMessages = history.map(m => ({
+          role: m.role,
+          content: m.content
+        }));
+      } catch (err) {
+        console.warn('⚠️ Could not load conversation history from DB:', err.message);
+      }
+
+      // Clean history for Claude (only user/assistant roles)
+      const cleanedHistory = this._cleanHistoryForClaude(historyMessages);
+
       // Build messages array: history + current message
       const messages = [
-        ...history,
-        { role: 'user', content: message }
+        ...cleanedHistory,
+        { role: 'user', content: messageText }
       ];
 
-      console.log(`🤖 Claude streaming with prompt (${systemPrompt.length} chars), ${tools.length} tools, ${history.length} history messages`);
+      console.log(`🤖 Claude streaming with prompt (${systemText.length} chars), ${tools.length} tools, ${cleanedHistory.length}/${historyMessages.length} history messages`);
 
       let maxIterations = 10;
       let currentMessages = messages;
@@ -105,9 +141,8 @@ class ClaudeService {
         const requestParams = {
           model,
           max_tokens: maxTokens,
-          system: systemPrompt,
-          messages: currentMessages,
-          stream: true
+          system: systemText,
+          messages: currentMessages
         };
 
         // Add tools if provided
@@ -289,6 +324,86 @@ class ClaudeService {
     } catch (error) {
       console.error('❌ Crew generation failed:', error.message);
       throw new Error(`Failed to generate crew: ${error.message}`);
+    }
+  }
+
+  /**
+   * Clean message history for Claude compatibility
+   * Claude only supports 'user' and 'assistant' roles
+   * @param {Array} history - OpenAI-format message history
+   * @returns {Array} - Cleaned history with only user/assistant messages
+   * @private
+   */
+  _cleanHistoryForClaude(history) {
+    return history
+      .map(msg => {
+        // Skip if no message or no role
+        if (!msg || !msg.role) {
+          console.warn('⚠️ Skipping invalid message (no role):', msg);
+          return null;
+        }
+
+        // Skip system messages (they should be in systemPrompt instead)
+        if (msg.role === 'system') {
+          return null;
+        }
+
+        // Convert developer role to user (highest authority)
+        if (msg.role === 'developer') {
+          const content = this._ensureStringContent(msg.content);
+          return content ? { role: 'user', content } : null;
+        }
+
+        // Convert function/tool messages to assistant
+        if (msg.role === 'function' || msg.role === 'tool') {
+          const content = this._ensureStringContent(msg.content);
+          return content ? { role: 'assistant', content } : null;
+        }
+
+        // Keep user and assistant as-is
+        if (msg.role === 'user' || msg.role === 'assistant') {
+          const content = this._ensureStringContent(msg.content);
+          return content ? { role: msg.role, content } : null;
+        }
+
+        // Skip unknown roles
+        console.warn('⚠️ Skipping message with unknown role:', msg.role);
+        return null;
+      })
+      .filter(msg => msg !== null); // Remove nulls
+  }
+
+  /**
+   * Ensure content is a valid non-empty string
+   * @private
+   */
+  _ensureStringContent(content) {
+    // Handle null/undefined
+    if (content === null || content === undefined) {
+      return null;
+    }
+
+    // Handle empty string
+    if (content === '') {
+      return null;
+    }
+
+    // Handle strings
+    if (typeof content === 'string') {
+      return content.trim() || null;
+    }
+
+    // Handle objects/arrays - stringify them
+    try {
+      const stringified = JSON.stringify(content);
+      // Don't return empty objects/arrays
+      if (stringified === '{}' || stringified === '[]') {
+        return null;
+      }
+      return stringified;
+    } catch (err) {
+      console.warn('⚠️ Could not stringify content:', err.message);
+      return null;
     }
   }
 

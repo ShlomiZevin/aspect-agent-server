@@ -84,7 +84,31 @@ class LLMService {
    * @returns {AsyncGenerator} - Stream of text chunks
    */
   async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
-    yield* this.provider.sendMessageStreamWithPrompt(message, conversationId, config);
+    // Detect provider from model name
+    const provider = this._getProviderForModel(config.model);
+    yield* provider.sendMessageStreamWithPrompt(message, conversationId, config);
+  }
+
+  /**
+   * Determine which provider to use based on model name
+   * @param {string} model - Model name (e.g., 'gpt-4o', 'claude-sonnet-4-5-20250929')
+   * @returns {Object} - Provider service (openaiService or claudeService)
+   * @private
+   */
+  _getProviderForModel(model) {
+    if (!model) {
+      return this.provider; // Default to OpenAI
+    }
+
+    // Claude models start with "claude-"
+    if (model.toLowerCase().startsWith('claude-')) {
+      console.log(`🤖 Using Claude provider for model: ${model}`);
+      return this.claude;
+    }
+
+    // Otherwise use OpenAI (for gpt-*, o1-*, o3-*, etc.)
+    console.log(`🤖 Using OpenAI provider for model: ${model}`);
+    return this.provider;
   }
 
   /**
@@ -98,7 +122,9 @@ class LLMService {
    * @returns {Promise<string>} - The response text
    */
   async sendOneShot(instructions, message, options = {}) {
-    return this.provider.sendOneShot(instructions, message, options);
+    // Detect provider from model name
+    const provider = this._getProviderForModel(options.model);
+    return provider.sendOneShot(instructions, message, options);
   }
 
   /**
