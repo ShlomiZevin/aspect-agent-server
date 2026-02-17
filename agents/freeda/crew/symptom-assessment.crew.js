@@ -17,7 +17,7 @@
  * 5. Move to next group when complete
  *
  * Transitions:
- * - After all 3 groups explored -> 'general' (treatment guidance)
+ * - After all 3 groups explored -> 'assessment_closure' (summary & companion positioning)
  */
 const CrewMember = require('../../../crew/base/CrewMember');
 const symptomTracker = require('../../../functions/symptom-tracker');
@@ -31,7 +31,7 @@ class FreedaSymptomAssessmentCrew extends CrewMember {
       description: 'Structured symptom exploration across emotional, cognitive, and physical groups',
       isDefault: false,
 
-      transitionTo: 'general',
+      transitionTo: 'assessment_closure',
 
       guidance: `You are Freeda, continuing your warm conversation with the user who has just completed the profiling stage.
 

@@ -293,11 +293,12 @@ app.get('/api/agents/:agentName/prompts', async (req, res) => {
     for (const crew of crewList) {
       const dbData = dbPrompts.find(p => p.crewMemberId === crew.name);
       if (dbData) {
-        // Has DB versions - use them
+        // Has DB versions - use them, include model from crew
         result.push({
           crewMemberId: crew.name,
           crewMemberName: crew.name,
           displayName: crew.displayName,
+          model: crew.model, // Include the crew's model
           versions: dbData.versions,
           currentVersion: dbData.currentVersion,
         });
@@ -309,6 +310,7 @@ app.get('/api/agents/:agentName/prompts', async (req, res) => {
             crewMemberId: crew.name,
             crewMemberName: crew.name,
             displayName: crew.displayName,
+            model: crewMember.model, // Include the crew's model
             versions: [{
               id: `code-${crew.name}`,
               version: 0,
@@ -608,10 +610,14 @@ app.get('/api/conversation/:conversationId/history', async (req, res) => {
       limit ? parseInt(limit) : 50
     );
 
+    // Also get the conversation's current crew member for state restoration
+    const conversation = await conversationService.getConversationByExternalId(conversationId);
+
     res.json({
       conversationId,
       messageCount: history.length,
-      messages: history
+      messages: history,
+      currentCrewMember: conversation?.currentCrewMember || null
     });
   } catch (err) {
     console.error('❌ Error fetching history:', err.message);
@@ -1002,6 +1008,13 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     if (hasCrew) {
       // ========== CREW-BASED ROUTING ==========
       console.log(`🎭 Agent ${agentNameToUse} has crew members, using dispatcher`);
+
+      // Debug: log received overrides from client
+      if (debug) {
+        console.log(`📥 [DEBUG] Received from client:`);
+        console.log(`   promptOverrides:`, promptOverrides || '(none)');
+        console.log(`   modelOverrides:`, modelOverrides || '(none)');
+      }
 
       // Get current crew info and send to client
       const crewInfo = await dispatcherService.getCrewInfo(agentNameToUse, conversationId, overrideCrewMember);

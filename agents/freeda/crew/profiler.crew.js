@@ -49,10 +49,6 @@ class FreedaProfilerCrew extends CrewMember {
         {
           name: 'sense_of_change',
           description: "User's general sense of change/transition intensity. One of: 'mild', 'moderate', 'significant', 'overwhelming'. Extract from how they describe their experience overall (not specific symptoms)."
-        },
-        {
-          name: 'process_explained',
-          description: "Set to 'true' when Freeda has explained the diagnostic process structure and the user has acknowledged understanding or is ready to continue."
         }
       ],
 
@@ -145,20 +141,17 @@ This analysis guides your approach but is NEVER shared with the user.`,
 
   /**
    * Pre-message transfer check.
-   * Transitions when:
-   * 1. Diagnostic process has been explained
-   * 2. Required positioning inputs collected (menstrual_status, treatment_history)
-   * 3. User is ready to continue
+   * Transitions when required positioning inputs are collected (menstrual_status, treatment_history).
+   * The process explanation happens naturally as part of the conversation.
    *
    * On transition, persists the journey profile and analysis to context_data.
    */
   async preMessageTransfer(collectedFields) {
-    const hasProcessExplained = !!collectedFields.process_explained;
     const hasMenstrualStatus = !!collectedFields.menstrual_status;
     const hasTreatmentHistory = !!collectedFields.treatment_history;
 
     // Required fields for transition
-    if (!hasProcessExplained || !hasMenstrualStatus || !hasTreatmentHistory) {
+    if (!hasMenstrualStatus || !hasTreatmentHistory) {
       return false;
     }
 
@@ -211,7 +204,7 @@ This analysis guides your approach but is NEVER shared with the user.`,
     const existingJourney = await this.getContext('journey');
 
     // Determine what's been collected vs still needed
-    const requiredFields = ['process_explained', 'menstrual_status', 'treatment_history'];
+    const requiredFields = ['menstrual_status', 'treatment_history'];
     const optionalFields = ['cycle_clarification', 'perceived_stage', 'prior_exposure', 'sense_of_change'];
 
     const missingRequired = requiredFields.filter(f => !collectedFields[f]);

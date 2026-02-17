@@ -6,6 +6,7 @@
  *
  * Flow: Introduction (default) → eligibility check → Profiler (orientation & journey profiling)
  *                                                  → SymptomAssessment (3 symptom groups)
+ *                                                  → AssessmentClosure (summary & companion positioning)
  *                                                  → General (treatment guidance)
  *                                                  → Ineligible (if under 38 or male)
  */
@@ -15,11 +16,13 @@ const FreedaProfilerCrew = require('./profiler.crew');
 const FreedaWelcomeCrew = require('./welcome.crew');
 const FreedaGeneralCrew = require('./general.crew');
 const FreedaSymptomAssessmentCrew = require('./symptom-assessment.crew');
+const FreedaAssessmentClosureCrew = require('./assessment-closure.crew');
 
 module.exports = {
   FreedaIntroductionCrew,
   FreedaProfilerCrew,
   FreedaWelcomeCrew,
   FreedaGeneralCrew,
-  FreedaSymptomAssessmentCrew
+  FreedaSymptomAssessmentCrew,
+  FreedaAssessmentClosureCrew
 };

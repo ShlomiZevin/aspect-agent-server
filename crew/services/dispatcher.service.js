@@ -366,10 +366,22 @@ class DispatcherService {
     // ========== RESOLVE MODEL ==========
     // Priority: 1. Session override → 2. Crew default
     let resolvedModel = crew.model;
+    let modelSource = 'crew_default';
+
+    // Debug: log received model overrides
+    console.log(`🔍 Model resolution for crew: "${crew.name}"`);
+    console.log(`🔍 Received modelOverrides:`, modelOverrides);
+    console.log(`🔍 Crew default model: ${crew.model}`);
+
     if (modelOverrides[crew.name]) {
       resolvedModel = modelOverrides[crew.name];
-      console.log(`📝 Using session override model for ${crew.name}: ${resolvedModel}`);
+      modelSource = 'session_override';
+      console.log(`✅ Using session override model for ${crew.name}: ${resolvedModel}`);
+    } else if (Object.keys(modelOverrides).length > 0) {
+      console.log(`⚠️ Model overrides exist but none match crew "${crew.name}". Keys: [${Object.keys(modelOverrides).join(', ')}]`);
     }
+
+    console.log(`🤖 Final model for ${crew.name}: ${resolvedModel} (source: ${modelSource})`)
 
     // ========== RESOLVE TRANSITION SYSTEM PROMPT ==========
     // Priority: DB value > code value (same as regular prompt)
@@ -436,6 +448,8 @@ class DispatcherService {
           fullInstructions,
           promptSource,
           model: resolvedModel,
+          modelSource, // 'session_override' or 'crew_default'
+          defaultModel: crew.model, // Original hardcoded model for comparison
           maxTokens: crew.maxTokens,
           tools: crew.getToolSchemas(),
           knowledgeBase: resolvedKB,
