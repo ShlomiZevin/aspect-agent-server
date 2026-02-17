@@ -78,9 +78,20 @@ Generate a PostgreSQL query that answers the user's question based on the schema
 3. **Clarity**: Prefer readable queries with proper aliases and formatting
 4. **Performance**: Use appropriate JOINs, WHERE clauses, and LIMIT when needed
 5. **Safety**: Never generate DROP, DELETE, UPDATE, or other destructive operations
-6. **Column Names**: Handle Hebrew column names properly by using double quotes
-7. **Aggregations**: Use appropriate GROUP BY, ORDER BY, and aggregate functions
-8. **Limits**: Add LIMIT clause for queries that might return many rows (default: 100)
+6. **Column Names**: CRITICAL - Column names with spaces or Hebrew MUST be quoted with double quotes
+7. **Quote Escaping**: If a column name contains a quote character (like מע"מ), you MUST escape it by doubling: "מכירה ללא מע""מ"
+8. **Aggregations**: Use appropriate GROUP BY, ORDER BY, and aggregate functions
+9. **Limits**: Add LIMIT clause for queries that might return many rows (default: 100)
+
+## Important Examples
+
+**WRONG** (quote not escaped):
+SELECT "מכירה ללא מע"מ" FROM zer4u.sales
+❌ This will cause: syntax error at or near "מ"
+
+**CORRECT** (quote escaped by doubling):
+SELECT "מכירה ללא מע""מ" FROM zer4u.sales
+✅ The quote inside the column name is escaped as ""
 
 ## Output Format
 
