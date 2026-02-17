@@ -96,10 +96,19 @@ class ClaudeService {
         systemPrompt += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
       }
 
-      // Build tools array (like OpenAI does)
+      // Convert tools from OpenAI format to Claude format
       const tools = [];
       if (crewTools && crewTools.length > 0) {
-        tools.push(...crewTools);
+        tools.push(...crewTools.map(tool => {
+          // OpenAI: {type: "function", name: "call_X", description, parameters}
+          // Claude: {name: "X", description, input_schema}
+          const claudeTool = {
+            name: tool.name.replace(/^call_/, ''), // Remove "call_" prefix
+            description: tool.description || '',
+            input_schema: tool.parameters || { type: 'object', properties: {} }
+          };
+          return claudeTool;
+        }));
       }
 
       // Ensure message is a string
