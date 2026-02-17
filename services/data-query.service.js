@@ -40,13 +40,19 @@ class DataQueryService {
 
     const client = await this.pool.connect();
 
+    // Generate SQL first (outside try/catch so we can return it even on error)
+    let sql, explanation, confidence;
+
     try {
       // Step 1: Generate SQL from question
       console.log(`   Step 1: Generating SQL...`);
-      const { sql, explanation, confidence } = await sqlGeneratorService.generateSQL(
+      const generated = await sqlGeneratorService.generateSQL(
         question,
         customerSchema
       );
+      sql = generated.sql;
+      explanation = generated.explanation;
+      confidence = generated.confidence;
 
       console.log(`   Generated SQL (confidence: ${confidence}):`);
       console.log(`   ${sql}`);
@@ -78,11 +84,13 @@ class DataQueryService {
     } catch (error) {
       console.error('❌ Query execution failed:', error.message);
 
-      // Return error in structured format
+      // Return error with SQL (so user can see what was generated)
       return {
         error: true,
         message: error.message,
-        sql: null,
+        sql,
+        explanation,
+        confidence,
         data: [],
         rowCount: 0
       };

@@ -133,8 +133,8 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
         }
       );
 
-      // Add thinking step with question and SQL (only if SQL was generated)
-      if (context.conversationId && result.sql) {
+      // Add thinking step with question and SQL
+      if (context.conversationId) {
         thinkingService.addFunctionCallStep(
           context.conversationId,
           'fetch_zer4u_data',
