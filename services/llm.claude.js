@@ -222,7 +222,8 @@ class ClaudeService {
             };
 
             try {
-              const handler = toolHandlers[toolCall.name];
+              // Try with call_ prefix first (matches dispatcher convention), then without
+              const handler = toolHandlers[`call_${toolCall.name}`] || toolHandlers[toolCall.name];
               if (!handler) {
                 throw new Error(`No handler for tool: ${toolCall.name}`);
               }
