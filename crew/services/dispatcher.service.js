@@ -106,6 +106,53 @@ class DispatcherService {
 
     console.log(`🚀 Dispatching to crew: ${crew.name} (${crew.displayName})`);
 
+    // Ensure currentCrewMember is set in DB (important for fields endpoint)
+    // This handles the case where default crew is used but never explicitly set
+    if (conversationId) {
+      const conversation = await conversationService.getConversationByExternalId(conversationId);
+      if (conversation && !conversation.currentCrewMember) {
+        await conversationService.updateCurrentCrewMember(conversationId, crew.name);
+        console.log(`📝 Set initial currentCrewMember to: ${crew.name}`);
+      }
+    }
+
+    // Always yield crew_info at the start so client knows current crew
+    // This is essential for the fields panel to load the correct field definitions
+    yield { type: 'crew_info', crew: crew.toJSON() };
+
+    // ========== ONE-SHOT CREW CHECK ==========
+    // If crew is oneShot and has already delivered, skip to transitionTo
+    if (crew.oneShot && crew.transitionTo) {
+      const conversation = await conversationService.getConversationByExternalId(conversationId);
+      const oneShotDelivered = conversation?.metadata?.oneShotDelivered || {};
+
+      if (oneShotDelivered[crew.name]) {
+        console.log(`⚡ OneShot crew ${crew.name} already delivered, transitioning to ${crew.transitionTo}`);
+
+        // Update conversation's current crew member BEFORE yielding (prevents race condition)
+        await conversationService.updateCurrentCrewMember(conversationId, crew.transitionTo);
+
+        // Yield transition event
+        yield {
+          type: 'crew_transition',
+          transition: {
+            from: crew.name,
+            to: crew.transitionTo,
+            reason: 'OneShot crew already delivered',
+            timestamp: new Date().toISOString()
+          }
+        };
+
+        // Get target crew and stream its response
+        const targetCrew = await crewService.getCrewMember(agentName, crew.transitionTo);
+        if (targetCrew) {
+          yield { type: 'crew_info', crew: targetCrew.toJSON() };
+          yield* this._streamCrew(targetCrew, params);
+        }
+        return;
+      }
+    }
+
     // Check if crew has fields to collect (triggers parallel extraction)
     const hasFieldsToCollect = crew.fieldsToCollect && crew.fieldsToCollect.length > 0;
 
@@ -133,14 +180,15 @@ class DispatcherService {
         if (shouldTransferEarly) {
           console.log(`⚡ Early pre-transfer: all fields already collected, transitioning ${crew.name} → ${crew.transitionTo}`);
 
+          // Update conversation's current crew member BEFORE yielding (prevents race condition)
+          await conversationService.updateCurrentCrewMember(conversationId, crew.transitionTo);
+
           yield { type: 'crew_transition', transition: {
             from: crew.name,
             to: crew.transitionTo,
             reason: 'All required fields already collected',
             timestamp: new Date().toISOString()
           }};
-
-          await conversationService.updateCurrentCrewMember(conversationId, crew.transitionTo);
 
           const targetCrew = await crewService.getCrewMember(agentName, crew.transitionTo);
           if (targetCrew) {
@@ -260,6 +308,9 @@ class DispatcherService {
         yield { type: 'field_extracted', field, value };
       }
 
+      // Update conversation's current crew member BEFORE yielding (prevents race condition)
+      await conversationService.updateCurrentCrewMember(conversationId, crew.transitionTo);
+
       // Yield transition event
       const transition = {
         from: crew.name,
@@ -268,9 +319,6 @@ class DispatcherService {
         timestamp: new Date().toISOString()
       };
       yield { type: 'crew_transition', transition };
-
-      // Update conversation's current crew member
-      await conversationService.updateCurrentCrewMember(conversationId, crew.transitionTo);
 
       // Get target crew and stream its response
       const targetCrew = await crewService.getCrewMember(agentName, crew.transitionTo);
@@ -483,6 +531,23 @@ class DispatcherService {
       }
     }
 
+    // ========== MARK ONE-SHOT AS DELIVERED ==========
+    // If this is a oneShot crew, mark it as delivered so next message transitions
+    if (crew.oneShot && crew.transitionTo) {
+      try {
+        const existingMetadata = conversation?.metadata || {};
+        const oneShotDelivered = existingMetadata.oneShotDelivered || {};
+        oneShotDelivered[crew.name] = true;
+
+        await conversationService.updateConversationMetadata(conversationId, {
+          oneShotDelivered
+        });
+        console.log(`✅ Marked oneShot crew ${crew.name} as delivered`);
+      } catch (err) {
+        console.warn('⚠️ Could not update oneShot metadata:', err.message);
+      }
+    }
+
     // ========== POST-MESSAGE TRANSFER CHECK ==========
     // For crews that use tools/context instead of fieldsToCollect,
     // check postMessageTransfer after streaming completes
@@ -491,6 +556,9 @@ class DispatcherService {
 
       if (shouldTransfer) {
         console.log(`🔄 postMessageTransfer triggered: ${crew.name} → ${crew.transitionTo}`);
+
+        // Update conversation's current crew member BEFORE yielding (prevents race condition)
+        await conversationService.updateCurrentCrewMember(conversationId, crew.transitionTo);
 
         // Yield transition event
         yield {
@@ -502,9 +570,6 @@ class DispatcherService {
             timestamp: new Date().toISOString()
           }
         };
-
-        // Update conversation's current crew member
-        await conversationService.updateCurrentCrewMember(conversationId, crew.transitionTo);
 
         // Get target crew and stream its response
         const targetCrew = await crewService.getCrewMember(agentName, crew.transitionTo);

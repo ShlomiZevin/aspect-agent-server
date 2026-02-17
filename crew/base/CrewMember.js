@@ -12,6 +12,7 @@
  * - collectFields: Fields to gather from the user
  * - fieldsToCollect: Structured field definitions for micro-agent extraction
  * - transitionTo: Target crew member for automatic transitions
+ * - oneShot: If true, delivers one response then auto-transitions on next message
  * - isDefault: Whether this is the default crew member for the agent
  *
  * Context methods (available after dispatcher sets _userId):
@@ -38,6 +39,7 @@ class CrewMember {
    * @param {string} options.transitionTo - Target crew member name for automatic transitions
    * @param {boolean} options.isDefault - Whether this is the default crew member
    * @param {string} options.transitionSystemPrompt - System prompt injected once when transitioning to this crew
+   * @param {boolean} options.oneShot - If true, crew delivers one response then auto-transitions on next user message
    */
   constructor(options = {}) {
     // Identity
@@ -82,6 +84,9 @@ class CrewMember {
     // System prompt injected once when transitioning to this crew member
     // Used to override historical conversation patterns when switching personas
     this.transitionSystemPrompt = options.transitionSystemPrompt || null;
+
+    // One-shot crews deliver one response then auto-transition on next user message
+    this.oneShot = options.oneShot || false;
 
     // Context service state (set by dispatcher before use)
     this._userId = null;
@@ -266,6 +271,7 @@ class CrewMember {
       fieldsToCollect: this.fieldsToCollect,
       extractionMode: this.extractionMode,
       transitionTo: this.transitionTo,
+      oneShot: this.oneShot,
       toolCount: this.tools.length,
       hasKnowledgeBase: this.knowledgeBase?.enabled || false,
       hasTransitionPrompt: !!this.transitionSystemPrompt,

@@ -272,7 +272,8 @@ Pass these to `super({...})` in the constructor:
 | `knowledgeBase` | `object\|null` | No | `{ enabled: true, storeId: "vs_..." }` or `null` |
 | `fieldsToCollect` | `array` | No | Fields to extract from conversation: `[{ name: "age", description: "User's age" }]` |
 | `transitionTo` | `string` | No | Target crew name for automatic transition |
-| `transitionSystemPrompt` | `string` | No | System prompt injected once when transitioning TO this crew (see 3.7) |
+| `transitionSystemPrompt` | `string` | No | System prompt injected once when transitioning TO this crew (see 3.6) |
+| `oneShot` | `boolean` | No | If `true`, crew delivers one response then auto-transitions on next user message (see 3.7) |
 
 ### 3.2 Overridable Methods
 
@@ -397,6 +398,37 @@ When transitioning between crew members mid-conversation, historical messages ca
 3. If not (new transition), the `transitionSystemPrompt` is injected as a `developer` message just before the current user message
 4. The crew's name is stored in `conversation.metadata.lastCrewWithTransitionPrompt` to prevent re-injection
 5. On subsequent messages with the same crew, the prompt is NOT re-injected
+
+### 3.7 One-Shot Crews
+
+For crews that deliver a single message then transition (e.g., closures, announcements, greetings), use the `oneShot` property. This avoids complex field extraction or tool-based transition logic.
+
+```js
+{
+  name: 'assessment_closure',
+  transitionTo: 'general',
+  oneShot: true,  // Delivers once, then auto-transitions
+  guidance: `Deliver a closure summary...`
+}
+```
+
+**How it works:**
+1. First message to a oneShot crew → delivers its response normally
+2. Dispatcher marks the crew as "delivered" in `conversation.metadata.oneShotDelivered`
+3. On next user message → dispatcher sees oneShot + already delivered → skips to `transitionTo`
+4. User's message is handled by the target crew
+
+**When to use:**
+- Transition announcements (e.g., "We've completed X, now let's move to Y")
+- Closure summaries (e.g., assessment wrap-up)
+- Welcome messages before main conversation
+- Any "deliver once and move on" pattern
+
+**Benefits over field-based:**
+- No field extraction complexity
+- No "stuck" states if extraction fails
+- Cleaner, simpler code
+- User response is handled by the right crew (not the transitional one)
 
 ---
 
@@ -994,12 +1026,17 @@ module.exports = MyAgentAssessmentCrew;
 |---------|--------------|
 | Field-based crew | `agents/freeda/crew/introduction.crew.js` |
 | Tool-based crew with postMessageTransfer | `agents/freeda/crew/symptom-assessment.crew.js` |
+| One-shot transitional crew | `agents/freeda/crew/assessment-closure.crew.js` |
 | Split tools for clarity | `functions/symptom-group-completion.js` |
 | Context persistence | `agents/freeda/crew/profiler.crew.js` |
 
 ---
 
 ## Changelog
+
+### v2.1 (2025-02)
+- Added **oneShot crews** - for transitional/announcement crews that deliver once then auto-transition
+- Added section 3.7 documenting oneShot property and behavior
 
 ### v2.0 (2025-02)
 - Added **Part 4: Transfer Methods** - detailed explanation of `preMessageTransfer` vs `postMessageTransfer`

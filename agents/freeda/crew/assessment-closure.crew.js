@@ -15,10 +15,8 @@
  * 3. Companion Positioning - Why Freeda stays relevant
  *
  * Transitions:
- * - After closure delivered and user responds -> 'general' (treatment guidance)
- *
- * Uses field-based transition (preMessageTransfer) to discard current crew
- * response and immediately stream from general crew.
+ * - Uses oneShot: delivers closure message once, then auto-transitions to 'general'
+ *   on the next user message (any message)
  */
 const CrewMember = require('../../../crew/base/CrewMember');
 
@@ -32,27 +30,8 @@ class FreedaAssessmentClosureCrew extends CrewMember {
 
       transitionTo: 'general',
 
-      // Field-based transition: extract when user explicitly acknowledges and is ready to continue
-      fieldsToCollect: [
-        {
-          name: 'closure_acknowledged',
-          description: `Set to 'true' ONLY when the user explicitly acknowledges the closure and signals readiness to move on.
-
-Examples of when to set to true:
-- "Okay, let's continue" / "בואי נמשיך"
-- "That makes sense, what's next?"
-- "Thanks, I'm ready to talk about treatments"
-- "Sounds good" / "נשמע טוב"
-- Clear acknowledgment + forward momentum
-
-Do NOT set to true if:
-- User asks a follow-up question about the summary
-- User has an emotional response that needs addressing
-- User wants to discuss something from the assessment further
-- User hasn't explicitly signaled readiness to move forward
-- Closure hasn't been delivered yet`
-        }
-      ],
+      // One-shot crew: delivers message once, then transitions on next user input
+      oneShot: true,
 
       guidance: `You are Freeda, completing the assessment phase with the user.
 
@@ -162,15 +141,6 @@ Be warm, grounding, and forward-looking.`,
     // Build a human-readable summary of what was found
     const groupSummaries = this._buildGroupSummaries(symptomSummary);
 
-    // Determine what fields have been collected vs still needed
-    const fieldsAlreadyCollected = this.fieldsToCollect
-      .filter(f => !!collectedFields[f.name])
-      .map(f => `${f.name}: ${collectedFields[f.name]}`);
-
-    const fieldsStillNeeded = this.fieldsToCollect
-      .filter(f => !collectedFields[f.name])
-      .map(f => f.name);
-
     return {
       ...baseContext,
       role: 'Assessment Closure - Transition to ongoing support',
@@ -191,13 +161,7 @@ Be warm, grounding, and forward-looking.`,
       journeyPosition: journeyProfile?.analysis?.estimatedPosition || 'unknown',
       toneAdjustment: journeyProfile?.analysis?.toneAdjustment || 'warm_exploratory',
 
-      // Field collection status
-      fieldsAlreadyCollected,
-      fieldsStillNeeded,
-
-      instruction: 'Deliver the three-layer closure (Reflection, Reframing, Companion Positioning). End with an invitation to continue. If user has questions or needs more time, address them warmly.',
-
-      note: 'The fields above reflect state from previous messages. Check current message for new values.'
+      instruction: 'Deliver the three-layer closure (Reflection, Reframing, Companion Positioning). End with an invitation to continue.'
     };
   }
 
@@ -227,19 +191,6 @@ Be warm, grounding, and forward-looking.`,
     }
 
     return summaries;
-  }
-
-  /**
-   * Pre-message transfer check.
-   * Transitions when user explicitly acknowledges closure and is ready to continue.
-   */
-  async preMessageTransfer(collectedFields) {
-    if (collectedFields.closure_acknowledged) {
-      console.log('✅ Assessment closure acknowledged, transitioning to general crew');
-      return true; // Discard current response, transition to 'general'
-    }
-
-    return false;
   }
 }
 
