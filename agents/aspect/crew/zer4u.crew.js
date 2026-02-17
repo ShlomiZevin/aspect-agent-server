@@ -100,11 +100,7 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
             required: ['question']
           },
           handler: async (params) => {
-            return await this.handleDataFetch(params, {
-              userId: this._userId,
-              conversationId: this._conversationId,
-              crewMember: this.name
-            });
+            return await this.handleDataFetch(params);
           }
         }
       ],
@@ -116,7 +112,7 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
   /**
    * Handle data fetch tool call
    */
-  async handleDataFetch(params, context) {
+  async handleDataFetch(params) {
     const { question } = params;
     const thinkingService = require('../../../services/thinking.service');
 
@@ -133,10 +129,10 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
         }
       );
 
-      // Add thinking step with question and SQL
-      if (context.conversationId) {
+      // Add thinking step with question and SQL (using external conversation ID)
+      if (this._externalConversationId && result.sql) {
         thinkingService.addFunctionCallStep(
-          context.conversationId,
+          this._externalConversationId,
           'fetch_zer4u_data',
           { question, sql: result.sql, explanation: result.explanation },
           `Fetching data: ${question}`

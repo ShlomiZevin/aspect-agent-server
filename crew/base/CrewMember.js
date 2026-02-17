@@ -90,7 +90,8 @@ class CrewMember {
 
     // Context service state (set by dispatcher before use)
     this._userId = null;
-    this._conversationId = null;
+    this._conversationId = null; // Internal database conversation ID
+    this._externalConversationId = null; // External conversation ID (UUID)
   }
 
   /**
@@ -99,10 +100,12 @@ class CrewMember {
    *
    * @param {number} userId - User ID
    * @param {number|null} conversationId - Conversation ID (for conversation-level context)
+   * @param {string|null} externalConversationId - External conversation ID (UUID)
    */
-  setContextUser(userId, conversationId = null) {
+  setContextUser(userId, conversationId = null, externalConversationId = null) {
     this._userId = userId;
     this._conversationId = conversationId;
+    this._externalConversationId = externalConversationId;
   }
 
   /**

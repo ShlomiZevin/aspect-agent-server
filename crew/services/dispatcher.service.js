@@ -169,7 +169,7 @@ class DispatcherService {
       // Set context user early for crews that may use getContext in preMessageTransfer
       const conversation = await conversationService.getConversationByExternalId(conversationId);
       if (conversation?.userId) {
-        crew.setContextUser(conversation.userId, conversation.id);
+        crew.setContextUser(conversation.userId, conversation.id, conversationId);
       }
 
       const existingFields = await agentContextService.getCollectedFields(conversationId);
@@ -361,7 +361,7 @@ class DispatcherService {
 
     // Set context user for crew's getContext/writeContext methods
     if (conversation?.userId) {
-      crew.setContextUser(conversation.userId, conversation.id);
+      crew.setContextUser(conversation.userId, conversation.id, conversationId);
     }
 
     // Build context from crew member
