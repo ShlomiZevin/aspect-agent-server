@@ -24,25 +24,36 @@ const pool = new Pool({
 });
 
 async function createSchema() {
+  const startTime = Date.now();
   console.log('🚀 Creating Zer4U schema in PostgreSQL...\n');
+  console.log('⚡ OPTIMIZED FOR FAST LOADING:');
+  console.log('  - NO primary keys');
+  console.log('  - NO foreign keys');
+  console.log('  - NO unique constraints');
+  console.log('  - NO indexes\n');
+  console.log('═'.repeat(60));
 
   const client = await pool.connect();
 
   try {
     // Step 1: Load analysis results
-    console.log('📋 Step 1: Loading CSV analysis...');
+    console.log('\n📋 Step 1: Loading CSV analysis...');
+    const step1Start = Date.now();
     const analysisData = await fs.readFile(ANALYSIS_FILE, 'utf8');
     const schemas = JSON.parse(analysisData);
-    console.log(`✅ Loaded ${schemas.length} table definitions\n`);
+    console.log(`✅ Loaded ${schemas.length} table definitions (${Date.now() - step1Start}ms)\n`);
 
     // Step 2: Create schema
     console.log('🏗️  Step 2: Creating schema...');
+    const step2Start = Date.now();
     await client.query(`DROP SCHEMA IF EXISTS ${SCHEMA_NAME} CASCADE`);
     await client.query(`CREATE SCHEMA ${SCHEMA_NAME}`);
-    console.log(`✅ Schema "${SCHEMA_NAME}" created\n`);
+    console.log(`✅ Schema "${SCHEMA_NAME}" created (${Date.now() - step2Start}ms)\n`);
 
     // Step 3: Create tables
     console.log('📊 Step 3: Creating tables...\n');
+    const step3Start = Date.now();
+    let tablesCreated = 0;
 
     for (let i = 0; i < schemas.length; i++) {
       const schema = schemas[i];
@@ -53,24 +64,27 @@ async function createSchema() {
       }
 
       const tableName = schema.tableName;
-      console.log(`[${i + 1}/${schemas.length}] Creating table: ${SCHEMA_NAME}.${tableName}`);
+      const tableStart = Date.now();
+      console.log(`[${i + 1}/${schemas.length}] Creating: ${SCHEMA_NAME}.${tableName}`);
 
       try {
         const createTableSQL = generateCreateTableSQL(SCHEMA_NAME, schema);
         await client.query(createTableSQL);
-        console.log(`  ✅ ${schema.columns.length} columns created\n`);
+        tablesCreated++;
+        console.log(`  ✅ ${schema.columns.length} columns (${Date.now() - tableStart}ms)\n`);
       } catch (error) {
-        console.error(`  ❌ Error creating table ${tableName}: ${error.message}\n`);
+        console.error(`  ❌ Error: ${error.message}\n`);
       }
     }
 
-    console.log('✅ All tables created successfully!\n');
+    console.log(`✅ ${tablesCreated} tables created (${Date.now() - step3Start}ms)\n`);
 
     // Step 4: Grant permissions
     console.log('🔒 Step 4: Setting permissions...');
+    const step4Start = Date.now();
     await client.query(`GRANT USAGE ON SCHEMA ${SCHEMA_NAME} TO ${process.env.DB_USER}`);
     await client.query(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA ${SCHEMA_NAME} TO ${process.env.DB_USER}`);
-    console.log('✅ Permissions set\n');
+    console.log(`✅ Permissions set (${Date.now() - step4Start}ms)\n`);
 
     // Step 5: Summary
     const result = await client.query(`
@@ -80,10 +94,13 @@ async function createSchema() {
       ORDER BY table_name
     `, [SCHEMA_NAME]);
 
+    const totalTime = Date.now() - startTime;
+    console.log('═'.repeat(60));
     console.log('📈 SUMMARY:');
     console.log('═'.repeat(60));
     console.log(`Schema: ${SCHEMA_NAME}`);
     console.log(`Tables created: ${result.rows.length}`);
+    console.log(`Total time: ${(totalTime / 1000).toFixed(2)}s`);
     console.log('═'.repeat(60));
     console.log('\n📋 Tables:');
     result.rows.forEach((row, idx) => {
@@ -104,16 +121,17 @@ async function createSchema() {
 
 /**
  * Generate CREATE TABLE SQL statement
+ * OPTIMIZED FOR FAST LOADING - NO CONSTRAINTS!
  */
 function generateCreateTableSQL(schemaName, tableSchema) {
   const tableName = tableSchema.tableName;
   const columns = tableSchema.columns;
 
-  // Sanitize column names (remove special chars, spaces)
+  // ALL columns are nullable for fast loading
+  // NO primary keys, NO foreign keys, NO unique constraints
   const columnDefs = columns.map(col => {
     const sanitizedName = sanitizeColumnName(col.name);
-    const nullable = col.nullable ? 'NULL' : 'NOT NULL';
-    return `  "${sanitizedName}" ${col.type} ${nullable}`;
+    return `  "${sanitizedName}" ${col.type} NULL`;
   });
 
   const sql = `

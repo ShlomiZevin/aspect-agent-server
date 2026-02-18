@@ -141,18 +141,9 @@ class GCSService {
 
     if (values.length === 0) return 'TEXT';
 
-    // Check if all values are integers
-    if (values.every(v => /^-?\d+$/.test(v))) {
-      const nums = values.map(Number);
-      const max = Math.max(...nums);
-      const min = Math.min(...nums);
-
-      if (min >= -32768 && max <= 32767) return 'SMALLINT';
-      if (min >= -2147483648 && max <= 2147483647) return 'INTEGER';
-      return 'BIGINT';
-    }
-
-    // Check if all values are floats
+    // CONSERVATIVE APPROACH: Use NUMERIC for any numeric-looking data
+    // This handles both integers and decimals safely
+    // Full dataset might have decimals even if sample only has integers
     if (values.every(v => /^-?\d+\.?\d*$/.test(v))) {
       return 'NUMERIC';
     }
@@ -170,8 +161,8 @@ class GCSService {
       return 'BOOLEAN';
     }
 
-    // Use TEXT for all string columns to avoid length issues
-    // TEXT has no performance penalty in PostgreSQL and avoids VARCHAR size problems
+    // Use TEXT for all other columns (strings, mixed types, special chars like "%")
+    // TEXT has no performance penalty in PostgreSQL and avoids all type issues
     return 'TEXT';
   }
 

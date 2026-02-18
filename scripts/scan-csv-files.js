@@ -117,9 +117,31 @@ async function scanAllCSVFiles() {
 }
 
 /**
+ * Hebrew to English table name mapping
+ */
+const HEBREW_TABLE_NAMES = {
+  'חנויות.csv': 'stores',
+  'יעדים.csv': 'targets',
+  'לקוחות.csv': 'customers',
+  'מולטיפס.csv': 'multips',
+  'מכירות.csv': 'sales',
+  'מלאי מחסנים.csv': 'warehouse_inventory',
+  'מלאי מינימום.csv': 'min_inventory',
+  'מלאי.csv': 'inventory',
+  'פריטים.csv': 'items',
+  'תאריכי ספירת מלאי.csv': 'inventory_count_dates'
+};
+
+/**
  * Convert file name to valid PostgreSQL table name
  */
 function sanitizeTableName(fileName) {
+  // Check if this is a Hebrew filename with a known mapping
+  if (HEBREW_TABLE_NAMES[fileName]) {
+    return HEBREW_TABLE_NAMES[fileName];
+  }
+
+  // Otherwise, sanitize the filename
   return fileName
     .replace('.csv', '')
     .toLowerCase()

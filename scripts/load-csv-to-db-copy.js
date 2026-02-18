@@ -1,21 +1,21 @@
 /**
- * Load CSV Data to PostgreSQL Script
+ * Load CSV Data to PostgreSQL Script - OPTIMIZED WITH COPY
  *
  * Loads all CSV files from GCS into zer4u schema tables
- * Uses streaming for large files
+ * Uses PostgreSQL COPY command for maximum speed
  */
 
 require('dotenv').config();
 const { Pool } = require('pg');
 const gcsService = require('../services/gcs.service');
 const csv = require('csv-parser');
-const { pipeline } = require('stream/promises');
+const { Transform } = require('stream');
 const fs = require('fs').promises;
 const path = require('path');
+const { from: copyFrom } = require('pg-copy-streams');
 
 const SCHEMA_NAME = 'zer4u';
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.json');
-const BATCH_SIZE = 5000; // Increased from 1000 to 5000 for faster loading
 
 // Database connection
 const pool = new Pool({
@@ -30,10 +30,10 @@ const pool = new Pool({
 async function loadAllCSVFiles() {
   const startTime = Date.now();
   console.log('🚀 Loading CSV data into PostgreSQL...\n');
-  console.log('⚡ OPTIMIZED SETTINGS:');
-  console.log(`  - Batch size: ${BATCH_SIZE.toLocaleString()} rows`);
+  console.log('⚡ ULTRA-OPTIMIZED WITH POSTGRESQL COPY:');
+  console.log(`  - Using COPY FROM STDIN (10-50x faster)`);
   console.log(`  - NO constraints validation`);
-  console.log(`  - Streaming from GCS\n`);
+  console.log(`  - Direct streaming from GCS\n`);
   console.log('═'.repeat(60));
 
   try {
@@ -126,7 +126,7 @@ async function loadAllCSVFiles() {
 }
 
 /**
- * Load a single CSV file into its table
+ * Load a single CSV file into its table using COPY
  */
 async function loadCSVFile(schema) {
   const client = await pool.connect();
@@ -140,132 +140,66 @@ async function loadCSVFile(schema) {
       sanitizeColumnName(col.name.replace(/^\uFEFF/, '').trim())
     );
 
-    // Create stream from GCS
-    const stream = gcsService.getFileStream(filePath);
+    const columnNames = columns.map(c => `"${c}"`).join(', ');
 
-    let batch = [];
+    // Create COPY command
+    const copyQuery = `COPY ${tableName} (${columnNames}) FROM STDIN WITH (FORMAT csv, HEADER true, NULL '')`;
+
+    console.log(`  🔄 Starting COPY stream...`);
+
+    // Get GCS stream
+    const gcsStream = gcsService.getFileStream(filePath);
+
+    // Create COPY stream
+    const copyStream = client.query(copyFrom(copyQuery));
+
     let totalRows = 0;
-    let batchCount = 0;
-    const loadStartTime = Date.now(); // Track start time for speed calculation
+    let lastLogTime = Date.now();
+    const startTime = Date.now();
 
-    // Process CSV stream
-    await new Promise((resolve, reject) => {
-      let isProcessing = false;
+    // Track progress
+    const progressTransform = new Transform({
+      transform(chunk, encoding, callback) {
+        // Count newlines to estimate rows
+        const newlines = chunk.toString().split('\n').length - 1;
+        totalRows += newlines;
 
-      stream
-        .pipe(csv())
-        .on('data', (row) => {
-          // Add row to batch
-          batch.push(row);
+        // Log progress every 2 seconds
+        const now = Date.now();
+        if (now - lastLogTime > 2000) {
+          const elapsed = (now - startTime) / 1000;
+          const speed = Math.round(totalRows / elapsed);
+          process.stdout.write(`  ⏳ ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${elapsed.toFixed(1)}s elapsed...\r`);
+          lastLogTime = now;
+        }
 
-          // Insert batch when it reaches BATCH_SIZE
-          if (batch.length >= BATCH_SIZE && !isProcessing) {
-            stream.pause(); // Pause stream while inserting
-            isProcessing = true;
-
-            const currentBatch = batch;
-            batch = [];
-
-            // Process batch asynchronously but properly
-            insertBatch(client, tableName, columns, currentBatch)
-              .then(() => {
-                totalRows += currentBatch.length;
-                batchCount++;
-
-                // Progress indicator EVERY batch for better visibility
-                const elapsedMs = Date.now() - loadStartTime;
-                const elapsedSec = (elapsedMs / 1000).toFixed(1);
-                const speed = elapsedMs > 0 ? Math.round(totalRows / (elapsedMs / 1000)) : 0;
-                process.stdout.write(`  ⏳ ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${elapsedSec}s elapsed...\r`);
-
-                isProcessing = false;
-                stream.resume(); // Resume stream
-              })
-              .catch(error => {
-                reject(error);
-              });
-          }
-        })
-        .on('end', () => {
-          // Wait for any pending batch processing to complete
-          const checkAndFinish = () => {
-            if (isProcessing) {
-              // Wait a bit and check again
-              setTimeout(checkAndFinish, 100);
-              return;
-            }
-
-            // Insert remaining rows
-            if (batch.length > 0) {
-              insertBatch(client, tableName, columns, batch)
-                .then(() => {
-                  totalRows += batch.length;
-
-                  // Show final progress
-                  const elapsedMs = Date.now() - loadStartTime;
-                  const elapsedSec = (elapsedMs / 1000).toFixed(1);
-                  const speed = elapsedMs > 0 ? Math.round(totalRows / (elapsedMs / 1000)) : 0;
-                  process.stdout.write(`  ✅ ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${elapsedSec}s\n`);
-                  resolve();
-                })
-                .catch(reject);
-            } else {
-              resolve();
-            }
-          };
-
-          checkAndFinish();
-        })
-        .on('error', reject);
+        callback(null, chunk);
+      }
     });
 
-    return totalRows;
+    // Pipe GCS stream through progress tracker to COPY stream
+    await new Promise((resolve, reject) => {
+      gcsStream
+        .pipe(progressTransform)
+        .pipe(copyStream)
+        .on('finish', () => {
+          const elapsed = (Date.now() - startTime) / 1000;
+          const speed = Math.round(totalRows / elapsed);
+          process.stdout.write(`  ✅ ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${elapsed.toFixed(1)}s\n`);
+          resolve();
+        })
+        .on('error', reject);
+
+      gcsStream.on('error', reject);
+      progressTransform.on('error', reject);
+    });
+
+    // Return row count (approximate from line count)
+    return Math.max(0, totalRows - 1); // Subtract header line
 
   } finally {
     client.release();
   }
-}
-
-/**
- * Insert a batch of rows into the table
- */
-async function insertBatch(client, tableName, columns, rows) {
-  if (rows.length === 0) return;
-
-  // Build INSERT statement with multiple VALUES
-  const columnNames = columns.map(c => `"${c}"`).join(', ');
-
-  // Build placeholders for all rows
-  const valuePlaceholders = [];
-  const values = [];
-  let paramIndex = 1;
-
-  for (const row of rows) {
-    const rowPlaceholders = [];
-
-    for (const col of columns) {
-      // Get original column name from row (might have BOM or different encoding)
-      const originalColName = Object.keys(row).find(k =>
-        k.replace(/^\uFEFF/, '').trim() === col
-      ) || col;
-
-      const value = row[originalColName] !== undefined && row[originalColName] !== ''
-        ? row[originalColName]
-        : null;
-
-      values.push(value);
-      rowPlaceholders.push(`$${paramIndex++}`);
-    }
-
-    valuePlaceholders.push(`(${rowPlaceholders.join(', ')})`);
-  }
-
-  const sql = `
-    INSERT INTO ${tableName} (${columnNames})
-    VALUES ${valuePlaceholders.join(', ')}
-  `;
-
-  await client.query(sql, values);
 }
 
 /**

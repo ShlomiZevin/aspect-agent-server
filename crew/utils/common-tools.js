@@ -69,6 +69,58 @@ const commonTools = {
         timestamp: new Date().toISOString()
       };
     }
+  },
+
+  /**
+   * Extract data from customer database
+   * Translates business questions to SQL and fetches data
+   */
+  extractData: {
+    name: 'extract_data',
+    description: 'Extract data from the customer database by asking a business question. Use this when the user needs specific data, analytics, or reports.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: {
+          type: 'string',
+          description: 'A clear, simple business question about the data (e.g., "What are the top 10 selling products?" or "Show sales by store for last month")'
+        },
+        schemaName: {
+          type: 'string',
+          description: 'Database schema name for the customer (e.g., "zer4u")'
+        }
+      },
+      required: ['question', 'schemaName']
+    },
+    handler: async (params, context) => {
+      console.log(`📊 Extracting data for: ${params.question}`);
+
+      try {
+        const sqlHelper = require('../../services/sql-helper.service');
+        const { data, query, explanation } = await sqlHelper.fetchDataForQuestion(
+          params.question,
+          params.schemaName
+        );
+
+        console.log(`✅ Data extracted: ${data.length} rows`);
+
+        return {
+          success: true,
+          data: data,
+          rowCount: data.length,
+          query: query,
+          explanation: explanation
+        };
+
+      } catch (error) {
+        console.error('❌ Data extraction failed:', error.message);
+        return {
+          success: false,
+          error: error.message,
+          suggestion: 'Try rephrasing the question or being more specific about what data you need.'
+        };
+      }
+    }
   }
 };
 
