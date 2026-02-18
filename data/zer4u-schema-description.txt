@@ -3,16 +3,93 @@
 ## Overview
 This is a Hebrew-language retail business intelligence database containing sales, inventory, customer, and employee data. The schema supports comprehensive retail analytics including sales performance, inventory management, customer analysis, and operational metrics.
 
+## ⚡ IMPORTANT: Use Materialized Views for Aggregations (FAST!)
+
+### Sales by Store (`mv_sales_by_store`) - **USE THIS FOR STORE QUERIES**
+Pre-aggregated sales totals by store. **ALWAYS use this instead of aggregating sales table for store-related questions.**
+
+**Columns:**
+- `store_number` (integer) - Store ID
+- `store_name` (text) - Store name in Hebrew
+- `transaction_count` (bigint) - Number of transactions
+- `total_revenue` (numeric) - Total sales without VAT
+- `avg_revenue` (numeric) - Average transaction value
+
+**When to use:** Questions about "top stores", "sales by store", "store performance", "best stores", etc.
+
+**Example queries:**
+```sql
+-- Top 5 stores by revenue
+SELECT store_number, store_name, total_revenue
+FROM zer4u.mv_sales_by_store
+WHERE total_revenue IS NOT NULL
+ORDER BY total_revenue DESC
+LIMIT 5;
+
+-- Specific store performance
+SELECT * FROM zer4u.mv_sales_by_store WHERE store_number = 11;
+```
+
+### Sales by Customer (`mv_sales_by_customer`) - **USE THIS FOR CUSTOMER QUERIES**
+Pre-aggregated purchases by customer. **ALWAYS use this for customer analysis.**
+
+**Columns:**
+- `customer_number` (integer) - Customer ID
+- `customer_name` (text) - Customer name
+- `purchase_count` (bigint) - Number of purchases
+- `total_purchases` (numeric) - Total spending without VAT
+
+**When to use:** Questions about "top customers", "customer spending", "best customers", etc.
+
+**Example queries:**
+```sql
+-- Top 10 customers by spending
+SELECT customer_number, customer_name, total_purchases
+FROM zer4u.mv_sales_by_customer
+WHERE total_purchases IS NOT NULL
+ORDER BY total_purchases DESC
+LIMIT 10;
+```
+
+### Sales by Product (`mv_sales_by_product`) - **USE THIS FOR PRODUCT QUERIES**
+Pre-aggregated sales by product. **ALWAYS use this for product analysis.**
+
+**Columns:**
+- `item_code` (text) - Product code
+- `item_name` (text) - Product name in Hebrew
+- `total_quantity` (numeric) - Total units sold
+- `total_revenue` (numeric) - Total revenue from this product
+
+**When to use:** Questions about "top selling products", "best sellers", "popular items", etc.
+
+**Example queries:**
+```sql
+-- Top 10 products by quantity sold
+SELECT item_code, item_name, total_quantity
+FROM zer4u.mv_sales_by_product
+WHERE total_quantity IS NOT NULL
+ORDER BY total_quantity DESC
+LIMIT 10;
+
+-- Top products by revenue
+SELECT item_code, item_name, total_revenue
+FROM zer4u.mv_sales_by_product
+ORDER BY total_revenue DESC
+LIMIT 10;
+```
+
 ## Core Business Tables
 
 ### Sales Data (`sales` - 9.4M records)
+**⚠️ WARNING: Direct aggregation on this table is VERY SLOW (2+ minutes). Use materialized views above for aggregated queries!**
+
 Primary transaction table containing all sales activities:
 - **Keys**: `UniqueInvoiceKey`, `InventoryKey`, `TargetKey`
-- **Store Info**: `מס.חנות SALES` (store number), `CHNOT_ITSIRA` (store creation)
-- **Dates**: `תאריך מקורי SALES` (original date)
-- **Financial**: `מכירה ללא מע"מ` (sales without VAT), `עלות ללא מע"מ` (cost without VAT)
-- **Products**: `קוד פריט SALES` (item code), `כמות ברמת שורה` (quantity)
-- **Customers**: `מס.לקוח` (customer number)
+- **Store Info**: `מס.חנות SALES` (store number - TEXT type), `CHNOT_ITSIRA` (store creation)
+- **Dates**: `תאריך מקורי SALES` (original date - TEXT type)
+- **Financial**: `מכירה ללא מע"מ` (sales without VAT - TEXT, needs ::numeric cast), `עלות ללא מע"מ` (cost without VAT)
+- **Products**: `קוד פריט SALES` (item code - TEXT), `כמות ברמת שורה` (quantity - TEXT)
+- **Customers**: `מס.לקוח` (customer number - TEXT type)
 
 ### Items/Products (`items` - 28K records)
 Product catalog and pricing:
@@ -28,13 +105,13 @@ Stock levels and values:
 
 ### Customers (`customers` - 1.4M records)
 Customer information:
-- **Identity**: `מס.לקוח` (customer number), `שם לקוח` (customer name)
+- **Identity**: `מס.לקוח` (customer number - INTEGER type), `שם לקוח` (customer name)
 - **Location**: `כתובת` (address), `ישוב` (settlement)
 - **Demographics**: `מין` (gender)
 
 ### Stores (`stores` - 94 records)
 Store master data:
-- **Identity**: `מס.חנות` (store number), `שם חנות` (store name)
+- **Identity**: `מס.חנות` (store number - INTEGER type), `שם חנות` (store name)
 - **Management**: `מנהל איזור` (area manager), `סוג חנות` (store type)
 - **Lifecycle**: `תאריך פתיחת חנות` (opening date), `תאריך סגירת חנות` (closing date)
 
@@ -56,27 +133,38 @@ Date dimension with Hebrew date fields:
 
 ## Key Relationships
 - Sales ↔ Items: `קוד פריט SALES` (text) = `קוד פריט` (text)
-- Sales ↔ Customers: `מס.לקוח` (text in sales, integer in customers) - REQUIRES CAST
-- Sales ↔ Stores: `מס.חנות SALES` (text) = `מס.חנות` (integer) - REQUIRES CAST: sales."מס.חנות SALES"::integer = stores."מס.חנות"
+- Sales ↔ Customers: `מס.לקוח` (text in sales, integer in customers) - REQUIRES CAST: `sales."מס.לקוח"::integer = customers."מס.לקוח"`
+- Sales ↔ Stores: `מס.חנות SALES` (text) = `מס.חנות` (integer) - REQUIRES CAST: `sales."מס.חנות SALES"::integer = stores."מס.חנות"`
 - Sales ↔ Calendar: `תאריך מקורי SALES` (text) = `תאריך מקורי` (text)
 - Sales ↔ Inventory: via `InventoryKey` (text)
 - Sales ↔ Targets: via `TargetKey` (text)
 
 ## Important Notes
 1. **Language**: Most column names are in Hebrew; some are mixed Hebrew/English
-2. **Text Types**: Many numeric values stored as text fields - may need casting with ::numeric or CAST()
+2. **Text Types**: Many numeric values stored as text fields - MUST cast with ::numeric or ::integer
 3. **Keys**: Complex composite keys used for linking (`UniqueInvoiceKey`, `InventoryKey`, etc.)
 4. **Dates**: Stored as text, various date dimension tables for analysis
 5. **Nullability**: All columns allow NULL values
 6. **Mixed Data**: Some tables contain both transactional and dimensional data
 7. **Type Mismatches**: CRITICAL - Many JOIN keys have type mismatches:
-   - Store numbers: text in sales, integer in stores - MUST cast: "מס.חנות SALES"::integer
-   - Customer numbers: text in sales, integer in customers - MUST cast: "מס.לקוח"::integer
-   - When joining, always check types and add ::integer or ::text as needed
+   - Store numbers: text in sales, integer in stores - MUST cast: `"מס.חנות SALES"::integer`
+   - Customer numbers: text in sales, integer in customers - MUST cast: `"מס.לקוח"::integer`
+   - Numeric values: stored as text - MUST cast: `"מכירה ללא מע""מ"::numeric`
+   - When joining, always check types and add ::integer, ::numeric, or ::text as needed
+8. **Performance**:
+   - ✅ USE materialized views for aggregations (instant results)
+   - ❌ AVOID direct aggregation on sales table (2+ minute queries)
+   - Expression indexes exist on CAST operations for better JOIN performance
+
+## Query Strategy
+1. **For aggregated data** (top X, totals, summaries): Use materialized views
+2. **For specific transactions** (find invoice, item details): Use base tables with WHERE clause
+3. **For JOINs**: Always include proper type casts (::integer, ::numeric)
+4. **For column names with quotes**: Escape by doubling: `"מכירה ללא מע""מ"` (note the doubled quote)
 
 ## Common Analysis Patterns
-- Sales by store, period, product category
-- Inventory turnover and stock levels
-- Customer purchase behavior
-- Employee productivity and costs
-- Target vs actual performance tracking
+- **Top stores by revenue**: `SELECT * FROM mv_sales_by_store ORDER BY total_revenue DESC LIMIT 10`
+- **Top customers**: `SELECT * FROM mv_sales_by_customer ORDER BY total_purchases DESC LIMIT 10`
+- **Best selling products**: `SELECT * FROM mv_sales_by_product ORDER BY total_quantity DESC LIMIT 10`
+- **Store performance**: `SELECT * FROM mv_sales_by_store WHERE store_number = X`
+- **Customer history**: Join sales with customers using proper CAST
