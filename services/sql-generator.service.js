@@ -85,6 +85,11 @@ Generate a PostgreSQL query that answers the user's question based on the schema
 10. **Type Casting**: CRITICAL - When joining tables, if column types differ (e.g., text vs integer), you MUST cast to matching types using ::type syntax or CAST()
     - Example: If joining text column to integer column, use: text_col::integer = int_col
     - Common case: sales."מס.חנות SALES"::integer = stores."מס.חנות" (text to integer)
+11. **Date Handling**: CRITICAL - Date columns are stored as TEXT in DD/MM/YYYY format (Israeli format).
+    - NEVER use ::date cast directly - it will fail with "date/time field value out of range"
+    - ALWAYS use TO_DATE(column, 'DD/MM/YYYY') to convert to date for comparisons
+    - Example: TO_DATE(s."תאריך מקורי SALES", 'DD/MM/YYYY') >= CURRENT_DATE - INTERVAL '6 months'
+    - For GROUP BY month: TO_CHAR(TO_DATE(s."תאריך מקורי SALES", 'DD/MM/YYYY'), 'YYYY-MM') AS month
 
 ## Important Examples
 
@@ -103,6 +108,22 @@ SELECT * FROM zer4u.sales s JOIN zer4u.stores st ON s."מס.חנות SALES" = st
 **CORRECT** (type casting in JOIN):
 SELECT * FROM zer4u.sales s JOIN zer4u.stores st ON s."מס.חנות SALES"::integer = st."מס.חנות"
 ✅ Cast text to integer for proper comparison
+
+**WRONG** (date cast on Israeli format):
+WHERE s."תאריך מקורי SALES"::date >= CURRENT_DATE - INTERVAL '6 months'
+❌ This will cause: date/time field value out of range: "16/12/2024"
+
+**CORRECT** (date using TO_DATE with format):
+WHERE TO_DATE(s."תאריך מקורי SALES", 'DD/MM/YYYY') >= CURRENT_DATE - INTERVAL '6 months'
+✅ Correctly parses DD/MM/YYYY format
+
+**CORRECT** (group by month):
+SELECT TO_CHAR(TO_DATE(s."תאריך מקורי SALES", 'DD/MM/YYYY'), 'YYYY-MM') AS month,
+       SUM(s."מכירה ללא מע""מ"::numeric) AS total_revenue
+FROM zer4u.sales s
+WHERE TO_DATE(s."תאריך מקורי SALES", 'DD/MM/YYYY') >= CURRENT_DATE - INTERVAL '6 months'
+GROUP BY month
+ORDER BY month
 
 ## Output Format
 
