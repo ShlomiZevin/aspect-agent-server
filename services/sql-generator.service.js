@@ -82,6 +82,9 @@ Generate a PostgreSQL query that answers the user's question based on the schema
 7. **Quote Escaping**: If a column name contains a quote character (like מע"מ), you MUST escape it by doubling: "מכירה ללא מע""מ"
 8. **Aggregations**: Use appropriate GROUP BY, ORDER BY, and aggregate functions
 9. **Limits**: Add LIMIT clause for queries that might return many rows (default: 100)
+10. **Type Casting**: CRITICAL - When joining tables, if column types differ (e.g., text vs integer), you MUST cast to matching types using ::type syntax or CAST()
+    - Example: If joining text column to integer column, use: text_col::integer = int_col
+    - Common case: sales."מס.חנות SALES"::integer = stores."מס.חנות" (text to integer)
 
 ## Important Examples
 
@@ -92,6 +95,14 @@ SELECT "מכירה ללא מע"מ" FROM zer4u.sales
 **CORRECT** (quote escaped by doubling):
 SELECT "מכירה ללא מע""מ" FROM zer4u.sales
 ✅ The quote inside the column name is escaped as ""
+
+**WRONG** (type mismatch in JOIN):
+SELECT * FROM zer4u.sales s JOIN zer4u.stores st ON s."מס.חנות SALES" = st."מס.חנות"
+❌ This will cause: operator does not exist: text = integer
+
+**CORRECT** (type casting in JOIN):
+SELECT * FROM zer4u.sales s JOIN zer4u.stores st ON s."מס.חנות SALES"::integer = st."מס.חנות"
+✅ Cast text to integer for proper comparison
 
 ## Output Format
 

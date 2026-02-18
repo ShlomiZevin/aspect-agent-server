@@ -55,20 +55,24 @@ Date dimension with Hebrew date fields:
 - **`shorot_kbla`**: Credit card payment details
 
 ## Key Relationships
-- Sales ↔ Items: `קוד פריט SALES` = `קוד פריט`
-- Sales ↔ Customers: `מס.לקוח`
-- Sales ↔ Stores: `מס.חנות SALES` = `מס.חנות`
-- Sales ↔ Calendar: `תאריך מקורי SALES` = `תאריך מקורי`
-- Sales ↔ Inventory: via `InventoryKey`
-- Sales ↔ Targets: via `TargetKey`
+- Sales ↔ Items: `קוד פריט SALES` (text) = `קוד פריט` (text)
+- Sales ↔ Customers: `מס.לקוח` (text in sales, integer in customers) - REQUIRES CAST
+- Sales ↔ Stores: `מס.חנות SALES` (text) = `מס.חנות` (integer) - REQUIRES CAST: sales."מס.חנות SALES"::integer = stores."מס.חנות"
+- Sales ↔ Calendar: `תאריך מקורי SALES` (text) = `תאריך מקורי` (text)
+- Sales ↔ Inventory: via `InventoryKey` (text)
+- Sales ↔ Targets: via `TargetKey` (text)
 
 ## Important Notes
 1. **Language**: Most column names are in Hebrew; some are mixed Hebrew/English
-2. **Text Types**: Many numeric values stored as text fields - may need casting
+2. **Text Types**: Many numeric values stored as text fields - may need casting with ::numeric or CAST()
 3. **Keys**: Complex composite keys used for linking (`UniqueInvoiceKey`, `InventoryKey`, etc.)
 4. **Dates**: Stored as text, various date dimension tables for analysis
 5. **Nullability**: All columns allow NULL values
 6. **Mixed Data**: Some tables contain both transactional and dimensional data
+7. **Type Mismatches**: CRITICAL - Many JOIN keys have type mismatches:
+   - Store numbers: text in sales, integer in stores - MUST cast: "מס.חנות SALES"::integer
+   - Customer numbers: text in sales, integer in customers - MUST cast: "מס.לקוח"::integer
+   - When joining, always check types and add ::integer or ::text as needed
 
 ## Common Analysis Patterns
 - Sales by store, period, product category

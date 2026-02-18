@@ -32,7 +32,7 @@ class DataQueryService {
   async queryByQuestion(question, customerSchema, options = {}) {
     const {
       maxRows = 100,
-      timeout = 30000
+      timeout = 120000  // Increased to 2 minutes for large aggregations
     } = options;
 
     console.log(`📊 Data Query Service: Processing question for ${customerSchema}`);
