@@ -1,0 +1,78 @@
+# Database Schema: zer4u - Retail Business Intelligence System
+
+## Overview
+This is a Hebrew-language retail business intelligence database containing sales, inventory, customer, and employee data. The schema supports comprehensive retail analytics including sales performance, inventory management, customer analysis, and operational metrics.
+
+## Core Business Tables
+
+### Sales Data (`sales` - 9.4M records)
+Primary transaction table containing all sales activities:
+- **Keys**: `UniqueInvoiceKey`, `InventoryKey`, `TargetKey`
+- **Store Info**: `מס.חנות SALES` (store number), `CHNOT_ITSIRA` (store creation)
+- **Dates**: `תאריך מקורי SALES` (original date)
+- **Financial**: `מכירה ללא מע"מ` (sales without VAT), `עלות ללא מע"מ` (cost without VAT)
+- **Products**: `קוד פריט SALES` (item code), `כמות ברמת שורה` (quantity)
+- **Customers**: `מס.לקוח` (customer number)
+
+### Items/Products (`items` - 28K records)
+Product catalog and pricing:
+- **Identity**: `קוד פריט` (item code), `שם פריט` (item name)
+- **Pricing**: Multiple price fields (`מחיר עלות 0/6`, `מחיר מחירון 1/2/4`)
+- **Classification**: `קבוצת פריט` (item group), `תת קבוצת פריט` (sub-group)
+- **Suppliers**: `שם ספק` (supplier name)
+
+### Inventory (`inventory` - 19.8M records)
+Stock levels and values:
+- **Keys**: `InventoryKey`, `InventoryMahsanKey`
+- **Metrics**: `יתרת מלאי` (stock balance), `ערך מלאי` (stock value)
+
+### Customers (`customers` - 1.4M records)
+Customer information:
+- **Identity**: `מס.לקוח` (customer number), `שם לקוח` (customer name)
+- **Location**: `כתובת` (address), `ישוב` (settlement)
+- **Demographics**: `מין` (gender)
+
+### Stores (`stores` - 94 records)
+Store master data:
+- **Identity**: `מס.חנות` (store number), `שם חנות` (store name)
+- **Management**: `מנהל איזור` (area manager), `סוג חנות` (store type)
+- **Lifecycle**: `תאריך פתיחת חנות` (opening date), `תאריך סגירת חנות` (closing date)
+
+## Supporting Tables
+
+### Calendar (`calendar` - 3.7K records)
+Date dimension with Hebrew date fields:
+- **Base**: `תאריך מקורי` (original date), `DateN` (date number)
+- **Periods**: `שנה` (year), `חודש` (month), `רבעון` (quarter), `שבוע` (week)
+
+### Employee Data
+- **`employee_units_costed`**: Work hours and costs by employee and program
+- **`units_delivery_costed`**: Delivery unit costs and employee assignments
+
+### Financial Tables
+- **`hesbonithiuvi`**: Invoice accounting records
+- **`multips`**: Multi-purchase discounts
+- **`shorot_kbla`**: Credit card payment details
+
+## Key Relationships
+- Sales ↔ Items: `קוד פריט SALES` = `קוד פריט`
+- Sales ↔ Customers: `מס.לקוח`
+- Sales ↔ Stores: `מס.חנות SALES` = `מס.חנות`
+- Sales ↔ Calendar: `תאריך מקורי SALES` = `תאריך מקורי`
+- Sales ↔ Inventory: via `InventoryKey`
+- Sales ↔ Targets: via `TargetKey`
+
+## Important Notes
+1. **Language**: Most column names are in Hebrew; some are mixed Hebrew/English
+2. **Text Types**: Many numeric values stored as text fields - may need casting
+3. **Keys**: Complex composite keys used for linking (`UniqueInvoiceKey`, `InventoryKey`, etc.)
+4. **Dates**: Stored as text, various date dimension tables for analysis
+5. **Nullability**: All columns allow NULL values
+6. **Mixed Data**: Some tables contain both transactional and dimensional data
+
+## Common Analysis Patterns
+- Sales by store, period, product category
+- Inventory turnover and stock levels
+- Customer purchase behavior
+- Employee productivity and costs
+- Target vs actual performance tracking
