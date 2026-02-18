@@ -1,10 +1,11 @@
 const openaiService = require('./llm.openai');
 const claudeService = require('./llm.claude');
+const googleService = require('./llm.google');
 const functionRegistry = require('./function-registry');
 
 /**
  * Main LLM service that routes requests to specific providers
- * Supports OpenAI (primary for chat) and Claude (for crew generation)
+ * Supports OpenAI (primary for chat), Claude (for generation), and Google Gemini
  *
  * Function calls are handled at this layer (provider-agnostic)
  */
@@ -12,6 +13,7 @@ class LLMService {
   constructor() {
     this.provider = openaiService;  // Default provider for chat
     this.claude = claudeService;     // Claude provider for generation tasks
+    this.google = googleService;     // Google Gemini provider
     this.functionRegistry = functionRegistry;
   }
 
@@ -85,29 +87,40 @@ class LLMService {
    */
   async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
     // Detect provider from model name
-    const provider = this._getProviderForModel(config.model);
+    const provider = this._getProviderForModel(config.model, 'crew');
     yield* provider.sendMessageStreamWithPrompt(message, conversationId, config);
   }
 
   /**
    * Determine which provider to use based on model name
-   * @param {string} model - Model name (e.g., 'gpt-4o', 'claude-sonnet-4-5-20250929')
-   * @returns {Object} - Provider service (openaiService or claudeService)
+   * @param {string} model - Model name (e.g., 'gpt-4o', 'claude-sonnet-4-5-20250929', 'gemini-2.0-flash')
+   * @param {string} context - Context for logging (e.g., 'crew', 'field-extractor', 'one-shot')
+   * @returns {Object} - Provider service (openaiService, claudeService, or googleService)
    * @private
    */
-  _getProviderForModel(model) {
+  _getProviderForModel(model, context = 'one-shot') {
+    const contextLabel = context ? `[${context}] ` : '';
+
     if (!model) {
       return this.provider; // Default to OpenAI
     }
 
+    const modelLower = model.toLowerCase();
+
     // Claude models start with "claude-"
-    if (model.toLowerCase().startsWith('claude-')) {
-      console.log(`🤖 Using Claude provider for model: ${model}`);
+    if (modelLower.startsWith('claude-')) {
+      console.log(`🤖 ${contextLabel}Using Claude provider for model: ${model}`);
       return this.claude;
     }
 
-    // Otherwise use OpenAI (for gpt-*, o1-*, o3-*, etc.)
-    console.log(`🤖 Using OpenAI provider for model: ${model}`);
+    // Google Gemini models start with "gemini-"
+    if (modelLower.startsWith('gemini-')) {
+      console.log(`🤖 ${contextLabel}Using Google provider for model: ${model}`);
+      return this.google;
+    }
+
+    // Otherwise use OpenAI (for gpt-*, o1-*, o3-*, o4-*, etc.)
+    console.log(`🤖 ${contextLabel}Using OpenAI provider for model: ${model}`);
     return this.provider;
   }
 
@@ -118,12 +131,12 @@ class LLMService {
    *
    * @param {string} instructions - System instructions/prompt
    * @param {string} message - The user message content
-   * @param {Object} options - { model, maxTokens, jsonOutput }
+   * @param {Object} options - { model, maxTokens, jsonOutput, context }
    * @returns {Promise<string>} - The response text
    */
   async sendOneShot(instructions, message, options = {}) {
-    // Detect provider from model name
-    const provider = this._getProviderForModel(options.model);
+    // Detect provider from model name (use context from options for logging)
+    const provider = this._getProviderForModel(options.model, options.context || 'one-shot');
     return provider.sendOneShot(instructions, message, options);
   }
 
