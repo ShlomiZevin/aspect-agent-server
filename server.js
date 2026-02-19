@@ -923,6 +923,118 @@ app.delete('/api/conversation/:conversationId/fields', async (req, res) => {
   }
 });
 
+// ========== CONTEXT ENDPOINTS (for Context Editor Panel) ==========
+const contextService = require('./services/context.service');
+
+// Get all context for a conversation (both user-level and conversation-level)
+app.get('/api/conversation/:conversationId/context', async (req, res) => {
+  const { conversationId } = req.params;
+
+  try {
+    // Get conversation to find userId
+    const conversation = await conversationService.getConversationByExternalId(conversationId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    if (!conversation.userId) {
+      return res.json({
+        conversationId,
+        userLevel: {},
+        conversationLevel: {}
+      });
+    }
+
+    // Get user-level namespaces
+    const userNamespaces = await contextService.listNamespaces(conversation.userId, null);
+    const userLevel = {};
+    for (const ns of userNamespaces) {
+      userLevel[ns] = await contextService.getContext(conversation.userId, ns, null);
+    }
+
+    // Get conversation-level namespaces
+    const convNamespaces = await contextService.listNamespaces(conversation.userId, conversation.id);
+    const conversationLevel = {};
+    for (const ns of convNamespaces) {
+      conversationLevel[ns] = await contextService.getContext(conversation.userId, ns, conversation.id);
+    }
+
+    res.json({
+      conversationId,
+      userLevel,
+      conversationLevel
+    });
+  } catch (err) {
+    console.error('❌ Error fetching context:', err.message);
+    res.status(500).json({ error: 'Error fetching context: ' + err.message });
+  }
+});
+
+// Update context for a specific namespace
+app.patch('/api/conversation/:conversationId/context/:namespace', async (req, res) => {
+  const { conversationId, namespace } = req.params;
+  const { data, level = 'user' } = req.body;
+
+  if (!data || typeof data !== 'object') {
+    return res.status(400).json({ error: 'Data object is required' });
+  }
+
+  try {
+    const conversation = await conversationService.getConversationByExternalId(conversationId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    if (!conversation.userId) {
+      return res.status(400).json({ error: 'Conversation has no associated user' });
+    }
+
+    const convId = level === 'conversation' ? conversation.id : null;
+    await contextService.saveContext(conversation.userId, namespace, data, convId);
+
+    console.log(`✅ Updated context for ${conversationId}, namespace=${namespace}, level=${level}`);
+    res.json({
+      success: true,
+      namespace,
+      level,
+      data
+    });
+  } catch (err) {
+    console.error('❌ Error updating context:', err.message);
+    res.status(500).json({ error: 'Error updating context: ' + err.message });
+  }
+});
+
+// Delete context for a specific namespace
+app.delete('/api/conversation/:conversationId/context/:namespace', async (req, res) => {
+  const { conversationId, namespace } = req.params;
+  const { level = 'user' } = req.body || {};
+
+  try {
+    const conversation = await conversationService.getConversationByExternalId(conversationId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    if (!conversation.userId) {
+      return res.status(400).json({ error: 'Conversation has no associated user' });
+    }
+
+    const convId = level === 'conversation' ? conversation.id : null;
+    await contextService.deleteContext(conversation.userId, namespace, convId);
+
+    console.log(`✅ Deleted context for ${conversationId}, namespace=${namespace}, level=${level}`);
+    res.json({
+      success: true,
+      namespace,
+      level
+    });
+  } catch (err) {
+    console.error('❌ Error deleting context:', err.message);
+    res.status(500).json({ error: 'Error deleting context: ' + err.message });
+  }
+});
+
 app.post('/api/finance-assistant', async (req, res) => {
   const { message, conversationId, userId, agentName } = req.body;
 
