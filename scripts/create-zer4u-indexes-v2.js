@@ -140,19 +140,41 @@ const INDEXES = [
   },
 
   // ============================================
+  // JOIN COLUMNS - Critical for multi-table queries
+  // ============================================
+
+  // 8. InventoryKey on SALES (for joining to inventory)
+  {
+    name: 'idx_sales_inventory_key',
+    table: 'sales',
+    sql: `CREATE INDEX IF NOT EXISTS idx_sales_inventory_key
+          ON zer4u.sales ("InventoryKey")`,
+    reason: 'JOIN: sales → inventory'
+  },
+
+  // 9. TargetKey on SALES (for joining to targets)
+  {
+    name: 'idx_sales_target_key',
+    table: 'sales',
+    sql: `CREATE INDEX IF NOT EXISTS idx_sales_target_key
+          ON zer4u.sales ("TargetKey")`,
+    reason: 'JOIN: sales → targets'
+  },
+
+  // ============================================
   // INVENTORY TABLE (19.8M rows)
   // ============================================
 
-  // 8. Inventory key for joins
+  // 10. Inventory key for joins (other side)
   {
     name: 'idx_inventory_key',
     table: 'inventory',
     sql: `CREATE INDEX IF NOT EXISTS idx_inventory_key
           ON zer4u.inventory ("InventoryKey")`,
-    reason: 'Inventory joins with sales'
+    reason: 'JOIN: inventory ← sales'
   },
 
-  // 9. Stock balance for low stock queries
+  // 11. Stock balance for low stock queries
   {
     name: 'idx_inventory_balance',
     table: 'inventory',
@@ -165,7 +187,7 @@ const INDEXES = [
   // ITEMS TABLE (28K rows) - Small but frequently joined
   // ============================================
 
-  // 10. Item group for category queries
+  // 12. Item group for category queries
   {
     name: 'idx_items_group',
     table: 'items',
@@ -174,7 +196,7 @@ const INDEXES = [
     reason: 'Product category filtering'
   },
 
-  // 11. Item name for text search
+  // 13. Item name for text search
   {
     name: 'idx_items_name',
     table: 'items',
@@ -187,7 +209,7 @@ const INDEXES = [
   // CUSTOMERS TABLE (1.4M rows)
   // ============================================
 
-  // 12. Customer name for lookups
+  // 14. Customer name for lookups
   {
     name: 'idx_customers_name',
     table: 'customers',
@@ -196,7 +218,7 @@ const INDEXES = [
     reason: 'Customer name lookups'
   },
 
-  // 13. Customer location for geographic queries
+  // 15. Customer location for geographic queries
   {
     name: 'idx_customers_location',
     table: 'customers',
