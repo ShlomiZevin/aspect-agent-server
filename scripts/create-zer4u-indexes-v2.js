@@ -175,11 +175,12 @@ const INDEXES = [
   },
 
   // 11. Stock balance for low stock queries
+  // Note: יתרת מלאי is already numeric type, no cast needed
   {
     name: 'idx_inventory_balance',
     table: 'inventory',
     sql: `CREATE INDEX IF NOT EXISTS idx_inventory_balance
-          ON zer4u.inventory (zer4u.to_numeric_safe("יתרת מלאי"))`,
+          ON zer4u.inventory ("יתרת מלאי" DESC NULLS LAST)`,
     reason: 'Stock level queries'
   },
 

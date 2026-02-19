@@ -250,6 +250,22 @@ const tasks = pgTable('tasks', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// =============================================================================
+// DEMO MOCKUP MODULE (Customer demo tool)
+// =============================================================================
+
+// Demo mockups - fake conversation screenshots for customer demos
+const demoMockups = pgTable('demo_mockups', {
+  id: serial('id').primaryKey(),
+  publicId: varchar('public_id', { length: 50 }).notNull().unique(), // UUID for public sharing
+  title: varchar('title', { length: 255 }).notNull().default('Untitled Mockup'),
+  viewMode: varchar('view_mode', { length: 20 }).notNull().default('regular'), // 'whatsapp' | 'regular'
+  config: jsonb('config').notNull().default({}), // { agentName, agentLogoUrl, senderName, colorScheme, language }
+  messages: jsonb('messages').notNull().default([]), // [{ id, senderName, text, side, timestamp }]
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -268,4 +284,5 @@ module.exports = {
   crewMembers,
   taskAssignees,
   tasks,
+  demoMockups,
 };

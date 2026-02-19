@@ -18,6 +18,7 @@ const adminService = require('./services/admin.service');
 const promptService = require('./services/prompt.service');
 const crewMembersService = require('./services/crewMembers.service');
 const taskService = require('./services/task.service');
+const demoService = require('./services/demo.service');
 
 // WhatsApp bridge
 const { handleIncomingMessage } = require('./whatsapp/bridge.service');
@@ -2069,6 +2070,196 @@ app.post('/api/assignees', async (req, res) => {
   } catch (err) {
     console.error('❌ Error adding assignee:', err.message);
     res.status(400).json({ error: err.message });
+  }
+});
+
+// ========== DEMO MOCKUP ENDPOINTS ==========
+
+// List all mockups
+app.get('/api/demo-mockups', async (req, res) => {
+  try {
+    const mockups = await demoService.listMockups();
+    res.json({ mockups });
+  } catch (err) {
+    console.error('❌ Error listing mockups:', err.message);
+    res.status(500).json({ error: 'Error listing mockups: ' + err.message });
+  }
+});
+
+// Get a single mockup by publicId
+app.get('/api/demo-mockups/:publicId', async (req, res) => {
+  try {
+    const { publicId } = req.params;
+    const mockup = await demoService.getMockup(publicId);
+
+    if (!mockup) {
+      return res.status(404).json({ error: 'Mockup not found' });
+    }
+
+    res.json({ mockup });
+  } catch (err) {
+    console.error('❌ Error getting mockup:', err.message);
+    res.status(500).json({ error: 'Error getting mockup: ' + err.message });
+  }
+});
+
+// Create a new mockup
+app.post('/api/demo-mockups', async (req, res) => {
+  try {
+    const { title, viewMode, config, messages } = req.body;
+    const mockup = await demoService.createMockup({ title, viewMode, config, messages });
+    res.status(201).json({ success: true, mockup });
+  } catch (err) {
+    console.error('❌ Error creating mockup:', err.message);
+    res.status(500).json({ error: 'Error creating mockup: ' + err.message });
+  }
+});
+
+// Update a mockup
+app.patch('/api/demo-mockups/:publicId', async (req, res) => {
+  try {
+    const { publicId } = req.params;
+    const { title, viewMode, config, messages } = req.body;
+
+    const mockup = await demoService.updateMockup(publicId, { title, viewMode, config, messages });
+
+    if (!mockup) {
+      return res.status(404).json({ error: 'Mockup not found' });
+    }
+
+    res.json({ mockup });
+  } catch (err) {
+    console.error('❌ Error updating mockup:', err.message);
+    res.status(500).json({ error: 'Error updating mockup: ' + err.message });
+  }
+});
+
+// Delete a mockup
+app.delete('/api/demo-mockups/:publicId', async (req, res) => {
+  try {
+    const { publicId } = req.params;
+    const deleted = await demoService.deleteMockup(publicId);
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Mockup not found' });
+    }
+
+    res.json({ success: true, message: 'Mockup deleted' });
+  } catch (err) {
+    console.error('❌ Error deleting mockup:', err.message);
+    res.status(500).json({ error: 'Error deleting mockup: ' + err.message });
+  }
+});
+
+// Parse free-text conversation using Claude
+app.post('/api/demo-mockups/parse', async (req, res) => {
+  try {
+    const { text, language = 'en' } = req.body;
+
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: 'Text is required' });
+    }
+
+    const systemPrompt = `You are a conversation parser. Parse the following conversation text into a structured JSON array of messages.
+
+OUTPUT FORMAT:
+Return a JSON array where each message has:
+- "id": unique string (use "msg_1", "msg_2", etc.)
+- "senderName": string (detected speaker name)
+- "text": string (the message content, preserve exactly)
+- "side": "left" or "right" (first speaker = "right" as user, second speaker = "left" as agent, then alternate)
+- "timestamp": string (formatted like "10:32 AM" or "Jan 15, 10:32 AM" if date is specified)
+
+PARSING RULES:
+1. Detect speaker names from patterns like "Name:" or "Name says:" at start of lines
+2. If no clear names, use "User" and "Agent"
+3. First speaker goes to "right" (user side), responses go to "left" (agent side)
+4. Preserve original text exactly, including line breaks within a message
+5. Language context: ${language === 'he' ? 'Hebrew (RTL text expected)' : 'English (LTR text expected)'}
+
+DATE MARKERS:
+- Look for date markers in brackets like [Monday], [Jan 15], [Yesterday], [2 days ago], [Tuesday 14:30]
+- When you see a date marker, apply that date/time to subsequent messages until a new marker appears
+- Date markers are NOT part of the message text - exclude them from output
+- If no date markers exist, generate realistic times starting at 10:30 AM, incrementing 1-3 minutes
+- For multi-day conversations, include the date in timestamp like "Jan 15, 10:32 AM"
+
+EXAMPLE INPUT WITH DATE MARKERS:
+[Monday]
+John: Hello, I need help
+Agent: Hi John! How can I assist you today?
+[Tuesday 14:00]
+John: Following up on my request
+Agent: Of course! Let me check that for you.
+
+EXAMPLE OUTPUT:
+[
+  {"id":"msg_1","senderName":"John","text":"Hello, I need help","side":"right","timestamp":"Mon, 10:30 AM"},
+  {"id":"msg_2","senderName":"Agent","text":"Hi John! How can I assist you today?","side":"left","timestamp":"Mon, 10:31 AM"},
+  {"id":"msg_3","senderName":"John","text":"Following up on my request","side":"right","timestamp":"Tue, 2:00 PM"},
+  {"id":"msg_4","senderName":"Agent","text":"Of course! Let me check that for you.","side":"left","timestamp":"Tue, 2:02 PM"}
+]`;
+
+    const response = await llmService.claude.sendOneShot(systemPrompt, text, {
+      jsonOutput: true,
+      maxTokens: 4096
+    });
+
+    // Parse the response
+    let messages;
+    try {
+      // Clean up potential markdown code blocks
+      let cleanResponse = response.trim();
+      if (cleanResponse.startsWith('```')) {
+        cleanResponse = cleanResponse.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+      }
+      messages = JSON.parse(cleanResponse);
+    } catch (parseErr) {
+      console.error('❌ Failed to parse Claude response:', parseErr.message);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to parse conversation',
+        rawResponse: response
+      });
+    }
+
+    res.json({ success: true, messages });
+  } catch (err) {
+    console.error('❌ Error parsing conversation:', err.message);
+    res.status(500).json({ error: 'Error parsing conversation: ' + err.message });
+  }
+});
+
+// Upload logo image for demo mockup
+app.post('/api/demo-mockups/upload-logo', upload.single('logo'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const fs = require('fs');
+    const { v4: uuidv4 } = require('uuid');
+
+    // Create uploads directory if it doesn't exist
+    const uploadsDir = path.join(__dirname, 'public', 'uploads', 'demo-logos');
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+
+    // Generate unique filename
+    const ext = path.extname(req.file.originalname) || '.png';
+    const filename = `${uuidv4()}${ext}`;
+    const filepath = path.join(uploadsDir, filename);
+
+    // Write file
+    fs.writeFileSync(filepath, req.file.buffer);
+
+    // Return URL path
+    const url = `/uploads/demo-logos/${filename}`;
+    res.json({ success: true, url });
+  } catch (err) {
+    console.error('❌ Error uploading logo:', err.message);
+    res.status(500).json({ error: 'Error uploading logo: ' + err.message });
   }
 });
 
