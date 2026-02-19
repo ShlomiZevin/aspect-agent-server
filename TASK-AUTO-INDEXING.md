@@ -1,237 +1,318 @@
-# Task: Adaptive Auto-Indexing for Zer4U Agent
+# Task: Query Optimizer (Admin Dashboard)
 
 ## Goal
-Enable the zer4u crew member to detect slow queries, identify missing indexes, and automatically create them to improve response times.
+Provide admins visibility into slow queries and manual tools to analyze and optimize them via the admin dashboard.
 
 ## Problem
 - Users ask unpredictable questions
-- Pre-created indexes may not cover all query patterns
-- Slow queries (>5s) hurt user experience
-- Manual index management doesn't scale
+- Some queries run slow due to missing indexes
+- Need visibility into which queries are slow
+- Need controlled way to analyze and fix
 
-## Solution: Query Performance Monitor + Auto-Indexer
+## Solution: Slow Query Logger + Admin Query Optimizer
+
+**Key principle:** Nothing automatic. Admin sees slow queries, analyzes them, decides to optimize.
 
 ### How It Works
 
 ```
-User Question → SQL Generated → Query Executed
-                                      ↓
-                              [Performance Monitor]
-                                      ↓
-                         Duration > threshold (3s)?
-                                      ↓
-                              [Analyze EXPLAIN]
-                                      ↓
-                         Sequential scan on large table?
-                                      ↓
-                              [Create Index]
-                                      ↓
-                         Log + Notify (optional)
+User Question → SQL Executed → Duration > 5s?
+                                    ↓ YES
+                          [Log to slow_queries table]
+                                    ↓
+                          Admin sees in dashboard
+                                    ↓
+                          Admin clicks "Analyze"
+                                    ↓
+                          System runs EXPLAIN → shows recommendation
+                                    ↓
+                          Admin clicks "Execute"
+                                    ↓
+                          Job added to optimization_jobs table
+                                    ↓
+                          Admin can track status (poll/refresh)
 ```
 
-### Implementation Steps
+---
 
-#### 1. Add Query Logging Table
+## Implementation
+
+### 1. Slow Query Logging (Server-Side)
+
+#### Database Table
 ```sql
-CREATE TABLE zer4u.query_performance_log (
+-- Only logs queries that exceed threshold
+CREATE TABLE public.slow_queries (
   id SERIAL PRIMARY KEY,
-  question TEXT,
-  sql TEXT,
-  duration_ms INTEGER,
+  agent_name TEXT NOT NULL,           -- 'aspect', 'zer4u', etc.
+  schema_name TEXT,                   -- 'zer4u' (for DB-connected agents)
+  question TEXT,                      -- Original user question
+  sql TEXT NOT NULL,                  -- Generated SQL
+  duration_ms INTEGER NOT NULL,       -- How long it took
   rows_returned INTEGER,
-  explain_plan JSONB,
-  suggested_index TEXT,
-  index_created BOOLEAN DEFAULT FALSE,
-  created_at TIMESTAMP DEFAULT NOW()
+  created_at TIMESTAMP DEFAULT NOW(),
+  analyzed_at TIMESTAMP,              -- When admin ran analysis
+  recommendation JSONB                -- Filled after analysis
 );
+
+CREATE INDEX idx_slow_queries_agent ON public.slow_queries(agent_name);
+CREATE INDEX idx_slow_queries_created ON public.slow_queries(created_at DESC);
 ```
 
-#### 2. Modify data-query.service.js
-- Log every query with duration
-- If duration > 3000ms, run EXPLAIN ANALYZE
-- Parse explain plan for sequential scans on tables > 10K rows
-- Extract columns used in WHERE, JOIN, ORDER BY
-
-#### 3. Create index-advisor.service.js
+#### Modify data-query.service.js
 ```javascript
-class IndexAdvisorService {
-  // Analyze slow query and suggest index
-  async analyzeSlowQuery(sql, explainPlan) { }
-
-  // Check if suggested index already exists
-  async indexExists(tableName, columns) { }
-
-  // Create index with standard naming
-  async createIndex(tableName, columns, options) { }
-
-  // Track index usage over time
-  async getUnusedIndexes() { }
+// After query execution, if slow:
+if (duration > SLOW_QUERY_THRESHOLD_MS) {
+  await this.logSlowQuery({
+    agentName: 'aspect',
+    schemaName: 'zer4u',
+    question,
+    sql,
+    durationMs: duration,
+    rowsReturned: result.rows.length
+  });
 }
 ```
 
-#### 4. Index Creation Rules
-| Pattern in Query | Index Type |
-|------------------|------------|
-| `WHERE col = ?` | B-tree on col |
-| `WHERE col > ? AND col < ?` | B-tree on col |
-| `WHERE zer4u.parse_date_ddmmyyyy(col)` | Functional index |
-| `WHERE col1 = ? AND col2 = ?` | Composite (col1, col2) |
-| `ORDER BY col DESC` | B-tree DESC |
-| `JOIN ON col` | B-tree on col |
-
-#### 5. Safety Guards
-- Max 3 auto-indexes per day (prevent runaway)
-- Only on tables > 10K rows (small tables don't need)
-- Skip if index would be > 1GB estimated
-- Require sequential scan in EXPLAIN (confirm it helps)
-- Use CONCURRENTLY to avoid locking
-
-#### 6. Naming Convention
-```
-idx_auto_{table}_{col1}_{col2}_{timestamp}
+#### Config
+```bash
+SLOW_QUERY_THRESHOLD_MS=5000   # Log queries slower than 5s
 ```
 
-### Example Flow
+---
+
+### 2. Optimization Jobs Table
+
+```sql
+-- Tracks index creation jobs triggered by admin
+CREATE TABLE public.optimization_jobs (
+  id SERIAL PRIMARY KEY,
+  slow_query_id INTEGER REFERENCES public.slow_queries(id),
+  agent_name TEXT NOT NULL,
+  schema_name TEXT NOT NULL,
+  job_type TEXT NOT NULL,             -- 'create_index', 'create_mv', etc.
+  description TEXT,                   -- "Create index on sales(store, date)"
+  sql TEXT NOT NULL,                  -- The CREATE INDEX statement
+  status TEXT DEFAULT 'pending',      -- pending/running/completed/failed
+  error_message TEXT,
+  started_at TIMESTAMP,
+  completed_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW(),
+  created_by TEXT                     -- Admin username
+);
+
+CREATE INDEX idx_optimization_jobs_status ON public.optimization_jobs(status);
+```
+
+---
+
+### 3. Admin Dashboard: Query Optimizer
+
+#### Location
+`/admin/query-optimizer`
+
+**Only visible for agents with DB connection** (check agent config for `schema` or `database` field).
+Currently: `aspect` agent only.
+
+#### UI Sections
+
+##### Section 1: Slow Queries Table
+| Column | Description |
+|--------|-------------|
+| Time | When query ran |
+| Agent | aspect |
+| Question | "מכירות חנות 15 בחודש האחרון" |
+| Duration | 8.2s |
+| SQL | `SELECT ... FROM sales ...` (expandable) |
+| Status | ⚪ New / 🔍 Analyzed / ✅ Optimized |
+| Actions | [Analyze] [Dismiss] |
+
+##### Section 2: Analysis Panel (after clicking Analyze)
+Shows:
+- EXPLAIN ANALYZE output
+- Detected issue: "Sequential scan on sales (9.4M rows)"
+- **Recommendation:** "Create composite index on (store, date)"
+- Suggested SQL:
+  ```sql
+  CREATE INDEX idx_sales_store_date ON zer4u.sales (
+    zer4u.to_int_safe("מס.חנות SALES"),
+    zer4u.parse_date_ddmmyyyy("תאריך מקורי SALES") DESC
+  );
+  ```
+- [Execute Optimization] button
+
+##### Section 3: Optimization Jobs Table
+| Column | Description |
+|--------|-------------|
+| ID | Job ID |
+| Type | create_index |
+| Description | "Index on sales(store, date)" |
+| Status | 🟡 Running / ✅ Completed / ❌ Failed |
+| Started | 14:32:05 |
+| Duration | 2m 34s |
+| Actions | [View Details] |
+
+**Refresh:** Manual refresh button + optional slow polling (30s)
+
+---
+
+### 4. API Endpoints
 
 ```
-User: "מה המכירות של חנות 15 בינואר?"
+# Slow Queries
+GET  /api/admin/slow-queries              - List slow queries (paginated)
+GET  /api/admin/slow-queries/:id          - Get single slow query
+POST /api/admin/slow-queries/:id/analyze  - Run EXPLAIN, get recommendation
+POST /api/admin/slow-queries/:id/dismiss  - Mark as dismissed
 
-1. SQL Generated:
-   SELECT ... FROM sales
-   WHERE zer4u.to_int_safe("מס.חנות SALES") = 15
-   AND zer4u.parse_date_ddmmyyyy("תאריך מקורי SALES")
-       BETWEEN '2024-01-01' AND '2024-01-31'
-
-2. Query runs: 8.2 seconds ❌
-
-3. EXPLAIN shows: Seq Scan on sales (9.4M rows)
-
-4. Advisor detects:
-   - Missing composite index on (store, date)
-   - Suggests: idx_auto_sales_store_date_20240115
-
-5. Creates index (CONCURRENTLY)
-
-6. Next similar query: 0.3 seconds ✅
+# Optimization Jobs
+GET  /api/admin/optimization-jobs         - List all jobs
+GET  /api/admin/optimization-jobs/:id     - Get job status
+POST /api/admin/optimization-jobs         - Create new job (execute recommendation)
 ```
 
-### Files to Create/Modify
+---
+
+### 5. Services
+
+#### slow-query.service.js
+```javascript
+class SlowQueryService {
+  // Called by data-query.service when query is slow
+  async logSlowQuery({ agentName, schemaName, question, sql, durationMs, rowsReturned }) { }
+
+  // List slow queries for admin
+  async getSlowQueries(agentName, options = { limit: 50 }) { }
+
+  // Run EXPLAIN ANALYZE and generate recommendation
+  async analyzeQuery(slowQueryId) { }
+}
+```
+
+#### optimization-job.service.js
+```javascript
+class OptimizationJobService {
+  // Create and execute optimization job
+  async createJob({ slowQueryId, jobType, description, sql, createdBy }) { }
+
+  // Get job status
+  async getJobStatus(jobId) { }
+
+  // List jobs
+  async listJobs(agentName, options = {}) { }
+
+  // Actually run the optimization (called async)
+  async executeJob(jobId) { }
+}
+```
+
+---
+
+### 6. Index Recommendation Logic
+
+When analyzing a slow query:
+
+1. Run `EXPLAIN (ANALYZE, FORMAT JSON)` on the SQL
+2. Parse output for sequential scans on tables > 10K rows
+3. Extract columns from:
+   - WHERE clauses
+   - JOIN conditions
+   - ORDER BY
+4. Generate CREATE INDEX statement using helper functions:
+   - `zer4u.parse_date_ddmmyyyy()` for date columns
+   - `zer4u.to_int_safe()` for integer casts
+   - `zer4u.to_numeric_safe()` for numeric casts
+5. Check if similar index already exists
+6. Return recommendation with confidence level
+
+---
+
+### 7. React Components
+
+```
+/admin/query-optimizer/
+├── QueryOptimizerPage.tsx       - Main page
+├── SlowQueriesTable.tsx         - List of slow queries
+├── QueryAnalysisPanel.tsx       - EXPLAIN output + recommendation
+├── OptimizationJobsTable.tsx    - Running/completed jobs
+├── JobStatusBadge.tsx           - Status indicator
+└── SqlPreview.tsx               - Expandable SQL display
+```
+
+---
+
+### 8. Agent Configuration
+
+For this feature to appear in admin, agent config needs:
+
+```typescript
+// agents/aspect.config.ts
+export const aspectConfig = {
+  name: 'aspect',
+  // ... other config
+  database: {
+    schema: 'zer4u',        // Enables Query Optimizer in admin
+    enableQueryLogging: true
+  }
+};
+```
+
+Generic check in admin:
+```javascript
+const showQueryOptimizer = agent.database?.schema != null;
+```
+
+---
+
+## Files to Create/Modify
 
 | File | Action |
 |------|--------|
-| `services/index-advisor.service.js` | Create - core logic |
-| `services/data-query.service.js` | Modify - add logging |
-| `db/schema/query_performance_log.sql` | Create - logging table |
-| `scripts/cleanup-unused-indexes.js` | Create - maintenance |
-
-### Config Options (env vars)
-```bash
-AUTO_INDEX_ENABLED=true
-AUTO_INDEX_THRESHOLD_MS=3000
-AUTO_INDEX_MAX_PER_DAY=3
-AUTO_INDEX_MIN_TABLE_ROWS=10000
-```
-
-### Success Metrics
-- Queries > 3s reduced by 80%
-- Average query time < 2s
-- No manual index requests needed
+| `services/slow-query.service.js` | Create |
+| `services/optimization-job.service.js` | Create |
+| `services/data-query.service.js` | Modify - add slow query logging |
+| `db/migrations/xxx_add_slow_queries.sql` | Create |
+| `routes/admin.routes.js` | Add endpoints |
+| Client: `QueryOptimizerPage.tsx` + components | Create |
 
 ---
 
-## Admin UI: Index Manager
+## Example Flow
 
-### Location
-Add to existing admin section: `/admin/indexes`
-
-### Features
-
-#### 1. Index Dashboard Table
-| Column | Description |
-|--------|-------------|
-| Index Name | `idx_auto_sales_store_date_...` |
-| Table | `sales` |
-| Columns | `store, date` |
-| Reason | "Slow query: store filter + date range" |
-| Status | 🟡 Building / ✅ Active / ❌ Failed / 🗑️ Dropped |
-| Created | 2024-01-15 14:32 |
-| Size | 245 MB |
-| Usage | 1,247 scans |
-
-#### 2. Status Types
 ```
-🟡 BUILDING   - Index creation in progress
-✅ ACTIVE     - Index ready and being used
-⚠️ UNUSED    - No scans in 7+ days (candidate for removal)
-❌ FAILED     - Creation failed (show error)
-🗑️ DROPPED   - Manually removed
-```
+1. User asks: "מכירות חנות 15 בחודש האחרון"
 
-#### 3. Admin Actions
-- **Pause auto-indexing** - Stop automatic creation
-- **Drop index** - Remove unused index
-- **Rebuild index** - Recreate with CONCURRENTLY
-- **Force create** - Manually trigger index from suggestion
+2. Query runs in 8.2 seconds → logged to slow_queries
 
-#### 4. Manual Index Tool
-For offline/scheduled indexing:
-```bash
-# CLI tool for manual index operations
-node scripts/index-manager.js --list           # Show all indexes
-node scripts/index-manager.js --suggestions    # Show pending suggestions
-node scripts/index-manager.js --create <name>  # Create specific index
-node scripts/index-manager.js --drop <name>    # Drop index
-node scripts/index-manager.js --rebuild-all    # Rebuild during maintenance
-```
+3. Admin opens /admin/query-optimizer
+   - Sees new slow query in table
 
-### Database Table for Admin
-```sql
-CREATE TABLE zer4u.index_registry (
-  id SERIAL PRIMARY KEY,
-  index_name TEXT UNIQUE NOT NULL,
-  table_name TEXT NOT NULL,
-  columns TEXT[] NOT NULL,
-  reason TEXT,                    -- Short: "store + date filter"
-  status TEXT DEFAULT 'pending',  -- pending/building/active/failed/dropped
-  auto_created BOOLEAN DEFAULT TRUE,
-  error_message TEXT,
-  size_bytes BIGINT,
-  scan_count INTEGER DEFAULT 0,
-  last_used_at TIMESTAMP,
-  created_at TIMESTAMP DEFAULT NOW(),
-  dropped_at TIMESTAMP
-);
-```
+4. Admin clicks [Analyze]
+   - System runs EXPLAIN ANALYZE
+   - Shows: "Seq Scan on sales, 9.4M rows"
+   - Recommendation: "Create index on (store, date)"
+   - Shows SQL: CREATE INDEX idx_sales_...
 
-### API Endpoints
-```
-GET  /api/admin/indexes          - List all indexes with stats
-GET  /api/admin/indexes/suggest  - Get suggested indexes
-POST /api/admin/indexes          - Create index manually
-DELETE /api/admin/indexes/:name  - Drop index
-POST /api/admin/indexes/:name/rebuild - Rebuild index
-POST /api/admin/indexes/pause    - Pause auto-indexing
-```
+5. Admin clicks [Execute Optimization]
+   - Job created in optimization_jobs (status: pending)
+   - Background process picks up job
+   - Status changes: pending → running → completed
 
-### React Component (simplified)
-```
-/admin/indexes
-├── IndexDashboard.tsx      - Main table view
-├── IndexStatusBadge.tsx    - Status indicator
-├── CreateIndexModal.tsx    - Manual creation
-└── IndexSuggestions.tsx    - Pending suggestions list
+6. Admin refreshes, sees job completed
+   - Next similar query: 0.3 seconds ✅
 ```
 
 ---
 
-## Priority: Medium-High
-This is an optimization task. Core functionality works, but UX suffers on slow queries.
+## Priority: Medium
 
 ## Estimated Complexity
-- Query logging: Low
-- EXPLAIN parsing: Medium
-- Auto-index creation: Medium
-- Safety guards: Low
-- Admin UI: Medium
-- CLI tool: Low
-- **Total: 3-4 focused sessions**
+| Component | Effort |
+|-----------|--------|
+| Slow query logging | Low |
+| Database tables | Low |
+| EXPLAIN parsing | Medium |
+| Recommendation logic | Medium |
+| Admin UI | Medium |
+| Job execution | Low |
+| **Total** | **2-3 focused sessions** |
