@@ -128,7 +128,8 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
         'zer4u', // Schema name
         {
           maxRows: 100,
-          timeout: 30000
+          // timeout: use QUERY_TIMEOUT_MS env var default (15s)
+          agentName: 'aspect',  // Agent name for query optimizer logging
         }
       );
 
@@ -140,6 +141,15 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
           { question, sql: result.sql, explanation: result.explanation },
           `Fetching data: ${question}`
         );
+      }
+
+      if (result.timeout) {
+        return {
+          error: true,
+          timeout: true,
+          message: result.message,
+          suggestion: 'Try a more specific question or a narrower date range (e.g. "this week" instead of "this year").'
+        };
       }
 
       if (result.error) {

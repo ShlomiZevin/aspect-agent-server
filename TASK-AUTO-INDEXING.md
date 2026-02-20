@@ -1,5 +1,9 @@
 # Task: Query Optimizer (Admin Dashboard)
 
+> **Status: ✅ COMPLETED — 2026-02-20**
+> Deployed to Cloud Run (revision 00042) and Firebase Hosting.
+> Migrations 005 and 006 applied to production DB.
+
 ## Goal
 Provide admins visibility into slow queries and manual tools to analyze and optimize them via the admin dashboard.
 

@@ -1861,6 +1861,106 @@ app.get('/api/agents/:agentName/feedback/stats', async (req, res) => {
   }
 });
 
+// ========== QUERY OPTIMIZER ENDPOINTS ==========
+
+const slowQueryService = require('./services/slow-query.service');
+const optimizationJobService = require('./services/optimization-job.service');
+
+// List slow queries
+app.get('/api/admin/slow-queries', async (req, res) => {
+  try {
+    const { agentName, limit, offset } = req.query;
+    const rows = await slowQueryService.getSlowQueries({
+      agentName,
+      limit: limit ? parseInt(limit) : 50,
+      offset: offset ? parseInt(offset) : 0,
+    });
+    res.json({ slowQueries: rows });
+  } catch (err) {
+    console.error('❌ Error fetching slow queries:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get single slow query
+app.get('/api/admin/slow-queries/:id', async (req, res) => {
+  try {
+    const sq = await slowQueryService.getSlowQuery(parseInt(req.params.id));
+    if (!sq) return res.status(404).json({ error: 'Not found' });
+    res.json({ slowQuery: sq });
+  } catch (err) {
+    console.error('❌ Error fetching slow query:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Analyze a slow query (EXPLAIN + Claude recommendation)
+app.post('/api/admin/slow-queries/:id/analyze', async (req, res) => {
+  try {
+    const result = await slowQueryService.analyzeQuery(parseInt(req.params.id));
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error analyzing slow query:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Dismiss a slow query
+app.post('/api/admin/slow-queries/:id/dismiss', async (req, res) => {
+  try {
+    await slowQueryService.dismissQuery(parseInt(req.params.id));
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error dismissing slow query:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List optimization jobs
+app.get('/api/admin/optimization-jobs', async (req, res) => {
+  try {
+    const { agentName, limit, offset } = req.query;
+    const jobs = await optimizationJobService.listJobs({
+      agentName,
+      limit: limit ? parseInt(limit) : 50,
+      offset: offset ? parseInt(offset) : 0,
+    });
+    res.json({ jobs });
+  } catch (err) {
+    console.error('❌ Error fetching optimization jobs:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get single optimization job status
+app.get('/api/admin/optimization-jobs/:id', async (req, res) => {
+  try {
+    const job = await optimizationJobService.getJob(parseInt(req.params.id));
+    if (!job) return res.status(404).json({ error: 'Not found' });
+    res.json({ job });
+  } catch (err) {
+    console.error('❌ Error fetching optimization job:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create and execute an optimization job
+app.post('/api/admin/optimization-jobs', async (req, res) => {
+  try {
+    const { slowQueryId, agentName, schemaName, jobType, description, sql, createdBy } = req.body;
+    if (!agentName || !schemaName || !sql) {
+      return res.status(400).json({ error: 'agentName, schemaName and sql are required' });
+    }
+    const job = await optimizationJobService.createJob({
+      slowQueryId, agentName, schemaName, jobType, description, sql, createdBy,
+    });
+    res.status(201).json({ job });
+  } catch (err) {
+    console.error('❌ Error creating optimization job:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // ========== ADMIN ENDPOINTS ==========
 
 // Get all users with filters

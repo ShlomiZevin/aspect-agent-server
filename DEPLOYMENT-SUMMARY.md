@@ -1,6 +1,41 @@
-# Deployment Summary - Zer4U Data Query Fix
+# Deployment Summary
 
-## Date: 2026-02-18
+---
+
+## 2026-02-20 — Query Optimizer + Query Timeout
+
+### Features Implemented
+
+1. **Query Optimizer** (TASK-AUTO-INDEXING.md) — Admin dashboard at `/admin/query-optimizer`
+   - Logs slow (>5s), error, and timeout queries from `data-query.service.js`
+   - EXPLAIN (FORMAT JSON) + Claude index recommendation on demand
+   - Async CREATE INDEX CONCURRENTLY execution via `optimization-job.service.js`
+   - DB migrations 005 and 006 applied to production
+
+2. **Query Timeout** (TASK-QUERY-TIMEOUT.md)
+   - Queries killed after **15 seconds** via PostgreSQL `SET statement_timeout`
+   - Configurable: `QUERY_TIMEOUT_MS` env var (default: 15000)
+   - User receives friendly message pointing to Query Optimizer
+   - Filter tabs (All / Slow / Error / Timeout) added to admin UI
+
+### Files Changed
+- `services/data-query.service.js` — QUERY_TIMEOUT_MS, friendly timeout message
+- `agents/aspect/crew/zer4u.crew.js` — timeout response handling
+- `services/slow-query.service.js` — query logging service
+- `services/optimization-job.service.js` — DDL job execution
+- `server.js` — 7 new `/api/admin/*` endpoints
+- `client/QueryOptimizerPage/` — full admin UI component
+
+### Reverted
+- Query timeout was previously increased to 120s (2026-02-18). Now **15s** with env var control.
+
+### Deployment
+- Server: Cloud Run revision `aspect-agent-server-00043-65r`
+- Client: Firebase Hosting (aspect-agents.web.app)
+
+---
+
+## 2026-02-18 — Zer4U Data Query Fix
 
 ## Problem
 SQL type mismatch error: `operator does not exist: text = integer`

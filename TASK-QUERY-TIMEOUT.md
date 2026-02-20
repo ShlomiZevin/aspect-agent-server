@@ -1,5 +1,10 @@
 # Task: Query Timeout & User Feedback
 
+> **Status: ✅ COMPLETED — 2026-02-20**
+> Default timeout: 15s via `QUERY_TIMEOUT_MS` env var.
+> Friendly timeout message returned to LLM for user-facing response.
+> Filter tabs (All / Slow / Error / Timeout) added to Query Optimizer UI.
+
 **Depends on:** TASK-AUTO-INDEXING.md (Query Optimizer) must be completed first.
 
 ## Goal

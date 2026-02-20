@@ -1,5 +1,8 @@
 const { Pool } = require('pg');
 const sqlGeneratorService = require('./sql-generator.service');
+const slowQueryService = require('./slow-query.service');
+
+const QUERY_TIMEOUT_MS = parseInt(process.env.QUERY_TIMEOUT_MS || '15000');
 
 /**
  * Data Query Service
@@ -32,7 +35,8 @@ class DataQueryService {
   async queryByQuestion(question, customerSchema, options = {}) {
     const {
       maxRows = 100,
-      timeout = 120000  // Increased to 2 minutes for large aggregations
+      timeout = QUERY_TIMEOUT_MS,
+      agentName = customerSchema,  // Agent name for logging (defaults to schema name)
     } = options;
 
     console.log(`📊 Data Query Service: Processing question for ${customerSchema}`);
@@ -42,6 +46,7 @@ class DataQueryService {
 
     // Generate SQL first (outside try/catch so we can return it even on error)
     let sql, explanation, confidence;
+    const startTime = Date.now();
 
     try {
       // Step 1: Generate SQL from question
@@ -63,12 +68,24 @@ class DataQueryService {
       // Set statement timeout for safety
       await client.query(`SET statement_timeout = ${timeout}`);
 
-      const startTime = Date.now();
       const result = await client.query(sql);
       const duration = Date.now() - startTime;
 
       console.log(`   ✅ Query completed in ${duration}ms`);
       console.log(`   Rows returned: ${result.rows.length}`);
+
+      // Log slow queries (fire-and-forget — never blocks the response)
+      if (duration > slowQueryService.threshold) {
+        slowQueryService.logSlowQuery({
+          agentName,
+          schemaName: customerSchema,
+          question,
+          sql,
+          durationMs: duration,
+          rowsReturned: result.rows.length,
+          queryType: 'slow',
+        }).catch(() => {});
+      }
 
       // Step 3: Format and return results
       return {
@@ -82,12 +99,30 @@ class DataQueryService {
       };
 
     } catch (error) {
+      const duration = Date.now() - startTime;
       console.error('❌ Query execution failed:', error.message);
+
+      // Detect timeout vs generic error
+      const isTimeout = error.message?.includes('canceling statement due to statement timeout')
+        || error.message?.includes('Query read timeout')
+        || error.code === '57014';  // PostgreSQL statement_timeout error code
+
+      // Log all failed queries to the optimizer (fire-and-forget)
+      slowQueryService.logSlowQuery({
+        agentName,
+        schemaName: customerSchema,
+        question,
+        sql: sql ?? '',
+        durationMs: duration,
+        queryType: isTimeout ? 'timeout' : 'error',
+        errorMessage: error.message,
+      }).catch(() => {});
 
       // Return error with SQL (so user can see what was generated)
       return {
         error: true,
-        message: error.message,
+        timeout: isTimeout,
+        message: isTimeout ? this._getTimeoutMessage() : error.message,
         sql,
         explanation,
         confidence,
@@ -100,6 +135,15 @@ class DataQueryService {
       await client.query('RESET statement_timeout').catch(() => {});
       client.release();
     }
+  }
+
+  /**
+   * Returns a user-friendly message when a query exceeds the timeout.
+   * The LLM will translate/adapt it to the user's language.
+   * @private
+   */
+  _getTimeoutMessage() {
+    return `The query took too long and was automatically stopped after ${QUERY_TIMEOUT_MS / 1000} seconds.\n\nIt has been logged in the Query Optimizer dashboard where an admin can analyze it and create the necessary database indexes to make similar queries much faster.\n\nIn the meantime, try asking a more specific question or narrowing the time range (e.g. "last week" instead of "last year").`;
   }
 
   /**
