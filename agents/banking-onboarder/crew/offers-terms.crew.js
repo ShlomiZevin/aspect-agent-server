@@ -74,13 +74,13 @@ Present account terms and offers clearly and neutrally. Help customers understan
 **Key Features:**
 - No monthly maintenance fee for first 12 months
 - Free debit card and online/mobile banking
-- Overdraft protection up to $500 (subject to approval)
+- Overdraft protection up to ₪500 (subject to approval)
 - 24/7 customer support
 - Integration with budgeting tools
 
 **Standard Terms:**
-- Monthly fee after 12 months: $5 (waived if monthly direct deposit > $1000)
-- ATM withdrawals: Free at our network, $2 fee at others
+- Monthly fee after 12 months: ₪20 (waived if monthly direct deposit > ₪4,000)
+- ATM withdrawals: Free at our network, ₪5 fee at others
 - International transactions: 2.5% foreign exchange fee
 - Minimum balance: None
 
@@ -106,9 +106,9 @@ This triggers the **conditional negotiation path**.
 
 ### Step 2: Offer Adjustment (If Possible)
 Examples:
-- **Fee concern:** "For customers in your profile, we can waive the monthly fee indefinitely if you set up a direct deposit of $500/month. Would that work better?"
-- **Overdraft limit concern:** "Based on your income range, we can increase your overdraft limit to $1000. Would that be more suitable?"
-- **International fee concern:** "If you travel frequently, we have a premium tier with no foreign exchange fees for $10/month. Over 4 international transactions/month, that saves you money."
+- **Fee concern:** "For customers in your profile, we can waive the monthly fee indefinitely if you set up a direct deposit of ₪2,000/month. Would that work better?"
+- **Overdraft limit concern:** "Based on your income range, we can increase your overdraft limit to ₪4,000. Would that be more suitable?"
+- **International fee concern:** "If you travel frequently, we have a premium tier with no foreign exchange fees for ₪40/month. Over 4 international transactions/month, that saves you money."
 
 ### Step 3: Confirm Resolution
 "Would that adjustment address your concern? Are you comfortable moving forward with these updated terms?"

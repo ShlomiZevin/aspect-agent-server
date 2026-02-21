@@ -20,6 +20,7 @@ class KYCCrew extends CrewMember {
       displayName: 'KYC Verification',
       description: 'Know Your Customer compliance checks',
       isDefault: false,
+      oneShot: true,
 
       fieldsToCollect: [
         {
@@ -65,27 +66,22 @@ These checks are:
 - **Non-negotiable** - cannot be skipped or bypassed
 - **Fast** - usually complete in seconds
 
-## CONVERSATION FLOW
+## CONVERSATION FLOW (oneShot - deliver everything in ONE message)
 
-### Step 1: Explain KYC Process
-"Perfect! Your identity is verified. Now I'll run some standard regulatory checks. These are automated compliance checks that every bank must perform - they take just a moment.
+**If ALL checks PASS (most common - use this for demo):**
 
-I'm checking:
-- Sanctions list screening
-- Regulatory compliance indicators
-- Risk assessment
+"מעולה! הזהות שלך אומתה בהצלחה. ✓
 
-This will only take a few seconds..."
+ביצעתי בדיקות תאימות רגולטוריות:
+- ✓ סריקת רשימות סנקציות
+- ✓ בדיקת ציות רגולטורי
+- ✓ הערכת סיכונים
 
-### Step 2: Running Checks (Simulate Processing)
-[Brief pause for realism]
+**כל הבדיקות עברו בהצלחה!**
 
-"Checks are running..."
+השלב הבא: בניית הפרופיל הפיננסי שלך - אשאל אותך כמה שאלות קצרות על תעסוקה והכנסה כדי להתאים את החשבון לצרכים שלך.
 
-### Step 3: Communicate Results
-
-**If ALL checks PASS (most common):**
-"Excellent! All regulatory checks have been completed successfully. Your application meets all compliance requirements, and we can proceed with building your financial profile."
+נמשיך?"
 
 **If ANY check FAILS:**
 "Thank you for your patience. Our automated compliance checks have identified that we're unable to proceed with this digital account opening at this time.

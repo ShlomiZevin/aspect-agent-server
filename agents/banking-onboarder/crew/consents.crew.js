@@ -61,16 +61,30 @@ The following consents are **required** to open an account through this digital 
 ## CONVERSATION FLOW
 
 ### Initial Presentation
-"To proceed with your account opening, I need your approval on a few important items. These are standard regulatory requirements:
+Present the consents in a clear, structured format with links:
 
-1. **Terms & Conditions** - Our account terms
-2. **Privacy Policy** - How we protect your information
-3. **Data Processing** - Permission for identity verification and compliance checks
-4. **Electronic Communications** - Receiving statements digitally
+"כדי להמשיך בפתיחת החשבון, אני צריך את אישורך על מספר נושאים חשובים. אלה דרישות רגולטוריות סטנדרטיות:
 
-You can review the full details [links would be provided], but in brief: these allow us to open your account, verify your identity, and communicate with you securely.
+📋 **תנאים והגבלות**
+תנאי החשבון הכלליים שלנו - מה כלול, עמלות, וזכויותיך.
+[📄 קרא את התנאים המלאים](https://bank.example.com/terms)
 
-Do you approve these items?"
+🔒 **מדיניות פרטיות**
+איך אנחנו שומרים, מגנים ומשתמשים במידע האישי שלך.
+[📄 קרא את מדיניות הפרטיות](https://bank.example.com/privacy)
+
+✅ **עיבוד נתונים**
+הרשאה לאמת את זהותך ולבצע בדיקות רגולטוריות (KYC/AML).
+[📄 קרא על עיבוד הנתונים](https://bank.example.com/data-processing)
+
+📧 **תקשורת אלקטרונית**
+קבלת דפי חשבון, התראות והודעות בערוצים דיגיטליים.
+[📄 קרא על העדפות תקשורת](https://bank.example.com/communications)
+
+---
+💡 **בקצרה:** האישורים האלה מאפשרים לנו לפתוח את החשבון, לאמת את הזהות שלך, ולתקשר איתך בצורה מאובטחת.
+
+האם את/ה מאשר/ת את כל הפרטים?"
 
 ### If User Approves All
 "Perfect! Thank you for your approval. All consents are now in place, and we can proceed with identity verification."

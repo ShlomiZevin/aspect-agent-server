@@ -19,6 +19,7 @@ class IdentityVerificationCrew extends CrewMember {
       displayName: 'Identity Verification',
       description: 'Identity verification via documents and OTP',
       isDefault: false,
+      extractionMode: 'form',
 
       fieldsToCollect: [
         {
@@ -39,11 +40,11 @@ class IdentityVerificationCrew extends CrewMember {
         },
         {
           name: 'otp_code',
-          description: "The OTP code entered by the user. Extract the numeric code they provide."
+          description: "The OTP code entered by the user. Extract the numeric code they provide. IMPORTANT: Always extract the LATEST code - if user enters a new code, update this field with the new value."
         },
         {
           name: 'otp_verified',
-          description: "Set to 'success' if OTP verification passed, 'failed' if it failed, 'pending' if not yet attempted."
+          description: "DEMO RULES: Set to 'success' if user enters a 6-digit code starting with '1' (e.g., 123456, 111111). Set to 'failed' if user enters a 6-digit code starting with '2' or '3' (e.g., 234567, 333333). IMPORTANT: Always re-evaluate based on the LATEST code the user entered - if they correct themselves with a new code, update this field accordingly."
         },
         {
           name: 'verification_attempt_count',
