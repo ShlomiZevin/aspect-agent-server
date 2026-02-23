@@ -139,7 +139,7 @@ In this demo environment:
     // Only transition if KYC checks are complete and approved
     const kycDecision = collectedFields.kyc_decision;
 
-    // Save KYC results to context for future reference
+    // Save KYC results to context (conversation-level)
     if (kycDecision === 'approved') {
       await this.writeContext('kyc_results', {
         approved: true,
@@ -150,13 +150,13 @@ In this demo environment:
           risk: collectedFields.risk_assessment || 'low'
         },
         decision: kycDecision
-      });
+      }, true);
 
       // Update onboarding progress
       await this.mergeContext('onboarding_profile', {
         kycCompleted: true,
         currentStep: 'profile-enrichment'
-      });
+      }, true);
 
       console.log('   ✅ KYC checks passed and saved to context');
     } else if (kycDecision === 'declined') {
@@ -165,7 +165,7 @@ In this demo environment:
         completedAt: new Date().toISOString(),
         decision: kycDecision,
         reason: 'Compliance checks did not pass'
-      });
+      }, true);
 
       console.log('   ❌ KYC checks failed and saved to context');
     }

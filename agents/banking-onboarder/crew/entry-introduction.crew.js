@@ -104,14 +104,14 @@ To open an account through this digital service, customers must be **at least 16
       return false;
     }
 
-    // Save user profile to context for future sessions
+    // Save user profile to context (conversation-level for fresh starts)
     await this.writeContext('onboarding_profile', {
       name: collectedFields.user_name,
       age: age,
       eligibleForOnboarding: true,
       startedAt: new Date().toISOString(),
       currentStep: 'account-type'
-    });
+    }, true);
 
     console.log(`   💾 Saved onboarding profile for user: ${collectedFields.user_name}`);
 

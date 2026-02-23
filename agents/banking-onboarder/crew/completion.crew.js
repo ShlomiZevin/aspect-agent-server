@@ -80,7 +80,7 @@ Your new account is now **active** and ready to use. Here are your account detai
 "Here''s what you now have access to:
 - ✓ Online and mobile banking (you can log in immediately)
 - ✓ Free debit card (arriving in 7-10 business days)
-- ✓ Overdraft protection up to $500
+- ✓ Overdraft protection up to ₪500
 - ✓ 24/7 customer support"
 
 ### Step 3: Provide Clear Next Actions (1-3 Max)
@@ -180,20 +180,20 @@ This is where onboarding ends and daily banking begins. The tone shifts from "pr
     // Simulate account number if not generated
     const simulatedAccountNumber = accountNumber || `****${Math.floor(1000 + Math.random() * 9000)}`;
 
-    // Save completion status to context (if account was opened)
+    // Save completion status to context (conversation-level)
     if (accountOpened) {
       await this.writeContext('onboarding_completion', {
         completed: true,
         completedAt: new Date().toISOString(),
         accountNumber: simulatedAccountNumber,
         accountStatus: accountStatus
-      });
+      }, true);
 
       // Update onboarding profile
       await this.mergeContext('onboarding_profile', {
         currentStep: 'completed',
         completedAt: new Date().toISOString()
-      });
+      }, true);
 
       console.log(`   🎉 Onboarding completed for user: ${userName}`);
     }

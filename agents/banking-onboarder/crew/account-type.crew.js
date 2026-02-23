@@ -103,18 +103,18 @@ This is an **expectation-setting moment**. Be informational, not restrictive. He
 
     const accountType = collectedFields.account_type.toLowerCase();
 
-    // Save account type to context
+    // Save account type to context (conversation-level)
     await this.mergeContext('onboarding_profile', {
       accountType: accountType,
       accountTypeSelectedAt: new Date().toISOString()
-    });
+    }, true);
 
     // Only private current account is supported
     if (accountType === 'private_current') {
       // Update progress
       await this.mergeContext('onboarding_profile', {
         currentStep: 'consents'
-      });
+      }, true);
 
       console.log(`   ✅ Account type saved: ${accountType}`);
       return true;

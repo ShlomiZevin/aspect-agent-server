@@ -72,7 +72,7 @@ Obtain clear, explicit, and deliberate authorization to open the account. This i
 
 **Account Terms:**
 - No monthly fee (first 12 months)
-- Overdraft protection: $500
+- Overdraft protection: ₪500
 - Free debit card and online banking
 
 **Your Profile:**
