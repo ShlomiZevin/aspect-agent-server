@@ -563,6 +563,70 @@ if (crew.transitionTo && typeof crew.postMessageTransfer === 'function') {
 | Need to transition based on conversation content | Either, depending on extraction timing |
 | Multi-phase assessment with explicit "done" signals | `postMessageTransfer` with state-updating tools |
 
+### 4.6 Transition Rules (Debug Visualization)
+
+Crew transition logic is code-based (JavaScript if-statements), which gives full flexibility. To help debug **why a transition didn't happen**, you can optionally define `transitionRules` — structured metadata that the debug panel evaluates and displays as pass/fail.
+
+**Without `transitionRules`**: Debug panel shows the raw function code of `preMessageTransfer` / `postMessageTransfer`.
+
+**With `transitionRules`**: Debug panel shows structured evaluation with checkmarks for each condition.
+
+```javascript
+// In your crew constructor:
+super({
+  name: 'introduction',
+  transitionTo: 'profiler',
+  fieldsToCollect: [...],
+
+  // Optional: structured rules for debug visualization
+  transitionRules: [
+    {
+      id: 'ineligible_male',
+      type: 'pre',  // 'pre' = preMessageTransfer, 'post' = postMessageTransfer
+      condition: {
+        description: 'User is male',
+        fields: ['gender'],
+        evaluate: (fields) => {
+          const gender = fields.gender?.toLowerCase();
+          return gender === 'male' || gender === 'man';
+        }
+      },
+      result: { action: 'transition', target: 'ineligible' },
+      priority: 1  // Lower numbers evaluated first
+    },
+    {
+      id: 'eligible_complete',
+      type: 'pre',
+      condition: {
+        description: 'Name, age, and ToS collected; age >= 38',
+        fields: ['name', 'age', 'tos_acknowledged'],
+        evaluate: (fields) => {
+          const hasAll = !!fields.name && !!fields.age && !!fields.tos_acknowledged;
+          const age = parseInt(String(fields.age).match(/\d+/)?.[0] || '0', 10);
+          return hasAll && age >= 38;
+        }
+      },
+      result: { action: 'transition', target: 'profiler' },
+      priority: 10
+    }
+  ]
+});
+```
+
+**Rule structure:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | Unique identifier for the rule |
+| `type` | `'pre'` \| `'post'` | Which transfer method this rule mirrors |
+| `condition.description` | `string` | Human-readable description shown in debug panel |
+| `condition.fields` | `string[]` | Which collected fields this rule depends on |
+| `condition.evaluate` | `(fields, context) => boolean` | Evaluation function — should mirror the real logic |
+| `result` | `{ action, target? }` | What happens when the rule passes |
+| `priority` | `number` | Evaluation order (lower = first) |
+
+> **Important:** `transitionRules` are for **debug visualization only**. The actual transition logic still lives in your `preMessageTransfer` / `postMessageTransfer` methods. Keep the rule `evaluate` functions in sync with your real code.
+
 ---
 
 ## Part 5: Tool-Based State Management

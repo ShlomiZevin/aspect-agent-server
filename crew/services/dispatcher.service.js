@@ -19,6 +19,7 @@ const agentContextService = require('../../services/agentContext.service');
 const llmService = require('../../services/llm');
 const fieldsExtractor = require('../micro-agents/FieldsExtractorAgent');
 const promptService = require('../../services/prompt.service');
+const CrewMember = require('../base/CrewMember');
 
 class DispatcherService {
   constructor() {
@@ -488,6 +489,9 @@ class DispatcherService {
         fullInstructions += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
       }
 
+      // Build transition logic debug data
+      const transitionLogic = this._buildTransitionDebugData(crew, collectedFields);
+
       yield {
         type: 'debug_prompt',
         data: {
@@ -504,6 +508,7 @@ class DispatcherService {
           processedMessage,
           transitionSystemPrompt: resolvedTransitionPrompt,
           transitionPromptInjected: isNewCrewTransition,
+          transitionLogic,
         }
       };
     }
@@ -756,6 +761,91 @@ class DispatcherService {
   async getCrewInfo(agentName, conversationId, overrideCrewMember = null) {
     const crew = await this.getCurrentCrew(agentName, conversationId, overrideCrewMember);
     return crew ? crew.toJSON() : null;
+  }
+
+  /**
+   * Build transition logic debug data for a crew member.
+   * If crew has transitionRules, evaluates them and returns structured results.
+   * Otherwise, extracts raw function code as fallback.
+   *
+   * @param {Object} crew - CrewMember instance
+   * @param {Object} collectedFields - Current collected fields
+   * @returns {Object|null} - Transition debug data or null if no transition logic
+   * @private
+   */
+  _buildTransitionDebugData(crew, collectedFields) {
+    // Check if crew has custom transfer methods (not the base class defaults)
+    const hasCustomPre = crew.preMessageTransfer !== CrewMember.prototype.preMessageTransfer;
+    const hasCustomPost = crew.postMessageTransfer !== CrewMember.prototype.postMessageTransfer;
+
+    // No transition logic at all
+    if (!hasCustomPre && !hasCustomPost && !crew.oneShot && !crew.transitionTo) {
+      return null;
+    }
+
+    const hasStructuredRules = crew.transitionRules && crew.transitionRules.length > 0;
+
+    // Build structured rules evaluation if available
+    let evaluatedRules = null;
+    if (hasStructuredRules) {
+      evaluatedRules = {
+        pre: this._evaluateTransitionRules(crew, 'pre', collectedFields),
+        post: this._evaluateTransitionRules(crew, 'post', collectedFields),
+      };
+    }
+
+    // Extract raw function code as fallback
+    let rawCode = null;
+    if (!hasStructuredRules) {
+      rawCode = {
+        pre: hasCustomPre ? crew.preMessageTransfer.toString() : null,
+        post: hasCustomPost ? crew.postMessageTransfer.toString() : null,
+      };
+    }
+
+    return {
+      transitionTo: crew.transitionTo,
+      oneShot: crew.oneShot,
+      hasPreTransfer: hasCustomPre,
+      hasPostTransfer: hasCustomPost,
+      hasStructuredRules,
+      evaluatedRules,
+      rawCode,
+      collectedFields: collectedFields || {},
+    };
+  }
+
+  /**
+   * Evaluate transition rules of a specific type for a crew member.
+   *
+   * @param {Object} crew - CrewMember instance
+   * @param {string} type - Rule type: 'pre' or 'post'
+   * @param {Object} fields - Current collected fields
+   * @returns {Array} - Evaluated rule results [{id, description, fields, passed, result}]
+   * @private
+   */
+  _evaluateTransitionRules(crew, type, fields) {
+    if (!crew.transitionRules) return [];
+
+    const rules = crew.transitionRules
+      .filter(r => r.type === type)
+      .sort((a, b) => (a.priority || 0) - (b.priority || 0));
+
+    return rules.map(rule => {
+      let passed = false;
+      try {
+        passed = !!rule.condition.evaluate(fields || {}, {});
+      } catch (err) {
+        console.warn(`⚠️ Error evaluating transition rule ${rule.id}:`, err.message);
+      }
+      return {
+        id: rule.id,
+        description: rule.condition.description,
+        fields: rule.condition.fields || [],
+        passed,
+        result: rule.result,
+      };
+    });
   }
 }
 

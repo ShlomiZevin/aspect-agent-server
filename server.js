@@ -141,6 +141,76 @@ app.get('/api/agents/:agentName/crew-members/:crewName', async (req, res) => {
   }
 });
 
+// Get transition logic for a specific crew member (for debug panel)
+app.get('/api/agents/:agentName/crew-members/:crewName/transition-logic', async (req, res) => {
+  const { agentName, crewName } = req.params;
+
+  try {
+    const crew = await crewService.getCrewMember(agentName, crewName);
+    if (!crew) {
+      return res.status(404).json({ error: 'Crew member not found' });
+    }
+
+    const CrewMember = require('./crew/base/CrewMember');
+
+    // Check if crew has custom transfer methods (not the base class defaults)
+    const hasCustomPre = crew.preMessageTransfer !== CrewMember.prototype.preMessageTransfer;
+    const hasCustomPost = crew.postMessageTransfer !== CrewMember.prototype.postMessageTransfer;
+
+    // No transition logic at all
+    if (!hasCustomPre && !hasCustomPost && !crew.oneShot && !crew.transitionTo) {
+      return res.json({ transitionLogic: null });
+    }
+
+    const hasStructuredRules = crew.transitionRules && crew.transitionRules.length > 0;
+
+    // Extract raw function code as fallback
+    let rawCode = null;
+    if (!hasStructuredRules) {
+      rawCode = {
+        pre: hasCustomPre ? crew.preMessageTransfer.toString() : null,
+        post: hasCustomPost ? crew.postMessageTransfer.toString() : null,
+      };
+    }
+
+    // For structured rules, return the rule definitions (without evaluation - that needs runtime fields)
+    let ruleDefinitions = null;
+    if (hasStructuredRules) {
+      ruleDefinitions = {
+        pre: crew.transitionRules.filter(r => r.type === 'pre').map(r => ({
+          id: r.id,
+          description: r.condition.description,
+          fields: r.condition.fields || [],
+          result: r.result,
+          priority: r.priority || 0,
+        })),
+        post: crew.transitionRules.filter(r => r.type === 'post').map(r => ({
+          id: r.id,
+          description: r.condition.description,
+          fields: r.condition.fields || [],
+          result: r.result,
+          priority: r.priority || 0,
+        })),
+      };
+    }
+
+    res.json({
+      transitionLogic: {
+        transitionTo: crew.transitionTo,
+        oneShot: crew.oneShot || false,
+        hasPreTransfer: hasCustomPre,
+        hasPostTransfer: hasCustomPost,
+        hasStructuredRules,
+        ruleDefinitions,
+        rawCode,
+      }
+    });
+  } catch (err) {
+    console.error('❌ Error fetching transition logic:', err.message);
+    res.status(500).json({ error: 'Error fetching transition logic: ' + err.message });
+  }
+});
+
 // Create a new crew member (DB-based)
 app.post('/api/agents/:agentName/crew-members', async (req, res) => {
   const { agentName } = req.params;

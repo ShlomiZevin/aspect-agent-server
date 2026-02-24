@@ -40,6 +40,7 @@ class CrewMember {
    * @param {boolean} options.isDefault - Whether this is the default crew member
    * @param {string} options.transitionSystemPrompt - System prompt injected once when transitioning to this crew
    * @param {boolean} options.oneShot - If true, crew delivers one response then auto-transitions on next user message
+   * @param {Array} options.transitionRules - Optional structured rules for debug visualization [{id, type, condition: {description, fields, evaluate}, result, priority}]
    */
   constructor(options = {}) {
     // Identity
@@ -87,6 +88,11 @@ class CrewMember {
 
     // One-shot crews deliver one response then auto-transition on next user message
     this.oneShot = options.oneShot || false;
+
+    // Transition rules for debug visualization (optional)
+    // If defined, debug panel shows structured pass/fail evaluation
+    // If not defined, debug panel shows raw function code as fallback
+    this.transitionRules = options.transitionRules || [];
 
     // Context service state (set by dispatcher before use)
     this._userId = null;
