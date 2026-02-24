@@ -253,6 +253,16 @@ const tasks = pgTable('tasks', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Task comments
+const taskComments = pgTable('task_comments', {
+  id: serial('id').primaryKey(),
+  taskId: integer('task_id').references(() => tasks.id).notNull(),
+  author: varchar('author', { length: 100 }).notNull(),
+  content: text('content').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // =============================================================================
 // DEMO MOCKUP MODULE (Customer demo tool)
 // =============================================================================
@@ -287,5 +297,6 @@ module.exports = {
   crewMembers,
   taskAssignees,
   tasks,
+  taskComments,
   demoMockups,
 };

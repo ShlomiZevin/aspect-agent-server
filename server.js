@@ -18,6 +18,7 @@ const adminService = require('./services/admin.service');
 const promptService = require('./services/prompt.service');
 const crewMembersService = require('./services/crewMembers.service');
 const taskService = require('./services/task.service');
+const commentsService = require('./services/comments.service');
 const demoService = require('./services/demo.service');
 
 // WhatsApp bridge
@@ -2215,6 +2216,42 @@ app.delete('/api/tasks/:id', async (req, res) => {
   } catch (err) {
     console.error('❌ Error deleting task:', err.message);
     res.status(500).json({ error: 'Error deleting task: ' + err.message });
+  }
+});
+
+// ─── Task Comments ───────────────────────────────────────────────────────────
+
+// Get comments for a task
+app.get('/api/tasks/:taskId/comments', async (req, res) => {
+  try {
+    const comments = await commentsService.getComments(parseInt(req.params.taskId));
+    res.json({ comments });
+  } catch (err) {
+    console.error('❌ Error fetching comments:', err.message);
+    res.status(500).json({ error: 'Error fetching comments: ' + err.message });
+  }
+});
+
+// Add a comment to a task
+app.post('/api/tasks/:taskId/comments', async (req, res) => {
+  try {
+    const { author, content } = req.body;
+    const comment = await commentsService.addComment(parseInt(req.params.taskId), author, content);
+    res.status(201).json({ comment });
+  } catch (err) {
+    console.error('❌ Error adding comment:', err.message);
+    res.status(400).json({ error: 'Error adding comment: ' + err.message });
+  }
+});
+
+// Delete a comment
+app.delete('/api/tasks/:taskId/comments/:commentId', async (req, res) => {
+  try {
+    await commentsService.deleteComment(parseInt(req.params.commentId));
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error deleting comment:', err.message);
+    res.status(500).json({ error: 'Error deleting comment: ' + err.message });
   }
 });
 
