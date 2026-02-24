@@ -1426,7 +1426,8 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     if (thinkingService.hasActiveContext(conversationId)) {
       await thinkingService.endContext(conversationId);
     }
-    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    // Send error as typed event so client can display it properly
+    res.write(`data: ${JSON.stringify({ type: 'stream_error', error: err.message })}\n\n`);
     res.flush && res.flush();
     res.end();
   }
