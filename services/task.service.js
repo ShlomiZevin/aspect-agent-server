@@ -133,7 +133,7 @@ class TaskService {
   async createTask(data) {
     if (!this.drizzle) this.initialize();
 
-    const { title, description, status, priority, type, domain, assignee, dueDate, atRisk, isCompleted, dependsOn, tags } = data;
+    const { title, description, status, priority, type, domain, assignee, dueDate, atRisk, isCompleted, dependsOn, tags, isDraft, createdBy } = data;
 
     if (!title?.trim()) {
       throw new Error('Task title is required');
@@ -154,6 +154,8 @@ class TaskService {
         isCompleted: isCompleted || false,
         dependsOn: dependsOn || null,
         tags: tags || [],
+        isDraft: isDraft || false,
+        createdBy: createdBy || null,
       })
       .returning();
 
@@ -180,6 +182,8 @@ class TaskService {
     if (updates.isCompleted !== undefined) updateData.isCompleted = updates.isCompleted;
     if (updates.dependsOn !== undefined) updateData.dependsOn = updates.dependsOn || null;
     if (updates.tags !== undefined) updateData.tags = updates.tags;
+    if (updates.isDraft !== undefined) updateData.isDraft = updates.isDraft;
+    if (updates.createdBy !== undefined) updateData.createdBy = updates.createdBy || null;
 
     const [task] = await this.drizzle
       .update(tasks)
