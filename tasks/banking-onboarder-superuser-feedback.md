@@ -138,23 +138,19 @@
 
 ---
 
-### Task 14 [#66]: KYC - "Financial profile" language is intimidating
+### ~~Task 14 [#66]: KYC - "Financial profile" language is intimidating~~ ✅
 **Crew:** KYC Verification
 **Type:** Wrong Reply
-**Notes:**
-- "בניית הפרופיל הפיננסי שלך" is intimidating and uninviting. Change in two levels:
-  1. Remove "פרופיל פיננסי" - replace with customer language like "כמה שאלות קצרות על העיסוק וההכנסה שלך"
-  2. Add short value explanation - customer needs to understand why we're asking. Something like "כדי שאוכל להמליץ לך על האפשרויות שהכי מתאימות לך"
-- "נמשיך?" can stay - gives customer sense of control
+**Status:** Done
+**Changes:** Replaced "בניית הפרופיל הפיננסי שלך" with "כמה שאלות קצרות על העיסוק וההכנסה שלך, כדי שנוכל להמליץ לך על האפשרויות שהכי מתאימות לך". Kept "נמשיך?" for sense of control.
 
 ---
 
-### Task 15 [#65]: KYC - Don't show behind-the-scenes checks
+### ~~Task 15 [#65]: KYC - Don't show behind-the-scenes checks~~ ✅
 **Crew:** KYC Verification
 **Type:** Wrong Reply
-**Notes:**
-- Should NOT list which checks were performed (sanctions, compliance, risk assessment)
-- Just update that everything was verified successfully
+**Status:** Done
+**Changes:** Removed detailed check list (sanctions, compliance, risk assessment). Replaced with simple "כל הבדיקות הושלמו בהצלחה". Added explicit rule: "Do NOT list which checks were performed."
 
 ---
 
@@ -265,13 +261,14 @@
 
 ---
 
-## Infrastructure Fixes (from consents debugging)
+## Infrastructure Fixes
 - **Dispatcher**: Form mode doesn't skip extraction when all fields collected; sends all active fields for correction support; filters empty string values
-- **FieldsExtractorAgent**: Updated form mode prompt to handle consent re-approval as corrections; added debug logging
+- **FieldsExtractorAgent**: Updated form mode prompt to handle consent re-approval as corrections; added debug logging; added TYPED FIELDS support (`type: 'boolean'`, `allowedValues: [...]`) with dynamic prompt injection
 - **CrewMember base**: Added `getFieldsForExtraction(collectedFields)` method for sequential field exposure
 - **AGENT_BUILDING_GUIDE.md**: Documented `getFieldsForExtraction` and extraction modes
 
 ## Cross-cutting fixes
-- **Gender-neutral rule**: Added to entry-introduction, account-type, consents, identity-verification crews
+- **Gender-neutral rule**: Added to entry-introduction, account-type, consents, identity-verification, kyc crews
 - **Context level**: All banking crews use conversation-level context (not user-level)
 - **Currency**: Fixed $ → ₪ in final-confirmations and completion crews
+- **Typed fields**: Added `type: 'boolean'` and `allowedValues` support to field definitions for consistent extractor output

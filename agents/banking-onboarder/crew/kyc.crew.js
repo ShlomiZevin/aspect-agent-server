@@ -3,13 +3,12 @@
  *
  * Section 5: KYC - Know Your Customer
  *
- * Performs automated KYC (Know Your Customer) checks including sanctions screening,
- * PEP (Politically Exposed Person) checks, and risk indicators.
- * This is a non-negotiable regulatory requirement.
+ * Performs automated KYC checks (simulated for demo).
+ * In demo: all standard customers pass automatically.
+ * Crew delivers result message, user confirms to continue.
  *
  * Transitions:
- * - If all KYC checks pass → 'profile-enrichment'
- * - If any KYC check fails → End journey with clear explanation and alternative channel
+ * - If user confirms → 'profile-enrichment'
  */
 const CrewMember = require('../../../crew/base/CrewMember');
 
@@ -20,28 +19,13 @@ class KYCCrew extends CrewMember {
       displayName: 'KYC Verification',
       description: 'Know Your Customer compliance checks',
       isDefault: false,
-      oneShot: true,
+      extractionMode: 'form',
 
       fieldsToCollect: [
         {
-          name: 'kyc_checks_initiated',
-          description: "Set to 'yes' when KYC checks have been started. This indicates system is running background checks."
-        },
-        {
-          name: 'sanctions_check',
-          description: "Result of sanctions list screening. Set to 'pass' if clear, 'fail' if found on sanctions list, 'pending' if not yet completed. FOR DEMO: Extract 'pass' for any user whose name does NOT contain 'sanction' or 'blocked', otherwise 'fail'."
-        },
-        {
-          name: 'pep_check',
-          description: "PEP (Politically Exposed Person) check result. Set to 'pass' if not a PEP, 'fail' if identified as PEP, 'pending' if not yet completed. FOR DEMO: Extract 'pass' for all users (PEP would require enhanced due diligence, not automatic failure)."
-        },
-        {
-          name: 'risk_assessment',
-          description: "Overall risk assessment result. Set to 'low', 'medium', 'high', or 'pending'. FOR DEMO: Set to 'low' for standard customers. High risk would require manual review."
-        },
-        {
-          name: 'kyc_decision',
-          description: "Final KYC decision. Set to 'approved' if all checks pass and risk acceptable, 'declined' if any critical check fails, 'manual_review' if requires human review, 'pending' if checks not complete."
+          name: 'kyc_approved',
+          type: 'boolean',
+          description: "Set to true when user confirms they want to continue after KYC results. Any confirmation (yes, כן, נמשיך, בסדר, מאשר, ok) = true."
         }
       ],
 
@@ -50,83 +34,31 @@ class KYCCrew extends CrewMember {
       guidance: `You are a professional banking assistant guiding customers through the KYC (Know Your Customer) verification process.
 
 ## YOUR PURPOSE
-Inform customers about the automated compliance checks being performed and communicate results clearly. KYC is a mandatory regulatory requirement for all bank accounts.
+Inform customers that automated compliance checks passed and guide them to the next step.
 
-## WHAT IS KYC
-KYC (Know Your Customer) is a set of automated checks that banks must perform to:
-- Verify customer identity
-- Screen against sanctions lists
-- Identify politically exposed persons (PEPs)
-- Assess risk factors
-- Comply with anti-money laundering (AML) regulations
+## CONVERSATION FLOW
 
-These checks are:
-- **Automated** - run by secure systems
-- **Standard practice** - required by law
-- **Non-negotiable** - cannot be skipped or bypassed
-- **Fast** - usually complete in seconds
+### First message - deliver KYC results:
 
-## CONVERSATION FLOW (oneShot - deliver everything in ONE message)
+"מעולה! כל הבדיקות הושלמו בהצלחה ✅
 
-**If ALL checks PASS (most common - use this for demo):**
-
-"מעולה! הזהות שלך אומתה בהצלחה. ✓
-
-ביצעתי בדיקות תאימות רגולטוריות:
-- ✓ סריקת רשימות סנקציות
-- ✓ בדיקת ציות רגולטורי
-- ✓ הערכת סיכונים
-
-**כל הבדיקות עברו בהצלחה!**
-
-השלב הבא: בניית הפרופיל הפיננסי שלך - אשאל אותך כמה שאלות קצרות על תעסוקה והכנסה כדי להתאים את החשבון לצרכים שלך.
+השלב הבא – כמה שאלות קצרות על העיסוק וההכנסה שלך, כדי שנוכל להמליץ לך על האפשרויות שהכי מתאימות לך.
 
 נמשיך?"
 
-**If ANY check FAILS:**
-"Thank you for your patience. Our automated compliance checks have identified that we're unable to proceed with this digital account opening at this time.
+### If user confirms → system will transition automatically.
 
-This doesn't necessarily mean there's an issue - it may indicate that your application requires **additional review** by our compliance team.
-
-To proceed, please:
-- **Visit a branch:** Our team can conduct a detailed review and assist you in person
-- **Call us:** Speak with a specialist at [phone number]
-- **More information:** You'll receive an email with specific next steps
-
-Your information is secure, and we appreciate your understanding of these regulatory requirements."
-
-### Step 4: Handle Questions
-
-**If customer asks why they failed:**
-"For security and privacy reasons, I cannot provide specific details about compliance checks. However, our branch team or specialists can review your situation in detail and provide more information. This is standard banking practice to protect customer privacy."
-
-**If customer disputes the result:**
-"I understand your concern. These checks are automated and required by law. If you believe there's been an error, our compliance team can review your case. Please visit a branch or call us so they can look into this for you."
+### If user has questions → answer briefly, then ask again to continue.
 
 ## RULES
+- **Gender-neutral self-reference** - Never expose your gender. No slash forms (מבין/ה). Use neutral phrasing.
+- Do NOT list which checks were performed (sanctions, compliance, risk, etc.) - just confirm everything passed
 - Use **neutral, factual language** - not emotional or judgmental
 - Present KYC as a **standard regulatory step** - not as evaluation or suspicion
-- **Don't suggest** the customer did something wrong
-- **Don't expose** internal KYC logic, thresholds, or specific reasons for failure
-- **Don't allow retry** - KYC decision is automated and final
-- Be **clear and definitive** about the outcome
-- Offer **clear alternatives** when KYC fails
+- Keep responses **short** (2-3 sentences)
 
-## KYC SIMULATION LOGIC (FOR DEMO)
-In this demo environment:
-- **Sanctions check:** PASS for all users unless name contains "sanction" or "blocked"
-- **PEP check:** PASS for all users (PEPs get flagged for enhanced due diligence, not auto-declined)
-- **Risk assessment:** LOW for standard customers
-- **Overall decision:** APPROVED if all checks pass
-
-**In production:** These would be real API calls to compliance services (e.g., Dow Jones, World-Check, OFAC lists, etc.)
-
-## KEY PRINCIPLES
-- **Transparency** about what's being checked
-- **Speed** - don't create unnecessary anxiety with long delays
-- **Clarity** on outcomes
-- **Respect** for the process and the customer
-- **Clear next steps** when checks don't pass`,
+## DEMO NOTE
+In this demo, all customers pass KYC automatically. In production, these would be real API calls to compliance services.`,
 
       model: 'gpt-4o',
       maxTokens: 1500,
@@ -136,113 +68,41 @@ In this demo environment:
   }
 
   async preMessageTransfer(collectedFields) {
-    // Only transition if KYC checks are complete and approved
-    const kycDecision = collectedFields.kyc_decision;
+    const approved = collectedFields.kyc_approved === 'true';
 
-    // Save KYC results to context (conversation-level)
-    if (kycDecision === 'approved') {
+    if (approved) {
       await this.writeContext('kyc_results', {
         approved: true,
-        completedAt: new Date().toISOString(),
-        checks: {
-          sanctions: collectedFields.sanctions_check || 'pass',
-          pep: collectedFields.pep_check || 'pass',
-          risk: collectedFields.risk_assessment || 'low'
-        },
-        decision: kycDecision
+        completedAt: new Date().toISOString()
       }, true);
 
-      // Update onboarding progress
       await this.mergeContext('onboarding_profile', {
         kycCompleted: true,
         currentStep: 'profile-enrichment'
       }, true);
 
-      console.log('   ✅ KYC checks passed and saved to context');
-    } else if (kycDecision === 'declined') {
-      await this.writeContext('kyc_results', {
-        approved: false,
-        completedAt: new Date().toISOString(),
-        decision: kycDecision,
-        reason: 'Compliance checks did not pass'
-      }, true);
-
-      console.log('   ❌ KYC checks failed and saved to context');
+      console.log('   ✅ KYC approved, transitioning to profile-enrichment');
     }
 
-    return kycDecision === 'approved';
+    return approved;
   }
 
   async buildContext(params) {
     const baseContext = await super.buildContext(params);
     const collectedFields = params.collectedFields || {};
 
-    // Check for existing KYC results (skip if already completed)
-    const existingKYC = await this.getContext('kyc_results');
-
-    const checksInitiated = collectedFields.kyc_checks_initiated === 'yes';
-    const sanctionsCheck = collectedFields.sanctions_check || 'pending';
-    const pepCheck = collectedFields.pep_check || 'pending';
-    const riskAssessment = collectedFields.risk_assessment || 'pending';
-    const kycDecision = collectedFields.kyc_decision || 'pending';
-
-    const allChecksComplete = sanctionsCheck !== 'pending' && pepCheck !== 'pending' && riskAssessment !== 'pending';
-    const anyCheckFailed = sanctionsCheck === 'fail' || pepCheck === 'fail' || riskAssessment === 'high';
-    const allChecksPassed = sanctionsCheck === 'pass' && pepCheck === 'pass' && riskAssessment === 'low';
-
-    // Get user name from previous sections
+    const approved = collectedFields.kyc_approved === 'true';
     const userName = collectedFields.user_name || null;
-
-    // Simulate KYC decision based on check results
-    let simulatedDecision = 'pending';
-    if (allChecksComplete) {
-      if (anyCheckFailed) {
-        simulatedDecision = 'declined';
-      } else if (allChecksPassed) {
-        simulatedDecision = 'approved';
-      } else {
-        simulatedDecision = 'manual_review';
-      }
-    }
 
     return {
       ...baseContext,
       role: 'KYC Compliance Verification',
-      stage: 'Know Your Customer Checks',
       customerName: userName,
-      existingKYCResults: existingKYC,
-      kycAlreadyCompleted: existingKYC?.approved === true,
-      kycStatus: {
-        initiated: checksInitiated,
-        sanctionsCheck: sanctionsCheck,
-        pepCheck: pepCheck,
-        riskAssessment: riskAssessment,
-        finalDecision: kycDecision
-      },
-      simulatedDecision: simulatedDecision,
-      nextSteps: existingKYC?.approved
-        ? 'KYC was already completed successfully in a previous session. Skip checks and proceed to next step.'
-        : !checksInitiated
-        ? 'Explain KYC process and initiate checks.'
-        : !allChecksComplete
-        ? 'Simulate running checks (brief pause for realism), then mark as complete.'
-        : kycDecision === 'approved'
-        ? 'All checks passed! System will transition to Profile Enrichment.'
-        : kycDecision === 'declined' || anyCheckFailed
-        ? 'KYC checks did not pass. Explain limitation clearly and provide alternative channels. End journey.'
-        : 'Process KYC results and communicate outcome.',
-      instruction: existingKYC?.approved
-        ? 'KYC already completed. Inform user: "Your identity verification is already complete. Let\'s continue with your profile."'
-        : !checksInitiated
-        ? 'Explain that automated compliance checks will now run. This is standard for all accounts. Make it sound routine and quick.'
-        : !allChecksComplete
-        ? 'Simulate processing (you can say "running checks..."). Then mark all checks as complete based on simulation logic.'
-        : kycDecision === 'approved'
-        ? 'Congratulate the customer! All compliance checks passed. Ready to proceed.'
-        : kycDecision === 'declined' || anyCheckFailed
-        ? 'Explain that compliance checks require additional review. Do NOT provide specific failure reasons. Offer alternative channels (branch, phone). Be respectful and clear.'
-        : 'Communicate KYC outcome based on check results.',
-      demoNote: 'KYC SIMULATION: For demo, all standard customers pass. Sanctions check fails only if name contains "sanction" or "blocked". In production, this would call real compliance APIs.'
+      kycApproved: approved,
+      instruction: approved
+        ? 'User confirmed. System will transition.'
+        : 'Deliver KYC results (all checks passed) and ask user to continue. Do NOT list individual checks.',
+      demoNote: 'All customers pass KYC in demo. In production, real compliance API calls.'
     };
   }
 }
