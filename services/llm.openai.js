@@ -1046,7 +1046,7 @@ class OpenAIService {
    */
   async deleteVectorStoreFile(vectorStoreId, fileId) {
     try {
-      const result = await this.client.vectorStores.files.del(vectorStoreId, fileId);
+      const result = await this.client.vectorStores.files.delete(vectorStoreId, fileId);
       console.log(`✅ File ${fileId} deleted from vector store ${vectorStoreId}`);
 
       return {
