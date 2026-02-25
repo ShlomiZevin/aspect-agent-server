@@ -1771,6 +1771,28 @@ app.post('/api/kb/:kbId/upload', upload.single('file'), async (req, res) => {
   }
 });
 
+// Delete legacy file by openaiFileId (no DB record — file lives only in OpenAI VS)
+app.delete('/api/kb/:kbId/files/openai/:openaiFileId', async (req, res) => {
+  try {
+    const { kbId, openaiFileId } = req.params;
+    const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
+
+    if (kb.vectorStoreId) {
+      try {
+        await llmService.deleteVectorStoreFile(kb.vectorStoreId, openaiFileId);
+      } catch (err) {
+        console.warn(`⚠️ Could not remove from OpenAI VS: ${err.message}`);
+      }
+    }
+
+    console.log(`✅ Legacy file deleted from VS: ${openaiFileId}`);
+    res.json({ success: true, openaiFileId });
+  } catch (err) {
+    console.error('❌ Delete Error:', err.message);
+    res.status(500).json({ error: 'Error deleting file: ' + err.message });
+  }
+});
+
 // Delete file from knowledge base (removes from all providers it's on)
 app.delete('/api/kb/:kbId/files/:fileId', async (req, res) => {
   try {
