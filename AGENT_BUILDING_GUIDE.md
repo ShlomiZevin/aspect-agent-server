@@ -371,6 +371,36 @@ transitionTo: 'general',  // Transition target when all fields are collected
 
 **Note:** Because extraction runs in parallel, the LLM's context may be one message behind for collected fields. The dispatcher auto-injects a note about this. The `buildContext()` method should include `fieldsAlreadyCollected` and `fieldsStillNeeded` so the LLM knows what to ask for.
 
+#### `getFieldsForExtraction(collectedFields)`
+
+Override this method to control which fields the extractor sees at any given point. By default it returns all `fieldsToCollect`. Useful when a crew presents fields **sequentially** (e.g., consents one at a time) and you need to prevent the extractor from confusing similarly-described fields.
+
+```js
+// Example: consent crew - only expose the currently active consent
+getFieldsForExtraction(collectedFields) {
+  if (!collectedFields.first_consent || collectedFields.first_consent === 'rejected') {
+    return this.fieldsToCollect.filter(f => f.name === 'first_consent');
+  }
+  if (collectedFields.first_consent === 'approved' && !collectedFields.second_consent) {
+    return this.fieldsToCollect.filter(f => f.name === 'second_consent');
+  }
+  return this.fieldsToCollect;
+}
+```
+
+**When to use:** When a crew has multiple fields with similar descriptions (e.g., multiple yes/no consents) and presents them one at a time. Without this override, the extractor may assign the user's response to the wrong field.
+
+#### Extraction Modes
+
+Set `extractionMode` in the constructor to control extraction behavior:
+
+- **`'conversational'`** (default): Uses recent messages, GPT-4o-mini. Skips already-collected fields. Good for natural conversation flow.
+- **`'form'`**: Strict mode, only last user message, GPT-4o. Supports **corrections** (user changing a previous answer). Good for structured data collection where values may change (e.g., consent rejected → approved).
+
+```js
+extractionMode: 'form',  // Enable correction support
+```
+
 ### 3.5 Knowledge Base
 
 When a crew member has a knowledge base, the LLM uses OpenAI's file_search tool to query a vector store.

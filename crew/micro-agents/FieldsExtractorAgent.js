@@ -57,7 +57,7 @@ CRITICAL RULES:
 CORRECTIONS:
 - If the user EXPLICITLY corrects a previously collected field, include it in "corrections"
 - Correction signals: "actually...", "I meant...", "correction:", "sorry, it's...", "let me fix that", "that should be..."
-- ONLY add to corrections if user is clearly fixing a previous answer
+- ALSO a correction: if a field was previously "rejected"/"no" and the user now agrees (yes, ok, I agree, מסכים, בסדר, כן), include the updated value in "corrections"
 - Do NOT add to corrections just because a value appears in the message
 
 EXTRACTION GUIDELINES:
@@ -147,13 +147,25 @@ Extract any field values from the conversation above. Return JSON.`;
     const model = isFormMode ? 'gpt-4o' : 'gpt-4o-mini';
 
     try {
+      console.log(`   🔍 [FieldsExtractor] Mode: ${extractionMode}, Model: ${model}`);
+      console.log(`   🔍 [FieldsExtractor] Fields to extract:\n${fieldDescriptions}`);
+      console.log(`   🔍 [FieldsExtractor] Already collected: ${collectedSummary}`);
+      console.log(`   🔍 [FieldsExtractor] Messages count: ${relevantMessages.length}`);
+
       const responseText = await llmService.sendOneShot(
         systemPrompt,
         userMessage,
         { model, maxTokens: 512, jsonOutput: true, context: 'field-extractor' }
       );
 
+      console.log(`   🔍 [FieldsExtractor] Raw response: ${responseText}`);
+
       const parsed = JSON.parse(responseText);
+
+      console.log(`   🔍 [FieldsExtractor] Extracted: ${JSON.stringify(parsed.extractedFields || {})}`);
+      if (parsed.corrections && Object.keys(parsed.corrections).length > 0) {
+        console.log(`   🔍 [FieldsExtractor] Corrections: ${JSON.stringify(parsed.corrections)}`);
+      }
 
       return {
         extractedFields: parsed.extractedFields || {},

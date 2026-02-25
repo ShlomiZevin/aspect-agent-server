@@ -168,6 +168,18 @@ class CrewMember {
   }
 
   /**
+   * Get the fields that should be sent to the extractor for the current message.
+   * Override in subclasses to control which fields are active at any point in the conversation.
+   * For example, a consent crew can expose only the currently presented consent field.
+   *
+   * @param {Object} collectedFields - Already collected fields {name: value, ...}
+   * @returns {Array} - Fields to extract [{name, description}, ...]
+   */
+  getFieldsForExtraction(collectedFields) {
+    return this.fieldsToCollect;
+  }
+
+  /**
    * Build context for the LLM call
    * Override in subclasses for custom context building
    *

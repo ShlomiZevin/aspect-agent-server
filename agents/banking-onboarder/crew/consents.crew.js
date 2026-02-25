@@ -19,27 +19,16 @@ class ConsentsCrew extends CrewMember {
       displayName: 'Consents',
       description: 'Regulatory consents and permissions',
       isDefault: false,
+      extractionMode: 'form',
 
       fieldsToCollect: [
         {
-          name: 'terms_and_conditions_consent',
-          description: "MANDATORY. User's explicit consent to Terms & Conditions. Extract 'approved' if they explicitly agree/accept/consent. Extract 'rejected' if they explicitly decline/refuse. If they ask questions without deciding, do not extract yet."
+          name: 'service_usage_consent',
+          description: "Value MUST be exactly 'approved' or 'rejected'. yes/כן/ok/מסכים/מאשר/בסדר → 'approved'. no/לא/לא רוצה/לא מסכים/refuse → 'rejected'."
         },
         {
-          name: 'privacy_policy_consent',
-          description: "MANDATORY. User's explicit consent to Privacy Policy. Extract 'approved' if they explicitly agree/accept/consent. Extract 'rejected' if they explicitly decline/refuse. If they ask questions without deciding, do not extract yet."
-        },
-        {
-          name: 'data_processing_consent',
-          description: "MANDATORY. User's explicit consent to Data Processing (KYC, credit checks, regulatory compliance). Extract 'approved' if they explicitly agree/accept/consent. Extract 'rejected' if they explicitly decline/refuse. If they ask questions without deciding, do not extract yet."
-        },
-        {
-          name: 'electronic_communication_consent',
-          description: "MANDATORY. User's explicit consent to receive electronic communications (statements, notifications). Extract 'approved' if they explicitly agree/accept/consent. Extract 'rejected' if they explicitly decline/refuse. If they ask questions without deciding, do not extract yet."
-        },
-        {
-          name: 'consent_rejection_reconsidered',
-          description: "Set to 'true' only if user initially rejected a consent, you explained why it's required, and they reconsidered and approved. This tracks the reconsideration cycle."
+          name: 'credit_database_consent',
+          description: "Value MUST be exactly 'approved' or 'rejected'. yes/כן/ok/מסכים/מאשר/בסדר → 'approved'. no/לא/לא רוצה/לא מסכים/refuse → 'rejected'."
         }
       ],
 
@@ -48,87 +37,81 @@ class ConsentsCrew extends CrewMember {
       guidance: `You are a professional banking assistant helping customers understand and provide the necessary consents for opening a bank account.
 
 ## YOUR PURPOSE
-Obtain all **mandatory consents** required by law and regulation to proceed with account opening. Enable **informed approval** with minimal friction.
+Obtain the 2 **mandatory consents** required to proceed with account opening. Present them **one at a time**. But first, give a brief overview of the process ahead.
 
-## MANDATORY CONSENTS
-The following consents are **required** to open an account through this digital process:
-
-1. **Terms & Conditions** - Standard account terms
-2. **Privacy Policy** - How we handle personal information
-3. **Data Processing** - Permission to verify identity, run credit/compliance checks
-4. **Electronic Communications** - Receive statements and notifications electronically
+## MANDATORY CONSENTS (2 total)
+1. **הסכמה לשימוש בשירות** - Agreement to use the banking service (terms, account agreement)
+2. **פניה למאגר נתוני אשראי** - Permission for the bank to access the credit database
 
 ## CONVERSATION FLOW
 
-### Initial Presentation
-Present the consents in a clear, structured format with links:
+### Step 0: Process Overview (FIRST MESSAGE ONLY)
+Before presenting any consents, give a brief, warm overview of the entire process ahead:
 
-"כדי להמשיך בפתיחת החשבון, אני צריך את אישורך על מספר נושאים חשובים. אלה דרישות רגולטוריות סטנדרטיות:
+"מצוין [שם]! לפני שנתחיל, הנה מה שצפוי:
 
-📋 **תנאים והגבלות**
-תנאי החשבון הכלליים שלנו - מה כלול, עמלות, וזכויותיך.
-[📄 קרא את התנאים המלאים](https://bank.example.com/terms)
+התהליך כולל כ-5 שלבים ולוקח בערך 5-7 דקות:
+1️⃣ אישורים (אנחנו כאן עכשיו)
+2️⃣ אימות זהות
+3️⃣ פרופיל קצר
+4️⃣ הצעת חשבון מותאמת
+5️⃣ אישור סופי ופתיחה
 
-🔒 **מדיניות פרטיות**
-איך אנחנו שומרים, מגנים ומשתמשים במידע האישי שלך.
-[📄 קרא את מדיניות הפרטיות](https://bank.example.com/privacy)
+💡 אפשר לשאול שאלות בכל שלב, ואם צריך הפסקה – הנתונים נשמרים ואפשר לחזור בכל זמן.
 
-✅ **עיבוד נתונים**
-הרשאה לאמת את זהותך ולבצע בדיקות רגולטוריות (KYC/AML).
-[📄 קרא על עיבוד הנתונים](https://bank.example.com/data-processing)
+נתחיל עם שני אישורים קצרים – נעשה את זה כמה שיותר קל."
 
-📧 **תקשורת אלקטרונית**
-קבלת דפי חשבון, התראות והודעות בערוצים דיגיטליים.
-[📄 קרא על העדפות תקשורת](https://bank.example.com/communications)
+### Step 1: First Consent - Service Usage
+Present ONLY the first consent:
 
----
-💡 **בקצרה:** האישורים האלה מאפשרים לנו לפתוח את החשבון, לאמת את הזהות שלך, ולתקשר איתך בצורה מאובטחת.
+"📋 **הסכמה לשימוש בשירות**
+הסכמה לתנאי השימוש בחשבון – מה כלול, עמלות, וזכויותיך.
+[📄 לקריאת התנאים המלאים](https://bank.example.com/terms)
 
-האם את/ה מאשר/ת את כל הפרטים?"
+האם את/ה מאשר/ת?"
 
-### If User Approves All
-"Perfect! Thank you for your approval. All consents are now in place, and we can proceed with identity verification."
+Wait for explicit response before continuing.
+
+### Step 2: Second Consent - Credit Database
+Only after first consent is approved, present the second:
+
+"🔒 **פניה למאגר נתוני אשראי**
+אישור לבנק לפנות למאגר נתוני אשראי כדי להשלים את תהליך פתיחת החשבון.
+[📄 קרא עוד על הפניה למאגר](https://bank.example.com/credit-check)
+
+האם את/ה מאשר/ת?"
+
+### After Both Approved
+"מעולה! כל האישורים הנדרשים התקבלו. נמשיך לשלב הבא – אימות זהות."
 
 ### If User Has Questions
-Answer directly and simply. Don't force reading full legal text. Keep answers practical and focused on **why we need this**.
+Answer directly and simply. Keep answers practical and focused on **why we need this**. Questions are NOT rejection.
 
 ### If User Rejects a Consent (First Time)
-**Explain purpose calmly:**
-"I understand your hesitation. [Consent name] is required because [practical reason - e.g., 'we need permission to verify your identity for security and regulatory compliance'].
+Explain calmly why it's required. Offer one chance to reconsider:
 
-Without this consent, we won't be able to proceed with opening your account through this digital process, as it's a regulatory requirement.
+"אני לגמרי מבין את זה. האישור הזה נדרש כי [סיבה מעשית]. בלי אישור זה לא נוכל להמשיך בתהליך הדיגיטלי.
 
-Would you like to reconsider, or would you prefer to explore opening an account through one of our branches where you can discuss this in detail?"
+רוצה לחשוב על זה שוב, או שאפשר לסייע בפתיחת חשבון דרך אחד הסניפים שלנו?"
 
 ### If User Still Rejects After Reconsideration
-**End journey respectfully:**
-"I completely understand. Without [consent name], we're unable to proceed with this digital account opening process.
-
-If you'd like to discuss this further or explore other options, you can:
-- Visit one of our branches
-- Call our customer service line
-
-Thank you for your time, and please feel free to return when you're ready."
+End journey respectfully. Provide branch/phone alternatives (📞 03-9999999).
 
 ## RULES
-- Clearly distinguish **mandatory** vs optional consents (all listed above are mandatory)
-- Use **simple, human language** - not legal jargon as primary language
+- **Gender-neutral self-reference** - Never expose your gender. No slash forms (מבין/ה). Use neutral phrasing like "אני מבין את זה".
+- **ONE consent at a time** - NEVER present both consents together
+- Use **simple, human language** - not legal jargon
 - Explain **purpose** ("why we need this") not just legal framing
-- Allow **one reconsideration cycle** - explain once, then respect decision
-- Don't dump full legal text inline - offer to "read more" but don't force it
-- Don't guilt the user into approval
-- Don't create infinite loops - ask once, explain if rejected, then accept final decision
+- Allow **one reconsideration cycle** per consent
 - Allow **questions** without treating them as rejection
 - Keep **process momentum** - don't make this feel like a roadblock
+- Don't guilt the user into approval
 
 ## KEY PRINCIPLES
 - **Informed approval with minimal cognitive load**
 - **Transparency** - clear about what they're approving and why
 - **Respect user autonomy** - no manipulation, no guilt
-- **Regulatory requirement** - frame as necessary, not arbitrary
-
-## CONSENT LOGGING
-When user approves, note timestamp and confirmation in your response for tracking purposes. Example: "Your consents have been recorded as of [timestamp]."`,
+- **One at a time** - focused, conversational, not a form`,
 
       model: 'gpt-4o',
       maxTokens: 1500,
@@ -137,20 +120,28 @@ When user approves, note timestamp and confirmation in your response for trackin
     });
   }
 
+  getFieldsForExtraction(collectedFields) {
+    const serviceConsent = collectedFields.service_usage_consent;
+    const creditConsent = collectedFields.credit_database_consent;
+
+    // Only expose the field currently being discussed
+    // If service consent is not yet approved, stay on it
+    if (!serviceConsent || serviceConsent !== 'approved') {
+      return this.fieldsToCollect.filter(f => f.name === 'service_usage_consent');
+    }
+    // Service approved - if credit is not yet approved, focus on it
+    if (!creditConsent || creditConsent !== 'approved') {
+      return this.fieldsToCollect.filter(f => f.name === 'credit_database_consent');
+    }
+    return this.fieldsToCollect;
+  }
+
   async preMessageTransfer(collectedFields) {
-    // Check if all mandatory consents are approved
-    const requiredConsents = [
-      'terms_and_conditions_consent',
-      'privacy_policy_consent',
-      'data_processing_consent',
-      'electronic_communication_consent'
-    ];
+    // Check if both mandatory consents are approved
+    const allApproved =
+      collectedFields.service_usage_consent === 'approved' &&
+      collectedFields.credit_database_consent === 'approved';
 
-    const allApproved = requiredConsents.every(
-      consent => collectedFields[consent] === 'approved'
-    );
-
-    // Only transition if all mandatory consents are approved
     return allApproved;
   }
 
@@ -159,21 +150,17 @@ When user approves, note timestamp and confirmation in your response for trackin
     const collectedFields = params.collectedFields || {};
 
     const consents = {
-      termsAndConditions: collectedFields.terms_and_conditions_consent || 'pending',
-      privacyPolicy: collectedFields.privacy_policy_consent || 'pending',
-      dataProcessing: collectedFields.data_processing_consent || 'pending',
-      electronicComm: collectedFields.electronic_communication_consent || 'pending'
+      serviceUsage: collectedFields.service_usage_consent || 'pending',
+      creditDatabase: collectedFields.credit_database_consent || 'pending'
     };
 
     const approved = Object.values(consents).filter(v => v === 'approved').length;
     const rejected = Object.values(consents).filter(v => v === 'rejected').length;
     const pending = Object.values(consents).filter(v => v === 'pending').length;
 
-    const allApproved = approved === 4;
+    const allApproved = approved === 2;
     const anyRejected = rejected > 0;
-    const hasReconsidered = collectedFields.consent_rejection_reconsidered === 'true';
 
-    // Get user name from previous sections
     const userName = collectedFields.user_name || null;
 
     return {
@@ -182,34 +169,29 @@ When user approves, note timestamp and confirmation in your response for trackin
       stage: 'Regulatory Consents',
       customerName: userName,
       consentStatus: {
-        termsAndConditions: consents.termsAndConditions,
-        privacyPolicy: consents.privacyPolicy,
-        dataProcessing: consents.dataProcessing,
-        electronicCommunications: consents.electronicComm
+        serviceUsage: consents.serviceUsage,
+        creditDatabase: consents.creditDatabase
       },
       summary: {
-        approved: `${approved}/4`,
+        approved: `${approved}/2`,
         rejected: rejected,
         pending: pending
       },
-      reconsiderationCycle: hasReconsidered ? 'Used (one reconsideration allowed)' : 'Available',
       nextSteps: allApproved
-        ? 'All mandatory consents approved! System will transition to Identity Verification.'
-        : anyRejected && hasReconsidered
-        ? 'User has rejected consent after reconsideration. Explain limitation and end journey respectfully.'
-        : anyRejected && !hasReconsidered
-        ? 'User rejected a consent. Explain why it\'s required and offer one reconsideration.'
-        : 'Present consents clearly and obtain approval.',
+        ? 'Both mandatory consents approved! System will transition to Identity Verification.'
+        : anyRejected
+        ? 'User rejected a consent. Explain why it\'s required and try to get approval. If they insist, end journey respectfully.'
+        : 'Present consents one at a time and obtain approval.',
       instruction: allApproved
-        ? 'Thank the user for their approvals and confirm we can proceed.'
-        : anyRejected && hasReconsidered
-        ? 'User has made their final decision. End journey respectfully, provide alternative channels.'
-        : anyRejected && !hasReconsidered
-        ? 'Explain calmly why the rejected consent is required. Offer one chance to reconsider.'
-        : pending === 4
-        ? 'Present all four mandatory consents clearly. Explain purpose in simple terms.'
-        : 'Continue collecting remaining consent approvals.',
-      note: 'Questions are normal and should be answered without treating as rejection. Only explicit refusal counts as rejection.'
+        ? 'Thank the user for their approvals and confirm we can proceed to identity verification.'
+        : anyRejected
+        ? 'A consent was rejected. Check the conversation: if you have NOT yet tried to convince the user about THIS specific consent, you MUST explain why it is required and ask to reconsider. Only end the journey if the user rejects AGAIN after your explanation.'
+        : pending === 2
+        ? 'Start with the process overview (Step 0), then present the FIRST consent only (service usage). ONE at a time.'
+        : consents.serviceUsage === 'approved' && consents.creditDatabase === 'pending'
+        ? 'First consent approved. Now present the SECOND consent only (credit database access).'
+        : 'Continue collecting remaining consent.',
+      note: 'ONE consent at a time. Questions are normal - answer without treating as rejection. NEVER end the journey without first trying to convince. You must always attempt reconsideration before giving up on a consent.'
     };
   }
 }

@@ -601,9 +601,10 @@ class DispatcherService {
     // Get already collected fields
     const collectedFields = await agentContextService.getCollectedFields(conversationId);
 
-    // Check if all fields already collected (skip extraction)
+    // Check if all fields already collected (skip extraction - but not in form mode, which supports corrections)
+    const isFormMode = crew.extractionMode === 'form';
     const missingFields = await agentContextService.getMissingFields(conversationId, crew.fieldsToCollect);
-    if (missingFields.length === 0) {
+    if (missingFields.length === 0 && !isFormMode) {
       console.log('✅ All fields already collected, skipping extraction');
       return { newFields: {}, allCollected: collectedFields, remainingFields: [] };
     }
@@ -620,11 +621,16 @@ class DispatcherService {
     // Add the current message (not yet in DB history)
     recentMessages.push({ role: 'user', content: message });
 
-    // Only send fields that haven't been collected yet (prevents re-extraction)
-    const fieldsStillNeeded = crew.fieldsToCollect.filter(f => !collectedFields[f.name]);
+    // Use getFieldsForExtraction to let crews control which fields are active
+    // In form mode, send all active fields (supports corrections like rejected→approved)
+    // In conversational mode, only send missing active fields (prevents re-extraction)
+    const activeFields = crew.getFieldsForExtraction(collectedFields);
+    const fieldsStillNeeded = isFormMode
+      ? activeFields
+      : activeFields.filter(f => !collectedFields[f.name]);
 
     // Run extractor
-    console.log(`🔍 Running fields extractor for ${fieldsStillNeeded.length} missing fields (mode: ${crew.extractionMode || 'conversational'})`);
+    console.log(`🔍 Running fields extractor for ${fieldsStillNeeded.length} fields (mode: ${crew.extractionMode || 'conversational'})`);
     const result = await fieldsExtractor.extract({
       recentMessages,
       fieldsToCollect: fieldsStillNeeded,
@@ -633,15 +639,22 @@ class DispatcherService {
     });
 
     // Identify newly extracted fields (not previously collected)
+    // Filter out empty/null/undefined values - these are not real extractions
     const newFields = {};
     for (const [field, value] of Object.entries(result.extractedFields)) {
-      if (!collectedFields[field]) {
+      if (value !== null && value !== undefined && value !== '' && !collectedFields[field]) {
         newFields[field] = value;
       }
     }
 
     // Handle corrections (form mode only - fields user explicitly corrected)
-    const corrections = result.corrections || {};
+    // Also filter out empty values from corrections
+    const corrections = {};
+    for (const [field, value] of Object.entries(result.corrections || {})) {
+      if (value !== null && value !== undefined && value !== '') {
+        corrections[field] = value;
+      }
+    }
     if (Object.keys(corrections).length > 0) {
       console.log(`✏️ User corrected ${Object.keys(corrections).length} fields:`, Object.keys(corrections).join(', '));
     }
