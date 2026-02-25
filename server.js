@@ -1652,43 +1652,46 @@ app.get('/api/kb/:kbId/files', async (req, res) => {
       }
     }
 
-    let files;
-    if (dbFiles.length > 0) {
-      // DB has records — use them, enriched with live OpenAI status
-      files = dbFiles.map(dbFile => {
-        const vsFile = vsFiles.find(f => f.id === dbFile.openaiFileId);
-        return {
-          id: dbFile.id,
-          openaiFileId: dbFile.openaiFileId,
-          googleDocumentId: dbFile.googleDocumentId,
-          originalFileUrl: dbFile.originalFileUrl,
-          fileName: dbFile.fileName,
-          fileSize: dbFile.fileSize,
-          fileType: dbFile.fileType,
-          tags: dbFile.metadata?.tags || [],
-          status: vsFile?.status || dbFile.status,
-          createdAt: dbFile.createdAt,
-          updatedAt: dbFile.updatedAt
-        };
-      });
-    } else if (vsFiles.length > 0) {
-      // DB is empty but OpenAI vector store has files (legacy KB) — show them read-only
-      files = vsFiles.map(vsFile => ({
-        id: null,
+    // Per-file merge: match vsFiles with DB records by openaiFileId
+    // Files with a DB record get their numeric id (deletable)
+    // Files without a DB record get id: null (legacy, read-only)
+    const dbFileByOpenaiId = new Map(dbFiles.filter(f => f.openaiFileId).map(f => [f.openaiFileId, f]));
+
+    const vsFilesFormatted = vsFiles.map(vsFile => {
+      const dbFile = dbFileByOpenaiId.get(vsFile.id);
+      return {
+        id: dbFile?.id ?? null,
         openaiFileId: vsFile.id,
-        googleDocumentId: null,
-        originalFileUrl: null,
-        fileName: vsFile.fileName || vsFile.id,
-        fileSize: vsFile.fileSize || 0,
-        fileType: vsFile.fileName?.split('.').pop() || 'unknown',
-        tags: [],
+        googleDocumentId: dbFile?.googleDocumentId ?? null,
+        originalFileUrl: dbFile?.originalFileUrl ?? null,
+        fileName: dbFile?.fileName || vsFile.fileName || vsFile.id,
+        fileSize: dbFile?.fileSize ?? vsFile.fileSize ?? 0,
+        fileType: dbFile?.fileType || vsFile.fileName?.split('.').pop() || 'unknown',
+        tags: dbFile?.metadata?.tags || [],
         status: vsFile.status,
-        createdAt: vsFile.createdAt ? new Date(vsFile.createdAt * 1000).toISOString() : null,
-        updatedAt: null
+        createdAt: dbFile?.createdAt || (vsFile.createdAt ? new Date(vsFile.createdAt * 1000).toISOString() : null),
+        updatedAt: dbFile?.updatedAt ?? null
+      };
+    });
+
+    // Also include Google-only DB files (no OpenAI counterpart)
+    const googleOnlyFiles = dbFiles
+      .filter(f => f.googleDocumentId && !f.openaiFileId)
+      .map(dbFile => ({
+        id: dbFile.id,
+        openaiFileId: null,
+        googleDocumentId: dbFile.googleDocumentId,
+        originalFileUrl: dbFile.originalFileUrl,
+        fileName: dbFile.fileName,
+        fileSize: dbFile.fileSize,
+        fileType: dbFile.fileType,
+        tags: dbFile.metadata?.tags || [],
+        status: dbFile.status,
+        createdAt: dbFile.createdAt,
+        updatedAt: dbFile.updatedAt
       }));
-    } else {
-      files = [];
-    }
+
+    const files = [...vsFilesFormatted, ...googleOnlyFiles];
 
     res.json({ knowledgeBaseId: kbId, files });
   } catch (err) {
