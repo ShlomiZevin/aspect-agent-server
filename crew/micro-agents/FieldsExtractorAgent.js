@@ -24,10 +24,16 @@ RULES:
 - If a field was already collected, only update it if the user explicitly provides a new value
 - Support multiple languages (Hebrew, English, etc.)
 
+TYPED FIELDS:
+- Some fields have type constraints (shown as [BOOLEAN] or [ALLOWED VALUES: ...] in the field list)
+- For [BOOLEAN] fields: return ONLY "true" or "false" - never "yes", "Yes", "success", etc.
+- For [ALLOWED VALUES: x, y] fields: return ONLY one of the listed values exactly as shown
+- For fields without type constraints: extract the value as-is from the conversation
+
 CONTEXTUAL EXTRACTION:
 When extracting fields like "tos_acknowledged" or similar confirmation fields:
 - Look at what the assistant said/asked immediately before the user's response
-- If the assistant presented terms/disclaimer and asked for confirmation, and the user responds with ANY affirmative response (yes, okay, sure, I understand, כן, בסדר, מתאים לי, etc.), extract as "true"
+- If the assistant presented terms/disclaimer and asked for confirmation, and the user responds with ANY affirmative response (yes, okay, sure, I understand, כן, בסדר, מתאים לי, etc.), extract using the exact value specified in the field description
 
 You MUST respond with a JSON object in this exact format:
 {
@@ -50,7 +56,8 @@ CRITICAL RULES:
    - "No" is a complete, valid answer - extract it
    - Don't leave a field empty if the user answered with a negative
 5. YES/NO QUESTIONS:
-   - If asked a yes/no question and user says "yes"/"no" → Extract "Yes" or "No"
+   - If the field has a type constraint ([BOOLEAN] or [ALLOWED VALUES]), use that instead of "Yes"/"No"
+   - Otherwise: if asked a yes/no question and user says "yes"/"no" → Extract "Yes" or "No"
    - If user says "we do" or "we don't" → Extract "Yes" or "No" accordingly
 6. For multi-part questions answered together, extract all applicable fields
 
@@ -59,6 +66,12 @@ CORRECTIONS:
 - Correction signals: "actually...", "I meant...", "correction:", "sorry, it's...", "let me fix that", "that should be..."
 - ALSO a correction: if a field was previously "rejected"/"no" and the user now agrees (yes, ok, I agree, מסכים, בסדר, כן), include the updated value in "corrections"
 - Do NOT add to corrections just because a value appears in the message
+
+TYPED FIELDS:
+- Some fields have type constraints (shown as [BOOLEAN] or [ALLOWED VALUES: ...] in the field list)
+- For [BOOLEAN] fields: return ONLY "true" or "false" - never "yes", "Yes", "success", etc.
+- For [ALLOWED VALUES: x, y] fields: return ONLY one of the listed values exactly as shown
+- For fields without type constraints: extract the value as-is from the conversation
 
 EXTRACTION GUIDELINES:
 - User says "no" or "none" → Extract "No" or "None" (this IS a valid collected value)
@@ -93,9 +106,16 @@ class FieldsExtractorAgent {
     const isFormMode = extractionMode === 'form';
     const systemPrompt = isFormMode ? FORM_SYSTEM_PROMPT : CONVERSATIONAL_SYSTEM_PROMPT;
 
-    // Build the field descriptions
+    // Build the field descriptions with type constraints
     const fieldDescriptions = fieldsToCollect
-      .map(f => `- ${f.name}: ${f.description}`)
+      .map(f => {
+        const typeTag = f.type === 'boolean'
+          ? ' [BOOLEAN: "true" or "false" only]'
+          : Array.isArray(f.allowedValues) && f.allowedValues.length > 0
+          ? ` [ALLOWED VALUES: ${f.allowedValues.map(v => `"${v}"`).join(', ')} only]`
+          : '';
+        return `- ${f.name}${typeTag}: ${f.description}`;
+      })
       .join('\n');
 
     // For form mode, we only care about the last exchange

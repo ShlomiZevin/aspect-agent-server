@@ -1,21 +1,18 @@
 # Banking Onboarder - Super User Feedback
 
-## Status: Pending
+## Status: In Progress
 
 ---
 
-### Task 1: Account Selection - Business account redirect too abrupt
+### ~~Task 1: Account Selection - Business account redirect too abrupt~~ ✅
 **Crew:** Account Selection
 **Type:** Wrong Reply
-**Notes:**
-- Placeholder visible: `[מספר טלפון]` appears as raw text, needs real data
-- Redirect is too abrupt/cold - should feel like "we're still taking care of you", not "not my job, go elsewhere"
-- No option to continue with a private account - if customer wants both, they're stuck
-- "יש עוד משהו שאני יכול לעזור לך בו?" is too generic when the agent already limited what it can do
+**Status:** Done
+**Changes:** Warm Hebrew redirect with fake phone 03-9999999, offers private account as alternative, gender-neutral language.
 
 ---
 
-### Task 2: Completion - Text-heavy format, needs celebratory UI
+### Task 2 [#78]: Completion - Text-heavy format, needs celebratory UI
 **Crew:** Account Opened (completion)
 **Type:** Wrong Reply
 **Notes:**
@@ -30,7 +27,7 @@
 
 ---
 
-### Task 3: Final Confirmation - Add digital signature simulation
+### Task 3 [#77]: Final Confirmation - Add digital signature simulation
 **Crew:** Final Confirmation
 **Type:** Wrong Reply
 **Notes:**
@@ -38,7 +35,7 @@
 
 ---
 
-### Task 4: Final Confirmation - Terms confirmation too abrupt
+### Task 4 [#76]: Final Confirmation - Terms confirmation too abrupt
 **Crew:** Final Confirmation
 **Type:** Wrong Reply
 **Notes:**
@@ -49,7 +46,7 @@
 
 ---
 
-### Task 5: Final Confirmation - Missing detail completion step
+### Task 5 [#75]: Final Confirmation - Missing detail completion step
 **Crew:** Final Confirmation
 **Type:** Wrong Reply
 **Notes:**
@@ -60,7 +57,7 @@
 
 ---
 
-### Task 6: Final Confirmation - Summary presentation improvements
+### Task 6 [#74]: Final Confirmation - Summary presentation improvements
 **Crew:** Final Confirmation
 **Type:** Wrong Reply
 **Notes:**
@@ -73,7 +70,7 @@
 
 ---
 
-### Task 7: Account Terms & Offers - Stuck, doesn't auto-transition
+### Task 7 [#73]: Account Terms & Offers - Stuck, doesn't auto-transition
 **Crew:** Account Terms & Offers
 **Type:** Didn't Transition
 **Notes:**
@@ -81,7 +78,7 @@
 
 ---
 
-### Task 8: Account Terms & Offers - Offer presentation too text-heavy
+### Task 8 [#72]: Account Terms & Offers - Offer presentation too text-heavy
 **Crew:** Account Terms & Offers
 **Type:** Wrong Reply
 **Notes:**
@@ -92,7 +89,7 @@
 
 ---
 
-### Task 9: Account Terms & Offers - Should present offer immediately
+### Task 9 [#71]: Account Terms & Offers - Should present offer immediately
 **Crew:** Account Terms & Offers
 **Type:** Wrong Reply
 **Notes:**
@@ -100,7 +97,7 @@
 
 ---
 
-### Task 10: Account Terms & Offers - Should offer immediately, not treat as new customer
+### Task 10 [#70]: Account Terms & Offers - Should offer immediately, not treat as new customer
 **Crew:** Account Terms & Offers
 **Type:** Wrong Reply
 **Notes:**
@@ -109,7 +106,7 @@
 
 ---
 
-### Task 11: Financial Profile - Asks too many questions at once
+### Task 11 [#69]: Financial Profile - Asks too many questions at once
 **Crew:** Financial Profile
 **Type:** Wrong Reply
 **Notes:**
@@ -120,7 +117,7 @@
 
 ---
 
-### Task 12: Financial Profile - Income questions too many at once
+### Task 12 [#68]: Financial Profile - Income questions too many at once
 **Crew:** Financial Profile
 **Type:** Wrong Reply
 **Notes:**
@@ -129,7 +126,7 @@
 
 ---
 
-### Task 13: Financial Profile - Employment questions problematic
+### Task 13 [#67]: Financial Profile - Employment questions problematic
 **Crew:** Financial Profile
 **Type:** Wrong Reply
 **Notes:**
@@ -137,11 +134,11 @@
 - Fix in three ways:
   1. One question at a time - start with most basic (employment status), continue to next only after answer
   2. Conditional logic - not all questions relevant to everyone (e.g., "position" only for employed, "temporary" only for freelancers). Branch based on answers
-  3. Remove "תוכלי לספק פרטים אלו בבקשה?" - unnecessary, adds bureaucratic feeling
+  3. Remove "תוכלי לספר פרטים אלו בבקשה?" - unnecessary, adds bureaucratic feeling
 
 ---
 
-### Task 14: KYC - "Financial profile" language is intimidating
+### Task 14 [#66]: KYC - "Financial profile" language is intimidating
 **Crew:** KYC Verification
 **Type:** Wrong Reply
 **Notes:**
@@ -152,7 +149,7 @@
 
 ---
 
-### Task 15: KYC - Don't show behind-the-scenes checks
+### Task 15 [#65]: KYC - Don't show behind-the-scenes checks
 **Crew:** KYC Verification
 **Type:** Wrong Reply
 **Notes:**
@@ -161,102 +158,93 @@
 
 ---
 
-### Task 16: Identity Verification - Missing face verification step
+### ~~Task 16 [#64]: Identity Verification - Missing face verification step~~ ✅
 **Crew:** Identity Verification
 **Type:** Wrong Reply
-**Notes:**
-- Identity verification is not complete - needs to also do face verification (simulate for current demo stage)
+**Status:** Done
+**Changes:** Added `face_verified` field (simulated). Full flow now: Phone → OTP → ID number → ID document → Face verification → Done. Added `getFieldsForExtraction` for sequential field exposure.
 
 ---
 
-### Task 17: Identity Verification - Should continue, not ask "more questions?"
+### ~~Task 17 [#63]: Identity Verification - Should continue, not ask "more questions?"~~ ✅
 **Crew:** Identity Verification
 **Type:** Wrong Reply
-**Notes:**
-- "אם יש לך שאלות נוספות" is wrong - agent should continue to next step, not offer open-ended help
+**Status:** Done
+**Changes:** Added rule "Always move forward - after each step, immediately proceed to the next. Never ask 'do you have questions?' or 'should we continue?'" in both guidance and buildContext note.
 
 ---
 
-### Task 18: Identity Verification - Doesn't continue conversation
+### ~~Task 18 [#62]: Identity Verification - Doesn't continue conversation~~ ✅
 **Crew:** Identity Verification
 **Type:** Didn't Transition
-**Notes:**
-- Agent says "we can continue to the next step" but doesn't actually transition/continue
+**Status:** Done
+**Changes:** Stronger buildContext instructions that explicitly tell the agent what to do next at each step. Combined with "always move forward" rule ensures agent progresses through steps.
 
 ---
 
-### Task 19: Identity Verification - OTP should mention code length for demo
+### ~~Task 19: Identity Verification - OTP should mention code length for demo~~ ✅
 **Crew:** Identity Verification
 **Type:** Wrong Reply
-**Notes:**
-- For demo purposes, should mention how many digits the code needs to be so the tester knows what to enter
+**Status:** Done
+**Changes:** Added "**6 ספרות**" to OTP guidance message and OTP DEMO RULES section with "IMPORTANT: Always mention the code is 6 digits".
 
 ---
 
-### Task 20: Identity Verification - Can we actually do OTP?
+### Task 20 [#59]: Identity Verification - Can we actually do OTP?
 **Crew:** Identity Verification
 **Type:** Feature Question
+**Status:** Skipped
 **Notes:**
 - Question about whether actual OTP sending is possible (for future, not demo)
 
 ---
 
-### Task 21: Consents - Missing transition message with process overview
+### ~~Task 21: Consents - Missing transition message with process overview~~ ✅
 **Crew:** Consents
 **Type:** Wrong Reply
-**Notes:**
-- Between account selection and consents, need a transition message including:
-  - Process overview and estimated duration - how many steps, how many minutes roughly
-  - Freedom to ask questions - customer knows they can ask anything along the way
-  - Option to stop and return - data is saved, can pause and return anytime
-  - Positive framing for consents section: "נעשה את זה כמה שיותר קצר וקל"
+**Status:** Done
+**Changes:** Added Step 0 process overview (5 steps, 5-7 min estimate, freedom to ask questions, option to pause and return).
 
 ---
 
-### Task 22: Identity Verification - Add file/image upload option
+### Task 22 [#57]: Identity Verification - Add file/image upload option
 **Crew:** Identity Verification
 **Type:** Feature Request
+**Status:** Skipped
 **Notes:**
 - Need ability to actually upload image/file for ID verification
 
 ---
 
-### Task 23: Identity Verification - OTP should come before ID document
+### ~~Task 23: Identity Verification - OTP should come before ID document~~ ✅
 **Crew:** Identity Verification
 **Type:** Wrong Reply
-**Notes:**
-- Agent should do OTP verification BEFORE requesting ID document, not after
+**Status:** Done
+**Changes:** Reordered flow from ID→Document→Phone→OTP to Phone→OTP→ID number→ID document→Face verification.
 
 ---
 
-### Task 24: Consents - Only 2 required consents, presented separately
+### ~~Task 24: Consents - Only 2 required consents, presented separately~~ ✅
 **Crew:** Consents
 **Type:** Wrong Reply
-**Notes:**
-- Only 2 consents are actually required:
-  1. Consent to use the service (הסכמה לשימוש בשירות)
-  2. Consent to access credit database (פניה למאגר נתוני אשראי)
-- All other playbook guidelines remain as-is
-- Each consent needs to be presented separately (see Task 25)
+**Status:** Done
+**Changes:** Reduced from 4 to 2 consents (service usage + credit database). Added extractionMode: 'form', getFieldsForExtraction for sequential exposure, Hebrew field descriptions with explicit approved/rejected mapping.
 
 ---
 
-### Task 25: Consents - Each consent separately, not all at once
+### ~~Task 25: Consents - Each consent separately, not all at once~~ ✅
 **Crew:** Consents
 **Type:** Wrong Reply
-**Notes:**
-- Each consent should be presented one at a time, moving through them individually
-- Not dumping all consents in one message
+**Status:** Done
+**Changes:** One-at-a-time flow in guidance + getFieldsForExtraction ensures extractor only sees the active consent field. Rejection → reconsideration flow with form mode corrections.
 
 ---
 
-### Task 26: Welcome - Opening message needs to be more inviting and detailed
+### ~~Task 26: Welcome - Opening message needs to be more inviting and detailed~~ ✅
 **Crew:** Welcome (entry-introduction)
 **Type:** Wrong Reply
-**Notes:**
-- Current opening is too brief: "שלום! אני כאן כדי לעזור לך לפתוח חשבון בנק חדש. איך קוראים לך?"
-- Should be more inviting and detailed, also for someone still considering
-- Example: "שלום! אני כאן כדי ללוות אותך בפתיחת חשבון בנק חדש. אוכל להסביר על המסלולים, המוצרים והיתרונות, לעשות יחד התאמה לצרכים שלך, ולוודא שתצאי מפה עם החשבון שהכי טוב עבורך. בואו נתחיל – איך קוראים לך?"
+**Status:** Done
+**Changes:** Updated opening to be more inviting with Hebrew example. Added gender-neutral rule.
 
 ---
 
@@ -269,10 +257,21 @@
 
 ---
 
-### Task 28: Account Selection - Show options as visual sliders/cards
+### ~~Task 28: Account Selection - Show options as visual sliders/cards~~ ✅
 **Crew:** Account Selection
 **Type:** Wrong Reply
-**Notes:**
-- Should present options: private account or other
-- Both options should appear as slider/card UI for selection
-- "Other" option should show "לא נתמך כרגע" (not supported currently)
+**Status:** Done
+**Changes:** Options presented as structured cards immediately (text only - UI slider/card is a separate task). Gender-neutral rule added.
+
+---
+
+## Infrastructure Fixes (from consents debugging)
+- **Dispatcher**: Form mode doesn't skip extraction when all fields collected; sends all active fields for correction support; filters empty string values
+- **FieldsExtractorAgent**: Updated form mode prompt to handle consent re-approval as corrections; added debug logging
+- **CrewMember base**: Added `getFieldsForExtraction(collectedFields)` method for sequential field exposure
+- **AGENT_BUILDING_GUIDE.md**: Documented `getFieldsForExtraction` and extraction modes
+
+## Cross-cutting fixes
+- **Gender-neutral rule**: Added to entry-introduction, account-type, consents, identity-verification crews
+- **Context level**: All banking crews use conversation-level context (not user-level)
+- **Currency**: Fixed $ → ₪ in final-confirmations and completion crews

@@ -3,12 +3,14 @@
  *
  * Section 4: אימות זהות - Identity Verification
  *
- * Verifies customer identity through document collection and OTP verification.
- * Keeps the customer calm and informed throughout the process.
+ * Verifies customer identity through OTP, document collection, and face verification.
+ * All verification steps are simulated for demo purposes.
+ *
+ * Flow: Phone → OTP → ID number → ID document → Face verification
  *
  * Transitions:
- * - If identity verified successfully → 'kyc'
- * - If verification fails repeatedly → End journey with alternative guidance
+ * - If all verified → 'kyc'
+ * - If OTP fails 3 times → End journey with alternative guidance
  */
 const CrewMember = require('../../../crew/base/CrewMember');
 
@@ -17,38 +19,37 @@ class IdentityVerificationCrew extends CrewMember {
     super({
       name: 'identity-verification',
       displayName: 'Identity Verification',
-      description: 'Identity verification via documents and OTP',
+      description: 'Identity verification via OTP, documents, and face scan',
       isDefault: false,
       extractionMode: 'form',
 
       fieldsToCollect: [
         {
-          name: 'id_number',
-          description: "User's government-issued ID number (national ID, passport, etc.). Extract the number provided."
-        },
-        {
-          name: 'id_document_uploaded',
-          description: "Set to 'yes' when user confirms they have uploaded or provided a photo/scan of their ID document. Set to 'pending' if not yet provided."
-        },
-        {
           name: 'phone_number',
-          description: "User's mobile phone number for OTP verification. Extract in format provided (with or without country code)."
-        },
-        {
-          name: 'otp_sent',
-          description: "Set to 'yes' after OTP code has been sent to user's phone. This is a system action confirmation."
+          description: "User's mobile phone number for OTP verification. Extract in format provided."
         },
         {
           name: 'otp_code',
-          description: "The OTP code entered by the user. Extract the numeric code they provide. IMPORTANT: Always extract the LATEST code - if user enters a new code, update this field with the new value."
+          description: "The OTP code entered by the user. Extract the numeric code. Always extract the LATEST code if user enters a new one."
         },
         {
           name: 'otp_verified',
-          description: "DEMO RULES: Set to 'success' if user enters a 6-digit code starting with '1' (e.g., 123456, 111111). Set to 'failed' if user enters a 6-digit code starting with '2' or '3' (e.g., 234567, 333333). IMPORTANT: Always re-evaluate based on the LATEST code the user entered - if they correct themselves with a new code, update this field accordingly."
+          allowedValues: ['success', 'failed'],
+          description: "DEMO: Set to 'success' if user enters 6-digit code starting with '1' (e.g., 123456). Set to 'failed' for codes starting with '2' or '3'. Always re-evaluate based on LATEST code."
         },
         {
-          name: 'verification_attempt_count',
-          description: "Number of OTP verification attempts. Increment each time verification is attempted. Max 3 attempts allowed."
+          name: 'id_number',
+          description: "User's government-issued ID number (ת\"ז, passport, driver's license). Extract the number."
+        },
+        {
+          name: 'id_document_uploaded',
+          type: 'boolean',
+          description: "SIMULATED: Set to true when user confirms they uploaded/provided their ID photo. Any confirmation = true."
+        },
+        {
+          name: 'face_verified',
+          type: 'boolean',
+          description: "SIMULATED: Set to true when user confirms they completed the selfie/face scan. Any confirmation = true."
         }
       ],
 
@@ -57,86 +58,50 @@ class IdentityVerificationCrew extends CrewMember {
       guidance: `You are a professional banking assistant helping customers verify their identity to proceed with account opening.
 
 ## YOUR PURPOSE
-Guide customers through identity verification, which includes:
-1. Collecting government ID information
-2. Receiving ID document photo/scan
-3. Verifying identity via OTP (One-Time Password) sent to their mobile phone
-
-## WHY THIS IS NEEDED
-Identity verification is a **mandatory regulatory requirement** for opening bank accounts. It helps:
-- Prevent fraud and identity theft
-- Comply with banking regulations
-- Protect both the customer and the bank
+Guide customers through identity verification. All steps are simulated for demo.
 
 ## CONVERSATION FLOW
 
-### Step 1: Collect ID Information
-"To verify your identity, I'll need a few details:
-1. Your government-issued ID number (national ID, passport, or driver's license)
-2. A photo or scan of that ID document
+### Step 1: Collect Phone Number
+"מעולה! נתחיל עם אימות מהיר של מספר הטלפון שלך. מה המספר הנייד שלך?"
 
-Could you please provide your ID number?"
+### Step 2: Send & Verify OTP
+After receiving phone number, immediately confirm OTP was sent:
+"שלחתי קוד אימות ל-[מספר]. הקוד הוא בן **6 ספרות** ויגיע תוך דקה-שתיים. הזן את הקוד כשתקבל אותו."
 
-[Wait for response]
+**Success:** "מצוין! הטלפון אומת בהצלחה."
+**Fail (retry):** "הקוד לא תואם. נשארו [X] ניסיונות. רוצה לנסות שוב?"
+**Fail (3 attempts):** "לא הצלחנו להשלים את האימות. אפשר לפנות לסניף: 📞 03-9999999"
 
-"Thank you. Now, please upload a clear photo or scan of your ID document. Make sure all details are visible and readable."
+### Step 3: Collect ID Number (after OTP success)
+"עכשיו צריך את מספר תעודת הזהות שלך (ת\"ז, דרכון או רישיון נהיגה)."
 
-### Step 2: Collect Phone Number for OTP
-"Great! Next, I need to verify your phone number. This is a quick security step.
+### Step 4: ID Document Upload (simulated)
+"תודה! עכשיו צריך תמונה ברורה של התעודה. העלה את התמונה ואשר כשסיימת."
+(In demo: user just confirms they "uploaded" and we accept it)
 
-What's the best mobile number to send you a verification code?"
+### Step 5: Face Verification (simulated)
+"שלב אחרון – אימות פנים 📸
+צלם סלפי ברור עם תאורה טובה. ודא שהפנים גלויות במלואן."
+(In demo: user just confirms they "took a selfie" and we accept it)
 
-### Step 3: Send OTP
-"Perfect! I'm sending a verification code to [phone number] right now. You should receive it within 1-2 minutes.
-
-Please enter the code when you receive it."
-
-### Step 4: Verify OTP Code
-[User provides code]
-
-**If verification succeeds:**
-"Excellent! Your identity has been verified successfully. We can now proceed with the next step."
-
-**If verification fails (attempt 1-2):**
-"The code you entered doesn't match. This can happen if:
-- The code was typed incorrectly
-- The code expired (they're valid for 10 minutes)
-
-You have [X attempts remaining]. Would you like to try again, or should I send you a new code?"
-
-**If verification fails repeatedly (3 attempts):**
-"I apologize, but the verification couldn't be completed after multiple attempts. This can happen due to technical issues or expired codes.
-
-To proceed with opening your account, please:
-- Try again later when you have a stable connection
-- Visit one of our branches where we can verify your identity in person
-- Call our customer service line for assistance
-
-Your progress has been saved, and you can resume from this step."
+### Step 6: All Complete
+"מעולה! כל שלבי האימות הושלמו בהצלחה ✅ נמשיך לשלב הבא."
 
 ## RULES
-- Keep language **calm and neutral** - this is standard procedure, not a security drama
-- **Don't alarm** the customer with security warnings
-- **Don't blame** the user for failures - frame as technical or timing issues
-- Allow **limited retries** (max 3 attempts)
-- Explain **what's happening** at each step
-- Keep responses **short and clear** (2-3 sentences)
-- Make the process feel **routine and safe**
+- **Gender-neutral self-reference** - Never expose your gender. No slash forms (מבין/ה). Use neutral phrasing.
+- Keep language **calm and neutral** - standard procedure, not security drama
+- **Don't alarm** the customer
+- **Don't blame** user for failures - frame as technical issues
+- Keep responses **short** (2-3 sentences)
+- **Always move forward** - after each step, immediately proceed to the next. Never ask "do you have questions?" or "should we continue?"
 
-## OTP VERIFICATION LOGIC (SIMULATED FOR DEMO)
-In this demo:
-- Any 6-digit code starting with "1" = SUCCESS
-- Any 6-digit code starting with "2" or "3" = FAILURE (retry)
-- Any other format = Ask user to enter 6-digit code
-- After 3 failed attempts = End verification, provide alternatives
-
-**Note:** In production, this would integrate with actual OTP service.
-
-## KEY PRINCIPLES
-- **Calm and professional** - reduce anxiety
-- **Clear instructions** - tell them exactly what to do
-- **Handle failures gracefully** - don't make users feel incompetent
-- **Progress preservation** - reassure that work isn't lost`,
+## OTP DEMO RULES
+- 6-digit code starting with "1" = SUCCESS (e.g., 123456)
+- 6-digit code starting with "2"/"3" = FAILURE
+- Other format = ask for 6-digit code
+- Max 3 attempts
+- **IMPORTANT:** Always mention the code is **6 digits**`,
 
       model: 'gpt-4o',
       maxTokens: 1500,
@@ -145,43 +110,60 @@ In this demo:
     });
   }
 
-  async preMessageTransfer(collectedFields) {
-    // Only transition if:
-    // 1. ID info collected
-    // 2. ID document uploaded
-    // 3. Phone number provided
-    // 4. OTP sent and verified successfully
-
-    const hasIdNumber = !!collectedFields.id_number;
-    const hasIdDocument = collectedFields.id_document_uploaded === 'yes';
+  getFieldsForExtraction(collectedFields) {
     const hasPhoneNumber = !!collectedFields.phone_number;
     const otpVerified = collectedFields.otp_verified === 'success';
+    const hasIdNumber = !!collectedFields.id_number;
+    const hasIdDocument = collectedFields.id_document_uploaded === 'true';
 
-    return hasIdNumber && hasIdDocument && hasPhoneNumber && otpVerified;
+    // Sequential: only expose the current step's field(s)
+    if (!hasPhoneNumber) {
+      return this.fieldsToCollect.filter(f => f.name === 'phone_number');
+    }
+    if (!otpVerified) {
+      // OTP step needs both otp_code and otp_verified together
+      return this.fieldsToCollect.filter(f => f.name === 'otp_code' || f.name === 'otp_verified');
+    }
+    if (!hasIdNumber) {
+      return this.fieldsToCollect.filter(f => f.name === 'id_number');
+    }
+    if (!hasIdDocument) {
+      return this.fieldsToCollect.filter(f => f.name === 'id_document_uploaded');
+    }
+    // Last step: face verification
+    return this.fieldsToCollect.filter(f => f.name === 'face_verified');
+  }
+
+  async preMessageTransfer(collectedFields) {
+    const hasPhoneNumber = !!collectedFields.phone_number;
+    const otpVerified = collectedFields.otp_verified === 'success';
+    const hasIdNumber = !!collectedFields.id_number;
+    const hasIdDocument = collectedFields.id_document_uploaded === 'true';
+    const faceVerified = collectedFields.face_verified === 'true';
+
+    return hasPhoneNumber && otpVerified && hasIdNumber && hasIdDocument && faceVerified;
   }
 
   async buildContext(params) {
     const baseContext = await super.buildContext(params);
     const collectedFields = params.collectedFields || {};
 
-    const hasIdNumber = !!collectedFields.id_number;
-    const hasIdDocument = collectedFields.id_document_uploaded === 'yes';
     const hasPhoneNumber = !!collectedFields.phone_number;
-    const otpSent = collectedFields.otp_sent === 'yes';
     const otpCode = collectedFields.otp_code || null;
     const otpVerified = collectedFields.otp_verified || 'pending';
-    const attemptCount = parseInt(collectedFields.verification_attempt_count || '0', 10);
+    const hasIdNumber = !!collectedFields.id_number;
+    const hasIdDocument = collectedFields.id_document_uploaded === 'true';
+    const faceVerified = collectedFields.face_verified === 'true';
 
-    const verificationComplete = otpVerified === 'success';
-    const verificationFailed = attemptCount >= 3 && otpVerified !== 'success';
+    const otpSuccess = otpVerified === 'success';
+    const otpFailed = otpVerified === 'failed';
+    const allComplete = hasPhoneNumber && otpSuccess && hasIdNumber && hasIdDocument && faceVerified;
 
-    // Get user name from previous sections
     const userName = collectedFields.user_name || null;
 
-    // Simple OTP simulation logic for demo
+    // OTP simulation for context
     let otpSimulation = null;
     if (otpCode && otpVerified === 'pending') {
-      // Simulate OTP check: codes starting with "1" succeed, others fail
       const codeStr = String(otpCode);
       if (codeStr.length === 6 && /^\d+$/.test(codeStr)) {
         otpSimulation = codeStr.startsWith('1') ? 'success' : 'failed';
@@ -191,47 +173,36 @@ In this demo:
     return {
       ...baseContext,
       role: 'Identity Verification',
-      stage: 'Document Collection & OTP Verification',
+      stage: 'OTP, Document & Face Verification',
       customerName: userName,
       verificationStatus: {
-        idNumber: hasIdNumber ? 'Collected' : 'Pending',
-        idDocument: hasIdDocument ? 'Uploaded' : 'Pending',
         phoneNumber: hasPhoneNumber ? 'Collected' : 'Pending',
-        otpSent: otpSent ? 'Yes' : 'No',
         otpCode: otpCode ? 'Entered' : 'Not entered',
         otpVerification: otpVerified,
-        attemptsUsed: `${attemptCount}/3`
+        idNumber: hasIdNumber ? 'Collected' : 'Pending',
+        idDocument: hasIdDocument ? 'Uploaded' : 'Pending',
+        faceVerification: faceVerified ? 'Verified' : 'Pending'
       },
       otpSimulationResult: otpSimulation,
-      nextSteps: verificationComplete
-        ? 'Identity verified successfully! System will transition to KYC checks.'
-        : verificationFailed
-        ? 'Verification failed after 3 attempts. End journey and provide alternative channels.'
-        : !hasIdNumber
-        ? 'Request ID number from customer.'
-        : !hasIdDocument
-        ? 'Request ID document upload (photo/scan).'
+      instruction: allComplete
+        ? 'All verification steps complete! Confirm success and prepare for transition.'
         : !hasPhoneNumber
-        ? 'Request phone number for OTP verification.'
-        : !otpSent
-        ? 'Confirm OTP has been sent to phone number.'
-        : !otpCode
-        ? 'Wait for customer to enter OTP code.'
-        : otpVerified === 'failed'
-        ? `OTP verification failed (attempt ${attemptCount}/3). Allow retry or send new code.`
-        : 'Processing OTP verification...',
-      instruction: verificationComplete
-        ? 'Congratulate user on successful verification and prepare for transition.'
-        : verificationFailed
-        ? 'Explain that verification could not be completed. Provide alternative options (branch visit, call support). End journey supportively.'
-        : !hasIdNumber || !hasIdDocument
-        ? 'Collect ID number and document. Explain why it\'s needed clearly.'
-        : !hasPhoneNumber || !otpSent
-        ? 'Collect phone number and simulate sending OTP (in demo, just confirm "code sent").'
-        : otpVerified === 'failed'
-        ? `OTP failed. Explain calmly, offer retry (${3 - attemptCount} attempts remaining) or new code.`
-        : 'Guide user through OTP entry. Use simulation logic: codes starting with "1" succeed, others fail.',
-      demoNote: 'OTP SIMULATION: For demo purposes, any 6-digit code starting with "1" will succeed (e.g., 123456). Other codes will fail. Max 3 attempts.'
+        ? 'Ask for phone number. Explain this is a quick verification step.'
+        : !otpCode && !otpSuccess
+        ? 'Simulate sending OTP to the phone number. Confirm "code sent" and mention it is a 6-digit code.'
+        : otpFailed
+        ? 'OTP failed. Explain calmly and offer to try again with a new code.'
+        : !otpSuccess
+        ? 'Guide user through OTP entry.'
+        : !hasIdNumber
+        ? 'OTP verified! Now ask for ID number (ת"ז, passport, or driver\'s license).'
+        : !hasIdDocument
+        ? 'Ask user to upload a photo of their ID document. In demo, accept any confirmation.'
+        : !faceVerified
+        ? 'Ask user to take a selfie for face verification. In demo, accept any confirmation.'
+        : 'Preparing transition.',
+      note: 'After each step, immediately proceed to the next. NEVER ask "do you have questions?" or "should we continue?" - just move forward.',
+      demoNote: 'ALL VERIFICATION IS SIMULATED. OTP: 6-digit code starting with "1" = success. ID upload & face scan: accept any user confirmation.'
     };
   }
 }
