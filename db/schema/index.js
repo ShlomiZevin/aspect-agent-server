@@ -76,7 +76,13 @@ const knowledgeBases = pgTable('knowledge_bases', {
   agentId: integer('agent_id').references(() => agents.id).notNull(),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
+  // Provider: 'openai' | 'google' | 'both'
+  provider: varchar('provider', { length: 50 }).default('openai').notNull(),
   vectorStoreId: varchar('vector_store_id', { length: 255 }), // OpenAI vector store ID
+  googleCorpusId: varchar('google_corpus_id', { length: 255 }), // Google File Search Store name
+  // Sync tracking
+  syncedFromId: integer('synced_from_id').references(() => knowledgeBases.id),
+  lastSyncedAt: timestamp('last_synced_at'),
   fileCount: integer('file_count').default(0),
   totalSize: integer('total_size').default(0), // Total size of all files in bytes
   metadata: jsonb('metadata'),
@@ -91,7 +97,9 @@ const knowledgeBaseFiles = pgTable('knowledge_base_files', {
   fileName: varchar('file_name', { length: 255 }).notNull(),
   fileSize: integer('file_size'),
   fileType: varchar('file_type', { length: 100 }),
-  openaiFileId: varchar('openai_file_id', { length: 255 }),
+  openaiFileId: varchar('openai_file_id', { length: 255 }), // OpenAI file reference
+  googleDocumentId: varchar('google_document_id', { length: 255 }), // Google document name
+  originalFileUrl: varchar('original_file_url', { length: 1024 }), // GCS path for sync
   status: varchar('status', { length: 50 }).default('processing').notNull(), // processing, completed, failed
   metadata: jsonb('metadata'),
   createdAt: timestamp('created_at').defaultNow().notNull(),

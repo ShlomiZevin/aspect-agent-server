@@ -10,6 +10,8 @@ const llmService = require('./services/llm');
 const db = require('./services/db.pg');
 const conversationService = require('./services/conversation.service');
 const kbService = require('./services/kb.service');
+const googleKBService = require('./services/kb.google.service');
+const storageService = require('./services/storage.service');
 const thinkingService = require('./services/thinking.service');
 const feedbackService = require('./services/feedback.service');
 const crewService = require('./crew/services/crew.service');
@@ -1560,39 +1562,42 @@ app.post('/webhook', (req, res) => {
 
 // ========== KNOWLEDGE BASE MANAGEMENT ENDPOINTS ==========
 
-// Create a new knowledge base
+// Create a new knowledge base (supports provider: 'openai' | 'google' | 'both')
 app.post('/api/kb/create', async (req, res) => {
   try {
-    const { agentName, name, description } = req.body;
+    const { agentName, name, description, provider = 'openai' } = req.body;
 
     if (!agentName || !name) {
       return res.status(400).json({ error: 'Agent name and KB name are required' });
     }
+    if (!['openai', 'google', 'both'].includes(provider)) {
+      return res.status(400).json({ error: 'Invalid provider. Must be openai, google, or both' });
+    }
 
-    // Get agent by name
     const agent = await kbService.getAgentByName(agentName);
 
-    // Create vector store in OpenAI
-    const vectorStore = await llmService.createVectorStore(name, description);
+    let vectorStoreId = null;
+    let googleCorpusId = null;
 
-    // Create KB in database
+    // Create OpenAI vector store if needed
+    if (provider === 'openai' || provider === 'both') {
+      const vectorStore = await llmService.createVectorStore(name, description);
+      vectorStoreId = vectorStore.id;
+    }
+
+    // Create Google File Search Store if needed
+    if (provider === 'google' || provider === 'both') {
+      const store = await googleKBService.createStore(name);
+      googleCorpusId = store.storeId;
+    }
+
     const kb = await kbService.createKnowledgeBase(
-      agent.id,
-      name,
-      description,
-      vectorStore.id
+      agent.id, name, description, provider, vectorStoreId, googleCorpusId
     );
 
     res.json({
       success: true,
-      knowledgeBase: {
-        id: kb.id,
-        name: kb.name,
-        description: kb.description,
-        vectorStoreId: kb.vectorStoreId,
-        fileCount: kb.fileCount,
-        createdAt: kb.createdAt
-      }
+      knowledgeBase: _formatKB(kb)
     });
   } catch (err) {
     console.error('❌ Error creating knowledge base:', err.message);
@@ -1604,48 +1609,26 @@ app.post('/api/kb/create', async (req, res) => {
 app.get('/api/kb/list/:agentName', async (req, res) => {
   try {
     const { agentName } = req.params;
-
-    // Get agent by name
     const agent = await kbService.getAgentByName(agentName);
-
-    // Get KBs from database
     const kbs = await kbService.getKnowledgeBasesByAgent(agent.id);
 
-    // Enrich with OpenAI vector store data
+    // Enrich with live OpenAI file count where available
     const enrichedKBs = await Promise.all(
       kbs.map(async (kb) => {
-        try {
-          const vsData = await llmService.getVectorStore(kb.vectorStoreId);
-
-          return {
-            id: kb.id,
-            name: kb.name,
-            description: kb.description,
-            vectorStoreId: kb.vectorStoreId,
-            fileCount: vsData.fileCount,
-            totalSize: kb.totalSize || 0,
-            createdAt: kb.createdAt,
-            updatedAt: kb.updatedAt
-          };
-        } catch (err) {
-          console.warn(`⚠️ Could not fetch vector store data for ${kb.vectorStoreId}`);
-          return {
-            id: kb.id,
-            name: kb.name,
-            description: kb.description,
-            vectorStoreId: kb.vectorStoreId,
-            fileCount: kb.fileCount,
-            totalSize: kb.totalSize || 0,
-            createdAt: kb.createdAt,
-            updatedAt: kb.updatedAt
-          };
+        let fileCount = kb.fileCount;
+        if (kb.vectorStoreId && (kb.provider === 'openai' || kb.provider === 'both')) {
+          try {
+            const vsData = await llmService.getVectorStore(kb.vectorStoreId);
+            fileCount = vsData.fileCount;
+          } catch {
+            // Use DB count as fallback
+          }
         }
+        return { ..._formatKB(kb), fileCount };
       })
     );
 
-    res.json({
-      knowledgeBases: enrichedKBs
-    });
+    res.json({ knowledgeBases: enrichedKBs });
   } catch (err) {
     console.error('❌ Error listing knowledge bases:', err.message);
     res.status(500).json({ error: 'Error listing knowledge bases: ' + err.message });
@@ -1656,43 +1639,65 @@ app.get('/api/kb/list/:agentName', async (req, res) => {
 app.get('/api/kb/:kbId/files', async (req, res) => {
   try {
     const { kbId } = req.params;
-
-    // Get KB from database
     const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
-
-    // Get files from database
     const dbFiles = await kbService.getFilesByKnowledgeBase(parseInt(kbId));
 
-    // Get files from OpenAI vector store
-    const vsFiles = await llmService.listVectorStoreFiles(kb.vectorStoreId);
+    // Optionally enrich with live OpenAI status
+    let vsFiles = [];
+    if (kb.vectorStoreId && (kb.provider === 'openai' || kb.provider === 'both')) {
+      try {
+        vsFiles = await llmService.listVectorStoreFiles(kb.vectorStoreId);
+      } catch {
+        // Use DB status as fallback
+      }
+    }
 
-    // Merge data: DB has tags, OpenAI has latest status
-    const files = dbFiles.map(dbFile => {
-      const vsFile = vsFiles.find(f => f.id === dbFile.openaiFileId);
-      return {
-        id: dbFile.id,
-        openaiFileId: dbFile.openaiFileId,
-        fileName: dbFile.fileName,
-        fileSize: dbFile.fileSize,
-        fileType: dbFile.fileType,
-        tags: dbFile.metadata?.tags || [],
-        status: vsFile?.status || dbFile.status,
-        createdAt: dbFile.createdAt,
-        updatedAt: dbFile.updatedAt
-      };
-    });
+    let files;
+    if (dbFiles.length > 0) {
+      // DB has records — use them, enriched with live OpenAI status
+      files = dbFiles.map(dbFile => {
+        const vsFile = vsFiles.find(f => f.id === dbFile.openaiFileId);
+        return {
+          id: dbFile.id,
+          openaiFileId: dbFile.openaiFileId,
+          googleDocumentId: dbFile.googleDocumentId,
+          originalFileUrl: dbFile.originalFileUrl,
+          fileName: dbFile.fileName,
+          fileSize: dbFile.fileSize,
+          fileType: dbFile.fileType,
+          tags: dbFile.metadata?.tags || [],
+          status: vsFile?.status || dbFile.status,
+          createdAt: dbFile.createdAt,
+          updatedAt: dbFile.updatedAt
+        };
+      });
+    } else if (vsFiles.length > 0) {
+      // DB is empty but OpenAI vector store has files (legacy KB) — show them read-only
+      files = vsFiles.map(vsFile => ({
+        id: null,
+        openaiFileId: vsFile.id,
+        googleDocumentId: null,
+        originalFileUrl: null,
+        fileName: vsFile.fileName || vsFile.id,
+        fileSize: vsFile.fileSize || 0,
+        fileType: vsFile.fileName?.split('.').pop() || 'unknown',
+        tags: [],
+        status: vsFile.status,
+        createdAt: vsFile.createdAt ? new Date(vsFile.createdAt * 1000).toISOString() : null,
+        updatedAt: null
+      }));
+    } else {
+      files = [];
+    }
 
-    res.json({
-      knowledgeBaseId: kbId,
-      files
-    });
+    res.json({ knowledgeBaseId: kbId, files });
   } catch (err) {
     console.error('❌ Error fetching KB files:', err.message);
     res.status(500).json({ error: 'Error fetching KB files: ' + err.message });
   }
 });
 
-// Upload file to a specific knowledge base
+// Upload file to a knowledge base (routes to correct provider(s) + GCS backup)
 app.post('/api/kb/:kbId/upload', upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
@@ -1701,84 +1706,200 @@ app.post('/api/kb/:kbId/upload', upload.single('file'), async (req, res) => {
   try {
     const { kbId } = req.params;
     const tags = req.body.tags ? JSON.parse(req.body.tags) : [];
+    const { buffer, originalname, size, mimetype } = req.file;
+    const fileType = originalname.split('.').pop().toLowerCase();
 
-    console.log(`📤 Uploading file: ${req.file.originalname} (${req.file.size} bytes) to KB ${kbId}`);
+    console.log(`📤 Uploading file: ${originalname} (${size} bytes) to KB ${kbId}`);
 
-    // Get KB from database
     const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
-    console.log(`📚 KB found: ${kb.name}, Vector Store ID: ${kb.vectorStoreId}`);
 
-    // Upload to OpenAI vector store
-    console.log(`🚀 Calling llmService.addFileToVectorStore...`);
-    const result = await llmService.addFileToVectorStore(
-      req.file.buffer,
-      req.file.originalname,
-      kb.vectorStoreId
-    );
-    console.log(`✅ OpenAI upload result:`, JSON.stringify(result, null, 2));
+    let openaiFileId = null;
+    let googleDocumentId = null;
+    let originalFileUrl = null;
 
-    // Get file type from extension
-    const fileType = req.file.originalname.split('.').pop().toLowerCase();
+    // Upload to OpenAI if KB uses OpenAI
+    if (kb.provider === 'openai' || kb.provider === 'both') {
+      const result = await llmService.addFileToVectorStore(buffer, originalname, kb.vectorStoreId);
+      openaiFileId = result.fileId;
+      console.log(`✅ Uploaded to OpenAI: ${openaiFileId}`);
+    }
 
-    // Save to database
-    console.log(`💾 Saving file to database...`);
+    // Upload to Google if KB uses Google
+    if (kb.provider === 'google' || kb.provider === 'both') {
+      const result = await googleKBService.uploadFile(kb.googleCorpusId, buffer, originalname, mimetype);
+      googleDocumentId = result.documentId;
+      console.log(`✅ Uploaded to Google: ${googleDocumentId}`);
+    }
+
+    // Save original to GCS for sync capability
+    try {
+      originalFileUrl = await storageService.uploadFile(buffer, originalname, mimetype, kbId);
+    } catch (gcsErr) {
+      console.warn(`⚠️ GCS backup failed (non-critical): ${gcsErr.message}`);
+    }
+
     const dbFile = await kbService.addFile(
       parseInt(kbId),
-      req.file.originalname,
-      req.file.size,
+      originalname,
+      size,
       fileType,
-      result.fileId,
+      { openaiFileId, googleDocumentId, originalFileUrl },
       tags,
       'completed'
     );
 
-    console.log(`✅ File upload complete - DB ID: ${dbFile.id}, OpenAI File ID: ${result.fileId}, Vector Store File ID: ${result.vectorStoreFileId}`);
+    console.log(`✅ File upload complete - DB ID: ${dbFile.id}`);
     res.json({
       success: true,
       file: {
         id: dbFile.id,
-        openaiFileId: result.fileId,
-        fileName: req.file.originalname,
-        fileSize: req.file.size,
-        fileType: fileType,
-        tags: tags,
-        status: result.status
+        openaiFileId,
+        googleDocumentId,
+        fileName: originalname,
+        fileSize: size,
+        fileType,
+        tags,
+        status: 'completed'
       }
     });
   } catch (err) {
     console.error('❌ Upload Error:', err.message);
-    console.error('❌ Full error:', err);
     res.status(500).json({ error: 'Error uploading file: ' + err.message });
   }
 });
 
-// Delete file from knowledge base
+// Delete file from knowledge base (removes from all providers it's on)
 app.delete('/api/kb/:kbId/files/:fileId', async (req, res) => {
   try {
     const { kbId, fileId } = req.params;
 
-    // Get KB and file from database
     const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
-    const file = await kbService.getFileByOpenAIId(fileId);
+    const file = await kbService.getFileById(parseInt(fileId));
 
     if (!file) {
       return res.status(404).json({ error: 'File not found in database' });
     }
 
-    // Delete from OpenAI vector store
-    await llmService.deleteVectorStoreFile(kb.vectorStoreId, fileId);
+    // Delete from OpenAI if applicable
+    if (file.openaiFileId && kb.vectorStoreId) {
+      try {
+        await llmService.deleteVectorStoreFile(kb.vectorStoreId, file.openaiFileId);
+      } catch (err) {
+        console.warn(`⚠️ Could not delete from OpenAI: ${err.message}`);
+      }
+    }
+
+    // Delete from Google if applicable
+    if (file.googleDocumentId) {
+      try {
+        await googleKBService.deleteDocument(file.googleDocumentId);
+      } catch (err) {
+        console.warn(`⚠️ Could not delete from Google: ${err.message}`);
+      }
+    }
+
+    // Delete from GCS if applicable
+    if (file.originalFileUrl) {
+      try {
+        await storageService.deleteFile(file.originalFileUrl);
+      } catch (err) {
+        console.warn(`⚠️ Could not delete from GCS: ${err.message}`);
+      }
+    }
 
     // Delete from database
     await kbService.deleteFile(file.id);
 
     console.log(`✅ File deleted: ${fileId}`);
-    res.json({
-      success: true,
-      fileId: fileId
-    });
+    res.json({ success: true, fileId });
   } catch (err) {
     console.error('❌ Delete Error:', err.message);
     res.status(500).json({ error: 'Error deleting file: ' + err.message });
+  }
+});
+
+// Sync KB to another provider (adds the missing provider to an existing KB)
+app.post('/api/kb/:kbId/sync', async (req, res) => {
+  try {
+    const { kbId } = req.params;
+    const { targetProvider } = req.body; // 'openai' | 'google'
+
+    if (!['openai', 'google'].includes(targetProvider)) {
+      return res.status(400).json({ error: 'targetProvider must be openai or google' });
+    }
+
+    const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
+
+    // Validate: target provider should not already be set
+    if (targetProvider === 'openai' && kb.vectorStoreId) {
+      return res.status(400).json({ error: 'KB already has an OpenAI vector store' });
+    }
+    if (targetProvider === 'google' && kb.googleCorpusId) {
+      return res.status(400).json({ error: 'KB already has a Google corpus' });
+    }
+
+    const files = await kbService.getFilesByKnowledgeBase(parseInt(kbId));
+
+    let newVectorStoreId = null;
+    let newGoogleCorpusId = null;
+    let syncedCount = 0;
+    const errors = [];
+
+    // Create the target provider store
+    if (targetProvider === 'openai') {
+      const vs = await llmService.createVectorStore(kb.name, kb.description);
+      newVectorStoreId = vs.id;
+    } else {
+      const store = await googleKBService.createStore(kb.name);
+      newGoogleCorpusId = store.storeId;
+    }
+
+    // Sync each file
+    for (const file of files) {
+      try {
+        // Download original from GCS
+        if (!file.originalFileUrl) {
+          errors.push({ file: file.fileName, error: 'No original file in GCS for sync' });
+          continue;
+        }
+
+        const buffer = await storageService.downloadFile(file.originalFileUrl);
+        const mimeType = `application/${file.fileType}`;
+
+        if (targetProvider === 'openai') {
+          const result = await llmService.addFileToVectorStore(buffer, file.fileName, newVectorStoreId);
+          await kbService.updateFileProviderIds(file.id, { openaiFileId: result.fileId });
+        } else {
+          const result = await googleKBService.uploadFile(newGoogleCorpusId, buffer, file.fileName, mimeType);
+          await kbService.updateFileProviderIds(file.id, { googleDocumentId: result.documentId });
+        }
+        syncedCount++;
+      } catch (err) {
+        console.error(`❌ Could not sync file ${file.fileName}:`, err.message);
+        errors.push({ file: file.fileName, error: err.message });
+      }
+    }
+
+    // Update KB record with new provider ID and update provider to 'both'
+    await kbService.updateKBProviderIds(parseInt(kbId), {
+      vectorStoreId: newVectorStoreId || kb.vectorStoreId,
+      googleCorpusId: newGoogleCorpusId || kb.googleCorpusId,
+      provider: 'both',
+      lastSyncedAt: new Date(),
+    });
+
+    const updatedKB = await kbService.getKnowledgeBaseById(parseInt(kbId));
+
+    res.json({
+      success: true,
+      syncedCount,
+      totalFiles: files.length,
+      errors: errors.length > 0 ? errors : undefined,
+      knowledgeBase: _formatKB(updatedKB)
+    });
+  } catch (err) {
+    console.error('❌ Sync Error:', err.message);
+    res.status(500).json({ error: 'Error syncing knowledge base: ' + err.message });
   }
 });
 
@@ -1790,10 +1911,7 @@ app.post('/api/kb/upload', upload.single('file'), async (req, res) => {
 
   try {
     console.log(`📤 Uploading file: ${req.file.originalname} (${req.file.size} bytes)`);
-
-    // Pass the buffer directly - OpenAI SDK will handle it
     const result = await llmService.addFileToKnowledgeBase(req.file.buffer, req.file.originalname);
-
     console.log(`✅ File uploaded successfully: ${result.fileId}`);
     res.json(result);
   } catch (err) {
@@ -1801,6 +1919,24 @@ app.post('/api/kb/upload', upload.single('file'), async (req, res) => {
     res.status(500).json({ error: 'Error uploading file: ' + err.message });
   }
 });
+
+/** Format a KB record for API responses */
+function _formatKB(kb) {
+  return {
+    id: kb.id,
+    name: kb.name,
+    description: kb.description,
+    provider: kb.provider,
+    vectorStoreId: kb.vectorStoreId,
+    googleCorpusId: kb.googleCorpusId,
+    syncedFromId: kb.syncedFromId,
+    lastSyncedAt: kb.lastSyncedAt,
+    fileCount: kb.fileCount,
+    totalSize: kb.totalSize || 0,
+    createdAt: kb.createdAt,
+    updatedAt: kb.updatedAt
+  };
+}
 
 // ========== FEEDBACK ENDPOINTS ==========
 

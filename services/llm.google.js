@@ -247,6 +247,7 @@ class GoogleService {
       tools: crewTools = [],
       toolHandlers = {},
       context = {},
+      knowledgeBase = null,
     } = config;
 
     let apiCallCount = 0; // Track API calls for debugging
@@ -262,6 +263,16 @@ class GoogleService {
 
       // Convert tools to Gemini format
       const geminiTools = this._convertToolsToGeminiFormat(crewTools);
+
+      // Add file_search tool if KB is configured with a Google corpus
+      if (knowledgeBase?.enabled && knowledgeBase.googleCorpusId) {
+        geminiTools.push({
+          fileSearch: {
+            fileSearchStores: [knowledgeBase.googleCorpusId],
+          },
+        });
+        console.log(`🔍 Google file_search tool added for store: ${knowledgeBase.googleCorpusId}`);
+      }
 
       // Ensure message is a string
       const messageText = typeof message === 'string' ? message : String(message);
@@ -309,6 +320,19 @@ class GoogleService {
         }
         if (chunk.functionCalls && chunk.functionCalls.length > 0) {
           functionCalls.push(...chunk.functionCalls);
+        }
+        // Emit file search results from grounding metadata
+        if (chunk.groundingMetadata?.groundingChunks?.length > 0) {
+          const files = chunk.groundingMetadata.groundingChunks
+            .filter(c => c.retrievedContext)
+            .map(c => ({
+              name: c.retrievedContext.title,
+              uri: c.retrievedContext.uri,
+              relevance: c.retrievedContext.relevanceScore,
+            }));
+          if (files.length > 0) {
+            yield { type: 'file_search_results', files };
+          }
         }
       }
 

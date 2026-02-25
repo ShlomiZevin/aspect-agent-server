@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
-    "@google/genai": "^1.41.0",
     "@google-cloud/storage": "^7.19.0",
+    "@google/genai": "^1.42.0",
     "axios": "^1.12.2",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",

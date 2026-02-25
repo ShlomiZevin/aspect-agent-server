@@ -448,10 +448,12 @@ class DispatcherService {
     }
 
     // Resolve knowledge base: crew config + client toggle
+    // Uses explicit provider IDs from crew config (no auto-routing by model)
     const crewKBEnabled = crew.knowledgeBase?.enabled !== false;
     const resolvedKB = (useKnowledgeBase && crewKBEnabled) ? {
       enabled: true,
-      storeId: crew.knowledgeBase?.storeId || null
+      storeId: crew.knowledgeBase?.storeId || null,
+      googleCorpusId: crew.knowledgeBase?.googleCorpusId || null,
     } : null;
 
     // Auto-inject knowledge base note into context when KB is active
