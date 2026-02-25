@@ -1777,13 +1777,11 @@ app.delete('/api/kb/:kbId/files/openai/:openaiFileId', async (req, res) => {
     const { kbId, openaiFileId } = req.params;
     const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
 
-    if (kb.vectorStoreId) {
-      try {
-        await llmService.deleteVectorStoreFile(kb.vectorStoreId, openaiFileId);
-      } catch (err) {
-        console.warn(`⚠️ Could not remove from OpenAI VS: ${err.message}`);
-      }
+    if (!kb.vectorStoreId) {
+      return res.status(400).json({ error: 'KB has no vector store' });
     }
+
+    await llmService.deleteVectorStoreFile(kb.vectorStoreId, openaiFileId);
 
     console.log(`✅ Legacy file deleted from VS: ${openaiFileId}`);
     res.json({ success: true, openaiFileId });
