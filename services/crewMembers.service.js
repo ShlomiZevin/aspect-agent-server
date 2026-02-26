@@ -366,7 +366,10 @@ class CrewMembersService {
       guidance: row.guidance,
       model: row.model,
       maxTokens: row.maxTokens,
-      knowledgeBase: row.knowledgeBase,
+      // Prefer knowledgeBaseSources (new column, string[]) over legacy knowledgeBase JSONB
+      knowledgeBase: row.knowledgeBaseSources
+        ? { enabled: true, sources: row.knowledgeBaseSources }
+        : row.knowledgeBase,
       fieldsToCollect: row.fieldsToCollect || [],
       transitionTo: row.transitionTo,
       transitionSystemPrompt: row.transitionSystemPrompt,

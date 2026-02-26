@@ -438,12 +438,15 @@ class OpenAIService {
       // Build tools array
       const tools = [];
 
-      // Resolve knowledge base: crew's knowledgeBase.storeId → OpenAI file_search
-      // storeId is configured directly in the crew member file
-      if (knowledgeBase?.enabled && knowledgeBase.storeId) {
+      // Resolve knowledge base: storeIds array (new) or storeId (legacy fallback)
+      const storeIds = knowledgeBase?.storeIds?.length > 0
+        ? knowledgeBase.storeIds
+        : (knowledgeBase?.storeId ? [knowledgeBase.storeId] : []);
+
+      if (knowledgeBase?.enabled && storeIds.length > 0) {
         tools.push({
           type: 'file_search',
-          vector_store_ids: [knowledgeBase.storeId]
+          vector_store_ids: storeIds
         });
       }
 
@@ -552,17 +555,24 @@ class OpenAIService {
           // Handle file_search_call results - yield file names found in KB
           if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'file_search_call') {
             const results = chunk.item.results || [];
+            console.log(`🔍 file_search_call done: ${results.length} results, scores: ${results.map(r => r.score).join(', ')}`);
             const files = results
-              .filter(r => r.score > 0.3)
+              .filter(r => r.score == null || r.score > 0.1)
               .map(r => ({
-                name: r.file_name || r.filename || 'Unknown',
+                name: r.file_name || r.filename || r.file_id || 'Unknown',
                 score: r.score
               }));
 
             if (files.length > 0) {
+              yield { type: 'file_search_results', files: files.slice(0, 8) };
+            } else if (results.length > 0) {
+              // results exist but all filtered — yield anyway
               yield {
                 type: 'file_search_results',
-                files: files.slice(0, 8)
+                files: results.slice(0, 8).map(r => ({
+                  name: r.file_name || r.filename || r.file_id || 'Unknown',
+                  score: r.score
+                }))
               };
             }
           }
@@ -678,12 +688,15 @@ class OpenAIService {
       // Build tools array
       const tools = [];
 
-      // Resolve knowledge base: crew's knowledgeBase.storeId → OpenAI file_search
-      // storeId is configured directly in the crew member file
-      if (knowledgeBase?.enabled && knowledgeBase.storeId) {
+      // Resolve knowledge base: storeIds array (new) or storeId (legacy fallback)
+      const storeIdsLegacy = knowledgeBase?.storeIds?.length > 0
+        ? knowledgeBase.storeIds
+        : (knowledgeBase?.storeId ? [knowledgeBase.storeId] : []);
+
+      if (knowledgeBase?.enabled && storeIdsLegacy.length > 0) {
         tools.push({
           type: 'file_search',
-          vector_store_ids: [knowledgeBase.storeId]
+          vector_store_ids: storeIdsLegacy
         });
       }
 
@@ -770,17 +783,24 @@ class OpenAIService {
           // Handle file_search_call results - yield file names found in KB
           if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'file_search_call') {
             const results = chunk.item.results || [];
+            console.log(`🔍 file_search_call done: ${results.length} results, scores: ${results.map(r => r.score).join(', ')}`);
             const files = results
-              .filter(r => r.score > 0.3)
+              .filter(r => r.score == null || r.score > 0.1)
               .map(r => ({
-                name: r.file_name || r.filename || 'Unknown',
+                name: r.file_name || r.filename || r.file_id || 'Unknown',
                 score: r.score
               }));
 
             if (files.length > 0) {
+              yield { type: 'file_search_results', files: files.slice(0, 8) };
+            } else if (results.length > 0) {
+              // results exist but all filtered — yield anyway
               yield {
                 type: 'file_search_results',
-                files: files.slice(0, 8)
+                files: results.slice(0, 8).map(r => ({
+                  name: r.file_name || r.filename || r.file_id || 'Unknown',
+                  score: r.score
+                }))
               };
             }
           }

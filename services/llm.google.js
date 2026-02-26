@@ -264,14 +264,19 @@ class GoogleService {
       // Convert tools to Gemini format
       const geminiTools = this._convertToolsToGeminiFormat(crewTools);
 
-      // Add file_search tool if KB is configured with a Google corpus
-      if (knowledgeBase?.enabled && knowledgeBase.googleCorpusId) {
+      // Add file_search tool if KB is configured with Google corpus IDs
+      // Supports corpusIds array (new) or googleCorpusId (legacy fallback)
+      const corpusIds = knowledgeBase?.corpusIds?.length > 0
+        ? knowledgeBase.corpusIds
+        : (knowledgeBase?.googleCorpusId ? [knowledgeBase.googleCorpusId] : []);
+
+      if (knowledgeBase?.enabled && corpusIds.length > 0) {
         geminiTools.push({
           fileSearch: {
-            fileSearchStores: [knowledgeBase.googleCorpusId],
+            fileSearchStores: corpusIds,
           },
         });
-        console.log(`🔍 Google file_search tool added for store: ${knowledgeBase.googleCorpusId}`);
+        console.log(`🔍 Google file_search tool added for stores: ${corpusIds.join(', ')}`);
       }
 
       // Ensure message is a string

@@ -45,7 +45,7 @@ Your task is to cover each topic one by one, then move on to the next.`,
 
       knowledgeBase: {
         enabled: true,
-        storeId: 'vs_695e750fc75481918e3d76851ce30cae'
+        sources: ['Freeda Medical KB']  // Resolved from knowledge_bases DB table at runtime
       },
 
       collectFields: [

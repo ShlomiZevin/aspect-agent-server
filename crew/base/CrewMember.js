@@ -309,6 +309,10 @@ class CrewMember {
       oneShot: this.oneShot,
       toolCount: this.tools.length,
       hasKnowledgeBase: this.knowledgeBase?.enabled || false,
+      knowledgeBase: this.knowledgeBase ? {
+        enabled: this.knowledgeBase.enabled || false,
+        sources: this.knowledgeBase.sources || [],
+      } : null,
       hasTransitionPrompt: !!this.transitionSystemPrompt,
       persona: this.persona || null,
       source: this.source || 'file'

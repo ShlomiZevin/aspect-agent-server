@@ -20,6 +20,7 @@ const llmService = require('../../services/llm');
 const fieldsExtractor = require('../micro-agents/FieldsExtractorAgent');
 const promptService = require('../../services/prompt.service');
 const CrewMember = require('../base/CrewMember');
+const kbResolver = require('../../services/kb.resolver');
 
 class DispatcherService {
   constructor() {
@@ -351,7 +352,9 @@ class DispatcherService {
       agentConfig = {},
       promptOverrides = {}, // Session overrides: { crewName: prompt }
       modelOverrides = {},  // Session overrides: { crewName: modelName }
-      personaOverride       // Session override: string (agent-level, applies to all crews)
+      personaOverride,      // Session override: string (agent-level, applies to all crews)
+      kbOverrides = {},     // Session override: { crewName: string[] } - same pattern as modelOverrides
+      agentId               // Agent DB ID for KB resolver
     } = params;
 
     // Get conversation for context
@@ -462,17 +465,52 @@ class DispatcherService {
       console.log(`🔄 Transition system prompt will be injected for ${crew.name} (previous: ${lastCrewWithPrompt || 'none'})`);
     }
 
-    // Resolve knowledge base: crew config + client toggle
-    // Uses explicit provider IDs from crew config (no auto-routing by model)
+    // ========== RESOLVE KNOWLEDGE BASE ==========
+    // Priority: debug session override > crew file config
+    // Model-aware: openai→storeIds, google→corpusIds, anthropic→skip
     const crewKBEnabled = crew.knowledgeBase?.enabled !== false;
-    const resolvedKB = (useKnowledgeBase && crewKBEnabled) ? {
-      enabled: true,
-      storeId: crew.knowledgeBase?.storeId || null,
-      googleCorpusId: crew.knowledgeBase?.googleCorpusId || null,
-    } : null;
+
+    // Determine KB sources: debug panel override > crew file sources
+    // Uses same pattern as modelOverrides: { crewName: sources[] }
+    const crewKBOverride = kbOverrides?.[crew.name];
+    const kbSources = (crewKBOverride?.length > 0)
+      ? crewKBOverride
+      : (crew.knowledgeBase?.sources || []);
+
+    let resolvedKB = null;
+
+    if (useKnowledgeBase && crewKBEnabled && kbSources.length > 0 && agentId) {
+      const modelProvider = kbResolver.getModelProvider(resolvedModel);
+
+      if (modelProvider === 'anthropic') {
+        console.log(`ℹ️ [${crew.name}] KB skipped for Anthropic model (not supported)`);
+      } else {
+        resolvedKB = await kbResolver.resolve(kbSources, modelProvider, agentId);
+
+        if (!resolvedKB.enabled) {
+          console.warn(`⚠️ [${crew.name}] No KB IDs resolved for ${modelProvider} model`);
+          resolvedKB = null;
+        } else {
+          const unresolved = resolvedKB.resolvedSources.filter(s => !s.resolved);
+          if (unresolved.length > 0) {
+            console.warn(`⚠️ [${crew.name}] Some KB sources could not be resolved:`, unresolved);
+          }
+          console.log(`📚 [${crew.name}] KB resolved for ${modelProvider}: ${JSON.stringify(resolvedKB.storeIds || resolvedKB.corpusIds)}`);
+        }
+      }
+    } else if (useKnowledgeBase && crewKBEnabled && kbSources.length === 0 && crew.knowledgeBase?.storeId) {
+      // Legacy fallback: crew still has old-style storeId hardcoded (not yet migrated)
+      console.log(`⚠️ [${crew.name}] Using legacy storeId (not yet migrated to sources[])`);
+      resolvedKB = {
+        enabled: true,
+        provider: 'openai',
+        storeIds: [crew.knowledgeBase.storeId],
+        resolvedSources: [{ name: 'legacy', resolved: true, id: crew.knowledgeBase.storeId }]
+      };
+    }
 
     // Auto-inject knowledge base note into context when KB is active
-    if (resolvedKB) {
+    if (resolvedKB?.enabled) {
       context.knowledgeBaseNote = 'You have access to an internal knowledge base for reference. These are NOT files uploaded by the user - never mention seeing uploaded files or documents. Use this information to answer questions accurately without referencing the source files directly.';
     }
 
@@ -527,7 +565,11 @@ class DispatcherService {
           defaultModel: crew.model, // Original hardcoded model for comparison
           maxTokens: crew.maxTokens,
           tools: crew.getToolSchemas(),
-          knowledgeBase: resolvedKB,
+          knowledgeBase: resolvedKB ? {
+            sources: resolvedKB.resolvedSources,
+            provider: resolvedKB.provider,
+            activeIds: resolvedKB.storeIds || resolvedKB.corpusIds || [],
+          } : null,
           processedMessage,
           persona: resolvedPersona,
           personaSource,

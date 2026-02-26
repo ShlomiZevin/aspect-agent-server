@@ -19,6 +19,7 @@ const dispatcherService = require('./crew/services/dispatcher.service');
 const adminService = require('./services/admin.service');
 const promptService = require('./services/prompt.service');
 const crewMembersService = require('./services/crewMembers.service');
+const kbResolverService = require('./services/kb.resolver');
 const taskService = require('./services/task.service');
 const commentsService = require('./services/comments.service');
 const demoService = require('./services/demo.service');
@@ -79,6 +80,24 @@ app.use(express.static('public'));
 // Health check endpoint for App Engine Flexible
 app.get('/health', async (req, res) => {
   res.status(200).json({});
+});
+
+// ========== KNOWLEDGE BASE ENDPOINTS (for debug panel) ==========
+
+// Get all available KBs for an agent (used by debug panel for KB override)
+app.get('/api/agents/:agentName/knowledge-bases', async (req, res) => {
+  const { agentName } = req.params;
+  try {
+    const agent = await conversationService.getAgentByName(agentName);
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+    const kbs = await kbResolverService.getAvailableKBs(agent.id);
+    res.json({ knowledgeBases: kbs });
+  } catch (err) {
+    console.error('❌ Error fetching agent KBs:', err.message);
+    res.status(500).json({ error: 'Error fetching knowledge bases: ' + err.message });
+  }
 });
 
 // ========== CREW MANAGEMENT ENDPOINTS ==========
@@ -1153,7 +1172,7 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, useKnowledgeBase, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, personaOverride } = req.body;
+  const { message, conversationId, useKnowledgeBase, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, personaOverride, kbOverrides } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -1250,7 +1269,9 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         debug,
         promptOverrides: promptOverrides || {},
         modelOverrides: modelOverrides || {},
-        personaOverride: personaOverride || undefined
+        personaOverride: personaOverride || undefined,
+        kbOverrides: kbOverrides || {},
+        agentId: agent?.id || null
       })) {
         // Check if chunk is a function call event (object) or text (string)
         if (typeof chunk === 'object' && chunk.type) {

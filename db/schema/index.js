@@ -207,8 +207,12 @@ const crewMembers = pgTable('crew_members', {
   model: varchar('model', { length: 50 }).default('gpt-4o').notNull(),
   maxTokens: integer('max_tokens').default(2048).notNull(),
 
-  // Knowledge base (optional) - { enabled: boolean, storeId: string }
+  // Knowledge base (optional) - { enabled: boolean, sources: string[] }
   knowledgeBase: jsonb('knowledge_base'),
+
+  // Knowledge base sources override - string[] of KB names from knowledge_bases table
+  // Null = use file-based config; set = overrides file-based KB config
+  knowledgeBaseSources: jsonb('knowledge_base_sources'),
 
   // Fields to collect (optional) - [{ name: string, description: string }]
   fieldsToCollect: jsonb('fields_to_collect'),
