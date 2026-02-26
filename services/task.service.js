@@ -103,6 +103,9 @@ class TaskService {
     if (filters.domain) {
       conditions.push(eq(tasks.domain, filters.domain));
     }
+    if (filters.crewMember) {
+      conditions.push(eq(tasks.crewMember, filters.crewMember));
+    }
 
     if (conditions.length > 0) {
       query = query.where(and(...conditions));
@@ -133,7 +136,7 @@ class TaskService {
   async createTask(data) {
     if (!this.drizzle) this.initialize();
 
-    const { title, description, status, priority, type, domain, assignee, dueDate, atRisk, isCompleted, dependsOn, tags, isDraft, createdBy } = data;
+    const { title, description, status, priority, type, domain, assignee, dueDate, atRisk, isCompleted, dependsOn, tags, crewMember, isDraft, createdBy } = data;
 
     if (!title?.trim()) {
       throw new Error('Task title is required');
@@ -154,6 +157,7 @@ class TaskService {
         isCompleted: isCompleted || false,
         dependsOn: dependsOn || null,
         tags: tags || [],
+        crewMember: crewMember || null,
         isDraft: isDraft || false,
         createdBy: createdBy || null,
       })
@@ -182,6 +186,7 @@ class TaskService {
     if (updates.isCompleted !== undefined) updateData.isCompleted = updates.isCompleted;
     if (updates.dependsOn !== undefined) updateData.dependsOn = updates.dependsOn || null;
     if (updates.tags !== undefined) updateData.tags = updates.tags;
+    if (updates.crewMember !== undefined) updateData.crewMember = updates.crewMember || null;
     if (updates.isDraft !== undefined) updateData.isDraft = updates.isDraft;
     if (updates.createdBy !== undefined) updateData.createdBy = updates.createdBy || null;
 

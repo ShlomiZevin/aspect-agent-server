@@ -255,6 +255,7 @@ const tasks = pgTable('tasks', {
   isCompleted: boolean('is_completed').default(false).notNull(), // PM approval - task fully completed and reviewed
   dependsOn: integer('depends_on'), // ID of task this depends on (must be done first)
   tags: jsonb('tags').default([]), // array of strings
+  crewMember: varchar('crew_member', { length: 100 }), // Crew member related to this task
   isDraft: boolean('is_draft').default(false).notNull(), // Draft mode - only visible to creator
   createdBy: varchar('created_by', { length: 255 }), // Browser-based user identifier
   createdAt: timestamp('created_at').defaultNow().notNull(),

@@ -2327,12 +2327,13 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
 // Get all tasks (with optional filters)
 app.get('/api/tasks', async (req, res) => {
   try {
-    const { status, assignee, type, priority } = req.query;
+    const { status, assignee, type, priority, crewMember } = req.query;
     const filters = {};
     if (status) filters.status = status;
     if (assignee) filters.assignee = assignee;
     if (type) filters.type = type;
     if (priority) filters.priority = priority;
+    if (crewMember) filters.crewMember = crewMember;
 
     const tasks = await taskService.getTasks(filters);
     res.json({ tasks });
