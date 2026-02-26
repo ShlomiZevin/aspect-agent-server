@@ -350,7 +350,8 @@ class DispatcherService {
       useKnowledgeBase = false,
       agentConfig = {},
       promptOverrides = {}, // Session overrides: { crewName: prompt }
-      modelOverrides = {}   // Session overrides: { crewName: modelName }
+      modelOverrides = {},  // Session overrides: { crewName: modelName }
+      personaOverride       // Session override: string (agent-level, applies to all crews)
     } = params;
 
     // Get conversation for context
@@ -365,6 +366,17 @@ class DispatcherService {
       crew.setContextUser(conversation.userId, conversation.id, conversationId);
     }
 
+    // ========== RESOLVE PERSONA ==========
+    // Session override replaces the crew's persona in context
+    const resolvedPersona = personaOverride || crew.persona || null;
+    const personaSource = personaOverride ? 'session_override' : (crew.persona ? 'code' : 'none');
+
+    // Temporarily apply persona override for buildContext
+    const originalPersona = crew.persona;
+    if (personaOverride) {
+      crew.persona = personaOverride;
+    }
+
     // Build context from crew member
     const context = await crew.buildContext({
       conversation,
@@ -373,6 +385,9 @@ class DispatcherService {
       collectedFields,
       metadata: {}
     });
+
+    // Restore original persona
+    crew.persona = originalPersona;
 
     // Pre-process message
     const processedMessage = await crew.preProcess(message, context);
@@ -487,8 +502,14 @@ class DispatcherService {
     if (params.debug) {
       // Build fullInstructions exactly as llm.openai.js does
       let fullInstructions = resolvedPrompt;
-      if (context && Object.keys(context).length > 0) {
-        fullInstructions += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
+
+      // Extract persona from context for readable display (matches LLM service format)
+      const { characterGuidance: _cg, ...debugRemainingContext } = context;
+      if (context.characterGuidance) {
+        fullInstructions += `\n\n## Persona\n${context.characterGuidance}`;
+      }
+      if (Object.keys(debugRemainingContext).length > 0) {
+        fullInstructions += `\n\n## Current Context\n${JSON.stringify(debugRemainingContext, null, 2)}`;
       }
 
       // Build transition logic debug data
@@ -508,6 +529,8 @@ class DispatcherService {
           tools: crew.getToolSchemas(),
           knowledgeBase: resolvedKB,
           processedMessage,
+          persona: resolvedPersona,
+          personaSource,
           transitionSystemPrompt: resolvedTransitionPrompt,
           transitionPromptInjected: isNewCrewTransition,
           transitionLogic,

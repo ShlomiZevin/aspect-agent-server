@@ -1,4 +1,4 @@
-# Agent Building Guide v2.0
+# Agent Building Guide v2.1
 
 This guide explains how to add new agents and crew members to the Aspect platform. It is intended to be read by an AI assistant (e.g., Claude Code) so it can build the actual code files from a description.
 
@@ -274,6 +274,7 @@ Pass these to `super({...})` in the constructor:
 | `transitionTo` | `string` | No | Target crew name for automatic transition |
 | `transitionSystemPrompt` | `string` | No | System prompt injected once when transitioning TO this crew (see 3.6) |
 | `oneShot` | `boolean` | No | If `true`, crew delivers one response then auto-transitions on next user message (see 3.7) |
+| `persona` | `string` | No | Shared character/voice text for the agent. Auto-injected into context as `characterGuidance` by `buildContext()`. See [Part 3.8: Persona](#38-persona-shared-character-across-crews). |
 
 ### 3.2 Overridable Methods
 
@@ -459,6 +460,75 @@ For crews that deliver a single message then transition (e.g., closures, announc
 - No "stuck" states if extraction fails
 - Cleaner, simpler code
 - User response is handled by the right crew (not the transitional one)
+
+### 3.8 Persona (Shared Character Across Crews)
+
+The `persona` property lets you define a shared character/voice that applies to all crew members of an agent. It is automatically injected into the context (as `characterGuidance`) by the base `buildContext()`, so every crew gets it without any extra code.
+
+**Why use persona?**
+- Agents often have a distinct personality (tone, communication rules, domain philosophy) that should be consistent across all crew members
+- Without persona, you'd either duplicate this content in every crew's `guidance` (fragile, hard to maintain) or add an agent-level system prompt (requires infrastructure changes)
+- Persona is injected as **context** (not as the prompt itself), so it doesn't interfere with crew-specific guidance and **survives prompt overrides** in debug mode
+
+**How it works:**
+1. Create a persona module in your agent folder (e.g., `agents/freeda/freeda-persona.js`)
+2. Each crew passes `persona: getPersona()` in its constructor
+3. The base `buildContext()` adds it as `characterGuidance` to the context object
+4. The LLM sees it in the `## Current Context` section alongside other context data
+
+**What goes in persona vs crew guidance:**
+
+| Persona (shared) | Crew Guidance (specific) |
+|---|---|
+| Character identity & personality | Process steps for this stage |
+| Communication style & rules | Fields to collect |
+| Domain philosophy & values | Transition-specific rules |
+| Emotional handling patterns | Tools usage instructions |
+| Language & tone rules | Stage-specific do's and don'ts |
+
+**Example: Creating a persona module**
+
+```js
+// agents/my-agent/my-agent-persona.js
+const MY_AGENT_PERSONA = `# MyAgent - Character & Voice
+
+## Who You Are
+You are MyAgent, a friendly financial advisor...
+
+## Communication Style
+- Keep responses under 3 sentences
+- Always end with a question
+...`;
+
+function getPersona() {
+  return MY_AGENT_PERSONA;
+}
+
+module.exports = { getPersona };
+```
+
+**Example: Using persona in a crew member**
+
+```js
+const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../my-agent-persona');
+
+class MyWelcomeCrew extends CrewMember {
+  constructor() {
+    super({
+      persona: getPersona(),
+      name: 'welcome',
+      guidance: `## Your Role in This Stage
+You are the welcome crew. Collect the user's name and preferred language.`,
+      // ... other properties
+    });
+  }
+}
+```
+
+The crew's `guidance` stays focused on what to do NOW. The persona provides the WHO - personality, tone, and values that apply across all stages.
+
+**Relationship between persona and guidance:** The crew's `guidance` is the system prompt (the `instructions` field sent to the LLM). The persona is appended as context. If there's a conflict (e.g., persona says "2-3 sentences" but a closure crew needs a longer message), the crew's guidance naturally takes precedence because the LLM prioritizes direct instructions over context.
 
 ---
 

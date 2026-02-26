@@ -423,10 +423,16 @@ class OpenAIService {
         context = {}
       } = config;
 
-      // Build full instructions with context
+      // Build full instructions: prompt + persona (readable) + context (JSON)
       let fullInstructions = prompt;
-      if (Object.keys(context).length > 0) {
-        fullInstructions += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
+
+      // Extract persona from context and add as readable section (not JSON)
+      const { characterGuidance, ...remainingContext } = context;
+      if (characterGuidance) {
+        fullInstructions += `\n\n## Persona\n${characterGuidance}`;
+      }
+      if (Object.keys(remainingContext).length > 0) {
+        fullInstructions += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;
       }
 
       // Build tools array
@@ -657,10 +663,16 @@ class OpenAIService {
         context = {}
       } = config;
 
-      // Build full instructions with context
+      // Build full instructions: prompt + persona (readable) + context (JSON)
       let fullInstructions = prompt;
-      if (Object.keys(context).length > 0) {
-        fullInstructions += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
+
+      // Extract persona from context and add as readable section (not JSON)
+      const { characterGuidance, ...remainingContext } = context;
+      if (characterGuidance) {
+        fullInstructions += `\n\n## Persona\n${characterGuidance}`;
+      }
+      if (Object.keys(remainingContext).length > 0) {
+        fullInstructions += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;
       }
 
       // Build tools array

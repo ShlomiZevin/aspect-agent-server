@@ -13,6 +13,7 @@
  * - fieldsToCollect: Structured field definitions for micro-agent extraction
  * - transitionTo: Target crew member for automatic transitions
  * - oneShot: If true, delivers one response then auto-transitions on next message
+ * - persona: Shared character/voice text injected into context for all crews of an agent
  * - isDefault: Whether this is the default crew member for the agent
  *
  * Context methods (available after dispatcher sets _userId):
@@ -40,6 +41,7 @@ class CrewMember {
    * @param {boolean} options.isDefault - Whether this is the default crew member
    * @param {string} options.transitionSystemPrompt - System prompt injected once when transitioning to this crew
    * @param {boolean} options.oneShot - If true, crew delivers one response then auto-transitions on next user message
+   * @param {string} options.persona - Shared character/voice text for the agent (injected into context automatically by buildContext)
    * @param {Array} options.transitionRules - Optional structured rules for debug visualization [{id, type, condition: {description, fields, evaluate}, result, priority}]
    */
   constructor(options = {}) {
@@ -88,6 +90,11 @@ class CrewMember {
 
     // One-shot crews deliver one response then auto-transition on next user message
     this.oneShot = options.oneShot || false;
+
+    // Shared character/voice text for the agent
+    // When set, buildContext() automatically includes it as `characterGuidance` in the context.
+    // All crews of an agent can share the same persona by importing a shared module.
+    this.persona = options.persona || null;
 
     // Transition rules for debug visualization (optional)
     // If defined, debug panel shows structured pass/fail evaluation
@@ -191,10 +198,17 @@ class CrewMember {
    * @returns {Object} - Additional context to include in prompt
    */
   async buildContext(params) {
-    return {
+    const context = {
       collectedData: params.collectedData || {},
       timestamp: new Date().toISOString()
     };
+
+    // Auto-inject persona as characterGuidance when set
+    if (this.persona) {
+      context.characterGuidance = this.persona;
+    }
+
+    return context;
   }
 
   /**
@@ -296,6 +310,7 @@ class CrewMember {
       toolCount: this.tools.length,
       hasKnowledgeBase: this.knowledgeBase?.enabled || false,
       hasTransitionPrompt: !!this.transitionSystemPrompt,
+      persona: this.persona || null,
       source: this.source || 'file'
     };
   }

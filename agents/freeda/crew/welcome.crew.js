@@ -8,10 +8,12 @@
  * both fields are collected, then transitions to the General crew member.
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../freeda-persona');
 
 class FreedaWelcomeCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'welcome',
       displayName: 'Welcome',
       description: 'Warm welcome and initial profile collection (legacy - not in active flow)',

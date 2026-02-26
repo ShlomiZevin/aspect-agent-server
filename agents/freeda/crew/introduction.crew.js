@@ -14,10 +14,12 @@
  * - Ineligible users (age < 38 or male) -> 'ineligible' crew
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../freeda-persona');
 
 class FreedaIntroductionCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'introduction',
       displayName: 'Introduction',
       description: 'Introduction, service overview, and eligibility check',

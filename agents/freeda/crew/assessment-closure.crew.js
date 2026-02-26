@@ -19,10 +19,12 @@
  *   on the next user message (any message)
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../freeda-persona');
 
 class FreedaAssessmentClosureCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'assessment_closure',
       displayName: 'Assessment Closure',
       description: 'Closes the assessment phase and positions Freeda as ongoing companion',

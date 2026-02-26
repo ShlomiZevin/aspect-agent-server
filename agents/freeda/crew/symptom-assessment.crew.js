@@ -20,12 +20,14 @@
  * - After all 3 groups explored -> 'assessment_closure' (summary & companion positioning)
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../freeda-persona');
 const symptomTracker = require('../../../functions/symptom-tracker');
 const symptomGroupCompletion = require('../../../functions/symptom-group-completion');
 
 class FreedaSymptomAssessmentCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'symptom_assessment',
       displayName: 'Symptom Assessment',
       description: 'Structured symptom exploration across emotional, cognitive, and physical groups',

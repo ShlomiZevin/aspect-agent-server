@@ -16,10 +16,12 @@
  * - User has passed eligibility gate (female, age >= 38)
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../freeda-persona');
 
 class FreedaProfilerCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'profiler',
       displayName: 'Journey Profiler',
       description: 'Pre-diagnostic orientation and journey profiling',
