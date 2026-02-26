@@ -1,5 +1,9 @@
 # Task: DB-Driven Crew-to-KB Connection with Model-Aware Resolution
 
+> **Status:** Pending
+> **Priority:** High
+> **Estimated Complexity:** 2-3 focused sessions
+
 ## Overview
 
 Decouple crew members from provider-specific KB IDs (like OpenAI's `vs_xxx`). Instead, crew members reference knowledge bases by **our DB ID or name**, and at runtime the system resolves to the correct provider-specific ID based on the model being used.
@@ -95,7 +99,25 @@ When model is `claude-*`, KB is not available. The dispatcher should:
 2. Log an info message: `"KB skipped for Anthropic model (not supported)"`
 3. NOT fail or error - just gracefully skip
 
-### R5: Update Crew Member Files
+### R5: Thinking Process + File Search Results
+
+The thinking indicator in the UI currently shows KB access and which files were referenced during the response. This must continue working for both providers.
+
+**Current flow (OpenAI — must keep working):**
+1. `server.js` calls `thinkingService.addKnowledgeBaseStep()` when KB is active
+2. `llm.openai.js` yields `{ type: 'file_search_results', files: [...] }` chunks during streaming
+3. `server.js` catches those chunks, adds a thinking step with the file names
+4. Client renders the files in the thinking indicator (expandable list)
+
+**Google Gemini — must work the same way:**
+1. Same `thinkingService.addKnowledgeBaseStep()` call (already provider-agnostic)
+2. `llm.google.js` must yield `{ type: 'file_search_results', files: [...] }` from grounding metadata
+3. `server.js` handles it identically — same SSE event, same thinking step
+4. Client renders it the same — no client changes needed for this
+
+**Key point:** The `file_search_results` chunk format must be the same from both providers so `server.js` and the client handle them uniformly. Both should yield `{ type: 'file_search_results', files: [{ name, ... }] }`.
+
+### R6: Update Crew Member File
 
 Update all existing `.crew.js` files that use KB to the new format:
 
@@ -116,7 +138,7 @@ knowledgeBase: {
 
 All other crew files that have `knowledgeBase: null` or `{ enabled: false }` remain unchanged.
 
-### R6: Debug Panel - Show KB Info
+### R7: Debug Panel - Show KB Info
 
 In the Prompt Editor Panel (Ctrl+Shift+D), add a read-only KB info section per crew member:
 
@@ -152,7 +174,7 @@ Show:
 - Resolution status: checkmark if provider ID exists for current model, warning if not
 - File count and size from DB
 
-### R7: Debug Panel - Override KB
+### R8: Debug Panel - Override KB
 
 Allow overriding KB assignment from the debug panel (session-only, not persisted to file):
 
@@ -166,7 +188,7 @@ Allow overriding KB assignment from the debug panel (session-only, not persisted
 
 This override is sent with the chat request (similar to how model/prompt overrides work) and applied for the current session only.
 
-### R8: DB Column for KB Override
+### R9: DB Column for KB Override
 
 Add a column to `crew_members` table for persistent KB override (used by dashboard-created crews):
 
@@ -668,6 +690,13 @@ Ensure KB name in `general.crew.js` matches `knowledge_bases.name` in the DB:
 - [ ] Override checkbox list shows all agent KBs
 - [ ] Override sent with stream request
 - [ ] Override applies to chat response
+
+### Thinking Process + File Search Results
+- [ ] OpenAI model + KB → thinking indicator shows "Searching knowledge base" step
+- [ ] OpenAI model + KB → file search results appear (file names, expandable)
+- [ ] Gemini model + KB → same thinking step shows
+- [ ] Gemini model + KB → file search results appear in same format as OpenAI
+- [ ] Both providers yield `{ type: 'file_search_results', files }` in same structure
 
 ### Chat Integration
 - [ ] Chat with OpenAI model + KB → file_search tool used, results shown
