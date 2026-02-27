@@ -250,6 +250,16 @@ class GoogleService {
       knowledgeBase = null,
     } = config;
 
+    // Gemini 2.5 "thinking" models use part of maxOutputTokens for internal
+    // reasoning. Boost the limit so visible output isn't starved.
+    const isThinkingModel = model.includes('2.5-pro') || model.includes('2.5-flash');
+    const effectiveMaxTokens = isThinkingModel
+      ? Math.max(maxTokens * 8, 8192)
+      : maxTokens;
+    if (isThinkingModel) {
+      console.log(`🧠 Thinking model detected (${model}): boosting maxOutputTokens from ${maxTokens} to ${effectiveMaxTokens}`);
+    }
+
     let apiCallCount = 0; // Track API calls for debugging
 
     try {
@@ -301,7 +311,7 @@ class GoogleService {
         history: historyMessages,
         config: {
           systemInstruction: systemPrompt,
-          maxOutputTokens: maxTokens,
+          maxOutputTokens: effectiveMaxTokens,
           temperature: 0.7,
           tools: geminiTools.length > 0 ? geminiTools : undefined,
         },
@@ -319,7 +329,25 @@ class GoogleService {
 
       // Process initial stream
       let fileSearchResultsEmitted = false;
+      let chunkCount = 0;
       for await (const chunk of stream) {
+        chunkCount++;
+
+        // Diagnostic logging for debugging stream cutoff issues (especially Pro models)
+        const finishReason = chunk.candidates?.[0]?.finishReason;
+        const safetyRatings = chunk.candidates?.[0]?.safetyRatings;
+        const usage = chunk.usageMetadata;
+        if (finishReason && finishReason !== 'STOP') {
+          console.warn(`⚠️ Google chunk #${chunkCount} finishReason: ${finishReason}`);
+          if (safetyRatings) {
+            const blocked = safetyRatings.filter(r => r.blocked);
+            if (blocked.length > 0) console.warn(`⚠️ Safety blocked:`, JSON.stringify(blocked));
+          }
+        }
+        if (usage) {
+          console.log(`📊 Google usage: prompt=${usage.promptTokenCount}, output=${usage.candidatesTokenCount}, thoughts=${usage.thoughtsTokenCount || 0}, total=${usage.totalTokenCount}`);
+        }
+
         if (chunk.text) {
           fullReply += chunk.text;
           yield chunk.text;
@@ -345,6 +373,8 @@ class GoogleService {
           }
         }
       }
+
+      console.log(`📊 Google stream ended after ${chunkCount} chunks, reply: ${fullReply.length} chars`);
 
       // If no grounding data came through streaming chunks, log it for debugging
       if (corpusIds.length > 0 && !fileSearchResultsEmitted) {
