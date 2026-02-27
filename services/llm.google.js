@@ -273,7 +273,7 @@ class GoogleService {
       if (knowledgeBase?.enabled && corpusIds.length > 0) {
         geminiTools.push({
           fileSearch: {
-            fileSearchStores: corpusIds,
+            fileSearchStoreNames: corpusIds,
           },
         });
         console.log(`🔍 Google file_search tool added for stores: ${corpusIds.join(', ')}`);
@@ -318,6 +318,7 @@ class GoogleService {
       let functionCalls = [];
 
       // Process initial stream
+      let fileSearchResultsEmitted = false;
       for await (const chunk of stream) {
         if (chunk.text) {
           fullReply += chunk.text;
@@ -326,19 +327,28 @@ class GoogleService {
         if (chunk.functionCalls && chunk.functionCalls.length > 0) {
           functionCalls.push(...chunk.functionCalls);
         }
-        // Emit file search results from grounding metadata
-        if (chunk.groundingMetadata?.groundingChunks?.length > 0) {
-          const files = chunk.groundingMetadata.groundingChunks
+        // Emit file search results from grounding metadata (typically in final chunk)
+        const groundingChunks = chunk.groundingMetadata?.groundingChunks
+          || chunk.candidates?.[0]?.groundingMetadata?.groundingChunks;
+        if (groundingChunks?.length > 0) {
+          const files = groundingChunks
             .filter(c => c.retrievedContext)
             .map(c => ({
-              name: c.retrievedContext.title,
-              uri: c.retrievedContext.uri,
-              relevance: c.retrievedContext.relevanceScore,
+              name: c.retrievedContext.title || c.retrievedContext.documentName || 'Unknown',
+              uri: c.retrievedContext.uri || '',
+              text: c.retrievedContext.text || '',
             }));
           if (files.length > 0) {
+            console.log(`📄 Google file search found ${files.length} file(s): ${files.map(f => f.name).join(', ')}`);
             yield { type: 'file_search_results', files };
+            fileSearchResultsEmitted = true;
           }
         }
+      }
+
+      // If no grounding data came through streaming chunks, log it for debugging
+      if (corpusIds.length > 0 && !fileSearchResultsEmitted) {
+        console.log(`ℹ️ Google file search: KB was configured but no grounding metadata returned in stream`);
       }
 
       // Function call loop - only for handling function responses
