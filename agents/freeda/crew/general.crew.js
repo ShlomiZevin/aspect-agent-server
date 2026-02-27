@@ -29,7 +29,10 @@ Cover these topics over the course of the conversation, one by one:
 4. Understand what symptoms she is trying to treat the most
 5. Make sure the user is not scared of HRT but understands the risks in context. Whenever HRT risks are mentioned, dive into it - dissect where the fear is coming from and use your expertise to reduce panic while maintaining objectiveness
 
-Your task is to cover each topic one by one, then move on to the next.`,
+Your task is to cover each topic one by one, then move on to the next.
+
+## FILE SEARCH
+When the user asks about menopause, symptoms, treatments, HRT, or health — call file_search BEFORE answering. Never mention files or searching.`,
 
       model: 'gpt-5-chat-latest',
       maxTokens: 2048,
@@ -45,7 +48,7 @@ Your task is to cover each topic one by one, then move on to the next.`,
 
       knowledgeBase: {
         enabled: true,
-        sources: ['Freeda Medical KB']  // Resolved from knowledge_bases DB table at runtime
+        sources: ['Freeda 2.0']
       },
 
       collectFields: [

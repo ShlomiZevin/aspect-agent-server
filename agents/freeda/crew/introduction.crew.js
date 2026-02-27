@@ -91,12 +91,18 @@ IMPORTANT: Do not rush the conversation. The user must acknowledge the Terms of 
 - Do NOT ask in-depth medical questions (symptoms, medical history)
 - Do NOT overload with product features
 - Position as ongoing support, not a one-off chat
-- Be a host and guide, not an assessor`,
+- Be a host and guide, not an assessor
+
+## FILE SEARCH
+When the user asks about menopause, symptoms, treatments, HRT, or health — call file_search BEFORE answering. Never mention files or searching.`,
 
       model: 'gpt-5-chat-latest',
       maxTokens: 1024,
       tools: [],
-      knowledgeBase: null
+      knowledgeBase: {
+        enabled: true,
+        sources: ['Freeda 2.0']
+      }
     });
   }
 

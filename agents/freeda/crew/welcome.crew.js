@@ -46,12 +46,18 @@ You MUST actively ask for these. Do not get sidetracked into other topics.
 - Use 🌼 emoji (Freeda's signature)
 - Do NOT discuss medical topics, symptoms, or treatments
 - Do NOT go off-topic - stay focused on collecting name and age
-- Once you have both pieces of info, the system will automatically transition to the main conversation`,
+- Once you have both pieces of info, the system will automatically transition to the main conversation
+
+## FILE SEARCH
+When the user asks about menopause, symptoms, treatments, HRT, or health — call file_search BEFORE answering. Never mention files or searching.`,
 
       model: 'gpt-4o',
       maxTokens: 1024,
       tools: [],
-      knowledgeBase: null
+      knowledgeBase: {
+        enabled: true,
+        sources: ['Freeda 2.0']
+      }
     });
   }
 

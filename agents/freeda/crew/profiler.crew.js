@@ -132,12 +132,18 @@ Based on inputs, you will internally assess:
 - Which symptom group to explore first (emotional / physical / cognitive)
 - Appropriate depth and tone for upcoming conversations
 
-This analysis guides your approach but is NEVER shared with the user.`,
+This analysis guides your approach but is NEVER shared with the user.
+
+## FILE SEARCH
+When the user asks about menopause, symptoms, treatments, HRT, or health — call file_search BEFORE answering. Never mention files or searching.`,
 
       model: 'gpt-5-chat-latest',
       maxTokens: 1024,
       tools: [],
-      knowledgeBase: null
+      knowledgeBase: {
+        enabled: true,
+        sources: ['Freeda 2.0']
+      }
     });
   }
 

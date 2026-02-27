@@ -115,14 +115,20 @@ The main risk here is drop-off due to perceived completion. Your goal is to shif
 - FROM: "I got assessed"
 - TO: "I now have someone walking with me"
 
-Be warm, grounding, and forward-looking.`,
+Be warm, grounding, and forward-looking.
+
+## FILE SEARCH
+When the user asks about menopause, symptoms, treatments, HRT, or health — call file_search BEFORE answering. Never mention files or searching.`,
 
       model: 'gpt-5-chat-latest',
       maxTokens: 1536,
 
       tools: [],
 
-      knowledgeBase: null
+      knowledgeBase: {
+        enabled: true,
+        sources: ['Freeda 2.0']
+      }
     });
   }
 

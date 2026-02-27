@@ -128,7 +128,10 @@ When completing the LAST (3rd) group, keep your response very brief and subtle:
 Example for final group when user confirms no symptoms:
 "מעולה שלומית 🌺 טוב לדעת שאת מרגישה טוב גם מהבחינה הקוגניטיבית."
 
-That's it - short, warm, done. Another crew will continue.`,
+That's it - short, warm, done. Another crew will continue.
+
+## FILE SEARCH
+When the user asks about menopause, symptoms, treatments, HRT, or health — call file_search BEFORE answering. Never mention files or searching.`,
 
       model: 'gpt-5-chat-latest',
       maxTokens: 1536,
@@ -136,7 +139,10 @@ That's it - short, warm, done. Another crew will continue.`,
       // Tools are set up with context wrappers in the constructor
       tools: [],
 
-      knowledgeBase: null
+      knowledgeBase: {
+        enabled: true,
+        sources: ['Freeda 2.0']
+      }
     });
 
     // Set up tools with context wrappers
