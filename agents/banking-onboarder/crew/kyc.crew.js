@@ -5,10 +5,10 @@
  *
  * Performs automated KYC checks (simulated for demo).
  * In demo: all standard customers pass automatically.
- * Crew delivers result message, user confirms to continue.
+ * Delivers result, user acknowledges to continue.
  *
  * Transitions:
- * - If user confirms → 'profile-enrichment'
+ * - User acknowledges → 'profile-enrichment'
  */
 const CrewMember = require('../../../crew/base/CrewMember');
 
@@ -23,39 +23,29 @@ class KYCCrew extends CrewMember {
 
       fieldsToCollect: [
         {
-          name: 'kyc_approved',
+          name: 'kyc_acknowledged',
           type: 'boolean',
-          description: "Set to true when user confirms they want to continue after KYC results. Any confirmation (yes, כן, נמשיך, בסדר, מאשר, ok) = true."
+          description: "Set to true when user acknowledges the KYC result and is ready to continue. Any response after the result (כן, בסדר, נמשיך, ok, אחלה, מעולה) = true."
         }
       ],
 
       transitionTo: 'profile-enrichment',
 
-      guidance: `You are a professional banking assistant guiding customers through the KYC (Know Your Customer) verification process.
+      guidance: `You are a calm, professional banking advisor running a quick regulatory check in Hebrew. Gender-neutral — no slash forms.
 
-## YOUR PURPOSE
-Inform customers that automated compliance checks passed and guide them to the next step.
+## YOUR TASK
+Simulate a short KYC process in one message. Structure it like a real-time status update:
 
-## CONVERSATION FLOW
+1. Say you're running the check now (e.g., "רגע, מריץ בדיקת תקינות...")
+2. Show 2-3 short status lines as if they're completing in real time — things like verifying details against records, confirming eligibility, regulatory clearance. Use ✅ to mark each as done. Keep the language simple and non-technical.
+3. Confirm everything passed — short and routine.
+4. Briefly mention the next step (a few short questions about employment and income).
+5. End with a short prompt to continue — e.g., "נמשיך?" or "מוכנים לשלב הבא?" so the user knows to respond.
 
-### First message - deliver KYC results:
+The whole thing should feel like a loading screen that resolves — not a formal report. Keep it short and light.
 
-"מעולה! כל הבדיקות הושלמו בהצלחה ✅
-
-השלב הבא – כמה שאלות קצרות על העיסוק וההכנסה שלך, כדי שנוכל להמליץ לך על האפשרויות שהכי מתאימות לך.
-
-נמשיך?"
-
-### If user confirms → system will transition automatically.
-
-### If user has questions → answer briefly, then ask again to continue.
-
-## RULES
-- **Gender-neutral self-reference** - Never expose your gender. No slash forms (מבין/ה). Use neutral phrasing.
-- Do NOT list which checks were performed (sanctions, compliance, risk, etc.) - just confirm everything passed
-- Use **neutral, factual language** - not emotional or judgmental
-- Present KYC as a **standard regulatory step** - not as evaluation or suspicion
-- Keep responses **short** (2-3 sentences)
+## CONVERSATION
+If the user has questions, answer briefly. Don't explain what was checked in detail.
 
 ## DEMO NOTE
 In this demo, all customers pass KYC automatically. In production, these would be real API calls to compliance services.`,
@@ -68,9 +58,9 @@ In this demo, all customers pass KYC automatically. In production, these would b
   }
 
   async preMessageTransfer(collectedFields) {
-    const approved = collectedFields.kyc_approved === 'true';
+    const acknowledged = collectedFields.kyc_acknowledged === 'true';
 
-    if (approved) {
+    if (acknowledged) {
       await this.writeContext('kyc_results', {
         approved: true,
         completedAt: new Date().toISOString()
@@ -81,27 +71,21 @@ In this demo, all customers pass KYC automatically. In production, these would b
         currentStep: 'profile-enrichment'
       }, true);
 
-      console.log('   ✅ KYC approved, transitioning to profile-enrichment');
+      console.log('   ✅ KYC acknowledged, transitioning to profile-enrichment');
     }
 
-    return approved;
+    return acknowledged;
   }
 
   async buildContext(params) {
     const baseContext = await super.buildContext(params);
     const collectedFields = params.collectedFields || {};
 
-    const approved = collectedFields.kyc_approved === 'true';
-    const userName = collectedFields.user_name || null;
-
     return {
       ...baseContext,
       role: 'KYC Compliance Verification',
-      customerName: userName,
-      kycApproved: approved,
-      instruction: approved
-        ? 'User confirmed. System will transition.'
-        : 'Deliver KYC results (all checks passed) and ask user to continue. Do NOT list individual checks.',
+      customerName: collectedFields.user_name || null,
+      kycResult: 'passed',
       demoNote: 'All customers pass KYC in demo. In production, real compliance API calls.'
     };
   }
