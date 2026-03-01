@@ -12,129 +12,99 @@
 
 ---
 
-### Task 2 [#78]: Completion - Text-heavy format, needs celebratory UI
+### ~~Task 2 [#78]: Completion - Text-heavy format, needs celebratory UI~~ ✅
 **Crew:** Account Opened (completion)
 **Type:** Wrong Reply
-**Notes:**
-- Text-heavy format - this screen deserves celebratory visual UI (account card with bold number, green status, icons)
-- "הצעדים הבאים" too long - 3 steps with long explanations at end of tiring process. Shorten drastically or show as light visual checklist
-- "ברוכה הבאה ל-[שם הבנק]" - visible placeholder, needs real bank name
-- "איך אפשר לעזור?" - after this process user doesn't know what to ask. Better to offer 2-3 Quick Replies: "הפקד כסף ראשון" / "הזמן כרטיס אשראי" / "סיימתי לבינתיים"
-- Missing celebratory moment - single 🎉 not enough. Consider short animation or design that marks completion
-- Separate what's already available vs next steps
-- Add links everywhere the customer needs/can continue
-- Remove "איך אפשר לעזור?" at the end. Create more closure options, customer can always return
+**Status:** Done
+**Changes:** Complete rewrite. Short celebratory message, "what's ready now" vs "what's coming" separation, warm closure instead of "how can I help". Removed placeholder bank name. Removed all fields (no collection needed). Celebratory UI / animation is separate UI task.
 
 ---
 
-### Task 3 [#77]: Final Confirmation - Add digital signature simulation
+### ~~Task 3 [#77]: Final Confirmation - Add digital signature simulation~~ ✅
 **Crew:** Final Confirmation
 **Type:** Wrong Reply
-**Notes:**
-- Add a simulated digital signature step instead of just typing "I authorize"
+**Status:** Done
+**Changes:** Guidance describes authorization as a "digital signature moment" — framed as official but not scary. Single `authorized` boolean field replaces multi-step authorization phrases.
 
 ---
 
-### Task 4 [#76]: Final Confirmation - Terms confirmation too abrupt
+### ~~Task 4 [#76]: Final Confirmation - Terms confirmation too abrupt~~ ✅
 **Crew:** Final Confirmation
 **Type:** Wrong Reply
-**Notes:**
-- Missing short summary of terms in customer-friendly language with mock link to full document
-- Missing context - transition from summary to this question is too sharp. Customer who didn't read terms feels like "signing" something they didn't understand. Add a connecting sentence
-- "תקנות" - dry terminology. Use simpler language like "תנאי השימוש" or "הפרטים שראית"
-- Quick Replies - "מאשר/ת" / "יש לי שאלה" buttons are better than free typing at this critical stage
+**Status:** Done
+**Changes:** Guidance instructs to present friendly summary of account terms before asking for authorization. Focus on what customer is getting, not internal process. Quick Replies is separate UI task.
 
 ---
 
-### Task 5 [#75]: Final Confirmation - Missing detail completion step
+### ~~Task 5 [#75]: Final Confirmation - Missing detail completion step~~ ✅
 **Crew:** Final Confirmation
 **Type:** Wrong Reply
-**Notes:**
-- Before final confirmation, missing a step to complete and confirm technical details:
-  - Full name
-  - Full name in English
-  - Address confirmation (based on ID)
+**Status:** Done
+**Changes:** Added 3 new fields: `full_name_hebrew`, `full_name_english`, `address_confirmed`. Sequential collection via `getFieldsForExtraction`. Collected before summary and authorization.
 
 ---
 
-### Task 6 [#74]: Final Confirmation - Summary presentation improvements
+### ~~Task 6 [#74]: Final Confirmation - Summary presentation improvements~~ ✅
 **Crew:** Final Confirmation
 **Type:** Wrong Reply
-**Notes:**
-- Text-heavy format - summary shown as text block with headers. This is the most important step, deserves dedicated UI (structured summary card easy to scan in a second)
-- "הפרופיל שלך" - term repeats. Unify customer-facing language throughout the flow
-- "האם כל הפרטים נכונים?" - better as Quick Replies: "הכל נכון, נמשיך" / "רוצה לתקן משהו"
-- Missing info on what happens after - customer doesn't know next step after confirmation. Before they approve, they should know what to expect (SMS? account opens immediately?). Expectation management is critical here
-- Don't show behind-the-scenes items like "אימות זהות: מאושר"
-- Expand on account terms, not customer profile
+**Status:** Done
+**Changes:** Guidance: focus on account offer not internal items, explain what happens after confirmation, customer-facing language. No behind-the-scenes details. Structured summary card is separate UI task.
 
 ---
 
-### Task 7 [#73]: Account Terms & Offers - Stuck, doesn't auto-transition
+### ~~Task 7 [#73]: Account Terms & Offers - Stuck, doesn't auto-transition~~ ✅
 **Crew:** Account Terms & Offers
 **Type:** Didn't Transition
-**Notes:**
-- Agent gets stuck and requires explicit request to continue after presenting terms
+**Status:** Done
+**Changes:** Simplified to single `terms_accepted` boolean field. `preMessageTransfer` transitions on acceptance. Removed 6-field negotiation state machine.
 
 ---
 
-### Task 8 [#72]: Account Terms & Offers - Offer presentation too text-heavy
+### ~~Task 8 [#72]: Account Terms & Offers - Offer presentation too text-heavy~~ ✅
 **Crew:** Account Terms & Offers
 **Type:** Wrong Reply
-**Notes:**
-- Text-heavy format - offer shown as long text block with bold headers. Feels like a document, not a conversation. Consider dedicated UI for offer display (visual product card)
-- "תנאים סטנדרטיים" - dry banking language. Use friendlier wording like "מה חשוב לדעת"
-- "האם ההצעה הזו עונה על צרכייך?" - too vague. Better to offer clear Quick Replies: "כן, נמשיך" / "יש לי שאלות" / "רוצה לראות אפשרויות נוספות"
-- No explanation of logic - customer doesn't know why they got this specific offer. A short sentence connecting what they shared to the recommendation increases trust and personalization feeling
+**Status:** Done
+**Changes:** Guidance rewritten — concise, friendly Hebrew, no dry jargon. Rule: "explain why" connects offer to customer profile. Removed wall-of-text example. Visual card is separate UI task.
 
 ---
 
-### Task 9 [#71]: Account Terms & Offers - Should present offer immediately
+### ~~Task 9 [#71]: Account Terms & Offers - Should present offer immediately~~ ✅
 **Crew:** Account Terms & Offers
 **Type:** Wrong Reply
-**Notes:**
-- Agent should continue and present the offer immediately without waiting for explicit request
+**Status:** Done
+**Changes:** Guidance rule: "present immediately — on your first message, present the offer right away. Do not ask what the customer needs."
 
 ---
 
-### Task 10 [#70]: Account Terms & Offers - Should offer immediately, not treat as new customer
+### ~~Task 10 [#70]: Account Terms & Offers - Should offer immediately, not treat as new customer~~ ✅
 **Crew:** Account Terms & Offers
 **Type:** Wrong Reply
-**Notes:**
-- Agent should present options/offer immediately upon entering this crew
-- Needs prompt sharpening or system prompt injection to know it should offer right away
+**Status:** Done
+**Changes:** Same as #71. Guidance explicitly says not to treat as new customer. `buildContext` passes customer profile (employment, income, usage) so agent has context.
 
 ---
 
-### Task 11 [#69]: Financial Profile - Asks too many questions at once
+### ~~Task 11 [#69]: Financial Profile - Asks too many questions at once~~ ✅
 **Crew:** Financial Profile
 **Type:** Wrong Reply
-**Notes:**
-- Agent asks 4 questions simultaneously. Switch to one question per message
-- "האם יש לך הלוואות קיימות או התחייבויות כספיות משמעותיות?" - very sensitive question without context/preparation. If needed, add framing explaining why it's relevant
-- "מה טווח ההוצאות החודשי המשוער?" - better as Quick Replies with predefined ranges
-- "איך את מצפה להשתמש בחשבון?" - too open-ended. Offer common clickable options (salary, savings, daily expenses, etc.) with "אחר" option
+**Status:** Done
+**Changes:** One question at a time via `getFieldsForExtraction`. Simplified from 14 to 6 fields. Guidance rewritten with general flow guidelines, Hebrew, gender-neutral. Predefined ranges in field descriptions. Removed over-detailed fields (industry, employment_stability, income_frequency, etc.).
 
 ---
 
-### Task 12 [#68]: Financial Profile - Income questions too many at once
+### ~~Task 12 [#68]: Financial Profile - Income questions too many at once~~ ✅
 **Crew:** Financial Profile
 **Type:** Wrong Reply
-**Notes:**
-- Agent asks 3 questions simultaneously (income source, range, additional sources). Switch to one per message
-- Income ranges should be Quick Replies - predefined clickable ranges instead of free typing. More comfortable and less intimidating
+**Status:** Done
+**Changes:** Sequential field exposure — income source, range, and usage asked one at a time. Predefined ranges in field descriptions for extractor. Added `extractionMode: 'form'`.
 
 ---
 
-### Task 13 [#67]: Financial Profile - Employment questions problematic
+### ~~Task 13 [#67]: Financial Profile - Employment questions problematic~~ ✅
 **Crew:** Financial Profile
 **Type:** Wrong Reply
-**Notes:**
-- Agent fires 4 questions at once, creating a form/questionnaire feeling instead of conversation
-- Fix in three ways:
-  1. One question at a time - start with most basic (employment status), continue to next only after answer
-  2. Conditional logic - not all questions relevant to everyone (e.g., "position" only for employed, "temporary" only for freelancers). Branch based on answers
-  3. Remove "תוכלי לספר פרטים אלו בבקשה?" - unnecessary, adds bureaucratic feeling
+**Status:** Done
+**Changes:** One question at a time. Conditional logic via `getFieldsForExtraction` — occupation only asked for employed/self-employed (skipped for students, retirees, unemployed using Set-based lookup). Removed bureaucratic tone. Simple conversational guidance.
 
 ---
 
