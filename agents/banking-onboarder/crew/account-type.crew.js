@@ -100,7 +100,7 @@ When a customer requests an unsupported account type, respond warmly - don't mak
 ## SCOPE CLARITY
 This is an **expectation-setting moment**. Be informational, not restrictive. Help the customer understand the current scope so they can make an informed decision about whether to continue.`,
 
-      model: 'gpt-4o',
+      model: 'gpt-5-chat-latest',
       maxTokens: 1024,
       tools: [],
       knowledgeBase: null

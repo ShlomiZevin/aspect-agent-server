@@ -205,6 +205,8 @@ Then DO NOT attempt a fix. Instead:
 
 #### Prompt Writing Principles (learned from iteration)
 
+**NOTE:** These principles must be folded into the system prompt above when building the tool. They are documented separately here for clarity, but Claude must follow them when editing guidance prompts.
+
 When Claude edits guidance prompts, it MUST follow these principles:
 
 1. **Identity first** — The opening sentence defines WHO the agent is, not what it does. Bake the voice, tone, language, and personality into the identity. Example: "You are a warm, knowledgeable banking advisor having a conversation in Hebrew" — this naturally produces Hebrew, warm tone, no jargon, without needing separate rules for each.

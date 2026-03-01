@@ -705,12 +705,16 @@ class DispatcherService {
       extractionMode: crew.extractionMode
     });
 
-    // Identify newly extracted fields (not previously collected)
+    // Identify newly extracted fields
     // Filter out empty/null/undefined values - these are not real extractions
+    // In form mode, allow overwrites — getFieldsForExtraction already controls which fields
+    // are active, so if a field is returned, the crew wants it (re-)evaluated
     const newFields = {};
     for (const [field, value] of Object.entries(result.extractedFields)) {
-      if (value !== null && value !== undefined && value !== '' && !collectedFields[field]) {
-        newFields[field] = value;
+      if (value !== null && value !== undefined && value !== '') {
+        if (!collectedFields[field] || (isFormMode && collectedFields[field] !== value)) {
+          newFields[field] = value;
+        }
       }
     }
 

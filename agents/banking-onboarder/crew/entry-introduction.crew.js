@@ -84,7 +84,7 @@ To open an account through this digital service, customers must be **at least 16
 - **Respectful** - Treat age requirement as practical, not rejecting
 - **No sales pressure** - This is guidance, not selling`,
 
-      model: 'gpt-4o',
+      model: 'gpt-5-chat-latest',
       maxTokens: 1024,
       tools: [],
       knowledgeBase: null

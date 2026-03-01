@@ -113,7 +113,7 @@ End journey respectfully. Provide branch/phone alternatives (📞 03-9999999).
 - **Respect user autonomy** - no manipulation, no guilt
 - **One at a time** - focused, conversational, not a form`,
 
-      model: 'gpt-4o',
+      model: 'gpt-5-chat-latest',
       maxTokens: 1500,
       tools: [],
       knowledgeBase: null

@@ -30,12 +30,7 @@ class IdentityVerificationCrew extends CrewMember {
         },
         {
           name: 'otp_code',
-          description: "The OTP code entered by the user. Extract the numeric code. Always extract the LATEST code if user enters a new one."
-        },
-        {
-          name: 'otp_verified',
-          allowedValues: ['success', 'failed'],
-          description: "DEMO: Set to 'success' if user enters 6-digit code starting with '1' (e.g., 123456). Set to 'failed' for codes starting with '2' or '3'. Always re-evaluate based on LATEST code."
+          description: "The OTP code entered by the user. Extract the numeric code exactly as typed."
         },
         {
           name: 'id_number',
@@ -74,7 +69,7 @@ After receiving phone number, immediately confirm OTP was sent:
 **Fail (3 attempts):** "לא הצלחנו להשלים את האימות. אפשר לפנות לסניף: 📞 03-9999999"
 
 ### Step 3: Collect ID Number (after OTP success)
-"עכשיו צריך את מספר תעודת הזהות שלך (ת\"ז, דרכון או רישיון נהיגה)."
+"עכשיו צריך את מספר תעודת הזהות שלך (ת\\"ז, דרכון או רישיון נהיגה)."
 
 ### Step 4: ID Document Upload (simulated)
 "תודה! עכשיו צריך תמונה ברורה של התעודה. העלה את התמונה ואשר כשסיימת."
@@ -103,16 +98,27 @@ After receiving phone number, immediately confirm OTP was sent:
 - Max 3 attempts
 - **IMPORTANT:** Always mention the code is **6 digits**`,
 
-      model: 'gpt-4o',
+      model: 'gpt-5-chat-latest',
       maxTokens: 1500,
       tools: [],
       knowledgeBase: null
     });
   }
 
+  /**
+   * Validate OTP code in code (not via LLM extraction).
+   * Returns true for 6-digit codes starting with '1'.
+   */
+  _isOtpValid(code) {
+    if (!code) return false;
+    const codeStr = String(code).trim();
+    return codeStr.length === 6 && /^\d+$/.test(codeStr) && codeStr.startsWith('1');
+  }
+
   getFieldsForExtraction(collectedFields) {
     const hasPhoneNumber = !!collectedFields.phone_number;
-    const otpVerified = collectedFields.otp_verified === 'success';
+    const otpCode = collectedFields.otp_code;
+    const otpVerified = this._isOtpValid(otpCode);
     const hasIdNumber = !!collectedFields.id_number;
     const hasIdDocument = collectedFields.id_document_uploaded === 'true';
 
@@ -121,8 +127,8 @@ After receiving phone number, immediately confirm OTP was sent:
       return this.fieldsToCollect.filter(f => f.name === 'phone_number');
     }
     if (!otpVerified) {
-      // OTP step needs both otp_code and otp_verified together
-      return this.fieldsToCollect.filter(f => f.name === 'otp_code' || f.name === 'otp_verified');
+      // OTP step: only extract the code, verification is done in code
+      return this.fieldsToCollect.filter(f => f.name === 'otp_code');
     }
     if (!hasIdNumber) {
       return this.fieldsToCollect.filter(f => f.name === 'id_number');
@@ -136,7 +142,7 @@ After receiving phone number, immediately confirm OTP was sent:
 
   async preMessageTransfer(collectedFields) {
     const hasPhoneNumber = !!collectedFields.phone_number;
-    const otpVerified = collectedFields.otp_verified === 'success';
+    const otpVerified = this._isOtpValid(collectedFields.otp_code);
     const hasIdNumber = !!collectedFields.id_number;
     const hasIdDocument = collectedFields.id_document_uploaded === 'true';
     const faceVerified = collectedFields.face_verified === 'true';
@@ -150,23 +156,23 @@ After receiving phone number, immediately confirm OTP was sent:
 
     const hasPhoneNumber = !!collectedFields.phone_number;
     const otpCode = collectedFields.otp_code || null;
-    const otpVerified = collectedFields.otp_verified || 'pending';
+    const otpVerified = this._isOtpValid(otpCode);
     const hasIdNumber = !!collectedFields.id_number;
     const hasIdDocument = collectedFields.id_document_uploaded === 'true';
     const faceVerified = collectedFields.face_verified === 'true';
 
-    const otpSuccess = otpVerified === 'success';
-    const otpFailed = otpVerified === 'failed';
-    const allComplete = hasPhoneNumber && otpSuccess && hasIdNumber && hasIdDocument && faceVerified;
+    const allComplete = hasPhoneNumber && otpVerified && hasIdNumber && hasIdDocument && faceVerified;
 
-    const userName = collectedFields.user_name || null;
-
-    // OTP simulation for context
-    let otpSimulation = null;
-    if (otpCode && otpVerified === 'pending') {
-      const codeStr = String(otpCode);
-      if (codeStr.length === 6 && /^\d+$/.test(codeStr)) {
-        otpSimulation = codeStr.startsWith('1') ? 'success' : 'failed';
+    // Determine OTP status for the LLM
+    let otpStatus = 'pending';
+    if (otpCode) {
+      const codeStr = String(otpCode).trim();
+      if (codeStr.length !== 6 || !/^\d+$/.test(codeStr)) {
+        otpStatus = 'invalid_format';
+      } else if (otpVerified) {
+        otpStatus = 'success';
+      } else {
+        otpStatus = 'failed';
       }
     }
 
@@ -174,25 +180,26 @@ After receiving phone number, immediately confirm OTP was sent:
       ...baseContext,
       role: 'Identity Verification',
       stage: 'OTP, Document & Face Verification',
-      customerName: userName,
+      customerName: collectedFields.user_name || null,
       verificationStatus: {
         phoneNumber: hasPhoneNumber ? 'Collected' : 'Pending',
         otpCode: otpCode ? 'Entered' : 'Not entered',
-        otpVerification: otpVerified,
+        otpVerification: otpStatus,
         idNumber: hasIdNumber ? 'Collected' : 'Pending',
         idDocument: hasIdDocument ? 'Uploaded' : 'Pending',
         faceVerification: faceVerified ? 'Verified' : 'Pending'
       },
-      otpSimulationResult: otpSimulation,
       instruction: allComplete
         ? 'All verification steps complete! Confirm success and prepare for transition.'
         : !hasPhoneNumber
         ? 'Ask for phone number. Explain this is a quick verification step.'
-        : !otpCode && !otpSuccess
+        : !otpCode
         ? 'Simulate sending OTP to the phone number. Confirm "code sent" and mention it is a 6-digit code.'
-        : otpFailed
+        : otpStatus === 'failed'
         ? 'OTP failed. Explain calmly and offer to try again with a new code.'
-        : !otpSuccess
+        : otpStatus === 'invalid_format'
+        ? 'The code entered is not in the right format. Ask for a 6-digit code.'
+        : !otpVerified
         ? 'Guide user through OTP entry.'
         : !hasIdNumber
         ? 'OTP verified! Now ask for ID number (ת"ז, passport, or driver\'s license).'

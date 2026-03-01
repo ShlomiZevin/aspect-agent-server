@@ -60,7 +60,7 @@ class ProfileEnrichmentCrew extends CrewMember {
 6. Expected account usage - offer common options
 7. Existing financial commitments - frame why it's relevant (helps tailor the account), keep it light and optional`,
 
-      model: 'gpt-4o',
+      model: 'gpt-5-chat-latest',
       maxTokens: 2000,
       tools: [],
       knowledgeBase: null

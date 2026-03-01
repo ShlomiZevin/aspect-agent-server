@@ -37,7 +37,7 @@ Answer warmly and briefly. Don't introduce new topics or complexity.
 ## DEMO NOTE
 Account details are simulated. In production, real account number and status would come from banking systems.`,
 
-      model: 'gpt-4o',
+      model: 'gpt-5-chat-latest',
       maxTokens: 1500,
       tools: [],
       knowledgeBase: null

@@ -60,7 +60,7 @@ Inform customers that automated compliance checks passed and guide them to the n
 ## DEMO NOTE
 In this demo, all customers pass KYC automatically. In production, these would be real API calls to compliance services.`,
 
-      model: 'gpt-4o',
+      model: 'gpt-5-chat-latest',
       maxTokens: 1500,
       tools: [],
       knowledgeBase: null
