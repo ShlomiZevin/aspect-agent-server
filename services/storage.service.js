@@ -8,12 +8,24 @@
  * Environment variable: GCS_BUCKET_NAME
  */
 const { Storage } = require('@google-cloud/storage');
+const path = require('path');
+const fs = require('fs');
 
 let storageClient = null;
 
 function getStorageClient() {
   if (!storageClient) {
-    storageClient = new Storage();
+    // Use service account key file if available, otherwise fall back to ADC
+    const keyFilePath = process.env.GOOGLE_APPLICATION_CREDENTIALS
+      || path.join(__dirname, '..', 'storage-service-account-api-key.json');
+
+    if (fs.existsSync(keyFilePath)) {
+      storageClient = new Storage({ keyFilename: keyFilePath });
+      console.log(`🔑 [Storage] Using service account key: ${path.basename(keyFilePath)}`);
+    } else {
+      storageClient = new Storage();
+      console.log(`🔑 [Storage] Using Application Default Credentials`);
+    }
   }
   return storageClient;
 }

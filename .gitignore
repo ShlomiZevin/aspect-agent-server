@@ -6,6 +6,7 @@ package-lock.json
 node_modules/
 *.log
 .DS_Store
+*-service-account*.json
 data/
 !data/*-schema-description.txt
 temp/

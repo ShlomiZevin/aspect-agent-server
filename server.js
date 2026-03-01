@@ -2344,6 +2344,120 @@ app.delete('/api/admin/users/:userId', async (req, res) => {
   }
 });
 
+// ========== CREW EDITOR ENDPOINTS (Admin) ==========
+
+const crewEditorService = require('./services/crew-editor.service');
+
+// Read crew member source file
+app.get('/api/admin/crew/:agentName/:crewName/source', async (req, res) => {
+  try {
+    const { agentName, crewName } = req.params;
+    const result = await crewEditorService.getCrewSource(agentName, crewName);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error reading crew source:', err.message);
+    res.status(404).json({ error: err.message });
+  }
+});
+
+// Chat with Claude about editing a crew file
+app.post('/api/admin/crew/:agentName/:crewName/chat', async (req, res) => {
+  try {
+    const { agentName, crewName } = req.params;
+    const { messages, currentSource } = req.body;
+
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: 'messages array is required' });
+    }
+    if (!currentSource) {
+      return res.status(400).json({ error: 'currentSource is required' });
+    }
+
+    const result = await crewEditorService.chatWithClaude(agentName, crewName, messages, currentSource);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error in crew editor chat:', err.message);
+    res.status(500).json({ error: 'Chat failed: ' + err.message });
+  }
+});
+
+// Apply changes to a crew file (validate + backup + write + hot-reload)
+app.post('/api/admin/crew/:agentName/:crewName/apply', async (req, res) => {
+  try {
+    const { agentName, crewName } = req.params;
+    const { source } = req.body;
+
+    if (!source) {
+      return res.status(400).json({ error: 'source is required' });
+    }
+
+    const result = await crewEditorService.applySource(agentName, crewName, source);
+
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error applying crew changes:', err.message);
+    res.status(500).json({ error: 'Apply failed: ' + err.message });
+  }
+});
+
+// List backed-up versions for a crew member
+app.get('/api/admin/crew/:agentName/:crewName/versions', async (req, res) => {
+  try {
+    const { agentName, crewName } = req.params;
+    const versions = await crewEditorService.listVersions(agentName, crewName);
+    res.json({ versions });
+  } catch (err) {
+    console.error('❌ Error listing crew versions:', err.message);
+    res.status(500).json({ error: 'Failed to list versions: ' + err.message });
+  }
+});
+
+// Get source code of a specific backed-up version
+app.get('/api/admin/crew/:agentName/:crewName/versions/:timestamp', async (req, res) => {
+  try {
+    const { agentName, crewName, timestamp } = req.params;
+    const source = await crewEditorService.getVersionSource(agentName, crewName, timestamp);
+    res.json({ source, timestamp });
+  } catch (err) {
+    console.error('❌ Error reading crew version:', err.message);
+    res.status(404).json({ error: 'Version not found: ' + err.message });
+  }
+});
+
+// Restore a backed-up version (validate + backup current + write + hot-reload)
+app.post('/api/admin/crew/:agentName/:crewName/versions/:timestamp/restore', async (req, res) => {
+  try {
+    const { agentName, crewName, timestamp } = req.params;
+    const result = await crewEditorService.restoreVersion(agentName, crewName, timestamp);
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error restoring crew version:', err.message);
+    res.status(500).json({ error: 'Restore failed: ' + err.message });
+  }
+});
+
+// Delete a backed-up version
+app.delete('/api/admin/crew/:agentName/:crewName/versions/:timestamp', async (req, res) => {
+  try {
+    const { agentName, crewName, timestamp } = req.params;
+    const result = await crewEditorService.deleteVersion(agentName, crewName, timestamp);
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error deleting crew version:', err.message);
+    res.status(500).json({ error: 'Delete failed: ' + err.message });
+  }
+});
+
 // ========== TASK BOARD ENDPOINTS (Internal Tool) ==========
 
 // Get all tasks (with optional filters)

@@ -1,6 +1,8 @@
 const { Storage } = require('@google-cloud/storage');
 const csv = require('csv-parser');
 const { Readable } = require('stream');
+const path = require('path');
+const fs = require('fs');
 
 /**
  * Google Cloud Storage Service
@@ -9,12 +11,17 @@ const { Readable } = require('stream');
  */
 class GCSService {
   constructor() {
-    // Initialize GCS client
-    // Uses Application Default Credentials or GOOGLE_APPLICATION_CREDENTIALS env var
-    this.storage = new Storage({
-      projectId: process.env.GCP_PROJECT_ID || 'aspect-agents'
-    });
+    // Use service account key file if available, otherwise fall back to ADC
+    const keyFilePath = process.env.GOOGLE_APPLICATION_CREDENTIALS
+      || path.join(__dirname, '..', 'storage-service-account-api-key.json');
 
+    const options = { projectId: process.env.GCP_PROJECT_ID || 'aspect-agents' };
+
+    if (fs.existsSync(keyFilePath)) {
+      options.keyFilename = keyFilePath;
+    }
+
+    this.storage = new Storage(options);
     this.bucketName = 'aspect-clients-data';
   }
 
