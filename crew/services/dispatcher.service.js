@@ -472,10 +472,15 @@ class DispatcherService {
 
     // Determine KB sources: debug panel override > crew file sources
     // Uses same pattern as modelOverrides: { crewName: sources[] }
-    const crewKBOverride = kbOverrides?.[crew.name];
-    const kbSources = (crewKBOverride?.length > 0)
-      ? crewKBOverride
+    // Check key presence (not length) so an empty array [] means "disable KB for this session"
+    const hasKBOverride = kbOverrides != null && crew.name in kbOverrides;
+    const kbSources = hasKBOverride
+      ? (kbOverrides[crew.name] || [])
       : (crew.knowledgeBase?.sources || []);
+
+    if (hasKBOverride) {
+      console.log(`🔧 [${crew.name}] KB override active: [${kbSources.join(', ') || 'none — KB disabled'}]`);
+    }
 
     let resolvedKB = null;
 
@@ -498,7 +503,7 @@ class DispatcherService {
           console.log(`📚 [${crew.name}] KB resolved for ${modelProvider}: ${JSON.stringify(resolvedKB.storeIds || resolvedKB.corpusIds)}`);
         }
       }
-    } else if (useKnowledgeBase && crewKBEnabled && kbSources.length === 0 && crew.knowledgeBase?.storeId) {
+    } else if (!hasKBOverride && useKnowledgeBase && crewKBEnabled && kbSources.length === 0 && crew.knowledgeBase?.storeId) {
       // Legacy fallback: crew still has old-style storeId hardcoded (not yet migrated)
       console.log(`⚠️ [${crew.name}] Using legacy storeId (not yet migrated to sources[])`);
       resolvedKB = {

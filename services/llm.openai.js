@@ -517,6 +517,12 @@ class OpenAIService {
 
         // Yield each chunk as it arrives
         for await (const chunk of stream) {
+          // Handle error events from OpenAI stream
+          if (chunk.type === 'error') {
+            console.error(`❌ OpenAI stream error event:`, JSON.stringify(chunk));
+            throw new Error(`OpenAI stream error: ${chunk.message || JSON.stringify(chunk)}`);
+          }
+
           // Handle text delta events
           if (chunk.type === 'response.output_text.delta') {
             const delta = chunk.delta;
@@ -542,6 +548,19 @@ class OpenAIService {
           if (chunk.type === 'response.function_call_arguments.done' && currentFunctionCall) {
             pendingFunctionCalls.push({ ...currentFunctionCall });
             currentFunctionCall = null;
+          }
+
+          // output_item.done is the reliable completion event for function calls
+          // deduplicate by call_id to avoid double-execution if both events fire
+          if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'function_call') {
+            const alreadyAdded = pendingFunctionCalls.some(f => f.call_id === chunk.item.call_id);
+            if (!alreadyAdded) {
+              pendingFunctionCalls.push({
+                name: chunk.item.name,
+                call_id: chunk.item.call_id,
+                arguments: chunk.item.arguments
+              });
+            }
           }
 
           // Handle file_search_call results - yield file names found in KB
@@ -762,6 +781,19 @@ class OpenAIService {
           if (chunk.type === 'response.function_call_arguments.done' && currentFunctionCall) {
             pendingFunctionCalls.push({ ...currentFunctionCall });
             currentFunctionCall = null;
+          }
+
+          // output_item.done is the reliable completion event for function calls
+          // deduplicate by call_id to avoid double-execution if both events fire
+          if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'function_call') {
+            const alreadyAdded = pendingFunctionCalls.some(f => f.call_id === chunk.item.call_id);
+            if (!alreadyAdded) {
+              pendingFunctionCalls.push({
+                name: chunk.item.name,
+                call_id: chunk.item.call_id,
+                arguments: chunk.item.arguments
+              });
+            }
           }
 
           // Handle file_search_call results - yield file names found in KB
