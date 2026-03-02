@@ -82,14 +82,16 @@ Generate a PostgreSQL query that answers the user's question based on the schema
 7. **Quote Escaping**: If a column name contains a quote character (like מע"מ), you MUST escape it by doubling: "מכירה ללא מע""מ"
 8. **Aggregations**: Use appropriate GROUP BY, ORDER BY, and aggregate functions
 9. **Limits**: Add LIMIT clause for queries that might return many rows (default: 100)
-10. **Type Casting**: CRITICAL - When joining tables, if column types differ (e.g., text vs integer), you MUST cast to matching types using ::type syntax or CAST()
-    - Example: If joining text column to integer column, use: text_col::integer = int_col
-    - Common case: sales."מס.חנות SALES"::integer = stores."מס.חנות" (text to integer)
+10. **Type Casting**: CRITICAL - Use the INDEXED helper functions for joins/filters on sales table columns:
+    - For store number: zer4u.to_int_safe(s."מס.חנות SALES") = st."מס.חנות" (uses index - FAST!)
+    - For customer number: zer4u.to_int_safe(s."מס.לקוח") = c."מס.לקוח" (uses index - FAST!)
+    - NEVER use ::integer cast directly for these columns - it skips the index and is SLOW
 11. **Date Handling**: CRITICAL - Date columns are stored as TEXT in DD/MM/YYYY format (Israeli format).
-    - NEVER use ::date cast directly - it will fail with "date/time field value out of range"
-    - ALWAYS use TO_DATE(column, 'DD/MM/YYYY') to convert to date for comparisons
-    - Example: TO_DATE(s."תאריך מקורי SALES", 'DD/MM/YYYY') >= CURRENT_DATE - INTERVAL '6 months'
-    - For GROUP BY month: TO_CHAR(TO_DATE(s."תאריך מקורי SALES", 'DD/MM/YYYY'), 'YYYY-MM') AS month
+    - NEVER use ::date cast - it fails with "date/time field value out of range"
+    - NEVER use TO_DATE(column, 'DD/MM/YYYY') in WHERE clauses - this is SLOW (no index)
+    - ALWAYS use zer4u.parse_date_ddmmyyyy(column) for date comparisons - uses an INDEX and is FAST!
+    - Example: WHERE zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES") >= CURRENT_DATE - INTERVAL '6 months'
+    - For GROUP BY month: TO_CHAR(zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES"), 'YYYY-MM') AS month
 
 ## Important Examples
 
@@ -101,27 +103,35 @@ SELECT "מכירה ללא מע"מ" FROM zer4u.sales
 SELECT "מכירה ללא מע""מ" FROM zer4u.sales
 ✅ The quote inside the column name is escaped as ""
 
-**WRONG** (type mismatch in JOIN):
+**WRONG** (type mismatch in JOIN - SLOW, no index):
 SELECT * FROM zer4u.sales s JOIN zer4u.stores st ON s."מס.חנות SALES" = st."מס.חנות"
 ❌ This will cause: operator does not exist: text = integer
 
-**CORRECT** (type casting in JOIN):
+**WRONG** (::integer cast - SLOW, skips index):
 SELECT * FROM zer4u.sales s JOIN zer4u.stores st ON s."מס.חנות SALES"::integer = st."מס.חנות"
-✅ Cast text to integer for proper comparison
+❌ This skips the expression index and is slow
+
+**CORRECT** (use indexed helper function - FAST!):
+SELECT * FROM zer4u.sales s JOIN zer4u.stores st ON zer4u.to_int_safe(s."מס.חנות SALES") = st."מס.חנות"
+✅ Uses expression index idx_sales_store_date - much faster
 
 **WRONG** (date cast on Israeli format):
 WHERE s."תאריך מקורי SALES"::date >= CURRENT_DATE - INTERVAL '6 months'
 ❌ This will cause: date/time field value out of range: "16/12/2024"
 
-**CORRECT** (date using TO_DATE with format):
+**WRONG** (TO_DATE - SLOW, no index):
 WHERE TO_DATE(s."תאריך מקורי SALES", 'DD/MM/YYYY') >= CURRENT_DATE - INTERVAL '6 months'
-✅ Correctly parses DD/MM/YYYY format
+❌ This skips the expression index and is slow
 
-**CORRECT** (group by month):
-SELECT TO_CHAR(TO_DATE(s."תאריך מקורי SALES", 'DD/MM/YYYY'), 'YYYY-MM') AS month,
+**CORRECT** (use indexed parse function - FAST!):
+WHERE zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES") >= CURRENT_DATE - INTERVAL '6 months'
+✅ Uses expression index idx_sales_date_parsed - much faster
+
+**CORRECT** (group by month - using indexed function):
+SELECT TO_CHAR(zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES"), 'YYYY-MM') AS month,
        SUM(s."מכירה ללא מע""מ"::numeric) AS total_revenue
 FROM zer4u.sales s
-WHERE TO_DATE(s."תאריך מקורי SALES", 'DD/MM/YYYY') >= CURRENT_DATE - INTERVAL '6 months'
+WHERE zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES") >= CURRENT_DATE - INTERVAL '6 months'
 GROUP BY month
 ORDER BY month
 

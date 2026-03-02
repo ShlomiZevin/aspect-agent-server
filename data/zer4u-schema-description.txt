@@ -146,25 +146,33 @@ Date dimension with Hebrew date fields:
 4. **Dates**: Stored as text, various date dimension tables for analysis
 5. **Nullability**: All columns allow NULL values
 6. **Mixed Data**: Some tables contain both transactional and dimensional data
-7. **Type Mismatches**: CRITICAL - Many JOIN keys have type mismatches:
-   - Store numbers: text in sales, integer in stores - MUST cast: `"מס.חנות SALES"::integer`
-   - Customer numbers: text in sales, integer in customers - MUST cast: `"מס.לקוח"::integer`
+7. **Type Mismatches**: CRITICAL - Use INDEXED helper functions for sales table joins/filters:
+   - Store numbers: `zer4u.to_int_safe(s."מס.חנות SALES") = st."מס.חנות"` (uses idx_sales_store_date - FAST!)
+   - Customer numbers: `zer4u.to_int_safe(s."מס.לקוח") = c."מס.לקוח"` (uses idx_sales_customer_date - FAST!)
+   - NEVER use `::integer` cast directly on these - skips the index and is SLOW
    - Numeric values: stored as text - MUST cast: `"מכירה ללא מע""מ"::numeric`
-   - When joining, always check types and add ::integer, ::numeric, or ::text as needed
-8. **Performance**:
+8. **Date Filtering**: CRITICAL - Use the INDEXED parse function:
+   - `zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES") >= 'YYYY-MM-DD'::date` (uses idx_sales_date_parsed - FAST!)
+   - NEVER use `TO_DATE(column, 'DD/MM/YYYY')` in WHERE clauses - skips index and is SLOW
+   - NEVER use `::date` cast - fails with "date/time field value out of range"
+9. **Performance**:
    - ✅ USE materialized views for aggregations (instant results)
-   - ❌ AVOID direct aggregation on sales table (2+ minute queries)
-   - Expression indexes exist on CAST operations for better JOIN performance
+   - ✅ USE `zer4u.parse_date_ddmmyyyy()` for date filters (uses expression index)
+   - ✅ USE `zer4u.to_int_safe()` for store/customer joins (uses expression index)
+   - ❌ AVOID direct aggregation on full sales table without date filter (very slow)
+   - ❌ AVOID `TO_DATE()` or `::integer` casts on indexed columns (skips index)
 
 ## Query Strategy
 1. **For aggregated data** (top X, totals, summaries): Use materialized views
-2. **For specific transactions** (find invoice, item details): Use base tables with WHERE clause
-3. **For JOINs**: Always include proper type casts (::integer, ::numeric)
+2. **For time-filtered data** (this month, last week, trends): Use sales table with `zer4u.parse_date_ddmmyyyy()` filter
+3. **For JOINs**: Use `zer4u.to_int_safe()` for store/customer, `::numeric` for amounts
 4. **For column names with quotes**: Escape by doubling: `"מכירה ללא מע""מ"` (note the doubled quote)
 
 ## Common Analysis Patterns
-- **Top stores by revenue**: `SELECT * FROM mv_sales_by_store ORDER BY total_revenue DESC LIMIT 10`
-- **Top customers**: `SELECT * FROM mv_sales_by_customer ORDER BY total_purchases DESC LIMIT 10`
-- **Best selling products**: `SELECT * FROM mv_sales_by_product ORDER BY total_quantity DESC LIMIT 10`
-- **Store performance**: `SELECT * FROM mv_sales_by_store WHERE store_number = X`
+- **Top stores by revenue**: `SELECT * FROM zer4u.mv_sales_by_store ORDER BY total_revenue DESC LIMIT 10`
+- **Top customers**: `SELECT * FROM zer4u.mv_sales_by_customer ORDER BY total_purchases DESC LIMIT 10`
+- **Best selling products**: `SELECT * FROM zer4u.mv_sales_by_product ORDER BY total_quantity DESC LIMIT 10`
+- **Store performance**: `SELECT * FROM zer4u.mv_sales_by_store WHERE store_number = X`
+- **Sales this month**: `SELECT SUM("מכירה ללא מע""מ"::numeric) FROM zer4u.sales WHERE zer4u.parse_date_ddmmyyyy("תאריך מקורי SALES") >= date_trunc('month', CURRENT_DATE)`
+- **Sales last 30 days**: `SELECT SUM("מכירה ללא מע""מ"::numeric) FROM zer4u.sales WHERE zer4u.parse_date_ddmmyyyy("תאריך מקורי SALES") >= CURRENT_DATE - INTERVAL '30 days'`
 - **Customer history**: Join sales with customers using proper CAST
