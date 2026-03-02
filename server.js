@@ -1253,7 +1253,9 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
       // Add KB access step if using knowledge base
       // For crew-based routing, the storeId is configured in the crew member file
       if (useKnowledgeBase && crewInfo?.hasKnowledgeBase) {
-        thinkingService.addKnowledgeBaseStep(conversationId, 'crew knowledge base');
+        const kbSources = crewInfo.knowledgeBase?.sources || [];
+        const kbDisplayName = kbSources.length > 0 ? kbSources.join(', ') : null;
+        thinkingService.addKnowledgeBaseStep(conversationId, kbDisplayName);
       }
 
       // Track if a pre-transfer transition happened during dispatch
@@ -1296,7 +1298,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             thinkingService.addStep(
               conversationId,
               'file_search',
-              `Found in: ${summary}${suffix}`,
+              `Found files in KB: ${summary}${suffix}`,
               { files: chunk.files }
             );
           }

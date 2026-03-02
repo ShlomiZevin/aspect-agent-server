@@ -151,15 +151,16 @@ class ThinkingService {
   /**
    * Add "Knowledge base access" step - call this when KB is being accessed
    * @param {string} conversationExternalId - External conversation ID
-   * @param {string} vectorStoreId - Vector store ID being accessed
+   * @param {string} kbName - Display name(s) of the KB being accessed
    * @param {Array} files - Optional list of files being searched
    */
-  addKnowledgeBaseStep(conversationExternalId, vectorStoreId = null, files = null) {
+  addKnowledgeBaseStep(conversationExternalId, kbName = null, files = null) {
+    const label = kbName ? `Accessing KB: ${kbName}` : 'Accessing knowledge base';
     return this.addStep(
       conversationExternalId,
       'kb_access',
-      'Accessing knowledge base',
-      { vectorStoreId, files }
+      label,
+      { kbName, files }
     );
   }
 
