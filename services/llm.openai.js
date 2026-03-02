@@ -544,14 +544,6 @@ class OpenAIService {
             currentFunctionCall = null;
           }
 
-          if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'function_call') {
-            pendingFunctionCalls.push({
-              name: chunk.item.name,
-              call_id: chunk.item.call_id,
-              arguments: chunk.item.arguments
-            });
-          }
-
           // Handle file_search_call results - yield file names found in KB
           if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'file_search_call') {
             const results = chunk.item.results || [];
@@ -770,14 +762,6 @@ class OpenAIService {
           if (chunk.type === 'response.function_call_arguments.done' && currentFunctionCall) {
             pendingFunctionCalls.push({ ...currentFunctionCall });
             currentFunctionCall = null;
-          }
-
-          if (chunk.type === 'response.output_item.done' && chunk.item?.type === 'function_call') {
-            pendingFunctionCalls.push({
-              name: chunk.item.name,
-              call_id: chunk.item.call_id,
-              arguments: chunk.item.arguments
-            });
           }
 
           // Handle file_search_call results - yield file names found in KB

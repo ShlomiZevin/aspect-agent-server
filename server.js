@@ -74,7 +74,8 @@ if (process.env.NODE_ENV === 'development') {
   }));
 }
 
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 app.use(express.static('public'));
 
 // Health check endpoint for App Engine Flexible
