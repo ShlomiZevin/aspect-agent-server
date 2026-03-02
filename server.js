@@ -2385,13 +2385,13 @@ app.post('/api/admin/crew/:agentName/:crewName/chat', async (req, res) => {
 app.post('/api/admin/crew/:agentName/:crewName/apply', async (req, res) => {
   try {
     const { agentName, crewName } = req.params;
-    const { source } = req.body;
+    const { source, name } = req.body;
 
     if (!source) {
       return res.status(400).json({ error: 'source is required' });
     }
 
-    const result = await crewEditorService.applySource(agentName, crewName, source);
+    const result = await crewEditorService.applySource(agentName, crewName, source, name || null);
 
     if (!result.success) {
       return res.status(400).json(result);
@@ -2408,11 +2408,47 @@ app.post('/api/admin/crew/:agentName/:crewName/apply', async (req, res) => {
 app.get('/api/admin/crew/:agentName/:crewName/versions', async (req, res) => {
   try {
     const { agentName, crewName } = req.params;
-    const versions = await crewEditorService.listVersions(agentName, crewName);
-    res.json({ versions });
+    const result = await crewEditorService.listVersions(agentName, crewName);
+    res.json(result); // { versions, projectFile }
   } catch (err) {
     console.error('❌ Error listing crew versions:', err.message);
     res.status(500).json({ error: 'Failed to list versions: ' + err.message });
+  }
+});
+
+// Get current default version marker (must be before :timestamp route)
+app.get('/api/admin/crew/:agentName/:crewName/versions/default', async (req, res) => {
+  try {
+    const { agentName, crewName } = req.params;
+    const result = await crewEditorService.getDefaultVersion(agentName, crewName);
+    res.json({ default: result });
+  } catch (err) {
+    console.error('❌ Error getting default version:', err.message);
+    res.status(500).json({ error: 'Failed to get default: ' + err.message });
+  }
+});
+
+// Unset default version — reverts to project file (must be before :timestamp DELETE route)
+app.delete('/api/admin/crew/:agentName/:crewName/versions/default', async (req, res) => {
+  try {
+    const { agentName, crewName } = req.params;
+    const result = await crewEditorService.unsetDefaultVersion(agentName, crewName);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error unsetting default version:', err.message);
+    res.status(500).json({ error: 'Failed to unset default: ' + err.message });
+  }
+});
+
+// Get the backed-up project file source (must be before :timestamp route)
+app.get('/api/admin/crew/:agentName/:crewName/versions/project', async (req, res) => {
+  try {
+    const { agentName, crewName } = req.params;
+    const source = await crewEditorService.getProjectFileSource(agentName, crewName);
+    res.json({ source });
+  } catch (err) {
+    console.error('❌ Error reading project file:', err.message);
+    res.status(404).json({ error: 'Project file not found: ' + err.message });
   }
 });
 
@@ -2440,6 +2476,18 @@ app.post('/api/admin/crew/:agentName/:crewName/versions/:timestamp/restore', asy
   } catch (err) {
     console.error('❌ Error restoring crew version:', err.message);
     res.status(500).json({ error: 'Restore failed: ' + err.message });
+  }
+});
+
+// Set a version as default
+app.post('/api/admin/crew/:agentName/:crewName/versions/:timestamp/set-default', async (req, res) => {
+  try {
+    const { agentName, crewName, timestamp } = req.params;
+    const result = await crewEditorService.setDefaultVersion(agentName, crewName, timestamp);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error setting default version:', err.message);
+    res.status(500).json({ error: 'Failed to set default: ' + err.message });
   }
 });
 

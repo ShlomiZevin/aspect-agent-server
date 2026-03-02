@@ -70,24 +70,27 @@ class CrewEditorService {
   }
 
   /**
-   * Backup the current crew file to Google Cloud Storage.
+   * Backup a crew file to Google Cloud Storage.
    *
    * @param {string} agentName - Agent name
    * @param {string} crewName - Crew member name
-   * @param {string} source - Current source code to backup
+   * @param {string} source - Source code to backup
+   * @param {string|null} versionName - Optional user-given name for this version
    * @returns {Promise<string>} - The backup version timestamp
    */
-  async backupToGCS(agentName, crewName, source) {
+  async backupToGCS(agentName, crewName, source, versionName = null) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const gcsPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/${timestamp}.crew.js`;
 
     const buffer = Buffer.from(source, 'utf8');
     const file = storageService.getBucket().file(gcsPath);
-    await file.save(buffer, {
-      metadata: { contentType: 'application/javascript' }
-    });
+    const saveMetadata = { contentType: 'application/javascript' };
+    if (versionName) {
+      saveMetadata.metadata = { versionName };
+    }
+    await file.save(buffer, { metadata: saveMetadata });
 
-    console.log(`✅ Crew backup saved to GCS: ${gcsPath}`);
+    console.log(`✅ Crew backup saved to GCS: ${gcsPath}${versionName ? ` (name: "${versionName}")` : ''}`);
 
     // Cleanup old versions (keep last MAX_VERSIONS)
     await this._cleanupOldVersions(agentName, crewName);
@@ -97,14 +100,15 @@ class CrewEditorService {
 
   /**
    * Apply new source code to a crew member file.
-   * Full flow: validate → backup → write → hot-reload
+   * Flow: validate → preserve project file → write → hot-reload → backup NEW to GCS → set as default
    *
    * @param {string} agentName - Agent name
    * @param {string} crewName - Crew member name
    * @param {string} newSource - The new source code
+   * @param {string|null} versionName - Optional user-given name for this version
    * @returns {Promise<{success: boolean, error?: string, backupVersion?: string}>}
    */
-  async applySource(agentName, crewName, newSource) {
+  async applySource(agentName, crewName, newSource, versionName = null) {
     console.log(`\n🚀 [CrewEditor] === APPLY START === agent="${agentName}", crew="${crewName}" (${newSource.length} chars)`);
     const filePath = this._resolveCrewFilePath(agentName, crewName);
     if (!filePath) {
@@ -113,25 +117,19 @@ class CrewEditorService {
     }
 
     // Step 1: Validate
-    console.log(`📋 [CrewEditor] Step 1/4: Validating...`);
+    console.log(`📋 [CrewEditor] Step 1/5: Validating...`);
     const validation = this.validateSource(newSource, filePath);
     if (!validation.valid) {
       console.error(`❌ [CrewEditor] Apply aborted — validation failed`);
       return { success: false, error: `Validation failed: ${validation.error}` };
     }
 
-    // Step 2: Backup current version to GCS
-    console.log(`💾 [CrewEditor] Step 2/4: Backing up to GCS...`);
-    let backupVersion;
-    try {
-      const currentSource = fs.readFileSync(filePath, 'utf8');
-      backupVersion = await this.backupToGCS(agentName, crewName, currentSource);
-    } catch (err) {
-      console.warn(`⚠️ [CrewEditor] GCS backup failed (continuing anyway): ${err.message}`);
-    }
+    // Step 2: Ensure original project file is preserved in GCS
+    console.log(`📁 [CrewEditor] Step 2/5: Preserving project file...`);
+    await this._ensureProjectFileBackup(agentName, crewName);
 
     // Step 3: Write new source to disk
-    console.log(`📝 [CrewEditor] Step 3/4: Writing to disk...`);
+    console.log(`📝 [CrewEditor] Step 3/5: Writing to disk...`);
     try {
       fs.writeFileSync(filePath, newSource, 'utf8');
       console.log(`✅ [CrewEditor] File written: ${filePath}`);
@@ -141,12 +139,28 @@ class CrewEditorService {
     }
 
     // Step 4: Hot-reload — clear require cache and re-register
-    console.log(`🔄 [CrewEditor] Step 4/4: Hot-reloading...`);
+    console.log(`🔄 [CrewEditor] Step 4/5: Hot-reloading...`);
     try {
       await this._hotReload(agentName, filePath);
     } catch (err) {
       console.warn(`⚠️ [CrewEditor] Hot-reload failed: ${err.message}`);
-      // File was written successfully, reload will happen on next server restart
+    }
+
+    // Step 5: Backup the NEW source to GCS and set as default
+    console.log(`💾 [CrewEditor] Step 5/5: Backing up & setting default...`);
+    let backupVersion;
+    try {
+      backupVersion = await this.backupToGCS(agentName, crewName, newSource, versionName);
+    } catch (err) {
+      console.warn(`⚠️ [CrewEditor] GCS backup failed: ${err.message}`);
+    }
+
+    if (backupVersion) {
+      try {
+        await this.setDefaultVersion(agentName, crewName, backupVersion);
+      } catch (err) {
+        console.warn(`⚠️ [CrewEditor] Failed to set default: ${err.message}`);
+      }
     }
 
     console.log(`🚀 [CrewEditor] === APPLY COMPLETE === success=true, backup=${backupVersion || 'none'}\n`);
@@ -279,6 +293,7 @@ class CrewEditorService {
 
   /**
    * Cleanup old GCS versions, keeping only the last MAX_VERSIONS.
+   * Excludes _default.json and _project.crew.js from count/deletion.
    * @private
    */
   async _cleanupOldVersions(agentName, crewName) {
@@ -286,13 +301,19 @@ class CrewEditorService {
       const prefix = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/`;
       const [files] = await storageService.getBucket().getFiles({ prefix });
 
-      if (files.length <= MAX_VERSIONS) return;
+      // Only count timestamped version files (exclude _default.json, _project.crew.js)
+      const versionFiles = files.filter(f => {
+        const basename = path.basename(f.name);
+        return !basename.startsWith('_');
+      });
+
+      if (versionFiles.length <= MAX_VERSIONS) return;
 
       // Sort by name (timestamps sort lexicographically)
-      files.sort((a, b) => a.name.localeCompare(b.name));
+      versionFiles.sort((a, b) => a.name.localeCompare(b.name));
 
       // Delete oldest files
-      const toDelete = files.slice(0, files.length - MAX_VERSIONS);
+      const toDelete = versionFiles.slice(0, versionFiles.length - MAX_VERSIONS);
       for (const file of toDelete) {
         await file.delete();
         console.log(`🗑️ Deleted old crew version: ${file.name}`);
@@ -304,10 +325,11 @@ class CrewEditorService {
 
   /**
    * List all backed-up versions for a crew member from GCS.
+   * Returns versions array and project file info.
    *
    * @param {string} agentName - Agent name
    * @param {string} crewName - Crew member name
-   * @returns {Promise<Array<{timestamp: string, name: string, size: number}>>}
+   * @returns {Promise<{versions: Array, projectFile: Object|null}>}
    */
   async listVersions(agentName, crewName) {
     console.log(`📋 [CrewEditor] Listing versions: agent="${agentName}", crew="${crewName}"`);
@@ -315,21 +337,42 @@ class CrewEditorService {
       const prefix = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/`;
       const [files] = await storageService.getBucket().getFiles({ prefix });
 
+      // Get default marker to flag the default version
+      const defaultInfo = await this.getDefaultVersion(agentName, crewName);
+      const defaultTimestamp = defaultInfo?.timestamp || null;
+
+      // Filter to timestamped version files only (exclude _default.json, _project.crew.js)
       const versions = files
+        .filter(file => {
+          const basename = path.basename(file.name);
+          return basename.endsWith('.crew.js') && !basename.startsWith('_');
+        })
         .map(file => {
-          // Extract timestamp from path: crew-versions/agent/crew/2024-01-15T10-30-00-000Z.crew.js
           const basename = path.basename(file.name, '.crew.js');
           return {
             timestamp: basename,
             name: file.name,
             size: parseInt(file.metadata.size || '0', 10),
-            created: file.metadata.timeCreated || null
+            created: file.metadata.timeCreated || null,
+            isDefault: basename === defaultTimestamp,
+            versionName: file.metadata.metadata?.versionName || null
           };
         })
         .sort((a, b) => b.timestamp.localeCompare(a.timestamp)); // newest first
 
-      console.log(`✅ [CrewEditor] Found ${versions.length} versions`);
-      return versions;
+      // Check for project file backup
+      let projectFile = null;
+      const projectGcsFile = files.find(f => path.basename(f.name) === '_project.crew.js');
+      if (projectGcsFile) {
+        projectFile = {
+          exists: true,
+          size: parseInt(projectGcsFile.metadata.size || '0', 10),
+          created: projectGcsFile.metadata.timeCreated || null
+        };
+      }
+
+      console.log(`✅ [CrewEditor] Found ${versions.length} versions${defaultTimestamp ? ` (default: ${defaultTimestamp})` : ''}${projectFile ? ', project file backed up' : ''}`);
+      return { versions, projectFile };
     } catch (err) {
       console.error(`❌ [CrewEditor] Failed to list versions: ${err.message}`);
       throw err;
@@ -374,6 +417,7 @@ class CrewEditorService {
 
   /**
    * Delete a backed-up version from GCS.
+   * If the deleted version is the current default, also unsets the default.
    *
    * @param {string} agentName - Agent name
    * @param {string} crewName - Crew member name
@@ -383,6 +427,13 @@ class CrewEditorService {
   async deleteVersion(agentName, crewName, timestamp) {
     console.log(`🗑️ [CrewEditor] Deleting version: ${timestamp}`);
     try {
+      // Check if this is the current default — unset if so
+      const defaultInfo = await this.getDefaultVersion(agentName, crewName);
+      if (defaultInfo && defaultInfo.timestamp === timestamp) {
+        console.log(`⚠️ [CrewEditor] Deleting default version — unsetting default`);
+        await this.unsetDefaultVersion(agentName, crewName);
+      }
+
       const gcsPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/${timestamp}.crew.js`;
       const file = storageService.getBucket().file(gcsPath);
       await file.delete();
@@ -391,6 +442,182 @@ class CrewEditorService {
     } catch (err) {
       console.error(`❌ [CrewEditor] Delete failed: ${err.message}`);
       return { success: false, error: err.message };
+    }
+  }
+
+  // ========== DEFAULT VERSION MANAGEMENT ==========
+
+  /**
+   * Set a GCS version as the "default" (known-good) version.
+   * Writes a marker file to GCS that records which version is the stable one.
+   *
+   * @param {string} agentName
+   * @param {string} crewName
+   * @param {string} timestamp - The version timestamp to mark as default
+   * @returns {Promise<{success: boolean}>}
+   */
+  async setDefaultVersion(agentName, crewName, timestamp) {
+    console.log(`⭐ [CrewEditor] Setting default: agent="${agentName}", crew="${crewName}", version="${timestamp}"`);
+    try {
+      const markerPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_default.json`;
+      const marker = JSON.stringify({ timestamp, setAt: new Date().toISOString() });
+      const file = storageService.getBucket().file(markerPath);
+      await file.save(Buffer.from(marker, 'utf8'), {
+        metadata: { contentType: 'application/json' }
+      });
+      console.log(`✅ [CrewEditor] Default version set: ${timestamp}`);
+      return { success: true };
+    } catch (err) {
+      console.error(`❌ [CrewEditor] Failed to set default: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Get the current default version marker from GCS.
+   *
+   * @param {string} agentName
+   * @param {string} crewName
+   * @returns {Promise<{timestamp: string, setAt: string} | null>}
+   */
+  async getDefaultVersion(agentName, crewName) {
+    try {
+      const markerPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_default.json`;
+      const file = storageService.getBucket().file(markerPath);
+      const [exists] = await file.exists();
+      if (!exists) return null;
+
+      const [content] = await file.download();
+      return JSON.parse(content.toString('utf8'));
+    } catch (err) {
+      console.warn(`⚠️ [CrewEditor] Could not read default marker: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Sync the default version from GCS to disk.
+   * Called during crew loading to ensure the known-good version is on disk.
+   * Silently skips if no default is set or GCS is unreachable.
+   *
+   * @param {string} agentName
+   * @param {string} crewName
+   */
+  async syncDefaultToDisk(agentName, crewName) {
+    try {
+      const defaultInfo = await this.getDefaultVersion(agentName, crewName);
+      if (!defaultInfo) {
+        console.log(`📁 [CrewEditor] ${crewName}: using project file (no GCS default)`);
+        return;
+      }
+
+      const filePath = this._resolveCrewFilePath(agentName, crewName);
+      if (!filePath) return;
+
+      // Download the default version source
+      const defaultSource = await this.getVersionSource(agentName, crewName, defaultInfo.timestamp);
+
+      // Compare with current disk file
+      const currentSource = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+      if (defaultSource.trim() === currentSource.trim()) {
+        console.log(`✅ [CrewEditor] ${crewName}: GCS default in sync (${defaultInfo.timestamp})`);
+        return;
+      }
+
+      // Backup project file before overwriting
+      await this._ensureProjectFileBackup(agentName, crewName);
+
+      // Write default version to disk
+      fs.writeFileSync(filePath, defaultSource, 'utf8');
+      console.log(`☁️ [CrewEditor] ${crewName}: loaded GCS default (${defaultInfo.timestamp}) — overrides project file`);
+    } catch (err) {
+      // Silently skip — don't block server startup
+      console.warn(`⚠️ [CrewEditor] GCS default sync skipped for ${crewName}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Unset the default version — deletes the _default.json marker.
+   * Restores the project file to disk if it exists in GCS, then hot-reloads.
+   *
+   * @param {string} agentName
+   * @param {string} crewName
+   * @returns {Promise<{success: boolean}>}
+   */
+  async unsetDefaultVersion(agentName, crewName) {
+    console.log(`⭐ [CrewEditor] Unsetting default: agent="${agentName}", crew="${crewName}"`);
+    try {
+      // Delete _default.json marker
+      const markerPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_default.json`;
+      const markerFile = storageService.getBucket().file(markerPath);
+      const [exists] = await markerFile.exists();
+      if (exists) {
+        await markerFile.delete();
+        console.log(`✅ [CrewEditor] Default marker deleted`);
+      }
+
+      // Restore project file to disk if it exists in GCS
+      const projectPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
+      const projectFile = storageService.getBucket().file(projectPath);
+      const [projectExists] = await projectFile.exists();
+
+      if (projectExists) {
+        const [content] = await projectFile.download();
+        const projectSource = content.toString('utf8');
+
+        const filePath = this._resolveCrewFilePath(agentName, crewName);
+        if (filePath) {
+          fs.writeFileSync(filePath, projectSource, 'utf8');
+          console.log(`📁 [CrewEditor] Project file restored to disk for ${crewName}`);
+          await this._hotReload(agentName, filePath);
+        }
+      }
+
+      return { success: true };
+    } catch (err) {
+      console.error(`❌ [CrewEditor] Failed to unset default: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Get the source code of the backed-up project file from GCS.
+   *
+   * @param {string} agentName
+   * @param {string} crewName
+   * @returns {Promise<string>}
+   */
+  async getProjectFileSource(agentName, crewName) {
+    console.log(`📁 [CrewEditor] Reading project file: agent="${agentName}", crew="${crewName}"`);
+    const gcsPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
+    const file = storageService.getBucket().file(gcsPath);
+    const [content] = await file.download();
+    return content.toString('utf8');
+  }
+
+  /**
+   * Ensure the original project file is backed up to GCS.
+   * Only backs up if _project.crew.js doesn't already exist (idempotent).
+   * @private
+   */
+  async _ensureProjectFileBackup(agentName, crewName) {
+    try {
+      const projectPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
+      const projectFile = storageService.getBucket().file(projectPath);
+      const [exists] = await projectFile.exists();
+      if (exists) return; // Already backed up
+
+      const filePath = this._resolveCrewFilePath(agentName, crewName);
+      if (!filePath) return;
+
+      const currentSource = fs.readFileSync(filePath, 'utf8');
+      const buffer = Buffer.from(currentSource, 'utf8');
+      await projectFile.save(buffer, {
+        metadata: { contentType: 'application/javascript' }
+      });
+      console.log(`📁 [CrewEditor] Project file backed up to GCS for ${crewName}`);
+    } catch (err) {
+      console.warn(`⚠️ [CrewEditor] Failed to backup project file: ${err.message}`);
     }
   }
 

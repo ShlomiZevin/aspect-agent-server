@@ -90,6 +90,20 @@ class CrewService {
     // Step 2: Load file-based crews (higher precedence - will overwrite DB crews with same name)
     const crewPath = this.resolveCrewPath(agentName);
 
+    // Sync default versions from GCS before require() so disk has the right files
+    if (crewPath) {
+      try {
+        const crewEditorService = require('../../services/crew-editor.service');
+        const crewFiles = fs.readdirSync(crewPath).filter(f => f.endsWith('.crew.js'));
+        for (const file of crewFiles) {
+          const crewName = file.replace('.crew.js', '');
+          await crewEditorService.syncDefaultToDisk(agentName, crewName);
+        }
+      } catch (err) {
+        console.warn(`⚠️ GCS default sync skipped: ${err.message}`);
+      }
+    }
+
     try {
       if (crewPath) {
         // Load crew module
