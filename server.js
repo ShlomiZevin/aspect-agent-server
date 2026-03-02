@@ -1796,6 +1796,46 @@ app.post('/api/kb/:kbId/upload', upload.single('file'), async (req, res) => {
   }
 });
 
+// Download original file from GCS
+app.get('/api/kb/:kbId/files/:fileId/download', async (req, res) => {
+  try {
+    const { kbId, fileId } = req.params;
+    const file = await kbService.getFileById(parseInt(fileId));
+
+    if (!file || file.knowledgeBaseId !== parseInt(kbId)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    if (!file.originalFileUrl) {
+      return res.status(404).json({ error: 'Original file not available for download' });
+    }
+
+    console.log(`📥 Downloading KB file: ${file.fileName}`);
+    const buffer = await storageService.downloadFile(file.originalFileUrl);
+
+    const mimeMap = {
+      pdf: 'application/pdf',
+      doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      csv: 'text/csv',
+      txt: 'text/plain',
+      json: 'application/json',
+      md: 'text/markdown',
+    };
+    const ext = (file.fileType || '').toLowerCase();
+    const contentType = mimeMap[ext] || 'application/octet-stream';
+
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.fileName)}"`);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
+  } catch (err) {
+    console.error('❌ Download Error:', err.message);
+    res.status(500).json({ error: 'Error downloading file: ' + err.message });
+  }
+});
+
 // Delete legacy file by openaiFileId (no DB record — file lives only in OpenAI VS)
 app.delete('/api/kb/:kbId/files/openai/:openaiFileId', async (req, res) => {
   try {
