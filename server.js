@@ -1660,63 +1660,25 @@ app.get('/api/kb/list/:agentName', async (req, res) => {
   }
 });
 
-// Get files in a knowledge base
+// Get files in a knowledge base — served directly from DB (no OpenAI API calls)
 app.get('/api/kb/:kbId/files', async (req, res) => {
   try {
     const { kbId } = req.params;
-    const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
     const dbFiles = await kbService.getFilesByKnowledgeBase(parseInt(kbId));
 
-    // Optionally enrich with live OpenAI status
-    let vsFiles = [];
-    if (kb.vectorStoreId && (kb.provider === 'openai' || kb.provider === 'both')) {
-      try {
-        vsFiles = await llmService.listVectorStoreFiles(kb.vectorStoreId);
-      } catch {
-        // Use DB status as fallback
-      }
-    }
-
-    // Per-file merge: match vsFiles with DB records by openaiFileId
-    // Files with a DB record get their numeric id (deletable)
-    // Files without a DB record get id: null (legacy, read-only)
-    const dbFileByOpenaiId = new Map(dbFiles.filter(f => f.openaiFileId).map(f => [f.openaiFileId, f]));
-
-    const vsFilesFormatted = vsFiles.map(vsFile => {
-      const dbFile = dbFileByOpenaiId.get(vsFile.id);
-      return {
-        id: dbFile?.id ?? null,
-        openaiFileId: vsFile.id,
-        googleDocumentId: dbFile?.googleDocumentId ?? null,
-        originalFileUrl: dbFile?.originalFileUrl ?? null,
-        fileName: dbFile?.fileName || vsFile.fileName || vsFile.id,
-        fileSize: dbFile?.fileSize ?? vsFile.fileSize ?? 0,
-        fileType: dbFile?.fileType || vsFile.fileName?.split('.').pop() || 'unknown',
-        tags: dbFile?.metadata?.tags || [],
-        status: vsFile.status,
-        createdAt: dbFile?.createdAt || (vsFile.createdAt ? new Date(vsFile.createdAt * 1000).toISOString() : null),
-        updatedAt: dbFile?.updatedAt ?? null
-      };
-    });
-
-    // Also include Google-only DB files (no OpenAI counterpart)
-    const googleOnlyFiles = dbFiles
-      .filter(f => f.googleDocumentId && !f.openaiFileId)
-      .map(dbFile => ({
-        id: dbFile.id,
-        openaiFileId: null,
-        googleDocumentId: dbFile.googleDocumentId,
-        originalFileUrl: dbFile.originalFileUrl,
-        fileName: dbFile.fileName,
-        fileSize: dbFile.fileSize,
-        fileType: dbFile.fileType,
-        tags: dbFile.metadata?.tags || [],
-        status: dbFile.status,
-        createdAt: dbFile.createdAt,
-        updatedAt: dbFile.updatedAt
-      }));
-
-    const files = [...vsFilesFormatted, ...googleOnlyFiles];
+    const files = dbFiles.map(dbFile => ({
+      id: dbFile.id,
+      openaiFileId: dbFile.openaiFileId ?? null,
+      googleDocumentId: dbFile.googleDocumentId ?? null,
+      originalFileUrl: dbFile.originalFileUrl ?? null,
+      fileName: dbFile.fileName,
+      fileSize: dbFile.fileSize,
+      fileType: dbFile.fileType,
+      tags: dbFile.metadata?.tags || [],
+      status: dbFile.status,
+      createdAt: dbFile.createdAt,
+      updatedAt: dbFile.updatedAt
+    }));
 
     res.json({ knowledgeBaseId: kbId, files });
   } catch (err) {
