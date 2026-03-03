@@ -10,10 +10,12 @@
  * - User authorizes → 'completion'
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../banking-onboarder-persona');
 
 class FinalConfirmationsCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'final-confirmations',
       displayName: 'Final Confirmation',
       description: 'Final authorization and account opening trigger',

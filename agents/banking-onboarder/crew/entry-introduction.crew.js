@@ -11,10 +11,12 @@
  * - If age < 16 → End journey with respectful explanation
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../banking-onboarder-persona');
 
 class EntryIntroductionCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'entry-introduction',
       displayName: 'Welcome',
       description: 'Introduction and eligibility check',

@@ -7,10 +7,12 @@
  * and provides clear closure. This is the endpoint — no further transitions.
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../banking-onboarder-persona');
 
 class CompletionCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'completion',
       displayName: 'Account Opened',
       description: 'Onboarding completion and next steps',

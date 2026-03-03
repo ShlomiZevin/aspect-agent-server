@@ -11,10 +11,12 @@
  * - User acknowledges → 'profile-enrichment'
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../banking-onboarder-persona');
 
 class KYCCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'kyc',
       displayName: 'KYC Verification',
       description: 'Know Your Customer compliance checks',

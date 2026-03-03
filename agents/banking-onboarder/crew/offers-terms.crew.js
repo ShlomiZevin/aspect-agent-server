@@ -11,10 +11,12 @@
  * - User accepts terms → 'final-confirmations'
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../banking-onboarder-persona');
 
 class OffersTermsCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'offers-terms',
       displayName: 'Account Terms & Offers',
       description: 'Account terms presentation and conditional negotiation',

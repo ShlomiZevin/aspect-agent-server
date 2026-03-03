@@ -11,10 +11,12 @@
  * - If any mandatory consent rejected (after reconsideration) → End journey
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../banking-onboarder-persona');
 
 class ConsentsCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'consents',
       displayName: 'Consents',
       description: 'Regulatory consents and permissions',

@@ -11,10 +11,12 @@
  * - If other account type selected → End journey with clear explanation
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../banking-onboarder-persona');
 
 class AccountTypeCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'account-type',
       displayName: 'Account Selection',
       description: 'Account type verification',

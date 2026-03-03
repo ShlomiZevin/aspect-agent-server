@@ -11,6 +11,7 @@
  * - When required profile fields are collected → 'offers-terms'
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../banking-onboarder-persona');
 
 // Statuses that don't need an occupation question
 const SKIP_OCCUPATION_STATUSES = new Set([
@@ -21,6 +22,7 @@ const SKIP_OCCUPATION_STATUSES = new Set([
 class ProfileEnrichmentCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'profile-enrichment',
       displayName: 'Financial Profile',
       description: 'Financial profile collection and enrichment',

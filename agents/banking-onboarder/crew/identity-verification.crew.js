@@ -13,10 +13,12 @@
  * - If OTP fails 3 times → End journey with alternative guidance
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getPersona } = require('../banking-onboarder-persona');
 
 class IdentityVerificationCrew extends CrewMember {
   constructor() {
     super({
+      persona: getPersona(),
       name: 'identity-verification',
       displayName: 'Identity Verification',
       description: 'Identity verification via OTP, documents, and face scan',
