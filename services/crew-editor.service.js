@@ -505,31 +505,32 @@ class CrewEditorService {
    */
   async syncDefaultToDisk(agentName, crewName) {
     try {
+      const filePath = this._resolveCrewFilePath(agentName, crewName);
+      if (!filePath) return;
+
+      const currentSource = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+
       const defaultInfo = await this.getDefaultVersion(agentName, crewName);
       if (!defaultInfo) {
+        // No GCS default — just ensure backup is fresh
+        await this._ensureProjectFileBackup(agentName, crewName);
         console.log(`📁 [CrewEditor] ${crewName}: using project file (no GCS default)`);
         return;
       }
 
-      const filePath = this._resolveCrewFilePath(agentName, crewName);
-      if (!filePath) return;
-
       // Download the default version source
       const defaultSource = await this.getVersionSource(agentName, crewName, defaultInfo.timestamp);
 
-      // Compare with current disk file
-      const currentSource = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
-      if (defaultSource.trim() === currentSource.trim()) {
+      // If disk differs from GCS default, a new deploy happened — update the project backup
+      // If disk matches GCS default, it was already overwritten by a previous sync — don't touch backup
+      if (currentSource.trim() !== defaultSource.trim()) {
+        await this._ensureProjectFileBackup(agentName, crewName);
+        // Write default version to disk
+        fs.writeFileSync(filePath, defaultSource, 'utf8');
+        console.log(`☁️ [CrewEditor] ${crewName}: loaded GCS default (${defaultInfo.timestamp}) — project file backed up first`);
+      } else {
         console.log(`✅ [CrewEditor] ${crewName}: GCS default in sync (${defaultInfo.timestamp})`);
-        return;
       }
-
-      // Backup project file before overwriting
-      await this._ensureProjectFileBackup(agentName, crewName);
-
-      // Write default version to disk
-      fs.writeFileSync(filePath, defaultSource, 'utf8');
-      console.log(`☁️ [CrewEditor] ${crewName}: loaded GCS default (${defaultInfo.timestamp}) — overrides project file`);
     } catch (err) {
       // Silently skip — don't block server startup
       console.warn(`⚠️ [CrewEditor] GCS default sync skipped for ${crewName}: ${err.message}`);
@@ -596,26 +597,32 @@ class CrewEditorService {
   }
 
   /**
-   * Ensure the original project file is backed up to GCS.
-   * Only backs up if _project.crew.js doesn't already exist (idempotent).
+   * Ensure the project file backup in GCS reflects the current disk file.
+   * Always updates — the deployed/folder version is the source of truth.
    * @private
    */
   async _ensureProjectFileBackup(agentName, crewName) {
     try {
-      const projectPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
-      const projectFile = storageService.getBucket().file(projectPath);
-      const [exists] = await projectFile.exists();
-      if (exists) return; // Already backed up
-
       const filePath = this._resolveCrewFilePath(agentName, crewName);
-      if (!filePath) return;
+      if (!filePath || !fs.existsSync(filePath)) return;
 
       const currentSource = fs.readFileSync(filePath, 'utf8');
+
+      const projectPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
+      const projectFile = storageService.getBucket().file(projectPath);
+
+      // Check if GCS backup matches disk — skip upload if identical
+      const [exists] = await projectFile.exists();
+      if (exists) {
+        const [content] = await projectFile.download();
+        if (content.toString('utf8').trim() === currentSource.trim()) return;
+      }
+
       const buffer = Buffer.from(currentSource, 'utf8');
       await projectFile.save(buffer, {
         metadata: { contentType: 'application/javascript' }
       });
-      console.log(`📁 [CrewEditor] Project file backed up to GCS for ${crewName}`);
+      console.log(`📁 [CrewEditor] Project file backup updated in GCS for ${crewName}`);
     } catch (err) {
       console.warn(`⚠️ [CrewEditor] Failed to backup project file: ${err.message}`);
     }
