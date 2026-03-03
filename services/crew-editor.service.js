@@ -23,6 +23,13 @@ const MAX_VERSIONS = 5;
 
 class CrewEditorService {
 
+  constructor() {
+    // In-memory snapshot of deployed (on-disk) crew files, captured at startup
+    // before any GCS sync overwrites them. Key: "agentName/crewName" → source string
+    // Once set, a key is NEVER overwritten — the first capture (startup) wins.
+    this._deployedSources = new Map();
+  }
+
   /**
    * Read the source code of a crew member file.
    *
@@ -100,7 +107,7 @@ class CrewEditorService {
 
   /**
    * Apply new source code to a crew member file.
-   * Flow: validate → preserve project file → write → hot-reload → backup NEW to GCS → set as default
+   * Flow: validate → write → hot-reload → backup NEW to GCS → set as default
    *
    * @param {string} agentName - Agent name
    * @param {string} crewName - Crew member name
@@ -124,9 +131,10 @@ class CrewEditorService {
       return { success: false, error: `Validation failed: ${validation.error}` };
     }
 
-    // Step 2: Ensure original project file is preserved in GCS
-    console.log(`📁 [CrewEditor] Step 2/5: Preserving project file...`);
-    await this._ensureProjectFileBackup(agentName, crewName);
+    // Step 2: Project file backup is managed by syncDefaultToDisk on startup.
+    // Do NOT update it here — disk may already be overwritten by GCS default sync.
+    console.log(`📁 [CrewEditor] Step 2/5: Project file preserved (managed at startup)`);
+    // (no-op — _project.crew.js is only set during deploy detection in syncDefaultToDisk)
 
     // Step 3: Write new source to disk
     console.log(`📝 [CrewEditor] Step 3/5: Writing to disk...`);
@@ -508,31 +516,33 @@ class CrewEditorService {
       const filePath = this._resolveCrewFilePath(agentName, crewName);
       if (!filePath) return;
 
-      const currentSource = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+      const key = `${agentName}/${crewName}`;
+      const diskSource = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
 
+      // Capture deployed version — only on FIRST call (startup). Never overwrite.
+      if (diskSource && !this._deployedSources.has(key)) {
+        this._deployedSources.set(key, diskSource);
+        this._saveProjectFileToGCS(agentName, crewName, diskSource).catch(err => {
+          console.warn(`⚠️ [CrewEditor] GCS project backup failed for ${crewName}: ${err.message}`);
+        });
+        console.log(`📸 [CrewEditor] ${crewName}: deployed version captured (${diskSource.length} chars)`);
+      }
+
+      // Apply GCS default if one exists
       const defaultInfo = await this.getDefaultVersion(agentName, crewName);
       if (!defaultInfo) {
-        // No GCS default — just ensure backup is fresh
-        await this._ensureProjectFileBackup(agentName, crewName);
-        console.log(`📁 [CrewEditor] ${crewName}: using project file (no GCS default)`);
+        console.log(`📁 [CrewEditor] ${crewName}: no GCS default — using deployed file`);
         return;
       }
 
-      // Download the default version source
       const defaultSource = await this.getVersionSource(agentName, crewName, defaultInfo.timestamp);
-
-      // If disk differs from GCS default, a new deploy happened — update the project backup
-      // If disk matches GCS default, it was already overwritten by a previous sync — don't touch backup
-      if (currentSource.trim() !== defaultSource.trim()) {
-        await this._ensureProjectFileBackup(agentName, crewName);
-        // Write default version to disk
+      if (diskSource.trim() !== defaultSource.trim()) {
         fs.writeFileSync(filePath, defaultSource, 'utf8');
-        console.log(`☁️ [CrewEditor] ${crewName}: loaded GCS default (${defaultInfo.timestamp}) — project file backed up first`);
+        console.log(`☁️ [CrewEditor] ${crewName}: loaded GCS default (${defaultInfo.timestamp})`);
       } else {
         console.log(`✅ [CrewEditor] ${crewName}: GCS default in sync (${defaultInfo.timestamp})`);
       }
     } catch (err) {
-      // Silently skip — don't block server startup
       console.warn(`⚠️ [CrewEditor] GCS default sync skipped for ${crewName}: ${err.message}`);
     }
   }
@@ -557,15 +567,26 @@ class CrewEditorService {
         console.log(`✅ [CrewEditor] Default marker deleted`);
       }
 
-      // Restore project file to disk if it exists in GCS
-      const projectPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
-      const projectFile = storageService.getBucket().file(projectPath);
-      const [projectExists] = await projectFile.exists();
+      // Restore the deployed/project file to disk
+      // Primary: in-memory snapshot. Fallback: GCS _project.crew.js
+      const key = `${agentName}/${crewName}`;
+      let projectSource = null;
 
-      if (projectExists) {
-        const [content] = await projectFile.download();
-        const projectSource = content.toString('utf8');
+      if (this._deployedSources.has(key)) {
+        projectSource = this._deployedSources.get(key);
+        console.log(`📁 [CrewEditor] Using in-memory deployed version for ${crewName}`);
+      } else {
+        const projectPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
+        const gcsFile = storageService.getBucket().file(projectPath);
+        const [projectExists] = await gcsFile.exists();
+        if (projectExists) {
+          const [content] = await gcsFile.download();
+          projectSource = content.toString('utf8');
+          console.log(`📁 [CrewEditor] Using GCS project file for ${crewName}`);
+        }
+      }
 
+      if (projectSource) {
         const filePath = this._resolveCrewFilePath(agentName, crewName);
         if (filePath) {
           fs.writeFileSync(filePath, projectSource, 'utf8');
@@ -590,6 +611,15 @@ class CrewEditorService {
    */
   async getProjectFileSource(agentName, crewName) {
     console.log(`📁 [CrewEditor] Reading project file: agent="${agentName}", crew="${crewName}"`);
+
+    // Primary: in-memory snapshot (captured at startup before GCS sync)
+    const key = `${agentName}/${crewName}`;
+    if (this._deployedSources.has(key)) {
+      console.log(`📁 [CrewEditor] Serving deployed version from memory`);
+      return this._deployedSources.get(key);
+    }
+
+    // Fallback: GCS backup
     const gcsPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
     const file = storageService.getBucket().file(gcsPath);
     const [content] = await file.download();
@@ -597,35 +627,17 @@ class CrewEditorService {
   }
 
   /**
-   * Ensure the project file backup in GCS reflects the current disk file.
-   * Always updates — the deployed/folder version is the source of truth.
+   * Save the deployed source to GCS as _project.crew.js.
    * @private
    */
-  async _ensureProjectFileBackup(agentName, crewName) {
-    try {
-      const filePath = this._resolveCrewFilePath(agentName, crewName);
-      if (!filePath || !fs.existsSync(filePath)) return;
-
-      const currentSource = fs.readFileSync(filePath, 'utf8');
-
-      const projectPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
-      const projectFile = storageService.getBucket().file(projectPath);
-
-      // Check if GCS backup matches disk — skip upload if identical
-      const [exists] = await projectFile.exists();
-      if (exists) {
-        const [content] = await projectFile.download();
-        if (content.toString('utf8').trim() === currentSource.trim()) return;
-      }
-
-      const buffer = Buffer.from(currentSource, 'utf8');
-      await projectFile.save(buffer, {
-        metadata: { contentType: 'application/javascript' }
-      });
-      console.log(`📁 [CrewEditor] Project file backup updated in GCS for ${crewName}`);
-    } catch (err) {
-      console.warn(`⚠️ [CrewEditor] Failed to backup project file: ${err.message}`);
-    }
+  async _saveProjectFileToGCS(agentName, crewName, source) {
+    const projectPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
+    const projectFile = storageService.getBucket().file(projectPath);
+    const buffer = Buffer.from(source, 'utf8');
+    await projectFile.save(buffer, {
+      metadata: { contentType: 'application/javascript' }
+    });
+    console.log(`📁 [CrewEditor] Project file saved to GCS for ${crewName}`);
   }
 
   /**
