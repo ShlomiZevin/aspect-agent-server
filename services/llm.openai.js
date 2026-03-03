@@ -1049,11 +1049,20 @@ class OpenAIService {
    */
   async listVectorStoreFiles(vectorStoreId) {
     try {
-      const response = await this.client.vectorStores.files.list(vectorStoreId);
+      // Use auto-pagination to fetch ALL files (default limit is 20)
+      const allVsFiles = await this.client.vectorStores.files.list(vectorStoreId, { limit: 100 }).then(async (page) => {
+        const files = [...page.data];
+        let current = page;
+        while (current.hasNextPage()) {
+          current = await current.getNextPage();
+          files.push(...current.data);
+        }
+        return files;
+      });
 
       // Get file details for each file
       const filesWithDetails = await Promise.all(
-        response.data.map(async (vsFile) => {
+        allVsFiles.map(async (vsFile) => {
           try {
             const fileDetails = await this.client.files.retrieve(vsFile.id);
             return {
@@ -1079,6 +1088,7 @@ class OpenAIService {
         })
       );
 
+      console.log(`📂 Listed ${filesWithDetails.length} files from vector store ${vectorStoreId}`);
       return filesWithDetails;
     } catch (error) {
       console.error('❌ Error listing vector store files:', error.message);
