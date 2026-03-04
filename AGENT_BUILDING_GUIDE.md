@@ -15,7 +15,8 @@ This guide explains how to add new agents and crew members to the Aspect platfor
 7. [Part 6: Context System](#part-6-context-system)
 8. [Part 7: Client-Side SSE Callbacks](#part-7-client-side-sse-callbacks)
 9. [Part 8: Tool Design Patterns](#part-8-tool-design-patterns)
-10. [Quick Reference: File Locations](#quick-reference-file-locations)
+10. [Part 9: Thinker+Talker Crews (ThinkingAdvisorAgent)](#part-9-thinkertalker-crews-thinkingadvisoragent)
+11. [Quick Reference: File Locations](#quick-reference-file-locations)
 
 ---
 
@@ -1157,6 +1158,156 @@ module.exports = MyAgentAssessmentCrew;
 
 ---
 
+## Part 9: Thinker+Talker Crews (ThinkingAdvisorAgent)
+
+A **thinker+talker** crew uses two LLMs per message: a **thinker** (Claude) that analyzes the conversation and produces structured advice, and a **talker** (GPT-5) that speaks to the user naturally based on that advice. This pattern is useful for crews that need strategic reasoning (e.g., sales conversations, complex assessments) without exposing the reasoning to the user.
+
+### 9.1 How It Works
+
+```
+User message → Dispatcher → buildContext() → Thinker (Claude) → advice JSON
+                                            → Talker (GPT-5) sees advice in context → response
+```
+
+The thinker runs inside `buildContext()` — which is already async and executes before the LLM call. No dispatcher changes are needed.
+
+### 9.2 ThinkingAdvisorAgent (Micro-Agent)
+
+Located at `crew/micro-agents/ThinkingAdvisorAgent.js`. A general-purpose reusable micro-agent (like FieldsExtractorAgent). Any crew can use it.
+
+```js
+const thinkingAdvisor = require('../../../crew/micro-agents/ThinkingAdvisorAgent');
+
+// Inside buildContext():
+const advice = await thinkingAdvisor.think({
+  thinkingPrompt: 'You are a strategic advisor. Return JSON: { nextQuestion, strategy, ... }',
+  context: 'Customer info, conversation history, available options...'
+});
+// advice is the parsed JSON object
+```
+
+Options (second argument):
+- `model` — default: `'claude-sonnet-4-20250514'`
+- `maxTokens` — default: `1024`
+- `jsonOutput` — default: `true` (parses response as JSON)
+
+### 9.3 Crew Setup
+
+A thinker crew has three key differences from a standard crew:
+
+**1. `this.usesThinker = true`** — Set this flag in the constructor (after `super()`). This tells the dispatcher to emit a `thinking_advisor_start` SSE event before `buildContext()` runs, so the client shows a thinking indicator ("מנתח את השיחה...") during the 1-2 second thinker wait. Without this flag, the UI appears stalled.
+
+```js
+class MyThinkerCrew extends CrewMember {
+  constructor() {
+    super({
+      name: 'my-crew',
+      model: 'gpt-5-chat-latest',
+      fieldsToCollect: [],  // Thinker replaces the field extractor
+      guidance: `You receive "thinkingAdvice" in context. Follow it...`,
+      // ...
+    });
+
+    this.usesThinker = true;  // Must be set AFTER super()
+  }
+}
+```
+
+> **Important:** `usesThinker` must be set as `this.usesThinker = true` after the `super()` call, not inside the options object. The base `CrewMember` constructor only stores known properties — arbitrary options are silently ignored.
+
+**2. `fieldsToCollect: []`** — The thinker replaces the field extractor. The dispatcher skips parallel extraction when `fieldsToCollect` is empty. All data collection happens through conversation analysis by the thinker.
+
+**3. `buildContext()` calls the thinker** — The thinker runs inside `buildContext`, returns structured advice, and the advice is included in the context for the talker.
+
+### 9.4 buildContext Pattern
+
+```js
+async buildContext(params) {
+  const baseContext = await super.buildContext(params);
+
+  // Gather data for the thinker
+  const profile = await this.getContext('my_profile', true) || {};
+  let historyText = '(no history)';
+  if (this._externalConversationId) {
+    const history = await conversationService.getConversationHistory(
+      this._externalConversationId, 20
+    );
+    historyText = history.map(m => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n');
+  }
+
+  const thinkerContext = `## Customer\n${JSON.stringify(profile)}\n\n## Conversation\n${historyText}`;
+
+  // Run the thinker
+  let thinkingAdvice = { fallback: true };
+  try {
+    thinkingAdvice = await thinkingAdvisor.think({
+      thinkingPrompt: THINKING_PROMPT,
+      context: thinkerContext
+    });
+  } catch (err) {
+    console.error('Thinker error:', err.message);
+  }
+
+  // Fallback if thinker failed
+  if (thinkingAdvice.fallback || thinkingAdvice.error) {
+    thinkingAdvice = { nextQuestion: 'Ask a basic question.', /* ... */ };
+  }
+
+  // Persist state for preMessageTransfer
+  await this.writeContext('advisor_state', {
+    recommendedOffer: thinkingAdvice.recommendedOffer || null,
+    offerAccepted: thinkingAdvice.offerAccepted === true
+  }, true);
+
+  return {
+    ...baseContext,
+    thinkingAdvice,  // Talker sees this in context
+  };
+}
+```
+
+### 9.5 Thinker-Driven Transitions
+
+Since the thinker analyzes the conversation every message, it can detect state changes (e.g., "customer accepted the offer") and signal transitions. Use `preMessageTransfer` to read from the context written by `buildContext`:
+
+```js
+async preMessageTransfer() {
+  const advisorState = await this.getContext('advisor_state', true);
+  if (!advisorState?.offerAccepted) return false;
+
+  // Write transition data for the next crew
+  await this.mergeContext('my_profile', {
+    currentStep: 'review',
+    acceptedOffer: advisorState.recommendedOffer
+  }, true);
+
+  return true;  // Triggers transition to transitionTo crew
+}
+```
+
+This approach re-evaluates fresh every message — no stale field values.
+
+### 9.6 Debug & Thinking Steps
+
+The dispatcher automatically handles two SSE events for thinker crews:
+
+| Event | When | What it shows |
+|-------|------|---------------|
+| `thinking_advisor_start` | Before `buildContext` (requires `usesThinker` flag) | Thinking step: "מנתח את השיחה..." with pulsing animation |
+| `thinking_advisor` | After `buildContext`, if `context.thinkingAdvice` exists | Thinking step with thinker's strategy summary |
+
+The full `thinkingAdvice` JSON is also included in the debug panel (`debug_prompt` data) under "Thinking Advice".
+
+### 9.7 Key Files
+
+| File | Purpose |
+|------|---------|
+| `crew/micro-agents/ThinkingAdvisorAgent.js` | Reusable thinker micro-agent |
+| `agents/banking-onboarder-v2/crew/main-conversation.crew.js` | Complete example of a thinker+talker crew |
+| `agents/banking-onboarder-v2/offers-catalog.js` | Static data module passed to thinker |
+
+---
+
 ## Quick Reference: File Locations
 
 ### Server
@@ -1193,10 +1344,14 @@ module.exports = MyAgentAssessmentCrew;
 | One-shot transitional crew | `agents/freeda/crew/assessment-closure.crew.js` |
 | Split tools for clarity | `functions/symptom-group-completion.js` |
 | Context persistence | `agents/freeda/crew/profiler.crew.js` |
+| Thinker+talker crew | `agents/banking-onboarder-v2/crew/main-conversation.crew.js` |
 
 ---
 
 ## Changelog
+
+### v2.2 (2026-03)
+- Added **Part 9: Thinker+Talker Crews** - ThinkingAdvisorAgent micro-agent, `usesThinker` flag, thinker-driven transitions, debug integration
 
 ### v2.1 (2025-02)
 - Added **oneShot crews** - for transitional/announcement crews that deliver once then auto-transition
