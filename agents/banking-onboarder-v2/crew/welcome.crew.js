@@ -33,7 +33,7 @@ class WelcomeCrew extends CrewMember {
         }
       ],
 
-      transitionTo: 'main-conversation',
+      transitionTo: 'main-conversation-single',
 
       guidance: `Welcome the customer and check eligibility (age >= 16).
 
