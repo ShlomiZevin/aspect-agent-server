@@ -1313,6 +1313,29 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             );
           }
 
+          // Handle thinking advisor start — show indicator while thinker processes
+          if (chunk.type === 'thinking_advisor_start') {
+            thinkingService.addStep(
+              conversationId,
+              'thinking_advisor',
+              'מנתח את השיחה...'
+            );
+          }
+
+          // Handle thinking advisor events
+          if (chunk.type === 'thinking_advisor' && chunk.advice) {
+            const a = chunk.advice;
+            const description = a.readyToRecommend
+              ? `Advisor: Ready to recommend "${a.recommendedOffer}"`
+              : `Advisor: ${a.sellingStrategy || 'Analyzing...'}`;
+            thinkingService.addStep(
+              conversationId,
+              'thinking_advisor',
+              description,
+              chunk.advice
+            );
+          }
+
           // Handle inline crew transition (pre-transfer from dispatcher)
           if (chunk.type === 'crew_transition' && chunk.transition) {
             // Save the first crew's message before transitioning

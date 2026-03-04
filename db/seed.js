@@ -123,6 +123,33 @@ async function seed() {
       console.log('✅ Banking Onboarder created successfully (ID:', inserted.id, ')');
     }
 
+    // Create Banking Onboarder V2 agent (Thinking Model)
+    console.log('Creating Banking Onboarder V2 agent...');
+
+    const bankingOnboarderV2Agent = {
+      name: 'Banking Onboarder V2',
+      domain: 'banking',
+      urlSlug: 'banking-v2',
+      description: 'Banking onboarder with thinker+talker architecture. 3 crews: welcome, main conversation (Claude thinks, GPT-5 talks), review & finalize.',
+      promptId: null,
+      config: {
+        model: process.env.OPENAI_MODEL || 'gpt-5-chat-latest',
+        vectorStoreId: null,
+        features: ['customer_onboarding', 'thinking_model', 'account_setup'],
+        supportedLanguages: ['he']
+      },
+      isActive: true
+    };
+
+    const existingV2 = await drizzle.select().from(agents).where(eq(agents.name, 'Banking Onboarder V2'));
+
+    if (existingV2.length > 0) {
+      console.log('✅ Banking Onboarder V2 already exists (ID:', existingV2[0].id, ')');
+    } else {
+      const [insertedV2] = await drizzle.insert(agents).values(bankingOnboarderV2Agent).returning();
+      console.log('✅ Banking Onboarder V2 created successfully (ID:', insertedV2.id, ')');
+    }
+
     console.log('');
     console.log('🎉 Seed completed successfully!');
     process.exit(0);

@@ -380,6 +380,11 @@ class DispatcherService {
       crew.persona = personaOverride;
     }
 
+    // Emit thinking start event so client can show indicator during buildContext
+    if (crew.usesThinker) {
+      yield { type: 'thinking_advisor_start' };
+    }
+
     // Build context from crew member
     const context = await crew.buildContext({
       conversation,
@@ -391,6 +396,11 @@ class DispatcherService {
 
     // Restore original persona
     crew.persona = originalPersona;
+
+    // Emit thinking advisor step if context contains thinking advice
+    if (context.thinkingAdvice && !context.thinkingAdvice.error) {
+      yield { type: 'thinking_advisor', advice: context.thinkingAdvice };
+    }
 
     // Pre-process message
     const processedMessage = await crew.preProcess(message, context);
@@ -581,6 +591,7 @@ class DispatcherService {
           transitionSystemPrompt: resolvedTransitionPrompt,
           transitionPromptInjected: isNewCrewTransition,
           transitionLogic,
+          thinkingAdvice: context.thinkingAdvice || null,
         }
       };
     }
