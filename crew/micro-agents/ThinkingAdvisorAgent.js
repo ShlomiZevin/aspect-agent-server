@@ -48,7 +48,12 @@ class ThinkingAdvisorAgent {
       console.log(`   🧠 [ThinkingAdvisor] Response received (${responseText.length} chars)`);
 
       if (jsonOutput) {
-        return JSON.parse(responseText);
+        const result = JSON.parse(responseText);
+        // Enforce _thinkingDescription for UI display
+        if (!result._thinkingDescription) {
+          result._thinkingDescription = 'Thinking...';
+        }
+        return result;
       }
       return responseText;
     } catch (error) {

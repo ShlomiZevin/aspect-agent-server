@@ -1176,13 +1176,19 @@ The thinker runs inside `buildContext()` — which is already async and executes
 
 Located at `crew/micro-agents/ThinkingAdvisorAgent.js`. A general-purpose reusable micro-agent (like FieldsExtractorAgent). Any crew can use it.
 
+The thinker receives **two inputs**:
+- **`thinkingPrompt`** (system prompt) — defines the reasoning task, JSON schema, and strategy rules
+- **`context`** (user message) — the data to reason about (conversation history, profile, domain data)
+
+Nothing else is injected. The only addition is a `jsonOutput` instruction appended by the LLM service ("Respond with valid JSON only").
+
 ```js
 const thinkingAdvisor = require('../../../crew/micro-agents/ThinkingAdvisorAgent');
 
 // Inside buildContext():
 const advice = await thinkingAdvisor.think({
-  thinkingPrompt: 'You are a strategic advisor. Return JSON: { nextQuestion, strategy, ... }',
-  context: 'Customer info, conversation history, available options...'
+  thinkingPrompt: THINKING_PROMPT,  // System prompt with JSON schema
+  context: thinkerContext            // Domain data + conversation history
 });
 // advice is the parsed JSON object
 ```
@@ -1209,16 +1215,27 @@ class MyThinkerCrew extends CrewMember {
       // ...
     });
 
-    this.usesThinker = true;  // Must be set AFTER super()
+    this.usesThinker = true;        // Must be set AFTER super()
+    this.thinkingPrompt = THINKING_PROMPT;  // Store for debug override support
   }
 }
 ```
 
-> **Important:** `usesThinker` must be set as `this.usesThinker = true` after the `super()` call, not inside the options object. The base `CrewMember` constructor only stores known properties — arbitrary options are silently ignored.
+> **Important:** `usesThinker` and `thinkingPrompt` must be set after the `super()` call, not inside the options object. The base `CrewMember` constructor only stores known properties — arbitrary options are silently ignored.
 
 **2. `fieldsToCollect: []`** — The thinker replaces the field extractor. The dispatcher skips parallel extraction when `fieldsToCollect` is empty. All data collection happens through conversation analysis by the thinker.
 
-**3. `buildContext()` calls the thinker** — The thinker runs inside `buildContext`, returns structured advice, and the advice is included in the context for the talker.
+**3. `this.thinkingPrompt`** — Store your thinking prompt constant on the instance. The dispatcher uses this for debug session overrides — it temporarily replaces `this.thinkingPrompt` before `buildContext()` runs, then restores the original after. In `buildContext()`, always use `this.thinkingPrompt` (not the constant directly) so overrides take effect:
+
+```js
+// ✅ Correct — supports debug overrides
+thinkingAdvisor.think({ thinkingPrompt: this.thinkingPrompt, context: thinkerContext });
+
+// ❌ Wrong — ignores debug overrides
+thinkingAdvisor.think({ thinkingPrompt: THINKING_PROMPT, context: thinkerContext });
+```
+
+**4. `buildContext()` calls the thinker** — The thinker runs inside `buildContext`, returns structured advice, and the advice is included in the context for the talker.
 
 ### 9.4 buildContext Pattern
 
@@ -1228,6 +1245,7 @@ async buildContext(params) {
 
   // Gather data for the thinker
   const profile = await this.getContext('my_profile', true) || {};
+  const prevState = await this.getContext('advisor_state', true) || {};
   let historyText = '(no history)';
   if (this._externalConversationId) {
     const history = await conversationService.getConversationHistory(
@@ -1236,13 +1254,20 @@ async buildContext(params) {
     historyText = history.map(m => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n');
   }
 
-  const thinkerContext = `## Customer\n${JSON.stringify(profile)}\n\n## Conversation\n${historyText}`;
+  // When thinking prompt is overridden (debug), send only conversation history.
+  // Including previous state / domain data would bias the thinker toward the
+  // original JSON schema, defeating the purpose of the override.
+  const isThinkingOverridden = this.thinkingPrompt !== THINKING_PROMPT;
 
-  // Run the thinker
+  const thinkerContext = isThinkingOverridden
+    ? `## Conversation\n${historyText}`
+    : `## Customer\n${JSON.stringify(profile)}\n\n## Previous State\n${JSON.stringify(prevState)}\n\n## Conversation\n${historyText}`;
+
+  // Run the thinker — use this.thinkingPrompt (not the constant) for override support
   let thinkingAdvice = { fallback: true };
   try {
     thinkingAdvice = await thinkingAdvisor.think({
-      thinkingPrompt: THINKING_PROMPT,
+      thinkingPrompt: this.thinkingPrompt,
       context: thinkerContext
     });
   } catch (err) {
@@ -1254,7 +1279,7 @@ async buildContext(params) {
     thinkingAdvice = { nextQuestion: 'Ask a basic question.', /* ... */ };
   }
 
-  // Persist state for preMessageTransfer
+  // Persist state for postThinkingTransfer
   await this.writeContext('advisor_state', {
     recommendedOffer: thinkingAdvice.recommendedOffer || null,
     offerAccepted: thinkingAdvice.offerAccepted === true
@@ -1267,7 +1292,42 @@ async buildContext(params) {
 }
 ```
 
-### 9.5 Thinker-Driven Transitions (`postThinkingTransfer`)
+### 9.5 Writing a Thinking Prompt
+
+The thinking prompt is the system prompt sent to the thinker LLM. It defines **what to analyze**, **how to reason**, and **what JSON schema to return**. A well-structured thinking prompt has three parts:
+
+**1. Role & goal** — Tell the thinker what it is and what it's trying to achieve.
+
+**2. JSON schema** — Define the exact fields you want back. Group them logically with comments.
+
+**3. Strategy rules** — How the thinker should reason (when to recommend, what to prioritize, edge cases).
+
+#### The `_thinkingDescription` Field
+
+Every thinking prompt **must** include a `_thinkingDescription` field in its JSON schema. This field is displayed in the UI thinking indicator as a live summary of what the thinker decided. Without it, the thinking step shows raw JSON which is not user-friendly.
+
+```js
+const THINKING_PROMPT = `You are a strategic advisor. Analyze the conversation and return JSON:
+{
+  // ── Display (shown in UI thinking indicator) ──
+  "_thinkingDescription": "short summary of what you decided — e.g. 'Asking about budget' or 'Ready to recommend Plan A'",
+
+  // ── Your domain fields ──
+  "nextQuestion": "...",
+  "strategy": "...",
+  // ...
+}`;
+```
+
+**Guidelines for `_thinkingDescription`:**
+- Keep it short (5-15 words) — it appears as a single line in the thinking step
+- Describe the **decision**, not the data — "Profiling: asking about employment" not "employment is null"
+- Use present tense — "Recommending Plus plan" not "Recommended Plus plan"
+- Make it specific to this turn — "Layer 2: offering credit card" not "Processing request"
+
+> **Tip:** The ThinkingAdvisor enforces a fallback — if the thinker response is missing `_thinkingDescription`, it defaults to `"Thinking..."`. But always include it in your prompt for meaningful display text.
+
+### 9.6 Thinker-Driven Transitions (`postThinkingTransfer`)
 
 Thinker crews use `postThinkingTransfer` — a transfer method that runs after `buildContext` completes but **before the talker responds**. This means the thinker can analyze the latest user message and trigger an immediate transition in the same turn, with no one-turn delay.
 
@@ -1295,7 +1355,7 @@ async postThinkingTransfer(context) {
 
 **Why not `postMessageTransfer`?** `postMessageTransfer` runs after the talker responds. For transitions, this means the talker would respond first (potentially saying something irrelevant) and the transition happens on the next turn.
 
-### 9.6 Debug & Thinking Steps
+### 9.7 Debug & Thinking Steps
 
 The dispatcher automatically handles two SSE events for thinker crews:
 
@@ -1304,9 +1364,11 @@ The dispatcher automatically handles two SSE events for thinker crews:
 | `thinking_advisor_start` | Before `buildContext` (requires `usesThinker` flag) | Thinking step: "מנתח את השיחה..." with pulsing animation |
 | `thinking_advisor` | After `buildContext`, if `context.thinkingAdvice` exists | Thinking step with thinker's strategy summary |
 
-The full `thinkingAdvice` JSON is also included in the debug panel (`debug_prompt` data) under "Thinking Advice".
+The `_thinkingDescription` field from the thinker's JSON response is displayed as the thinking step summary. The full `thinkingAdvice` JSON is also included in the debug panel (`debug_prompt` data) under "Thinking Advice".
 
-### 9.7 Key Files
+**Debug override:** The thinking prompt can be temporarily overridden per session from the debug Prompt Editor panel. When overridden, the dispatcher replaces `crew.thinkingPrompt` before `buildContext()` runs and restores it after. The crew's `buildContext` should send only conversation history as context when overridden (no previous state or domain data) to avoid biasing the thinker toward the original schema.
+
+### 9.8 Key Files
 
 | File | Purpose |
 |------|---------|
@@ -1361,6 +1423,9 @@ The full `thinkingAdvice` JSON is also included in the debug panel (`debug_promp
 ### v2.2 (2026-03)
 - Added **Part 9: Thinker+Talker Crews** - ThinkingAdvisorAgent micro-agent, `usesThinker` flag, thinker-driven transitions, debug integration
 - Added **`postThinkingTransfer`** - new transfer method for thinker crews (runs after buildContext, before talker). No one-turn delay.
+- Added **Section 9.5: Writing a Thinking Prompt** - thinking prompt structure, `_thinkingDescription` convention for UI display
+- Added **`this.thinkingPrompt`** convention - store prompt on instance for debug override support, use `this.thinkingPrompt` in buildContext (not constant)
+- Updated **Section 9.4** - override-aware buildContext pattern (skip domain data when prompt is overridden)
 
 ### v2.1 (2025-02)
 - Added **oneShot crews** - for transitional/announcement crews that deliver once then auto-transition

@@ -354,6 +354,7 @@ class DispatcherService {
       modelOverrides = {},  // Session overrides: { crewName: modelName }
       personaOverride,      // Session override: string (agent-level, applies to all crews)
       kbOverrides = {},     // Session override: { crewName: string[] } - same pattern as modelOverrides
+      thinkingPromptOverrides = {}, // Session override: { crewName: thinkingPrompt }
       agentId               // Agent DB ID for KB resolver
     } = params;
 
@@ -380,6 +381,14 @@ class DispatcherService {
       crew.persona = personaOverride;
     }
 
+    // ========== RESOLVE THINKING PROMPT ==========
+    // Session override replaces the crew's thinkingPrompt for this request
+    const originalThinkingPrompt = crew.thinkingPrompt;
+    if (crew.usesThinker && thinkingPromptOverrides[crew.name]) {
+      crew.thinkingPrompt = thinkingPromptOverrides[crew.name];
+      console.log(`   🧠 Thinking prompt override applied for "${crew.name}"`);
+    }
+
     // Emit thinking start event so client can show indicator during buildContext
     if (crew.usesThinker) {
       yield { type: 'thinking_advisor_start' };
@@ -394,8 +403,9 @@ class DispatcherService {
       metadata: {}
     });
 
-    // Restore original persona
+    // Restore original persona and thinking prompt
     crew.persona = originalPersona;
+    crew.thinkingPrompt = originalThinkingPrompt;
 
     // Emit thinking advisor step if context contains thinking advice
     if (context.thinkingAdvice && !context.thinkingAdvice.error) {

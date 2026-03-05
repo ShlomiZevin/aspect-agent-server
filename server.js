@@ -60,7 +60,8 @@ if (process.env.NODE_ENV === 'development') {
         'https://primyo.io',
         'https://boostmind-b052c.web.app',
         'https://freeda-2b4af.web.app',
-        'https://freeda-2b4af.firebaseapp.com'
+        'https://freeda-2b4af.firebaseapp.com',
+        'https://lybi.ai/'
       ];
 
       if (!origin || ALLOWED_ORIGINS.includes(origin)) {
@@ -1173,7 +1174,7 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, useKnowledgeBase, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, personaOverride, kbOverrides } = req.body;
+  const { message, conversationId, useKnowledgeBase, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, personaOverride, kbOverrides, thinkingPromptOverrides } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -1274,6 +1275,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         modelOverrides: modelOverrides || {},
         personaOverride: personaOverride || undefined,
         kbOverrides: kbOverrides || {},
+        thinkingPromptOverrides: thinkingPromptOverrides || {},
         agentId: agent?.id || null
       })) {
         // Check if chunk is a function call event (object) or text (string)

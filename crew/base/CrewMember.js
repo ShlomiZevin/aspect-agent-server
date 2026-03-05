@@ -327,7 +327,9 @@ class CrewMember {
       } : null,
       hasTransitionPrompt: !!this.transitionSystemPrompt,
       persona: this.persona || null,
-      source: this.source || 'file'
+      source: this.source || 'file',
+      usesThinker: this.usesThinker || false,
+      thinkingPrompt: this.thinkingPrompt || null,
     };
   }
 }

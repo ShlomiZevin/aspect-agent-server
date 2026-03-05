@@ -24,7 +24,7 @@ class MainConversationSingleCrew extends CrewMember {
     super({
       persona: getPersona(),
       name: 'main-conversation-single',
-      displayName: 'יועץ חשבון',
+      displayName: 'יועץ חשבון (פשוט)',
       description: 'פרופיל, ייעוץ והמלצת חשבון (ללא חושב)',
       isDefault: false,
       model: 'gpt-5-chat-latest',

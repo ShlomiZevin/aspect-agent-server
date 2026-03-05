@@ -134,6 +134,7 @@ Your scope is advising and getting agreement on the plan and products. Once agre
     });
 
     this.usesThinker = true;
+    this.thinkingPrompt = THINKING_PROMPT;
   }
 
   async postThinkingTransfer(context) {
@@ -174,7 +175,13 @@ Your scope is advising and getting agreement on the plan and products. Once agre
     // Load previous advisor state for continuity
     const prevState = await this.getContext('advisor_state', true) || {};
 
-    const thinkerContext = `## Customer
+    // If thinking prompt is overridden (debug), send only conversation history
+    // so the thinker follows the override prompt without schema influence
+    const isThinkingOverridden = this.thinkingPrompt !== THINKING_PROMPT;
+
+    const thinkerContext = isThinkingOverridden
+      ? `## Conversation\n${historyText}`
+      : `## Customer
 Name: ${profile.name || 'Unknown'}
 Age: ${profile.age || 'Unknown'}
 
@@ -191,7 +198,7 @@ ${historyText}`;
     let thinkingAdvice = { fallback: true };
     try {
       thinkingAdvice = await thinkingAdvisor.think({
-        thinkingPrompt: THINKING_PROMPT,
+        thinkingPrompt: this.thinkingPrompt || THINKING_PROMPT,
         context: thinkerContext
       });
     } catch (err) {
