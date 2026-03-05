@@ -2841,6 +2841,24 @@ app.post('/api/demo-mockups/upload-logo', upload.single('logo'), async (req, res
   }
 });
 
+// Lybi contact form
+const { sendLybiContactEmail } = require('./services/email.service');
+
+app.post('/api/lybi/contact', async (req, res) => {
+  const { name, email, company, message } = req.body;
+  if (!name || !email) {
+    return res.status(400).json({ error: 'Name and email are required' });
+  }
+  try {
+    await sendLybiContactEmail({ name, email, company, message });
+    console.log(`✅ Lybi contact email sent from ${name} <${email}>`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error sending Lybi contact email:', err.message);
+    res.status(500).json({ error: 'Failed to send email' });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 
 // Initialize database and start server
