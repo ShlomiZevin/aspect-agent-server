@@ -276,6 +276,17 @@ const taskComments = pgTable('task_comments', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Task notifications
+const taskNotifications = pgTable('task_notifications', {
+  id: serial('id').primaryKey(),
+  recipient: varchar('recipient', { length: 100 }).notNull(), // assignee name
+  taskId: integer('task_id').references(() => tasks.id).notNull(),
+  commentId: integer('comment_id').references(() => taskComments.id),
+  type: varchar('type', { length: 50 }).notNull(), // 'mention' | 'comment_on_assigned'
+  isRead: boolean('is_read').default(false).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 // =============================================================================
 // DEMO MOCKUP MODULE (Customer demo tool)
 // =============================================================================
@@ -311,5 +322,6 @@ module.exports = {
   taskAssignees,
   tasks,
   taskComments,
+  taskNotifications,
   demoMockups,
 };

@@ -22,6 +22,7 @@ const crewMembersService = require('./services/crewMembers.service');
 const kbResolverService = require('./services/kb.resolver');
 const taskService = require('./services/task.service');
 const commentsService = require('./services/comments.service');
+const notificationsService = require('./services/notifications.service');
 const demoService = require('./services/demo.service');
 
 // WhatsApp bridge
@@ -2653,6 +2654,45 @@ app.post('/api/assignees', async (req, res) => {
   }
 });
 
+// ─── Notifications ───────────────────────────────────────────────────────────
+
+// Get unread notifications for current user identity
+app.get('/api/notifications', async (req, res) => {
+  try {
+    const { identity } = req.query;
+    if (!identity) return res.json({ notifications: [] });
+    const notifications = await notificationsService.getNotifications(identity);
+    res.json({ notifications });
+  } catch (err) {
+    console.error('❌ Error fetching notifications:', err.message);
+    res.status(500).json({ error: 'Error fetching notifications: ' + err.message });
+  }
+});
+
+// Mark a single notification as read
+app.patch('/api/notifications/:id/read', async (req, res) => {
+  try {
+    await notificationsService.markRead(parseInt(req.params.id));
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error marking notification read:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mark all notifications as read for current user
+app.patch('/api/notifications/read-all', async (req, res) => {
+  try {
+    const { identity } = req.query;
+    if (!identity) return res.status(400).json({ error: 'identity is required' });
+    await notificationsService.markAllRead(identity);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error marking all notifications read:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== DEMO MOCKUP ENDPOINTS ==========
 
 // List all mockups
@@ -2840,6 +2880,24 @@ app.post('/api/demo-mockups/upload-logo', upload.single('logo'), async (req, res
   } catch (err) {
     console.error('❌ Error uploading logo:', err.message);
     res.status(500).json({ error: 'Error uploading logo: ' + err.message });
+  }
+});
+
+// Lybi contact form
+const { sendLybiContactEmail } = require('./services/email.service');
+
+app.post('/api/lybi/contact', async (req, res) => {
+  const { name, email, company, message } = req.body;
+  if (!name || !email) {
+    return res.status(400).json({ error: 'Name and email are required' });
+  }
+  try {
+    await sendLybiContactEmail({ name, email, company, message });
+    console.log(`✅ Lybi contact email sent from ${name} <${email}>`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error sending Lybi contact email:', err.message);
+    res.status(500).json({ error: 'Failed to send email' });
   }
 });
 
