@@ -64,7 +64,7 @@ class CommentsService {
 
     // Strip HTML tags and parse @mentions
     const plainText = content.replace(/<[^>]+>/g, ' ');
-    const mentionRegex = /@([\w\u0080-\uFFFF]+(?:\s[\w\u0080-\uFFFF]+)?)/g;
+    const mentionRegex = /@([\w\u0080-\uFFFF]+)/g;
     const mentionedNames = new Set();
 
     let match;
