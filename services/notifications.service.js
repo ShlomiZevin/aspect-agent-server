@@ -5,6 +5,8 @@ const { eq, and, desc } = require('drizzle-orm');
 class NotificationsService {
   constructor() {
     this.drizzle = null;
+    // SSE: identity -> Set of response objects
+    this.sseClients = new Map();
   }
 
   initialize() {
@@ -27,6 +29,34 @@ class NotificationsService {
       .orderBy(desc(taskNotifications.createdAt));
   }
 
+  // ─── SSE ─────────────────────────────────────────────────────────────────
+
+  addSSEClient(identity, res) {
+    if (!this.sseClients.has(identity)) {
+      this.sseClients.set(identity, new Set());
+    }
+    this.sseClients.get(identity).add(res);
+  }
+
+  removeSSEClient(identity, res) {
+    const clients = this.sseClients.get(identity);
+    if (clients) {
+      clients.delete(res);
+      if (clients.size === 0) this.sseClients.delete(identity);
+    }
+  }
+
+  emitToClient(recipient, notification) {
+    const clients = this.sseClients.get(recipient);
+    if (!clients || clients.size === 0) return;
+    const data = `data: ${JSON.stringify(notification)}\n\n`;
+    for (const res of clients) {
+      try { res.write(data); } catch { /* client disconnected */ }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+
   /**
    * Create a notification
    */
@@ -37,6 +67,9 @@ class NotificationsService {
       .insert(taskNotifications)
       .values({ recipient, taskId, commentId: commentId || null, type })
       .returning();
+
+    // Push to any connected SSE clients immediately
+    this.emitToClient(recipient, notification);
 
     return notification;
   }

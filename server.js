@@ -2693,6 +2693,29 @@ app.patch('/api/notifications/read-all', async (req, res) => {
   }
 });
 
+// SSE stream for real-time notifications
+app.get('/api/notifications/stream', (req, res) => {
+  const { identity } = req.query;
+  if (!identity) return res.status(400).json({ error: 'identity is required' });
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  notificationsService.addSSEClient(identity, res);
+
+  // Heartbeat every 25s to keep connection alive
+  const heartbeat = setInterval(() => {
+    try { res.write(': heartbeat\n\n'); } catch { /* ignore */ }
+  }, 25_000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    notificationsService.removeSSEClient(identity, res);
+  });
+});
+
 // ========== DEMO MOCKUP ENDPOINTS ==========
 
 // List all mockups
