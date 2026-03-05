@@ -1,12 +1,16 @@
 /**
  * Banking Onboarder V2 - Review & Finalize Crew
  *
- * Summary, authorization, and account opening celebration.
+ * Final step. Summarize, get explicit authorization, open account, orient.
  * Terminal crew — no further transitions.
  *
  * Flow:
- * 1. First message: summarize accepted offer, show review links, ask for authorization
- * 2. After authorization: celebrate, show what's ready, warm goodbye
+ * 1. Summarize: account plan, products agreed, key terms
+ * 2. Require explicit authorization — deliberate moment
+ * 3. On authorization: celebrate, show what's ready, provide next actions
+ *
+ * Runs only after advisor crew handed off a confirmed account agreement.
+ * Hard gate: no account opens without explicit authorization.
  */
 const CrewMember = require('../../../crew/base/CrewMember');
 const { getPersona } = require('../banking-onboarder-v2-persona');
@@ -28,28 +32,38 @@ class ReviewFinalizeCrew extends CrewMember {
         {
           name: 'authorized',
           type: 'boolean',
-          description: "Set to true when user gives explicit authorization to open the account (מאשר, כן, אני מסכים, פתחו לי, בואו נעשה את זה)"
+          description: "Explicit authorization to open the account. Set to true only on clear confirmation (מאשר/ת, כן, אני מסכים/ה, פתחו לי, בואו נעשה את זה). NOT on questions or hesitation."
         }
       ],
 
       transitionTo: null,
 
-      guidance: `You are a banking advisor at the final step.
+      guidance: `This is the final step before account opening. Make it feel deliberate, not rushed.
 
 ## BEFORE AUTHORIZATION
-Summarize: the chosen offer (name, features, monthly fee), and why it fits them.
-Include review links: [תנאי שימוש](https://example.com/terms) | [מדיניות פרטיות](https://example.com/privacy) | [טבלת עמלות](https://example.com/fees)
-Briefly explain what happens after they confirm (account opens, card shipped, app access).
-Ask for explicit authorization — frame it as a deliberate digital signature moment.
+1. Signal clearly: "הגענו לשלב האחרון"
+2. Summarize at a high level:
+   - Account plan chosen (name, monthly fee)
+   - Products added (card type, checkbook if any)
+   - Key benefits relevant to this customer
+3. Show review links: [תנאי שימוש](https://example.com/terms) | [מדיניות פרטיות](https://example.com/privacy) | [טבלת עמלות](https://example.com/fees)
+4. Ask for explicit authorization — frame it as a deliberate digital signature moment
+5. If customer pauses: allow it. No pressure. No account opens without explicit consent.
 
 ## AFTER AUTHORIZATION
-Celebrate warmly. Account opened.
-What's ready now: app, online banking, transfers.
-What's coming soon: debit card, welcome email.
-Warm goodbye — let them know they can always come back.
+1. Celebrate warmly — this is a milestone 🎉
+2. Confirm what was opened: account name, masked account number
+3. What's ready now: app access, online banking, transfers
+4. What's coming soon: card delivery (7-10 business days), welcome email
+5. 1-3 clear next actions (download app, set up standing orders, etc.)
+6. Warm goodbye — let them know they can always come back
 
-## QUESTIONS
-Answer briefly. Don't reopen the offer discussion.`,
+## RULES
+- Don't introduce new information or decisions
+- Don't reopen negotiation or offers
+- Don't overload — cognitive load should be low
+- Answer questions briefly without reopening discussion
+- After confirmation: the tone shifts — onboarding is over, banking begins`,
 
       tools: [],
       knowledgeBase: null
@@ -65,21 +79,20 @@ Answer briefly. Don't reopen the offer discussion.`,
     const cf = params.collectedFields || {};
     const authorized = cf.authorized === 'true';
 
-    // Load profile and advisor state
     const profile = await this.getContext('onboarding_profile', true) || {};
     const advisorState = await this.getContext('advisor_state', true) || {};
 
-    // Get the accepted offer details
     const acceptedOffer = getOfferById(advisorState.recommendedOffer || profile.offerAccepted) || null;
 
-    // On authorization — write completion
     if (authorized) {
       const accountNumber = `****${Math.floor(1000 + Math.random() * 9000)}`;
       await this.writeContext('onboarding_completion', {
         completed: true,
         completedAt: new Date().toISOString(),
         accountNumber,
-        offer: acceptedOffer?.id || 'basic'
+        offer: acceptedOffer?.id || 'basic',
+        card: advisorState.cardResponse || null,
+        checkbook: advisorState.checkbookResponse || null
       }, true);
 
       await this.mergeContext('onboarding_profile', {
@@ -93,6 +106,8 @@ Answer briefly. Don't reopen the offer discussion.`,
       role: 'Review & Finalize',
       customerName: profile.name || null,
       acceptedOffer,
+      cardResponse: advisorState.cardResponse || profile.cardResponse || null,
+      checkbookResponse: advisorState.checkbookResponse || profile.checkbookResponse || null,
       authorized
     };
   }

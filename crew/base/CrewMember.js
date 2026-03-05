@@ -265,6 +265,18 @@ class CrewMember {
   }
 
   /**
+   * Determine if a transfer should occur AFTER buildContext completes but BEFORE the talker responds.
+   * Only relevant for thinker crews (usesThinker=true). Called with the context returned by buildContext.
+   * If returns true, the talker is skipped and the conversation transitions immediately.
+   *
+   * @param {Object} context - The context object returned by buildContext (includes thinkingAdvice)
+   * @returns {Promise<boolean>} - true to transfer (using this.transitionTo), false to continue
+   */
+  async postThinkingTransfer(context) {
+    return false;
+  }
+
+  /**
    * Determine if a transfer should occur AFTER the crew response is sent.
    * Called after the crew response has been fully streamed to the client.
    * If returns true, the conversation transitions to this.transitionTo for the next message.

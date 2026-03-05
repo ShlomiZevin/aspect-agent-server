@@ -1324,10 +1324,8 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
 
           // Handle thinking advisor events
           if (chunk.type === 'thinking_advisor' && chunk.advice) {
-            const a = chunk.advice;
-            const description = a.readyToRecommend
-              ? `Advisor: Ready to recommend "${a.recommendedOffer}"`
-              : `Advisor: ${a.sellingStrategy || 'Analyzing...'}`;
+            // Generic: thinker provides _thinkingDescription to control the step text
+            const description = chunk.advice._thinkingDescription || 'Advisor: Analysis complete';
             thinkingService.addStep(
               conversationId,
               'thinking_advisor',

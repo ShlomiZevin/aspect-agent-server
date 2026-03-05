@@ -1,20 +1,19 @@
 /**
- * Banking Onboarder V2 - Main Conversation Crew (Thinker+Talker)
+ * Banking Onboarder V2 - Main Conversation (Thinker+Talker)
  *
- * The core selling crew. Uses a ThinkingAdvisorAgent (Claude) to reason
- * about the customer and advise the talker (GPT-5) on what to ask and
- * when to recommend.
+ * The heart of the onboarding. Thinker (Claude) reads the customer and decides
+ * what to do. Talker (GPT-5) speaks naturally based on the thinker's output.
  *
- * Flow per message:
- * 1. buildContext() calls ThinkingAdvisorAgent with conversation + profile + offers
- * 2. Thinker returns structured advice (next question, selling strategy, recommendation)
- * 3. If thinker says offerAccepted → transition before talker responds
- * 4. Otherwise talker (GPT-5) sees advice in context and responds naturally
+ * The thinker is a "smart field extractor" — it tracks hard fields (employment, income),
+ * soft fields (customer type, signals), and conversation state (layers, readiness).
  *
- * No fieldsToCollect — the thinker handles everything via conversation analysis.
+ * 3 product layers:
+ * - Layer 1: Account plan + fees (must be agreed before anything else)
+ * - Layer 2: Card + checkbook (offered after layer 1, must get response)
+ * - Layer 3: Deposits/loans (mention as value, don't close here)
  *
  * Transitions:
- * - Thinker detects customer accepted offer → 'review-finalize'
+ * - Layer 1 agreed + Layer 2 complete → 'review-finalize'
  */
 const CrewMember = require('../../../crew/base/CrewMember');
 const { getPersona } = require('../banking-onboarder-v2-persona');
@@ -22,30 +21,90 @@ const thinkingAdvisor = require('../../../crew/micro-agents/ThinkingAdvisorAgent
 const { getOffersCatalog, getOfferById } = require('../offers-catalog');
 const conversationService = require('../../../services/conversation.service');
 
-// ── Thinker Prompt (Claude) ──────────────────────────────────────────
-const THINKING_PROMPT = `You are a strategic advisor for a banking onboarding agent. You analyze the customer and guide the talker on what to do next.
+// ── Thinker Prompt ──────────────────────────────────────────────────
+const THINKING_PROMPT = `You are the strategic brain of a banking onboarding agent. You analyze the customer and return structured state for the talker.
 
-You receive: conversation history, customer profile, and available account offers.
+You receive: customer profile, conversation history, and available offers.
 
 Return JSON:
 {
-  "nextQuestion": "The single question to ask next, in Hebrew. null if ready to recommend or offer was accepted.",
-  "sellingStrategy": "Brief note on current approach for the talker.",
-  "readyToRecommend": false,
-  "recommendedOffer": null,
-  "recommendationPitch": "How to present this offer when recommending.",
+  // ── Display (shown in UI thinking indicator) ──
+  "_thinkingDescription": "short summary of what you decided — e.g. 'Profiling: asking about employment' or 'Recommending Plus plan' or 'Layer 2: offering card'",
+
+  // ── Profile: try to learn (actively ask for these) ──
+  "employment": "free text, null if unknown",
+  "incomeRange": "free text — approximate range, not exact. null if unknown",
+  "expectedUsage": "free text, null if unknown",
+  "isFirstAccount": true/false/null,
+
+  // ── Profile: ask when relevant (use judgment per customer) ──
+  "occupation": "free text, null if unknown/irrelevant",
+  "financialCommitments": "free text, null if unknown/irrelevant",
+  "balanceBehavior": "free text, null if unknown",
+  "overdraftUsage": "free text, null if unknown",
+
+  // ── Profile: capture if mentioned (don't chase) ──
+  "industry": "free text, null if not mentioned",
+  "employmentStability": "free text, null if not mentioned",
+  "primaryIncomeSource": "free text, null if not mentioned",
+  "incomeFrequency": "free text, null if not mentioned",
+  "numberOfIncomeSources": "free text, null if not mentioned",
+  "isStudent": true/false/null,
+
+  // ── Customer read ──
+  "customerType": "your overall read of this customer — free text",
+  "signals": "what you're picking up right now — mood, hesitation, urgency, confidence, anything relevant",
+
+  // ── Strategy ──
+  "nextQuestion": "the single Hebrew question to ask next, or null if recommending/wrapping",
+  "strategy": "what to do next and why — one sentence",
+  "toneNotes": "tone adjustment if needed",
+
+  // ── Product layers ──
+  "recommendedOffer": "basic|plus|premium — from the offers catalog, null if not ready",
+  "offerPitch": "why this offer fits THIS customer — used when recommending",
+  "layer1Agreed": false,
+  "cardOffered": false,
+  "cardResponse": "free text — what the customer said about the card, null if not offered yet",
+  "checkbookOffered": false,
+  "checkbookResponse": "free text — what the customer said about the checkbook, null if not offered/relevant",
+  "layer2Complete": false,
+
+  // ── Transition ──
   "offerAccepted": false,
-  "toneNotes": "Any tone adjustment based on conversation signals."
+  "readyToTransfer": false
 }
 
-Rules:
-- Even if you know the right offer early, keep asking to build rapport. The customer should feel understood before hearing a recommendation.
-- Mix profile questions (employment, income, account usage) with discovery questions (what matters most, banking frustrations, future plans).
-- When customer shows urgency or impatience — accelerate, don't over-cook.
-- The recommendation should feel earned. Connect it to what they told you.
-- Keep nextQuestion natural and conversational — not a form field label.
-- Set offerAccepted to true ONLY when the customer explicitly agrees to the recommended offer (כן, מתאים, אני רוצה, בואו נעשה את זה, etc.). Asking questions or showing interest is NOT acceptance.
-- If the customer rejects or wants something else, reset: readyToRecommend back to false, keep the conversation going.`;
+## HOW TO THINK
+1. Read the conversation. Update every field you can from what the customer said — infer when obvious.
+2. Count the profiling exchanges so far (assistant questions about the customer + customer answers). This is your "rapport score."
+3. Check the "try to learn" fields. If any are still null and relevant to this customer — your nextQuestion should fill one.
+4. Check the "ask when relevant" fields. If they matter for this person's offer — work them in naturally.
+5. Never chase "capture if mentioned" fields. If the customer said it, record it. If not, leave null.
+6. Adapt framing to the customer: 16-year-old → skip income/overdraft/commitments, ask "כבר עובד?". Savvy adult → be direct. Price-sensitive → lead with value.
+7. Mix profile questions with discovery questions (what matters most in a bank, banking frustrations, future financial plans).
+8. Don't ask what you already know. Don't ask what's irrelevant to this person.
+
+## WHEN TO RECOMMEND
+You may set recommendedOffer ONLY when ALL of these are true:
+- At least 3 profiling exchanges have happened (rapport score >= 3)
+- You have enough "try to learn" fields to make a confident match
+- The customer feels understood — not just profiled
+Even if you already know the right offer after 1-2 answers: keep asking. The recommendation should feel earned, not rushed. The customer should think "yes, that makes sense for me" — not "how do you know that already?"
+Exception: if the customer explicitly asks you to recommend or shows clear impatience — accelerate.
+
+## PRODUCT LAYERS
+- Layer 1 (account plan): match offer to customer. One specific recommendation with a customer-specific reason. Must be agreed before layer 2.
+- Layer 2 (card + checkbook): offer ONLY after layer 1 agreed. Card: always offer, type depends on profile. Checkbook: based on need (skip for teens, recommend for renters). Frame as natural additions, not upsells.
+- Layer 3 (deposits/loans/higher credit): don't close here. Mention as value arguments only.
+
+## STRATEGY RULES
+- Lead with value. Price is last resort — only when price is what stands between the customer and closing.
+- One recommendation at a time. Never present a menu.
+- Set offerAccepted=true ONLY on explicit agreement (כן, מתאים, אני רוצה, בואו נעשה את זה). Interest ≠ acceptance.
+- If customer rejects: reset layer1Agreed=false, keep going. Ask what didn't fit.
+- Set readyToTransfer=true ONLY when layer1Agreed AND layer2Complete.
+- layer2Complete=true when both card and checkbook have a response (accepted/refused/skipped).`;
 
 class MainConversationCrew extends CrewMember {
   constructor() {
@@ -58,20 +117,22 @@ class MainConversationCrew extends CrewMember {
       model: 'gpt-5-chat-latest',
       maxTokens: 1024,
 
-      // No fieldsToCollect — thinker handles everything
       fieldsToCollect: [],
 
       transitionTo: 'review-finalize',
 
-      guidance: `You are a banking advisor having a natural conversation to find the perfect account.
+      guidance: `You are a banking advisor. Your role is to understand the customer, recommend the right account plan, and get their agreement on the plan and products. Once everything is agreed, the customer moves to a final step where the account is formally opened and confirmed — that step is handled separately, not by you.
 
-You receive "thinkingAdvice" in your context. Follow it:
+You receive "thinkingAdvice" in your context — follow it:
 - Ask the question it suggests, in your own natural words
-- Follow its selling strategy and tone notes
-- When it says ready to recommend: present the offer warmly — name, features, price, and why it fits this specific customer
+- Follow its strategy and tone notes
+- When it recommends an offer: present it warmly — name, features, price, and why it fits THIS customer
 - After presenting: guide toward acceptance naturally
+- If customer hesitates or rejects: ask what didn't fit, explore alternatives
+- After the customer agrees to a plan: offer card and checkbook as natural additions
+- When all products are agreed: wrap up warmly and confirm you'll move to the final step for formal approval
 
-Never mention internal systems, advice, or thinking. You are just a knowledgeable banker.`,
+You are a knowledgeable banker having a real conversation. Stay helpful and informative — every customer has a plan that fits them.`,
 
       tools: [],
       knowledgeBase: null
@@ -80,24 +141,24 @@ Never mention internal systems, advice, or thinking. You are just a knowledgeabl
     this.usesThinker = true;
   }
 
-  async preMessageTransfer() {
-    // Check if thinker flagged offer as accepted (stored in buildContext)
-    const advisorState = await this.getContext('advisor_state', true);
-    if (!advisorState?.offerAccepted) return false;
+  async postThinkingTransfer(context) {
+    const advice = context.thinkingAdvice;
+    if (!advice?.readyToTransfer) return false;
 
     await this.mergeContext('onboarding_profile', {
       currentStep: 'review-finalize',
-      offerAccepted: advisorState.recommendedOffer || 'basic'
+      offerAccepted: advice.recommendedOffer || 'basic',
+      cardResponse: advice.cardResponse || null,
+      checkbookResponse: advice.checkbookResponse || null
     }, true);
 
-    console.log('   ✅ Thinker: offer accepted, transitioning to review-finalize');
+    console.log('   ✅ Advisor: layers complete, transitioning to review-finalize');
     return true;
   }
 
   async buildContext(params) {
     const baseContext = await super.buildContext(params);
 
-    // Load profile from welcome crew
     const profile = await this.getContext('onboarding_profile', true) || {};
 
     // Load conversation history for the thinker
@@ -115,10 +176,15 @@ Never mention internal systems, advice, or thinking. You are just a knowledgeabl
       }
     }
 
-    // Build context for the thinker
+    // Load previous advisor state for continuity
+    const prevState = await this.getContext('advisor_state', true) || {};
+
     const thinkerContext = `## Customer
 Name: ${profile.name || 'Unknown'}
 Age: ${profile.age || 'Unknown'}
+
+## Previous State
+${JSON.stringify(prevState, null, 2)}
 
 ## Available Offers
 ${JSON.stringify(getOffersCatalog(), null, 2)}
@@ -126,7 +192,7 @@ ${JSON.stringify(getOffersCatalog(), null, 2)}
 ## Conversation
 ${historyText}`;
 
-    // Run the thinker (Claude)
+    // Run the thinker
     let thinkingAdvice = { fallback: true };
     try {
       thinkingAdvice = await thinkingAdvisor.think({
@@ -137,29 +203,40 @@ ${historyText}`;
       console.error('   [MainConversation] Thinker error:', err.message);
     }
 
-    // Fallback if thinker failed
+    // Fallback
     if (thinkingAdvice.fallback || thinkingAdvice.error) {
       thinkingAdvice = {
-        nextQuestion: 'Ask about their employment and what they need from a bank account.',
-        readyToRecommend: false,
+        nextQuestion: 'ספר/י לי קצת על עצמך — במה את/ה עוסק/ת?',
+        strategy: 'Start with employment, build rapport.',
+        customerType: 'general',
         recommendedOffer: null,
         offerAccepted: false,
-        sellingStrategy: 'Keep it simple and warm.',
-        recommendationPitch: '',
-        toneNotes: ''
+        layer1Agreed: false,
+        layer2Complete: false,
+        readyToTransfer: false
       };
     }
 
-    // Persist advisor state — thinker's recommendation + acceptance flag
+    // Persist advisor state
     await this.writeContext('advisor_state', {
       recommendedOffer: thinkingAdvice.recommendedOffer || null,
-      recommendationPitch: thinkingAdvice.recommendationPitch || '',
-      offerAccepted: thinkingAdvice.offerAccepted === true
+      offerPitch: thinkingAdvice.offerPitch || '',
+      offerAccepted: thinkingAdvice.offerAccepted === true,
+      layer1Agreed: thinkingAdvice.layer1Agreed === true,
+      cardOffered: thinkingAdvice.cardOffered === true,
+      cardResponse: thinkingAdvice.cardResponse || null,
+      checkbookOffered: thinkingAdvice.checkbookOffered === true,
+      checkbookResponse: thinkingAdvice.checkbookResponse || null,
+      layer2Complete: thinkingAdvice.layer2Complete === true,
+      readyToTransfer: thinkingAdvice.readyToTransfer === true,
+      customerType: thinkingAdvice.customerType || 'general',
+      employment: thinkingAdvice.employment || null,
+      incomeRange: thinkingAdvice.incomeRange || null
     }, true);
 
     // Resolve offer details for the talker
     let offerDetails = null;
-    if (thinkingAdvice.readyToRecommend && thinkingAdvice.recommendedOffer) {
+    if (thinkingAdvice.recommendedOffer) {
       offerDetails = getOfferById(thinkingAdvice.recommendedOffer);
     }
 

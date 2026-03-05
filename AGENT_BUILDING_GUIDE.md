@@ -26,12 +26,13 @@ Each **agent** is a self-contained AI assistant (e.g., Freeda for menopause, Asp
 
 **Key flow:** `Client → Server endpoint → Dispatcher → Crew Member → LLM → Streaming response back to client`
 
-### Two Approaches to Crew Transitions
+### Three Approaches to Crew Transitions
 
-| Approach | Use Case | Transfer Method | State Storage |
-|----------|----------|-----------------|---------------|
-| **Field-based** | Collect data, transition when complete | `preMessageTransfer` | `fieldsToCollect` + DB |
-| **Tool-based** | Interactive state via tool calls | `postMessageTransfer` | Context system |
+| Approach | Use Case | Transfer Method | When it runs |
+|----------|----------|-----------------|--------------|
+| **Field-based** | Collect data, transition when complete | `preMessageTransfer` | Before LLM call |
+| **Thinker-driven** | Thinker decides transition | `postThinkingTransfer` | After buildContext, before talker |
+| **Tool-based** | Interactive state via tool calls | `postMessageTransfer` | After LLM response |
 
 ---
 
@@ -1266,26 +1267,33 @@ async buildContext(params) {
 }
 ```
 
-### 9.5 Thinker-Driven Transitions
+### 9.5 Thinker-Driven Transitions (`postThinkingTransfer`)
 
-Since the thinker analyzes the conversation every message, it can detect state changes (e.g., "customer accepted the offer") and signal transitions. Use `preMessageTransfer` to read from the context written by `buildContext`:
+Thinker crews use `postThinkingTransfer` — a transfer method that runs after `buildContext` completes but **before the talker responds**. This means the thinker can analyze the latest user message and trigger an immediate transition in the same turn, with no one-turn delay.
+
+```
+Flow: buildContext (thinker runs) → postThinkingTransfer → if true: skip talker, transition
+                                                         → if false: talker responds normally
+```
 
 ```js
-async preMessageTransfer() {
-  const advisorState = await this.getContext('advisor_state', true);
-  if (!advisorState?.offerAccepted) return false;
+async postThinkingTransfer(context) {
+  const advice = context.thinkingAdvice;
+  if (!advice?.readyToTransfer) return false;
 
   // Write transition data for the next crew
   await this.mergeContext('my_profile', {
     currentStep: 'review',
-    acceptedOffer: advisorState.recommendedOffer
+    acceptedOffer: advice.recommendedOffer
   }, true);
 
-  return true;  // Triggers transition to transitionTo crew
+  return true;  // Triggers immediate transition to transitionTo crew
 }
 ```
 
-This approach re-evaluates fresh every message — no stale field values.
+**Why not `preMessageTransfer`?** `preMessageTransfer` runs before `buildContext`, so it can only read state from the *previous* thinker run (one-turn delay). `postThinkingTransfer` reads the *current* thinker output directly from the context object — no delay, no stale state.
+
+**Why not `postMessageTransfer`?** `postMessageTransfer` runs after the talker responds. For transitions, this means the talker would respond first (potentially saying something irrelevant) and the transition happens on the next turn.
 
 ### 9.6 Debug & Thinking Steps
 
@@ -1352,6 +1360,7 @@ The full `thinkingAdvice` JSON is also included in the debug panel (`debug_promp
 
 ### v2.2 (2026-03)
 - Added **Part 9: Thinker+Talker Crews** - ThinkingAdvisorAgent micro-agent, `usesThinker` flag, thinker-driven transitions, debug integration
+- Added **`postThinkingTransfer`** - new transfer method for thinker crews (runs after buildContext, before talker). No one-turn delay.
 
 ### v2.1 (2025-02)
 - Added **oneShot crews** - for transitional/announcement crews that deliver once then auto-transition

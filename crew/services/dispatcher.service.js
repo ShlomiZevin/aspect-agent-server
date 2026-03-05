@@ -402,6 +402,35 @@ class DispatcherService {
       yield { type: 'thinking_advisor', advice: context.thinkingAdvice };
     }
 
+    // ========== POST-THINKING TRANSFER ==========
+    // For thinker crews: check if thinker decided to transition before the talker responds
+    if (crew.transitionTo) {
+      const shouldTransfer = await crew.postThinkingTransfer(context);
+      if (shouldTransfer) {
+        console.log(`🧠 Post-thinking transfer: ${crew.name} → ${crew.transitionTo}`);
+
+        // Update conversation's current crew member BEFORE yielding (prevents race condition)
+        await conversationService.updateCurrentCrewMember(conversationId, crew.transitionTo);
+
+        yield {
+          type: 'crew_transition',
+          transition: {
+            from: crew.name,
+            to: crew.transitionTo,
+            reason: 'Post-thinking transfer',
+            timestamp: new Date().toISOString()
+          }
+        };
+
+        const targetCrew = await crewService.getCrewMember(agentName, crew.transitionTo);
+        if (targetCrew) {
+          yield { type: 'crew_info', crew: targetCrew.toJSON() };
+          yield* this._streamCrew(targetCrew, params);
+        }
+        return;
+      }
+    }
+
     // Pre-process message
     const processedMessage = await crew.preProcess(message, context);
 
