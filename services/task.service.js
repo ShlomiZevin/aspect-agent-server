@@ -177,6 +177,7 @@ class TaskService {
 
     // Fetch current task before update to detect changes for notifications
     const [before] = await this.drizzle.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+    const updatedBy = updates.updatedBy || null;
 
     const updateData = { updatedAt: new Date() };
 
@@ -204,7 +205,7 @@ class TaskService {
 
     // Fire notifications asynchronously
     if (before) {
-      this._createUpdateNotifications(before, task).catch(err =>
+      this._createUpdateNotifications(before, task, updatedBy).catch(err =>
         console.error('[notifications] Failed to create task update notifications:', err)
       );
     }
@@ -216,11 +217,11 @@ class TaskService {
   /**
    * Notify assignee when task is assigned or status changes
    */
-  async _createUpdateNotifications(before, after) {
+  async _createUpdateNotifications(before, after, updatedBy = null) {
     const newAssignee = after.assignee;
 
-    // Assignee changed → notify the new assignee
-    if (newAssignee && newAssignee !== before.assignee) {
+    // Assignee changed → notify the new assignee (unless they assigned themselves)
+    if (newAssignee && newAssignee !== before.assignee && newAssignee !== updatedBy) {
       await notificationsService.createNotification({
         recipient: newAssignee,
         taskId: after.id,
@@ -229,8 +230,8 @@ class TaskService {
       });
     }
 
-    // Status changed → notify current assignee (if any, and not just-assigned)
-    if (after.status !== before.status && newAssignee && newAssignee === before.assignee) {
+    // Status changed → notify current assignee (if any, not just-assigned, and not the one who changed it)
+    if (after.status !== before.status && newAssignee && newAssignee === before.assignee && newAssignee !== updatedBy) {
       await notificationsService.createNotification({
         recipient: newAssignee,
         taskId: after.id,
