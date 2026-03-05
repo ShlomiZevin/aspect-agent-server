@@ -46,7 +46,7 @@ class ReviewFinalizeCrew extends CrewMember {
    - Account plan chosen (name, monthly fee)
    - Products added (card type, checkbook if any)
    - Key benefits relevant to this customer
-3. Show review links: [תנאי שימוש](https://example.com/terms) | [מדיניות פרטיות](https://example.com/privacy) | [טבלת עמלות](https://example.com/fees)
+3. Show review links: [תנאי שימוש](/banking/terms.html) | [מדיניות פרטיות](/banking/privacy.html) | [טבלת עמלות](/banking/fees.html)
 4. Ask for explicit authorization — frame it as a deliberate digital signature moment
 5. If customer pauses: allow it. No pressure. No account opens without explicit consent.
 
