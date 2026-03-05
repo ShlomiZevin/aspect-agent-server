@@ -23,6 +23,7 @@ const kbResolverService = require('./services/kb.resolver');
 const taskService = require('./services/task.service');
 const commentsService = require('./services/comments.service');
 const notificationsService = require('./services/notifications.service');
+const boardEventsService = require('./services/boardEvents.service');
 const demoService = require('./services/demo.service');
 
 // WhatsApp bridge
@@ -2713,6 +2714,25 @@ app.get('/api/notifications/stream', (req, res) => {
   req.on('close', () => {
     clearInterval(heartbeat);
     notificationsService.removeSSEClient(identity, res);
+  });
+});
+
+// SSE stream for real-time board events (task/comment changes)
+app.get('/api/board/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  boardEventsService.addClient(res);
+
+  const heartbeat = setInterval(() => {
+    try { res.write(': heartbeat\n\n'); } catch { /* ignore */ }
+  }, 25_000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    boardEventsService.removeClient(res);
   });
 });
 

@@ -2,6 +2,7 @@ const db = require('./db.pg');
 const { tasks, taskAssignees } = require('../db/schema');
 const { eq, desc, and, ilike } = require('drizzle-orm');
 const notificationsService = require('./notifications.service');
+const boardEventsService = require('./boardEvents.service');
 
 /**
  * Task Board Service
@@ -164,6 +165,7 @@ class TaskService {
       })
       .returning();
 
+    boardEventsService.emit({ type: 'task_created', task });
     return task;
   }
 
@@ -207,6 +209,7 @@ class TaskService {
       );
     }
 
+    boardEventsService.emit({ type: 'task_updated', task });
     return task;
   }
 

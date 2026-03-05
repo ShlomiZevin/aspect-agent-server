@@ -2,6 +2,7 @@ const db = require('./db.pg');
 const { taskComments, tasks, taskAssignees } = require('../db/schema');
 const { eq, asc } = require('drizzle-orm');
 const notificationsService = require('./notifications.service');
+const boardEventsService = require('./boardEvents.service');
 
 class CommentsService {
   constructor() {
@@ -43,6 +44,9 @@ class CommentsService {
     this._createNotifications(taskId, comment.id, author.trim(), content).catch(err =>
       console.error('[notifications] Failed to create notifications:', err)
     );
+
+    // Broadcast to all board clients for live comment updates
+    boardEventsService.emit({ type: 'comment_added', taskId, comment });
 
     return comment;
   }
