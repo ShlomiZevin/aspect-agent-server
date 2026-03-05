@@ -1,6 +1,7 @@
 const db = require('./db.pg');
 const { tasks, taskAssignees } = require('../db/schema');
 const { eq, desc, and, ilike } = require('drizzle-orm');
+const notificationsService = require('./notifications.service');
 
 /**
  * Task Board Service
@@ -172,6 +173,9 @@ class TaskService {
   async updateTask(id, updates) {
     if (!this.drizzle) this.initialize();
 
+    // Fetch current task before update to detect changes for notifications
+    const [before] = await this.drizzle.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+
     const updateData = { updatedAt: new Date() };
 
     if (updates.title !== undefined) updateData.title = updates.title.trim();
@@ -196,7 +200,41 @@ class TaskService {
       .where(eq(tasks.id, id))
       .returning();
 
+    // Fire notifications asynchronously
+    if (before) {
+      this._createUpdateNotifications(before, task).catch(err =>
+        console.error('[notifications] Failed to create task update notifications:', err)
+      );
+    }
+
     return task;
+  }
+
+  /**
+   * Notify assignee when task is assigned or status changes
+   */
+  async _createUpdateNotifications(before, after) {
+    const newAssignee = after.assignee;
+
+    // Assignee changed → notify the new assignee
+    if (newAssignee && newAssignee !== before.assignee) {
+      await notificationsService.createNotification({
+        recipient: newAssignee,
+        taskId: after.id,
+        commentId: null,
+        type: 'assigned',
+      });
+    }
+
+    // Status changed → notify current assignee (if any, and not just-assigned)
+    if (after.status !== before.status && newAssignee && newAssignee === before.assignee) {
+      await notificationsService.createNotification({
+        recipient: newAssignee,
+        taskId: after.id,
+        commentId: null,
+        type: 'status_changed',
+      });
+    }
   }
 
   /**
