@@ -62,7 +62,7 @@ if (process.env.NODE_ENV === 'development') {
         'https://boostmind-b052c.web.app',
         'https://freeda-2b4af.web.app',
         'https://freeda-2b4af.firebaseapp.com',
-        'https://lybi.ai/'
+        'https://lybi.ai'
       ];
 
       if (!origin || ALLOWED_ORIGINS.includes(origin)) {
