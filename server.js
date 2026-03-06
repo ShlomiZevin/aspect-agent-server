@@ -2665,6 +2665,7 @@ app.get('/api/notifications', async (req, res) => {
     const { identity } = req.query;
     if (!identity) return res.json({ notifications: [] });
     const notifications = await notificationsService.getNotifications(identity);
+    res.set('Cache-Control', 'no-store');
     res.json({ notifications });
   } catch (err) {
     console.error('❌ Error fetching notifications:', err.message);
