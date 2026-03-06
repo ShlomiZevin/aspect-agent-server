@@ -1,12 +1,12 @@
 const db = require('./db.pg');
 const { taskNotifications } = require('../db/schema');
-const { eq, and, desc } = require('drizzle-orm');
+const { eq, and, desc, sql, inArray } = require('drizzle-orm');
+
+const DELIVERED_HISTORY = 10; // how many delivered notifications to return
 
 class NotificationsService {
   constructor() {
     this.drizzle = null;
-    // SSE: identity -> Set of response objects
-    this.sseClients = new Map();
   }
 
   initialize() {
@@ -14,51 +14,81 @@ class NotificationsService {
   }
 
   /**
-   * Get unread notifications for a recipient (their name identity)
+   * Fetch notifications for a recipient, mark undelivered ones as delivered.
+   *
+   * Logic:
+   *   - Count undelivered notifications for the recipient.
+   *   - If undelivered > DELIVERED_HISTORY: return all undelivered + last DELIVERED_HISTORY delivered.
+   *   - Otherwise: return the last DELIVERED_HISTORY notifications (mix of delivered + not).
+   *   - After building the list, mark all undelivered in the list as delivered.
+   *   - The returned rows contain the ORIGINAL isDelivered value (false = NEW for client).
    */
   async getNotifications(recipient) {
     if (!this.drizzle) this.initialize();
 
-    return this.drizzle
-      .select()
+    // Count undelivered
+    const [{ count }] = await this.drizzle
+      .select({ count: sql`count(*)::int` })
       .from(taskNotifications)
       .where(and(
         eq(taskNotifications.recipient, recipient),
-        eq(taskNotifications.isRead, false)
-      ))
-      .orderBy(desc(taskNotifications.createdAt));
-  }
+        eq(taskNotifications.isDelivered, false)
+      ));
 
-  // ─── SSE ─────────────────────────────────────────────────────────────────
+    let rows;
 
-  addSSEClient(identity, res) {
-    if (!this.sseClients.has(identity)) {
-      this.sseClients.set(identity, new Set());
+    if (count > DELIVERED_HISTORY) {
+      // Fetch all undelivered
+      const undelivered = await this.drizzle
+        .select()
+        .from(taskNotifications)
+        .where(and(
+          eq(taskNotifications.recipient, recipient),
+          eq(taskNotifications.isDelivered, false)
+        ))
+        .orderBy(desc(taskNotifications.createdAt));
+
+      // Fetch last DELIVERED_HISTORY delivered
+      const delivered = await this.drizzle
+        .select()
+        .from(taskNotifications)
+        .where(and(
+          eq(taskNotifications.recipient, recipient),
+          eq(taskNotifications.isDelivered, true)
+        ))
+        .orderBy(desc(taskNotifications.createdAt))
+        .limit(DELIVERED_HISTORY);
+
+      rows = [...undelivered, ...delivered].sort(
+        (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+      );
+    } else {
+      // Return last DELIVERED_HISTORY overall (any delivery status)
+      rows = await this.drizzle
+        .select()
+        .from(taskNotifications)
+        .where(eq(taskNotifications.recipient, recipient))
+        .orderBy(desc(taskNotifications.createdAt))
+        .limit(DELIVERED_HISTORY);
     }
-    this.sseClients.get(identity).add(res);
-  }
 
-  removeSSEClient(identity, res) {
-    const clients = this.sseClients.get(identity);
-    if (clients) {
-      clients.delete(res);
-      if (clients.size === 0) this.sseClients.delete(identity);
+    // Mark undelivered rows as delivered (after we've captured the original state)
+    const undeliveredIds = rows
+      .filter(r => !r.isDelivered)
+      .map(r => r.id);
+
+    if (undeliveredIds.length > 0) {
+      await this.drizzle
+        .update(taskNotifications)
+        .set({ isDelivered: true })
+        .where(inArray(taskNotifications.id, undeliveredIds));
     }
-  }
 
-  emitToClient(recipient, notification) {
-    const clients = this.sseClients.get(recipient);
-    if (!clients || clients.size === 0) return;
-    const data = `data: ${JSON.stringify(notification)}\n\n`;
-    for (const res of clients) {
-      try { res.write(data); } catch { /* client disconnected */ }
-    }
+    return rows;
   }
-
-  // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Create a notification
+   * Create a notification and store it in the DB.
    */
   async createNotification({ recipient, taskId, commentId, type }) {
     if (!this.drizzle) this.initialize();
@@ -68,37 +98,7 @@ class NotificationsService {
       .values({ recipient, taskId, commentId: commentId || null, type })
       .returning();
 
-    // Push to any connected SSE clients immediately
-    this.emitToClient(recipient, notification);
-
     return notification;
-  }
-
-  /**
-   * Mark a single notification as read
-   */
-  async markRead(id) {
-    if (!this.drizzle) this.initialize();
-
-    await this.drizzle
-      .update(taskNotifications)
-      .set({ isRead: true })
-      .where(eq(taskNotifications.id, id));
-  }
-
-  /**
-   * Mark all notifications for a recipient as read
-   */
-  async markAllRead(recipient) {
-    if (!this.drizzle) this.initialize();
-
-    await this.drizzle
-      .update(taskNotifications)
-      .set({ isRead: true })
-      .where(and(
-        eq(taskNotifications.recipient, recipient),
-        eq(taskNotifications.isRead, false)
-      ));
   }
 }
 

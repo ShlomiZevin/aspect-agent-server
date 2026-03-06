@@ -55,28 +55,32 @@ class CommentsService {
    * Create notifications for a new comment:
    * 1. @mention notifications for each @Name found in content
    * 2. comment_on_assigned notification for the task assignee (if not the author)
+   * 3. comment_on_assigned notification for anyone previously @mentioned in this task (if not author/assignee/already notified)
    */
   async _createNotifications(taskId, commentId, author, content) {
     if (!this.drizzle) this.initialize();
 
     // Fetch all known assignee names for mention matching
     const assigneeRows = await this.drizzle.select().from(taskAssignees);
+    const validNames = new Map(assigneeRows.map(a => [a.name.toLowerCase(), a.name]));
 
-    // Strip HTML tags and parse @mentions
-    const plainText = content.replace(/<[^>]+>/g, ' ');
-    const mentionRegex = /@([\w\u0080-\uFFFF]+)/g;
-    const mentionedNames = new Set();
-
-    let match;
-    while ((match = mentionRegex.exec(plainText)) !== null) {
-      const mentioned = match[1].trim();
-      const found = assigneeRows.find(a => a.name.toLowerCase() === mentioned.toLowerCase());
-      if (found && found.name !== author) {
-        mentionedNames.add(found.name);
+    // Helper: extract @mentioned names from HTML content
+    const extractMentions = (html) => {
+      const plain = html.replace(/<[^>]+>/g, ' ');
+      const regex = /@([\w\u0080-\uFFFF]+)/g;
+      const names = new Set();
+      let m;
+      while ((m = regex.exec(plain)) !== null) {
+        const canonical = validNames.get(m[1].trim().toLowerCase());
+        if (canonical) names.add(canonical);
       }
-    }
+      return names;
+    };
 
-    // Create mention notifications
+    // 1. @mentions in the new comment
+    const mentionedNames = extractMentions(content);
+    mentionedNames.delete(author); // don't notify yourself
+
     for (const name of mentionedNames) {
       await notificationsService.createNotification({ recipient: name, taskId, commentId, type: 'mention' });
     }
@@ -84,14 +88,44 @@ class CommentsService {
     // Fetch task to check assignee
     const [task] = await this.drizzle.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
 
-    // Notify assignee if they're not the author and weren't already notified via @mention
-    if (task?.assignee && task.assignee !== author && !mentionedNames.has(task.assignee)) {
+    // Track who already got notified to avoid duplicates
+    const alreadyNotified = new Set(mentionedNames);
+    alreadyNotified.add(author);
+
+    // 2. Notify task assignee
+    if (task?.assignee && !alreadyNotified.has(task.assignee)) {
       await notificationsService.createNotification({
         recipient: task.assignee,
         taskId,
         commentId,
         type: 'comment_on_assigned',
       });
+      alreadyNotified.add(task.assignee);
+    }
+
+    // 3. Notify anyone previously @mentioned in this task's comments
+    const previousComments = await this.drizzle
+      .select({ content: taskComments.content })
+      .from(taskComments)
+      .where(eq(taskComments.taskId, taskId));
+
+    const previouslyMentioned = new Set();
+    for (const { content: prevContent } of previousComments) {
+      for (const name of extractMentions(prevContent)) {
+        previouslyMentioned.add(name);
+      }
+    }
+
+    for (const name of previouslyMentioned) {
+      if (!alreadyNotified.has(name)) {
+        await notificationsService.createNotification({
+          recipient: name,
+          taskId,
+          commentId,
+          type: 'comment_on_assigned',
+        });
+        alreadyNotified.add(name);
+      }
     }
   }
 

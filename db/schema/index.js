@@ -284,6 +284,7 @@ const taskNotifications = pgTable('task_notifications', {
   commentId: integer('comment_id').references(() => taskComments.id),
   type: varchar('type', { length: 50 }).notNull(), // 'mention' | 'comment_on_assigned'
   isRead: boolean('is_read').default(false).notNull(),
+  isDelivered: boolean('is_delivered').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
