@@ -67,7 +67,7 @@ class CommentsService {
     // Helper: extract @mentioned names from HTML content
     const extractMentions = (html) => {
       const plain = html.replace(/<[^>]+>/g, ' ');
-      const regex = /@([\w\u0080-\uFFFF]+)/g;
+      const regex = /@([\w\u00C0-\uFFFF]+)/g;
       const names = new Set();
       let m;
       while ((m = regex.exec(plain)) !== null) {

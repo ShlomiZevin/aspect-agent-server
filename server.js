@@ -2673,6 +2673,19 @@ app.get('/api/notifications', async (req, res) => {
   }
 });
 
+// Mark all undelivered notifications for a recipient as delivered (called when panel opens)
+app.post('/api/notifications/mark-delivered', async (req, res) => {
+  try {
+    const { identity } = req.body;
+    if (!identity) return res.status(400).json({ error: 'identity required' });
+    await notificationsService.markDelivered(identity);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error marking notifications delivered:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // (read state is managed client-side; these stubs kept for backwards compatibility)
 app.patch('/api/notifications/:id/read', (_req, res) => res.json({ success: true }));
 
