@@ -2394,7 +2394,7 @@ app.get('/api/admin/crew/:agentName/:crewName/source', async (req, res) => {
 app.post('/api/admin/crew/:agentName/:crewName/chat', async (req, res) => {
   try {
     const { agentName, crewName } = req.params;
-    const { messages, currentSource } = req.body;
+    const { messages, currentSource, mode } = req.body;
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages array is required' });
@@ -2403,7 +2403,7 @@ app.post('/api/admin/crew/:agentName/:crewName/chat', async (req, res) => {
       return res.status(400).json({ error: 'currentSource is required' });
     }
 
-    const result = await crewEditorService.chatWithClaude(agentName, crewName, messages, currentSource);
+    const result = await crewEditorService.chatWithClaude(agentName, crewName, messages, currentSource, mode || 'discuss');
     res.json(result);
   } catch (err) {
     console.error('❌ Error in crew editor chat:', err.message);

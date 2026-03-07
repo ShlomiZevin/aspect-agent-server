@@ -177,31 +177,40 @@ class CrewEditorService {
 
   /**
    * Chat with Claude AI about editing a crew member file.
-   * Claude receives the current source code and the AGENT_BUILDING_GUIDE as context.
+   * Two modes:
+   * - 'discuss' (default): lightweight prompt, no code output
+   * - 'generate': full prompt with building guide, outputs complete updated file
    *
    * @param {string} agentName - Agent name
    * @param {string} crewName - Crew member name
    * @param {Array<{role: string, content: string}>} messages - Conversation history
    * @param {string} currentSource - The current crew file source code
+   * @param {'discuss'|'generate'} mode - Chat mode
    * @returns {Promise<{response: string, updatedSource?: string}>}
    */
-  async chatWithClaude(agentName, crewName, messages, currentSource) {
-    console.log(`\n💬 [CrewEditor] === CHAT START === agent="${agentName}", crew="${crewName}", messages=${messages.length}`);
+  async chatWithClaude(agentName, crewName, messages, currentSource, mode = 'discuss') {
+    console.log(`\n💬 [CrewEditor] === CHAT START === agent="${agentName}", crew="${crewName}", mode="${mode}", messages=${messages.length}`);
     const startTime = Date.now();
 
-    // Load the agent building guide
-    const guidePath = path.join(__dirname, '..', 'AGENT_BUILDING_GUIDE.md');
-    let guideContent = '';
-    try {
-      guideContent = fs.readFileSync(guidePath, 'utf8');
-      console.log(`📖 [CrewEditor] Guide loaded (${guideContent.length} chars)`);
-    } catch (err) {
-      console.warn('⚠️ [CrewEditor] Could not load AGENT_BUILDING_GUIDE.md:', err.message);
+    let systemPrompt;
+
+    if (mode === 'generate') {
+      // Full prompt — load building guide
+      const guidePath = path.join(__dirname, '..', 'AGENT_BUILDING_GUIDE.md');
+      let guideContent = '';
+      try {
+        guideContent = fs.readFileSync(guidePath, 'utf8');
+        console.log(`📖 [CrewEditor] Guide loaded (${guideContent.length} chars)`);
+      } catch (err) {
+        console.warn('⚠️ [CrewEditor] Could not load AGENT_BUILDING_GUIDE.md:', err.message);
+      }
+      systemPrompt = this._buildGeneratePrompt(currentSource, guideContent);
+    } else {
+      // Lightweight discuss prompt — no building guide needed
+      systemPrompt = this._buildDiscussPrompt(currentSource);
     }
 
-    // Build system prompt (from task spec)
-    const systemPrompt = this._buildSystemPrompt(currentSource, guideContent);
-    console.log(`📋 [CrewEditor] System prompt built (${systemPrompt.length} chars), source (${currentSource.length} chars)`);
+    console.log(`📋 [CrewEditor] System prompt built (${systemPrompt.length} chars), mode="${mode}"`);
 
     // Build messages array for Claude
     // Convert to Claude format: [{role: 'user'|'assistant', content: string}]
@@ -228,12 +237,14 @@ class CrewEditorService {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`✅ [CrewEditor] Claude responded in ${elapsed}s (${response.length} chars)`);
 
-    // Try to extract updated source from Claude's response
-    const updatedSource = this._extractUpdatedSource(response);
+    // Only extract source code in generate mode
+    const updatedSource = mode === 'generate' ? this._extractUpdatedSource(response) : null;
     if (updatedSource) {
       console.log(`📝 [CrewEditor] Updated source extracted (${updatedSource.length} chars)`);
+    } else if (mode === 'generate') {
+      console.log(`⚠️ [CrewEditor] Generate mode but no source code found in response`);
     } else {
-      console.log(`💬 [CrewEditor] No source code changes proposed`);
+      console.log(`💬 [CrewEditor] Discuss response (no code expected)`);
     }
 
     return {
@@ -641,20 +652,181 @@ class CrewEditorService {
   }
 
   /**
-   * Build the system prompt for Claude crew editor chat.
-   * Uses the prompt template from the task spec.
+   * Extract a lightweight summary from crew source code.
+   * Used by the discuss prompt to avoid sending the full source.
    * @private
    */
-  _buildSystemPrompt(currentSource, guideContent) {
+  _extractCrewSummary(source) {
+    const result = {
+      guidance: null,
+      fields: [],
+      transitionTo: null,
+      isThinker: false,
+      thinkingPrompt: null
+    };
+
+    // Extract guidance — look for guidance getter with template literal or string
+    const guidanceMatch = source.match(/get\s+guidance\s*\(\)\s*\{[\s\S]*?return\s+`([\s\S]*?)`\s*;?\s*\}/);
+    if (guidanceMatch) {
+      result.guidance = guidanceMatch[1].trim();
+    } else {
+      // Try guidance as a constructor property
+      const guidancePropMatch = source.match(/guidance:\s*`([\s\S]*?)`/);
+      if (guidancePropMatch) result.guidance = guidancePropMatch[1].trim();
+    }
+
+    // Extract fields — look for fieldsToCollect array
+    const fieldsMatch = source.match(/(?:get\s+)?fieldsToCollect[\s\S]*?\[[\s\S]*?\]/);
+    if (fieldsMatch) {
+      const fieldEntries = [...fieldsMatch[0].matchAll(/\{\s*name:\s*['"]([^'"]+)['"][\s\S]*?description:\s*['"`]([\s\S]*?)['"`]\s*(?:,|\})/g)];
+      result.fields = fieldEntries.map(m => ({ name: m[1], description: m[2].trim() }));
+    }
+
+    // Extract transitionTo
+    const transitionMatch = source.match(/transitionTo:\s*['"]([^'"]+)['"]/);
+    if (transitionMatch) result.transitionTo = transitionMatch[1];
+
+    // Detect thinker crew
+    result.isThinker = /usesThinker\s*=\s*true/.test(source);
+
+    // Extract thinking prompt constant
+    if (result.isThinker) {
+      const thinkingMatch = source.match(/(?:const|let|var)\s+THINKING_PROMPT\s*=\s*`([\s\S]*?)`;/);
+      if (thinkingMatch) result.thinkingPrompt = thinkingMatch[1].trim();
+    }
+
+    return result;
+  }
+
+  /**
+   * Build a lightweight prompt for discuss mode.
+   * Only includes extracted guidance, fields, and thinker info — no full source or building guide.
+   * @private
+   */
+  _buildDiscussPrompt(currentSource) {
+    const summary = this._extractCrewSummary(currentSource);
+
+    const fieldsText = summary.fields.length > 0
+      ? summary.fields.map(f => `• ${f.name} — ${f.description}`).join('\n')
+      : '(no fields — this step does not collect structured data)';
+
+    let thinkerSection = '';
+    if (summary.isThinker && summary.thinkingPrompt) {
+      thinkerSection = `
+===== TWO-PART BRAIN =====
+
+This step has two parts working together:
+- **Strategy brain** — decides WHAT to do: what questions to ask, what path to follow, when to make recommendations.
+- **Speaking brain** — decides HOW to say it: tone, personality, phrasing.
+
+**Current strategy rules:**
+${summary.thinkingPrompt}
+
+When discussing changes, figure out which part to change:
+- If the problem is about what the agent DOES (wrong questions, wrong decisions, wrong timing) → change the strategy rules
+- If the problem is about how the agent SOUNDS (wrong tone, too formal, too wordy) → change the speaking instructions
+- Explain this to the user in simple terms
+`;
+    }
+
+    return `You are helping a product expert improve an AI assistant's behavior.
+The user is NOT a developer. They are a domain expert who knows the product well but not the code.
+
+YOUR COMMUNICATION STYLE:
+- Use plain, everyday language — no technical jargon
+- Never mention: JSON, schema, code, prompts, API, LLM, model, parameters, configuration, fields (use "information it collects" instead)
+- Never use category codes like (A), (B), (C), (D), (E) — just describe what you'd change in plain language
+- Talk about the assistant's "behavior", "personality", "conversation style", "questions", "responses" — not about "prompts" or "code"
+- Be conversational and warm, like a colleague helping with a product improvement
+- Keep responses concise — 2-4 short paragraphs max
+
+===== WHAT THE ASSISTANT CURRENTLY DOES =====
+
+**How it talks and behaves:**
+${summary.guidance || '(could not extract current behavior)'}
+
+**Information it collects from the user:**
+${fieldsText}
+
+**Next step after this one:** ${summary.transitionTo || '(none)'}
+${thinkerSection}
+===== WHAT YOU CAN CHANGE =====
+
+You can help with these kinds of improvements:
+- **How it talks** — tone, personality, phrasing, conversation style
+- **What it decides** — strategy, question flow, when it makes recommendations${summary.isThinker ? ' (strategy rules)' : ''}
+- **What it collects** — the information it gathers from the user
+- **When it moves on** — the conditions for transitioning to the next conversation step
+
+If the change requires something outside your control (a different system, a different part of the product), say so honestly and help write a clear description of what's needed so the team can fix it.
+
+===== YOUR ROLE =====
+
+- Understand what the user wants to improve
+- Ask clarifying questions when the request is vague
+- Suggest what to change and explain the trade-offs in simple terms
+- DO NOT output code — that happens when the user clicks "Generate"
+- Focus on understanding the problem before proposing a solution
+- When you feel you've understood the change well enough, wrap up by saying something like: "I think we have a clear direction — whenever you're ready, click **Generate Changes** and I'll update the file." Do this naturally each time the discussion reaches a conclusion, not just once.
+
+===== HOW TO THINK ABOUT FIXES =====
+
+When the user reports a problem:
+1. Find what in the current behavior is CAUSING the issue
+2. Describe how you'd rewrite it so the right behavior is clear
+3. Never just add "don't do X" — find the root cause and fix it properly
+4. Describe the desired behavior positively`;
+  }
+
+  /**
+   * Build the full system prompt for generate mode.
+   * Includes complete source, building guide, thinker awareness, categories, and output rules.
+   * @private
+   */
+  _buildGeneratePrompt(currentSource, guideContent) {
+    const summary = this._extractCrewSummary(currentSource);
+
+    let thinkerSection = '';
+    if (summary.isThinker) {
+      thinkerSection = `
+===== THINKER+TALKER CREW =====
+
+This crew uses a thinker+talker pattern: a thinker LLM (Claude) analyzes the conversation and returns structured JSON advice, then a talker LLM (GPT-5) speaks based on that advice.
+
+You can tell this is a thinker crew because the source has:
+- \`this.usesThinker = true\`
+- A \`THINKING_PROMPT\` constant with a JSON schema
+- \`thinkingAdvisor.think()\` call in \`buildContext()\`
+
+**Two prompts, two purposes:**
+- **Thinking prompt** (THINKING_PROMPT constant) — controls WHAT the agent does: what questions to ask, what strategy to follow, when to recommend, when to transition. Returns structured JSON.
+- **Guidance** (inside the class) — controls HOW the agent talks: tone, personality, phrasing. The talker receives \`thinkingAdvice\` in context and follows it.
+
+When the user reports a problem:
+- "Wrong questions / wrong strategy / wrong timing" → edit the THINKING_PROMPT (strategy rules or JSON schema)
+- "Wrong tone / too formal / talks too much" → edit the guidance
+
+**JSON schema rules:**
+- Always keep the \`_thinkingDescription\` field — it shows in the UI thinking indicator
+- Group fields logically with comments
+- When adding fields, also add strategy rules explaining when/how to populate them
+- The schema IS the state machine — profile fields, strategy, state flags, and transition triggers
+
+When editing the thinking prompt:
+- Explain to the user which prompt you're changing and why
+- If both prompts need changes, do both and explain each
+`;
+    }
+
     return `You are a crew member editor for the Aspect multi-agent platform.
-Your job is to help improve how a specific AI agent crew member behaves — how it talks, what it collects, and how it transitions.
-The user talking to you is a product expert who tests and refines agents. They are NOT a developer. Speak in plain, non-technical language.
+The user has been discussing changes with you. Based on that discussion, generate the complete updated crew file.
+The user is a product expert, NOT a developer. Speak in plain, non-technical language.
 
 ===== WHAT YOU'RE EDITING =====
 
 A "crew member" is a step in a multi-step AI agent conversation. Each crew member is defined as a Node.js file with:
-- **Guidance** — the main prompt that tells the agent how to behave, what to say, and what tone to use. This is your PRIMARY edit target.
-- **Fields** — data the agent collects from the user during conversation (name, phone, etc.). Each field has a name and description that tells the extraction system what to look for.
+- **Guidance** — the main prompt that tells the agent how to behave, what to say, and what tone to use.
+- **Fields** — data the agent collects from the user during conversation. Each field has a name and description.
 - **Transition logic** — code that decides when this step is done and the next one begins.
 - **Context builder** — additional information passed to the agent at runtime.
 
@@ -667,65 +839,63 @@ ${currentSource}
 ===== AGENT BUILDING GUIDE (reference) =====
 
 ${guideContent}
-
-===== HOW TO FIX PROBLEMS — PRIORITY ORDER =====
+${thinkerSection}
+===== HOW TO FIX PROBLEMS =====
 
 When the user reports a problem, fix it using the FIRST approach that works.
-Only move to the next level if the previous one genuinely cannot solve it.
 
-**Level 1: Change the GUIDANCE (prompt)** — Try this first, always
+**(A) Change the GUIDANCE** — try this first, always
 - Rewrite or adjust the guidance text
-- The guidance must be flat and uniform — the same text applies to every conversation, every user
-- NEVER add if/else logic, conditional sections, or dynamic placeholders inside the guidance
-- Use general behavioral rules ("ask one question at a time", "keep it short") not case-specific patches ("if user says X, respond with Y")
-- Most problems (tone, phrasing, flow, too many questions, wrong language) are solved here
+- The guidance must be flat and uniform — no if/else, no conditional sections
+- Use general behavioral rules, not case-specific patches
+- Most problems (tone, phrasing, flow, wrong language) are solved here
 
-**Level 2: Improve FIELD DESCRIPTIONS**
-- If a field isn't being extracted correctly, the description probably isn't clear enough
+**(B) Change the THINKING PROMPT** — for thinker crews, when the problem is about WHAT the agent decides
+- Strategy rules, JSON schema fields, decision timing, transition conditions
+- If this is a thinker crew and the problem is about what the agent does (not how it sounds), this is your target
+
+**(C) Add or improve FIELDS**
+- If a field isn't being extracted correctly, improve the description
 - Make descriptions simple and self-contained
-- You may add a few general examples of what values to expect, but NEVER use the user's specific failed scenario as the example — generalize
-- Use type:'boolean' for yes/no fields, allowedValues for fields with a fixed set of options
+- Use type:'boolean' for yes/no, allowedValues for fixed options
 
-**Level 3: Modify CODE (only if levels 1-2 can't solve it)**
-- Transition conditions (preMessageTransfer) — when to move to the next step
-- Field sequencing (getFieldsForExtraction) — which fields to show when
-- Context (buildContext) — what runtime info to pass to the agent
+**(D) Modify CODE** — only if A/B/C can't solve it
+- Transition conditions (preMessageTransfer / postThinkingTransfer)
+- Field sequencing (getFieldsForExtraction)
+- Context builder (buildContext)
 - Keep code minimal. Avoid adding complexity.
 
-**Level 4: ESCALATE — you cannot fix this**
-Some problems are outside the scope of a single crew file. If the fix requires ANY of:
-- Changes to the field extraction engine itself
-- Changes to the dispatcher (the system that routes between crew members)
-- Changes to the base crew class or shared infrastructure
-- New tool/function implementations
-- Database schema changes
-- Changes to how streaming or the chat UI works
-- Changes to a DIFFERENT crew member (you can only edit the current one)
-
-Then DO NOT attempt a fix. Instead:
+**(E) ESCALATE** — you cannot fix this
+If the fix requires changes to infrastructure, the dispatcher, the base class, tools, database, streaming, UI, or a different crew member:
 1. Explain to the user in simple terms why this can't be fixed from here
-2. Help them phrase a clear bug report with a title and description
+2. Generate a bug report:
+**Title:** [clear title]
+**Description:** [what the user wants, why it can't be done here, what change is needed]
+**Reported from:** Crew Editor
 
 ===== PROMPT WRITING PRINCIPLES =====
 
-When editing guidance prompts, follow these principles:
-
-1. **Identity first** — The opening sentence defines WHO the agent is, not what it does. Bake the voice, tone, language, and personality into the identity.
-2. **Describe behavior, not prohibitions** — Instead of listing "don't do X" rules, describe the desired behavior positively.
-3. **No whack-a-mole** — When fixing a problem, never just add "don't do [the thing that went wrong]". Instead, find what in the prompt is CAUSING the wrong behavior and fix that.
-4. **Short and natural** — Keep guidance concise. A short, well-written prompt with clear identity produces better results than a long prompt with many rules.
-5. **Conversation, not flowchart** — Describe how the agent should handle situations as natural conversation behavior, not as if/then decision trees.
+1. **Identity first** — The opening sentence defines WHO the agent is. Bake voice, tone, personality into the identity.
+2. **Describe behavior, not prohibitions** — Instead of "don't do X", describe the desired behavior positively.
+3. **No whack-a-mole** — Never add "don't do [the thing that went wrong]". Find what's CAUSING it and fix that.
+4. **Short and natural** — A concise prompt with clear identity beats a long prompt with many rules.
+5. **Conversation, not flowchart** — Natural conversation behavior, not if/then decision trees.
 
 ===== OUTPUT RULES =====
 
-- When you make changes, output the COMPLETE updated file — not a partial snippet or diff
-- Keep the file structure intact: the class name, imports, and exports must stay the same
-- Explain what you changed and why in 1-3 simple sentences. No code jargon.
-- If the user's request is vague, ask a clarifying question before making changes
+- Output the COMPLETE updated file — not a partial snippet or diff
+- Keep the file structure intact: class name, imports, and exports must stay the same
+- Wrap the complete updated file in a code block: \`\`\`javascript ... \`\`\`
+- After the code block, include a **"Changes made:"** summary listing each change with its category label:
+  **(A) Guidance** — what you changed
+  **(B) Thinking prompt** — what you changed [if applicable]
+  **(C) Fields** — what you changed [if applicable]
+  **(D) Code** — what you changed [if applicable]
+- If the change spans multiple categories, list each one
+- If this is an escalation (E), do NOT output code — output the bug report instead
+- Explain changes in plain language, no code jargon
 - Never remove fields, methods, or transitions unless the user explicitly asks
 - If the user asks for something that could break the agent, warn them and suggest a safer way
-- When showing the updated file, say "here's the updated version" — not "here's the refactored class"
-- Wrap the complete updated file in a code block: \`\`\`javascript ... \`\`\`
 
 ===== WHAT YOU CANNOT DO =====
 
