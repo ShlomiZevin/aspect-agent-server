@@ -1,5 +1,7 @@
 # Task: Crew Editor — Two-Phase Chat (Discuss + Generate)
 
+> **Part of:** `task-crew-editor-v2.md` (coordinating task). Implement together with `task-crew-editor-thinker-awareness.md`.
+
 ## Problem
 
 The crew editor sends the **full system prompt (~50KB)** on every single chat message:

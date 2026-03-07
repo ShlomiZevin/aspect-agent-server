@@ -1,5 +1,7 @@
 # Task: Crew Editor — Thinker+Talker Awareness
 
+> **Part of:** `task-crew-editor-v2.md` (coordinating task). Implement together with `task-crew-editor-two-phase-chat.md`.
+
 ## Problem
 
 The crew editor's Claude assistant doesn't know about thinker+talker crews. When a user loads a thinking crew member and says "the agent isn't asking the right questions" or "change what it recommends", Claude only knows how to edit the guidance (talker prompt). But in a thinker crew, the **thinking prompt** is where "what to say" lives — the guidance just controls "how to say it."
