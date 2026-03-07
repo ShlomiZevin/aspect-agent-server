@@ -16,10 +16,12 @@ Claude also outputs the **complete updated file** on every response, even when t
 Split the chat into two modes:
 
 ### Phase 1: Discuss (default)
-- Lightweight prompt (~750 tokens): role description + extracted guidance text + field names only
+- Lightweight prompt: role description + extracted guidance text + field names only
+- For thinker crews: also includes the full thinking prompt text (strategy rules + JSON schema) — this is essential for Claude to discuss strategy changes intelligently
 - Claude discusses, asks clarifying questions, understands what to change
 - No code output — plain language only
 - Fast responses (~0.5-1s)
+- Claude never decides to switch to generate mode — the user controls that via the Generate button
 
 ### Phase 2: Generate (on demand)
 - Full prompt: complete crew source + AGENT_BUILDING_GUIDE + all editor instructions
@@ -35,7 +37,7 @@ Split the chat into two modes:
 
 #### 1. New method: `_buildDiscussPrompt(currentSource)`
 
-Extract guidance text and field names from the source code using regex, build a short prompt:
+Uses `_extractCrewSummary()` to get guidance, fields, transition, and thinker info. Builds a lightweight prompt with just enough context for discussion. For thinker crews, includes the full thinking prompt text so Claude can discuss strategy changes intelligently:
 
 ```
 You are a crew member editor for the Aspect multi-agent platform.
@@ -51,6 +53,22 @@ You're helping improve a crew member's behavior. The user is a product expert, N
 
 **Transitions to:** {transitionTo value}
 
+{if isThinker:}
+===== THINKER+TALKER CREW =====
+
+This is a thinker+talker crew. Two LLMs work together:
+- **Thinker** (Claude) — decides WHAT to do: what to ask, what strategy to follow, when to recommend. Returns structured JSON.
+- **Talker** (GPT-5) — decides HOW to say it: tone, phrasing, personality. Follows the thinker's advice.
+
+**Thinking prompt (strategy + JSON schema):**
+{extracted thinking prompt text}
+
+When discussing changes:
+- "What to say / ask / decide / recommend" → this is a thinking prompt change
+- "How to say it / tone / personality / phrasing" → this is a guidance change
+- Tell the user which one you'd change and why
+{end if}
+
 ===== YOUR ROLE =====
 
 - Discuss what changes the user wants
@@ -58,16 +76,27 @@ You're helping improve a crew member's behavior. The user is a product expert, N
 - Suggest approaches and explain trade-offs
 - DO NOT output code or the full file yet — that happens when the user clicks "Generate"
 - Focus on understanding the problem before proposing a solution
+- When the user reports "the agent did X wrong" — find what's causing it, don't just suggest adding "don't do X"
+
+===== PROMPT FIXING PRINCIPLES =====
+
+When the user reports a problem, think about root cause:
+1. Find what in the current prompt is CAUSING the wrong behavior
+2. Fix the definition — rewrite the rule so the right behavior is clear
+3. Never add "don't do [thing that went wrong]" — that's a patch, not a fix
+4. Describe desired behavior positively, not as a list of prohibitions
 ```
 
-#### 2. New method: `_extractGuidanceAndFields(source)`
+#### 2. New method: `_extractCrewSummary(source)`
 
 Regex-based extraction:
 - Guidance: match `get guidance()` getter, extract the template literal content
 - Fields: match `get fieldsToCollect()` array, extract field names and descriptions
 - TransitionTo: match `get transitionTo()` return value
+- IsThinker: check for `usesThinker = true`
+- ThinkingPrompt: if thinker, extract the full `THINKING_PROMPT` constant content (strategy rules + JSON schema)
 
-Returns `{ guidance, fields, transitionTo }`.
+Returns `{ guidance, fields, transitionTo, isThinker, thinkingPrompt }`.
 
 #### 3. Modify `_buildSystemPrompt` → rename to `_buildGeneratePrompt`
 
@@ -171,9 +200,17 @@ No new types needed — `CrewChatResponse` already has optional `updatedSource`.
 
 ## Verification
 
-1. Open crew editor, select a crew member
-2. Send a message like "the agent is asking too many questions" → Claude should respond in plain language, ask what specifically is wrong, no code
-3. Have a 2-3 message discussion → all responses should be fast, no code
+### Standard crew
+1. Open crew editor, select a standard crew member
+2. Send "the agent is asking too many questions" → Claude responds in plain language, asks what specifically is wrong, no code
+3. Have a 2-3 message discussion → all responses fast, no code
 4. Click "Generate Changes" → Claude outputs the full updated file with explanation
 5. Code panel shows proposed source → Apply flow works as before
 6. Check server logs: discuss calls should NOT load the AGENT_BUILDING_GUIDE
+
+### Thinker crew
+7. Load a thinker crew (e.g., banking-onboarder-v2 main-conversation)
+8. Send "the agent recommends too early" → Claude should discuss the thinking prompt strategy rules, mention it's a thinking prompt issue (not guidance)
+9. Send "also the tone is too formal" → Claude should identify this as a guidance change and explain the difference
+10. Click "Generate Changes" → Claude outputs the complete file with changes to BOTH the thinking prompt and guidance, clearly explaining which part changed and why
+11. Send "the agent asked about income on the first message" → Claude should NOT suggest "add don't ask income first" — should discuss fixing the strategy rules
