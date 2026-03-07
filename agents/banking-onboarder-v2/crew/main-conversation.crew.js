@@ -29,10 +29,9 @@ You receive: customer profile, conversation history, and available offers.
 Return JSON:
 {
   // ── Display (shown in UI thinking indicator) ──
-  "_thinkingDescription": "short summary of what you decided — e.g. 'Asking for address first' or 'Profiling: asking about employment' or 'Recommending Plus plan' or 'Layer 2: offering card'",
+  "_thinkingDescription": "short summary of what you decided — e.g. 'Profiling: asking about employment' or 'Recommending Plus plan' or 'Layer 2: offering card'",
 
   // ── Profile: try to learn (actively ask for these) ──
-  "address": "full address details, null if unknown",
   "employment": "free text, null if unknown",
   "incomeRange": "free text — approximate range, not exact. null if unknown",
   "expectedUsage": "free text, null if unknown",
@@ -50,6 +49,7 @@ Return JSON:
   "primaryIncomeSource": "free text, null if not mentioned",
   "incomeFrequency": "free text, null if not mentioned",
   "numberOfIncomeSources": "free text, null if not mentioned",
+  "isStudent": true/false/null,
 
   // ── Customer read ──
   "customerType": "your overall read of this customer — free text",
@@ -78,19 +78,17 @@ Return JSON:
 ## HOW TO THINK
 1. Read the conversation. Update every field you can from what the customer said — infer when obvious.
 2. Count the profiling exchanges so far (assistant questions about the customer + customer answers). This is your "rapport score."
-3. ADDRESS FIRST RULE: If address is still null, your nextQuestion MUST ask for the full address. Don't ask anything else until you have the address.
-4. After address is captured, check the other "try to learn" fields. If any are still null and relevant to this customer — your nextQuestion should fill one.
-5. Check the "ask when relevant" fields. If they matter for this person's offer — work them in naturally.
-6. Never chase "capture if mentioned" fields. If the customer said it, record it. If not, leave null.
-7. Adapt framing to the customer: 16-year-old first account → skip income/overdraft/commitments, celebrate the milestone. Savvy adult → be direct, go deep on products early. Someone doing market research → patience, value-first, no pressure. Price-sensitive → lead with value, use price only when needed to close. Secondary account opener → full reprofiling, different framing and offers.
-8. Mix profile questions with discovery questions (what matters most in a bank, banking frustrations, future financial plans).
-9. Don't ask what you already know. Don't ask what's irrelevant to this person.
+3. Check the "try to learn" fields. If any are still null and relevant to this customer — your nextQuestion should fill one.
+4. Check the "ask when relevant" fields. If they matter for this person's offer — work them in naturally.
+5. Never chase "capture if mentioned" fields. If the customer said it, record it. If not, leave null.
+6. Adapt framing to the customer: 16-year-old first account → skip income/overdraft/commitments, ask "כבר עובד?", celebrate the milestone. Savvy adult → be direct, go deep on products early. Someone doing market research → patience, value-first, no pressure. Price-sensitive → lead with value, use price only when needed to close. Secondary account opener → full reprofiling, different framing and offers.
+7. Mix profile questions with discovery questions (what matters most in a bank, banking frustrations, future financial plans).
+8. Don't ask what you already know. Don't ask what's irrelevant to this person.
 
 ## WHEN TO RECOMMEND
 You may set recommendedOffer ONLY when ALL of these are true:
-- Address has been captured (mandatory requirement)
 - At least 3 profiling exchanges have happened (rapport score >= 3)
-- You have enough other "try to learn" fields to make a confident match (employment, incomeRange, expectedUsage, isFirstAccount should be captured)
+- You have enough "try to learn" fields to make a confident match
 - The customer feels understood — not just profiled
 Even if you already know the right offer after 1-2 answers: keep asking. The recommendation should feel earned, not rushed. The customer should think "yes, that makes sense for me" — not "how do you know that already?"
 Exception: if the customer explicitly asks you to recommend or shows clear impatience — accelerate.
@@ -125,9 +123,7 @@ class MainConversationCrew extends CrewMember {
 
       guidance: `You are a banker opening a relationship. The customer should feel known, not sold to.
 
-You receive "thinkingAdvice" in your context — follow it exactly. Ask what it suggests in your own natural words, follow its strategy and tone notes, and present offers warmly with a reason that fits THIS customer.
-
-IMPORTANT: Always ask for the customer's full address first, before any other questions. This is a mandatory requirement for account opening.
+You receive "thinkingAdvice" in your context — follow it. Ask what it suggests in your own natural words, follow its strategy and tone notes, and present offers warmly with a reason that fits THIS customer.
 
 When discussing price, lead with value. Frame price as a benefit you can offer — not a discount.
 
@@ -212,8 +208,8 @@ ${historyText}`;
     // Fallback
     if (thinkingAdvice.fallback || thinkingAdvice.error) {
       thinkingAdvice = {
-        nextQuestion: 'מה כתובתך המלאה? אני צריך את הפרטים לפתיחת החשבון.',
-        strategy: 'Start with address first - mandatory requirement.',
+        nextQuestion: 'ספר/י לי קצת על עצמך — במה את/ה עוסק/ת?',
+        strategy: 'Start with employment, build rapport.',
         customerType: 'general',
         recommendedOffer: null,
         offerAccepted: false,
