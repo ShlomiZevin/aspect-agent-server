@@ -146,16 +146,10 @@ class CrewEditorService {
       return { success: false, error: `Failed to write file: ${err.message}` };
     }
 
-    // Step 4: Hot-reload — clear require cache and re-register
-    console.log(`🔄 [CrewEditor] Step 4/5: Hot-reloading...`);
-    try {
-      await this._hotReload(agentName, filePath);
-    } catch (err) {
-      console.warn(`⚠️ [CrewEditor] Hot-reload failed: ${err.message}`);
-    }
-
-    // Step 5: Backup the NEW source to GCS and set as default
-    console.log(`💾 [CrewEditor] Step 5/5: Backing up & setting default...`);
+    // Step 4: Backup to GCS and set as default BEFORE hot-reload.
+    // Hot-reload calls syncDefaultToDisk which overwrites disk with GCS default.
+    // We must update GCS first so sync finds matching content and doesn't revert.
+    console.log(`💾 [CrewEditor] Step 4/5: Backing up & setting default...`);
     let backupVersion;
     try {
       backupVersion = await this.backupToGCS(agentName, crewName, newSource, versionName);
@@ -169,6 +163,15 @@ class CrewEditorService {
       } catch (err) {
         console.warn(`⚠️ [CrewEditor] Failed to set default: ${err.message}`);
       }
+    }
+
+    // Step 5: Hot-reload — clear require cache and re-register.
+    // syncDefaultToDisk will run but GCS default now matches disk, so no revert.
+    console.log(`🔄 [CrewEditor] Step 5/5: Hot-reloading...`);
+    try {
+      await this._hotReload(agentName, filePath);
+    } catch (err) {
+      console.warn(`⚠️ [CrewEditor] Hot-reload failed: ${err.message}`);
     }
 
     console.log(`🚀 [CrewEditor] === APPLY COMPLETE === success=true, backup=${backupVersion || 'none'}\n`);
@@ -478,13 +481,24 @@ class CrewEditorService {
   async setDefaultVersion(agentName, crewName, timestamp) {
     console.log(`⭐ [CrewEditor] Setting default: agent="${agentName}", crew="${crewName}", version="${timestamp}"`);
     try {
+      // 1. Update GCS marker
       const markerPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_default.json`;
       const marker = JSON.stringify({ timestamp, setAt: new Date().toISOString() });
       const file = storageService.getBucket().file(markerPath);
       await file.save(Buffer.from(marker, 'utf8'), {
         metadata: { contentType: 'application/json' }
       });
-      console.log(`✅ [CrewEditor] Default version set: ${timestamp}`);
+      console.log(`✅ [CrewEditor] Default marker set: ${timestamp}`);
+
+      // 2. Write version source to disk and hot-reload
+      const filePath = this._resolveCrewFilePath(agentName, crewName);
+      if (filePath) {
+        const versionSource = await this.getVersionSource(agentName, crewName, timestamp);
+        fs.writeFileSync(filePath, versionSource, 'utf8');
+        console.log(`📝 [CrewEditor] Default written to disk: ${filePath}`);
+        await this._hotReload(agentName, filePath);
+      }
+
       return { success: true };
     } catch (err) {
       console.error(`❌ [CrewEditor] Failed to set default: ${err.message}`);
@@ -530,13 +544,11 @@ class CrewEditorService {
       const key = `${agentName}/${crewName}`;
       const diskSource = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
 
-      // Capture deployed version — only on FIRST call (startup). Never overwrite.
+      // Capture startup version from disk (before GCS default may overwrite it).
+      // In-memory only — resets on each server restart.
       if (diskSource && !this._deployedSources.has(key)) {
         this._deployedSources.set(key, diskSource);
-        this._saveProjectFileToGCS(agentName, crewName, diskSource).catch(err => {
-          console.warn(`⚠️ [CrewEditor] GCS project backup failed for ${crewName}: ${err.message}`);
-        });
-        console.log(`📸 [CrewEditor] ${crewName}: deployed version captured (${diskSource.length} chars)`);
+        console.log(`📸 [CrewEditor] ${crewName}: startup version captured (${diskSource.length} chars)`);
       }
 
       // Apply GCS default if one exists
@@ -578,24 +590,9 @@ class CrewEditorService {
         console.log(`✅ [CrewEditor] Default marker deleted`);
       }
 
-      // Restore the deployed/project file to disk
-      // Primary: in-memory snapshot. Fallback: GCS _project.crew.js
+      // Restore the startup version to disk (in-memory snapshot from server start)
       const key = `${agentName}/${crewName}`;
-      let projectSource = null;
-
-      if (this._deployedSources.has(key)) {
-        projectSource = this._deployedSources.get(key);
-        console.log(`📁 [CrewEditor] Using in-memory deployed version for ${crewName}`);
-      } else {
-        const projectPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
-        const gcsFile = storageService.getBucket().file(projectPath);
-        const [projectExists] = await gcsFile.exists();
-        if (projectExists) {
-          const [content] = await gcsFile.download();
-          projectSource = content.toString('utf8');
-          console.log(`📁 [CrewEditor] Using GCS project file for ${crewName}`);
-        }
-      }
+      const projectSource = this._deployedSources.get(key) || null;
 
       if (projectSource) {
         const filePath = this._resolveCrewFilePath(agentName, crewName);
@@ -620,35 +617,12 @@ class CrewEditorService {
    * @param {string} crewName
    * @returns {Promise<string>}
    */
-  async getProjectFileSource(agentName, crewName) {
-    console.log(`📁 [CrewEditor] Reading project file: agent="${agentName}", crew="${crewName}"`);
-
-    // Primary: in-memory snapshot (captured at startup before GCS sync)
+  getProjectFileSource(agentName, crewName) {
     const key = `${agentName}/${crewName}`;
     if (this._deployedSources.has(key)) {
-      console.log(`📁 [CrewEditor] Serving deployed version from memory`);
       return this._deployedSources.get(key);
     }
-
-    // Fallback: GCS backup
-    const gcsPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
-    const file = storageService.getBucket().file(gcsPath);
-    const [content] = await file.download();
-    return content.toString('utf8');
-  }
-
-  /**
-   * Save the deployed source to GCS as _project.crew.js.
-   * @private
-   */
-  async _saveProjectFileToGCS(agentName, crewName, source) {
-    const projectPath = `${GCS_VERSIONS_PREFIX}/${agentName}/${crewName}/_project.crew.js`;
-    const projectFile = storageService.getBucket().file(projectPath);
-    const buffer = Buffer.from(source, 'utf8');
-    await projectFile.save(buffer, {
-      metadata: { contentType: 'application/javascript' }
-    });
-    console.log(`📁 [CrewEditor] Project file saved to GCS for ${crewName}`);
+    throw new Error(`No startup version available for "${crewName}" — server may not have loaded this crew yet`);
   }
 
   /**
