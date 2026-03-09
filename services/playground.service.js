@@ -45,6 +45,7 @@ class PlaygroundService {
         sources: config.kbSources
       } : null,
       fieldsToCollect: config.fieldsToCollect || [],
+      transitionTo: config.transitionTo || null,
     });
 
     // Set thinker properties
@@ -283,7 +284,9 @@ class ${className} extends CrewMember {
       knowledgeBase: ${kbConfig},
       tools: [
 ${toolsDef}
-      ],
+      ],${config.fieldsToCollect && config.fieldsToCollect.length > 0 ? `
+      fieldsToCollect: ${JSON.stringify(config.fieldsToCollect, null, 6).replace(/\n/g, '\n      ')},` : ''}${config.transitionTo ? `
+      transitionTo: '${config.transitionTo}',` : ''}
     });
 ${thinkerInit}
 ${config.persona ? `\n    this.persona = \`${config.persona.replace(/`/g, '\\`')}\`;` : ''}

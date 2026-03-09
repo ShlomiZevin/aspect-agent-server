@@ -70,6 +70,18 @@ class DynamicCrewMember extends CrewMember {
   }
 
   /**
+   * Default field-based transition: return true when all fieldsToCollect
+   * are present. File-based crews override this with custom logic.
+   */
+  async preMessageTransfer(collectedFields) {
+    if (!this.transitionTo || !this.fieldsToCollect || this.fieldsToCollect.length === 0) {
+      return false;
+    }
+    const allCollected = this.fieldsToCollect.every(f => collectedFields[f.name] != null);
+    return allCollected;
+  }
+
+  /**
    * Override buildContext to support thinker mode.
    * When usesThinker is enabled, fetches conversation history,
    * calls ThinkingAdvisorAgent, and injects advice into context.

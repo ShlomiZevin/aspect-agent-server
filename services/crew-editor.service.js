@@ -997,6 +997,34 @@ WHAT YOU'RE HELPING THEM DEFINE:
 - Its personality/voice (persona)
 - What tools/actions it can take (e.g., search products, book appointments)
 - What it already knows about the user from previous steps (context)
+- Whether it transitions to another crew when it finishes its job
+
+ABOUT TRANSITIONS:
+In the crew system, crews can transition to other crews. For example, a "welcome" crew
+collects the user's name and age, then transitions to the "main-conversation" crew.
+There are three transition approaches — ask the user which fits their use case:
+
+1. **Field-based (preMessageTransfer)**: The crew collects specific fields from the user
+   (e.g., name, age, account type). Once all fields are collected, the transition fires
+   automatically BEFORE the crew responds. Best for: intake forms, onboarding steps.
+   → Requires fieldsToCollect + transitionTo in the config.
+
+2. **Thinker-based (postThinkingTransfer)**: The strategy brain (thinker) analyzes the
+   conversation and decides when to transition. Fires AFTER thinking but BEFORE the
+   response. Best for: nuanced decisions like "is the user ready to move on?"
+   → Requires thinker mode + custom code (written after export).
+
+3. **Tool-based (postMessageTransfer)**: Tools update internal state during the conversation.
+   After the response (including tool calls), the system checks if the state triggers a
+   transition. Best for: multi-step workflows where tools track progress.
+   → Requires custom code (written after export).
+
+NOTE: Transitions are implemented as code in the exported .crew.js file. In the playground,
+only field-based transitions can be fully tested. Thinker-based and tool-based transitions
+require exporting the crew and writing custom transfer methods.
+
+If the user mentions transitions, help them understand which approach fits. Include
+fieldsToCollect and transitionTo in the generated config when using field-based transitions.
 
 IMPORTANT ABOUT KNOWLEDGE BASE:
 - Do NOT suggest or invent knowledge base IDs. Knowledge bases are connected separately
@@ -1029,7 +1057,7 @@ THE JSON SCHEMA:
   "displayName": "Human-readable name",
   "description": "One-line description",
   "mode": "simple" or "thinker",
-  "model": "gpt-5" (or other model ID),
+  "model": "gpt-4o" (or other model ID),
   "guidance": "The full prompt that defines the assistant's behavior...",
   "thinkingPrompt": "(only for thinker mode) The strategy brain prompt...",
   "thinkingModel": "claude-sonnet-4-20250514",
@@ -1046,6 +1074,10 @@ THE JSON SCHEMA:
   "context": {
     "namespace_name": { ...data the crew already knows... }
   },
+  "fieldsToCollect": [
+    { "name": "field_name", "description": "What this field captures" }
+  ],
+  "transitionTo": "target-crew-name",
   "maxTokens": 2048
 }
 
@@ -1056,8 +1088,14 @@ RULES:
 - tools.mockResponse should contain realistic example data
 - context should simulate what previous crews would have collected
 - Only include fields that were discussed. Don't invent features.
-- model should be a valid model ID: gpt-5, claude-sonnet-4-20250514, gemini-2.0-flash, etc.
+- model should be a valid model ID: gpt-4o, gpt-5-chat-latest, claude-sonnet-4-20250514, gemini-2.5-flash, gemini-2.0-flash
 - Do NOT include kbSources — knowledge bases are connected separately through the Config tab using real vector stores.
+- fieldsToCollect: only include if the crew needs to extract specific data from the user
+  for a field-based transition (e.g., name, age, account type). Each field needs a name
+  and a description that tells the extractor what to look for.
+- transitionTo: the name of the next crew this crew transitions to. Only include if
+  the crew has a natural "end point" and should hand off to another crew.
+  In the playground, the target crew won't exist — a transition message will appear instead.
 
 CURRENT CONFIG (update/replace as needed):
 ${currentConfig ? JSON.stringify(currentConfig, null, 2) : '(none)'}
