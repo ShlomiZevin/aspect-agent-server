@@ -167,6 +167,17 @@ class TaskService {
       .returning();
 
     boardEventsService.emit({ type: 'task_created', task });
+
+    // Notify assignee if assigned on creation (and not assigning themselves)
+    if (assignee && assignee !== opener) {
+      notificationsService.createNotification({
+        recipient: assignee,
+        taskId: task.id,
+        commentId: null,
+        type: 'assigned',
+      }).catch(err => console.error('[notifications] Failed to create task creation notification:', err));
+    }
+
     return task;
   }
 
