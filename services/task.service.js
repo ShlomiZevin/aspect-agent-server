@@ -242,14 +242,32 @@ class TaskService {
       });
     }
 
-    // Status changed → notify current assignee (if any, not just-assigned, and not the one who changed it)
-    if (after.status !== before.status && newAssignee && newAssignee === before.assignee && newAssignee !== updatedBy) {
-      await notificationsService.createNotification({
-        recipient: newAssignee,
-        taskId: after.id,
-        commentId: null,
-        type: `moved_to_${after.status}`,
-      });
+    // Status changed → notify assignee and opener
+    if (after.status !== before.status) {
+      const notificationType = `moved_to_${after.status}`;
+      const notified = new Set();
+
+      // Notify assignee (if same as before, not the one who changed it)
+      if (newAssignee && newAssignee === before.assignee && newAssignee !== updatedBy) {
+        await notificationsService.createNotification({
+          recipient: newAssignee,
+          taskId: after.id,
+          commentId: null,
+          type: notificationType,
+        });
+        notified.add(newAssignee);
+      }
+
+      // Notify opener (if set, not the one who changed it, and not already notified)
+      const opener = after.opener;
+      if (opener && opener !== updatedBy && !notified.has(opener)) {
+        await notificationsService.createNotification({
+          recipient: opener,
+          taskId: after.id,
+          commentId: null,
+          type: notificationType,
+        });
+      }
     }
   }
 
