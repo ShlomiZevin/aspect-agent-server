@@ -924,6 +924,164 @@ If the fix requires changes to infrastructure, the dispatcher, the base class, t
 
     return null;
   }
+
+  // ========== PLAYGROUND METHODS ==========
+
+  /**
+   * Chat with Claude about designing a NEW crew member in the playground.
+   * Two modes:
+   * - 'discuss': Understand what the user wants (no config output)
+   * - 'generate': Output a complete crew config as JSON
+   *
+   * @param {Array<{role: string, content: string}>} messages - Conversation history
+   * @param {object|null} currentConfig - Current playground config (if any)
+   * @param {'discuss'|'generate'} mode
+   * @returns {Promise<{response: string, updatedConfig?: object}>}
+   */
+  async playgroundChat(messages, currentConfig, mode = 'discuss') {
+    console.log(`\n🎮 [Playground] === CHAT === mode="${mode}", messages=${messages.length}`);
+    const startTime = Date.now();
+
+    const systemPrompt = mode === 'discuss'
+      ? this._buildPlaygroundDiscussPrompt(currentConfig)
+      : this._buildPlaygroundGeneratePrompt(currentConfig);
+
+    const claudeMessages = messages.map(m => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content
+    }));
+
+    const userContent = claudeMessages.length > 1
+      ? this._buildConversationContext(claudeMessages)
+      : claudeMessages[0]?.content || '';
+
+    const response = await claudeService.sendOneShot(
+      systemPrompt,
+      userContent,
+      { maxTokens: mode === 'generate' ? 4096 : 1024 }
+    );
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`✅ [Playground] Claude responded in ${elapsed}s (${response.length} chars)`);
+
+    let updatedConfig = null;
+    if (mode === 'generate') {
+      updatedConfig = this._extractPlaygroundConfig(response);
+      if (updatedConfig) {
+        console.log(`📝 [Playground] Config extracted: "${updatedConfig.displayName || 'unnamed'}"`);
+      } else {
+        console.log(`⚠️ [Playground] Generate mode but no config found in response`);
+      }
+    }
+
+    return { response, updatedConfig: updatedConfig || undefined };
+  }
+
+  /**
+   * Build discuss prompt for playground design chat.
+   * @private
+   */
+  _buildPlaygroundDiscussPrompt(currentConfig) {
+    return `You are helping a product expert design a NEW AI assistant crew member from scratch.
+The user is NOT a developer. They are a domain expert who knows the product well.
+
+YOUR COMMUNICATION STYLE:
+- Use plain, everyday language — no technical jargon
+- Talk about the assistant's "behavior", "personality", "conversation style"
+- Be conversational and warm
+- Keep responses concise — 2-4 short paragraphs max
+
+WHAT YOU'RE HELPING THEM DEFINE:
+- What the assistant does and how it talks (its guidance/prompt)
+- Whether it needs a "strategy brain" (thinker mode) that analyzes before responding
+- Its personality/voice (persona)
+- What tools/actions it can take (e.g., search products, book appointments)
+- What it already knows about the user from previous steps (context)
+
+IMPORTANT ABOUT KNOWLEDGE BASE:
+- Do NOT suggest or invent knowledge base IDs. Knowledge bases are connected separately
+  through the Config tab — they use real vector stores, not mocked data.
+- If the user mentions needing a KB, tell them: "You can connect a real knowledge base
+  in the Config tab after generating the crew."
+
+ASK ABOUT EACH AREA NATURALLY:
+Don't dump all questions at once. Start by understanding the purpose,
+then dig into specifics one area at a time.
+
+CURRENT CONFIG (what we have so far):
+${currentConfig ? JSON.stringify(currentConfig, null, 2) : '(nothing yet — starting fresh)'}
+
+When you feel you've understood enough, wrap up by saying something like:
+"I think we have a clear picture — whenever you're ready, click **Generate** and I'll create the crew configuration."
+Do this naturally each time the discussion reaches a conclusion.`;
+  }
+
+  /**
+   * Build generate prompt for playground config generation.
+   * @private
+   */
+  _buildPlaygroundGeneratePrompt(currentConfig) {
+    return `You are generating a crew member configuration based on the conversation.
+Output a COMPLETE JSON configuration inside a \`\`\`json code block.
+
+THE JSON SCHEMA:
+{
+  "displayName": "Human-readable name",
+  "description": "One-line description",
+  "mode": "simple" or "thinker",
+  "model": "gpt-5" (or other model ID),
+  "guidance": "The full prompt that defines the assistant's behavior...",
+  "thinkingPrompt": "(only for thinker mode) The strategy brain prompt...",
+  "thinkingModel": "claude-sonnet-4-20250514",
+  "persona": "Voice and personality description...",
+  "kbSources": [{"vectorStoreId": "vs_xxx", "name": "Product KB"}],
+  "tools": [
+    {
+      "name": "tool_name",
+      "description": "What this tool does",
+      "parameters": { "type": "object", "properties": { ... }, "required": [...] },
+      "mockResponse": { ...example response data... }
+    }
+  ],
+  "context": {
+    "namespace_name": { ...data the crew already knows... }
+  },
+  "maxTokens": 2048
+}
+
+RULES:
+- guidance should be detailed and complete — this IS the crew's prompt
+- For thinker mode: thinkingPrompt should instruct the strategy brain to return JSON
+  with analysis and recommendations. The talking brain will use this to respond.
+- tools.mockResponse should contain realistic example data
+- context should simulate what previous crews would have collected
+- Only include fields that were discussed. Don't invent features.
+- model should be a valid model ID: gpt-5, claude-sonnet-4-20250514, gemini-2.0-flash, etc.
+- Do NOT include kbSources — knowledge bases are connected separately through the Config tab using real vector stores.
+
+CURRENT CONFIG (update/replace as needed):
+${currentConfig ? JSON.stringify(currentConfig, null, 2) : '(none)'}
+
+After the JSON block, add a plain-language summary of what was created,
+grouped by area: Behavior, Personality, Knowledge, Tools, Context.`;
+  }
+
+  /**
+   * Extract playground config from Claude's response.
+   * Looks for a JSON code block and validates basic structure.
+   * @private
+   */
+  _extractPlaygroundConfig(response) {
+    const match = response.match(/```json\s*\n([\s\S]*?)```/);
+    if (!match) return null;
+    try {
+      const config = JSON.parse(match[1].trim());
+      if (!config.guidance) return null;
+      return config;
+    } catch {
+      return null;
+    }
+  }
 }
 
 module.exports = new CrewEditorService();

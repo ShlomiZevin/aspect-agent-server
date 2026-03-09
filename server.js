@@ -2536,6 +2536,114 @@ app.delete('/api/admin/crew/:agentName/:crewName/versions/:timestamp', async (re
   }
 });
 
+// ========== PLAYGROUND ENDPOINTS ==========
+
+const playgroundService = require('./services/playground.service');
+
+// Register/update a playground crew (creates in-memory DynamicCrewMember)
+app.post('/api/playground/register', async (req, res) => {
+  try {
+    const { sessionId, agentName, config } = req.body;
+    if (!sessionId || !agentName || !config) {
+      return res.status(400).json({ error: 'Missing sessionId, agentName, or config' });
+    }
+    const result = await playgroundService.register(sessionId, agentName, config);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error registering playground:', err.message);
+    res.status(500).json({ error: 'Register failed: ' + err.message });
+  }
+});
+
+// Design mode chat (talk with Claude about what to build)
+app.post('/api/playground/design', async (req, res) => {
+  try {
+    const { messages, currentConfig, mode } = req.body;
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: 'Missing messages array' });
+    }
+    const result = await crewEditorService.playgroundChat(messages, currentConfig || null, mode || 'discuss');
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error in playground design chat:', err.message);
+    res.status(500).json({ error: 'Design chat failed: ' + err.message });
+  }
+});
+
+// Remove playground session
+app.delete('/api/playground/:sessionId', async (req, res) => {
+  try {
+    playgroundService.remove(req.params.sessionId);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error removing playground:', err.message);
+    res.status(500).json({ error: 'Remove failed: ' + err.message });
+  }
+});
+
+// Save playground config to GCS
+app.post('/api/playground/save', async (req, res) => {
+  try {
+    const { agentName, name, config } = req.body;
+    if (!agentName || !name || !config) {
+      return res.status(400).json({ error: 'Missing agentName, name, or config' });
+    }
+    const result = await playgroundService.saveToGCS(agentName, name, config);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error saving playground config:', err.message);
+    res.status(500).json({ error: 'Save failed: ' + err.message });
+  }
+});
+
+// List saved playground configs
+app.get('/api/playground/configs/:agentName', async (req, res) => {
+  try {
+    const configs = await playgroundService.listSavedConfigs(req.params.agentName);
+    res.json({ configs });
+  } catch (err) {
+    console.error('❌ Error listing playground configs:', err.message);
+    res.status(500).json({ error: 'List failed: ' + err.message });
+  }
+});
+
+// Load a saved playground config
+app.get('/api/playground/configs/:agentName/:id', async (req, res) => {
+  try {
+    const data = await playgroundService.loadConfig(req.params.agentName, req.params.id);
+    res.json(data);
+  } catch (err) {
+    console.error('❌ Error loading playground config:', err.message);
+    res.status(500).json({ error: 'Load failed: ' + err.message });
+  }
+});
+
+// Delete a saved playground config
+app.delete('/api/playground/configs/:agentName/:id', async (req, res) => {
+  try {
+    await playgroundService.deleteConfig(req.params.agentName, req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error deleting playground config:', err.message);
+    res.status(500).json({ error: 'Delete failed: ' + err.message });
+  }
+});
+
+// Export playground config as .crew.js file
+app.post('/api/playground/export', async (req, res) => {
+  try {
+    const { config } = req.body;
+    if (!config) {
+      return res.status(400).json({ error: 'Missing config' });
+    }
+    const source = playgroundService.exportToCrewFile(config);
+    res.json({ source });
+  } catch (err) {
+    console.error('❌ Error exporting playground config:', err.message);
+    res.status(500).json({ error: 'Export failed: ' + err.message });
+  }
+});
+
 // ========== TASK BOARD ENDPOINTS (Internal Tool) ==========
 
 // Get all tasks (with optional filters)
