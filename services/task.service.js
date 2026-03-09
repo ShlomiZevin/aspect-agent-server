@@ -174,7 +174,7 @@ class TaskService {
         recipient: assignee,
         taskId: task.id,
         commentId: null,
-        type: 'assigned',
+        type: opener ? `assigned_by:${opener}` : 'assigned',
       }).catch(err => console.error('[notifications] Failed to create task creation notification:', err));
     }
 
@@ -234,11 +234,12 @@ class TaskService {
 
     // Assignee changed → notify the new assignee (unless they assigned themselves)
     if (newAssignee && newAssignee !== before.assignee && newAssignee !== updatedBy) {
+      const assigner = updatedBy || after.opener || null;
       await notificationsService.createNotification({
         recipient: newAssignee,
         taskId: after.id,
         commentId: null,
-        type: 'assigned',
+        type: assigner ? `assigned_by:${assigner}` : 'assigned',
       });
     }
 
