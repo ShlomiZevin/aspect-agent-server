@@ -138,7 +138,7 @@ class TaskService {
   async createTask(data) {
     if (!this.drizzle) this.initialize();
 
-    const { title, description, status, priority, type, domain, assignee, dueDate, atRisk, isCompleted, dependsOn, tags, crewMember, isDraft, createdBy } = data;
+    const { title, description, status, priority, type, domain, assignee, dueDate, atRisk, isCompleted, dependsOn, tags, crewMember, isDraft, createdBy, opener } = data;
 
     if (!title?.trim()) {
       throw new Error('Task title is required');
@@ -162,10 +162,22 @@ class TaskService {
         crewMember: crewMember || null,
         isDraft: isDraft || false,
         createdBy: createdBy || null,
+        opener: opener || null,
       })
       .returning();
 
     boardEventsService.emit({ type: 'task_created', task });
+
+    // Notify assignee if assigned on creation (and not assigning themselves)
+    if (assignee && assignee !== opener) {
+      notificationsService.createNotification({
+        recipient: assignee,
+        taskId: task.id,
+        commentId: null,
+        type: 'assigned',
+      }).catch(err => console.error('[notifications] Failed to create task creation notification:', err));
+    }
+
     return task;
   }
 
