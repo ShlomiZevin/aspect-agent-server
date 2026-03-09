@@ -138,7 +138,7 @@ class TaskService {
   async createTask(data) {
     if (!this.drizzle) this.initialize();
 
-    const { title, description, status, priority, type, domain, assignee, dueDate, atRisk, isCompleted, dependsOn, tags, crewMember, isDraft, createdBy } = data;
+    const { title, description, status, priority, type, domain, assignee, dueDate, atRisk, isCompleted, dependsOn, tags, crewMember, isDraft, createdBy, opener } = data;
 
     if (!title?.trim()) {
       throw new Error('Task title is required');
@@ -162,6 +162,7 @@ class TaskService {
         crewMember: crewMember || null,
         isDraft: isDraft || false,
         createdBy: createdBy || null,
+        opener: opener || null,
       })
       .returning();
 

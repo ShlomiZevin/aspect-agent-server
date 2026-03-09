@@ -262,6 +262,7 @@ const tasks = pgTable('tasks', {
   crewMember: varchar('crew_member', { length: 100 }), // Crew member related to this task
   isDraft: boolean('is_draft').default(false).notNull(), // Draft mode - only visible to creator
   createdBy: varchar('created_by', { length: 255 }), // Browser-based user identifier
+  opener: varchar('opener', { length: 100 }), // Human-readable name of who opened the task ("who you are" identity)
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
