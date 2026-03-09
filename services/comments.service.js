@@ -54,8 +54,10 @@ class CommentsService {
   /**
    * Create notifications for a new comment:
    * 1. @mention notifications for each @Name found in content
-   * 2. comment_on_assigned notification for the task assignee (if not the author)
-   * 3. comment_on_assigned notification for anyone previously @mentioned in this task (if not author/assignee/already notified)
+   * 2. comment notification for the task assignee (if not the author)
+   * 3. comment notification for the task opener (if not the author)
+   * 4. comment notification for anyone who previously commented on this task
+   * 5. comment notification for anyone previously @mentioned in this task's comments
    */
   async _createNotifications(taskId, commentId, author, content) {
     if (!this.drizzle) this.initialize();
@@ -85,46 +87,46 @@ class CommentsService {
       await notificationsService.createNotification({ recipient: name, taskId, commentId, type: 'mention' });
     }
 
-    // Fetch task to check assignee
+    // Fetch task to check assignee and opener
     const [task] = await this.drizzle.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
 
     // Track who already got notified to avoid duplicates
     const alreadyNotified = new Set(mentionedNames);
     alreadyNotified.add(author);
 
-    // 2. Notify task assignee
-    if (task?.assignee && !alreadyNotified.has(task.assignee)) {
-      await notificationsService.createNotification({
-        recipient: task.assignee,
-        taskId,
-        commentId,
-        type: 'comment_on_assigned',
-      });
-      alreadyNotified.add(task.assignee);
-    }
-
-    // 3. Notify anyone previously @mentioned in this task's comments
-    const previousComments = await this.drizzle
-      .select({ content: taskComments.content })
-      .from(taskComments)
-      .where(eq(taskComments.taskId, taskId));
-
-    const previouslyMentioned = new Set();
-    for (const { content: prevContent } of previousComments) {
-      for (const name of extractMentions(prevContent)) {
-        previouslyMentioned.add(name);
-      }
-    }
-
-    for (const name of previouslyMentioned) {
-      if (!alreadyNotified.has(name)) {
+    const notify = async (recipient) => {
+      if (recipient && !alreadyNotified.has(recipient)) {
         await notificationsService.createNotification({
-          recipient: name,
+          recipient,
           taskId,
           commentId,
           type: 'comment_on_assigned',
         });
-        alreadyNotified.add(name);
+        alreadyNotified.add(recipient);
+      }
+    };
+
+    // 2. Notify task assignee
+    if (task?.assignee) await notify(task.assignee);
+
+    // 3. Notify task opener
+    if (task?.opener) await notify(task.opener);
+
+    // Fetch previous comments for steps 4 and 5
+    const previousComments = await this.drizzle
+      .select({ content: taskComments.content, author: taskComments.author })
+      .from(taskComments)
+      .where(eq(taskComments.taskId, taskId));
+
+    // 4. Notify anyone who previously commented on this task
+    for (const { author: prevAuthor } of previousComments) {
+      await notify(prevAuthor);
+    }
+
+    // 5. Notify anyone previously @mentioned in this task's comments
+    for (const { content: prevContent } of previousComments) {
+      for (const name of extractMentions(prevContent)) {
+        await notify(name);
       }
     }
   }
