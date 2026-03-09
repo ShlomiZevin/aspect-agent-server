@@ -1110,15 +1110,51 @@ grouped by area: Behavior, Personality, Knowledge, Tools, Context.`;
    * @private
    */
   _extractPlaygroundConfig(response) {
-    const match = response.match(/```json\s*\n([\s\S]*?)```/);
-    if (!match) return null;
-    try {
-      const config = JSON.parse(match[1].trim());
-      if (!config.guidance) return null;
-      return config;
-    } catch {
-      return null;
+    // Strategy 1: Try non-greedy (smallest block) — works when no nested fences
+    const fenceMatchShort = response.match(/```(?:json|JSON|js|javascript)?\s*\n([\s\S]*?)```/);
+    if (fenceMatchShort) {
+      try {
+        const config = JSON.parse(fenceMatchShort[1].trim());
+        if (config.guidance) return config;
+      } catch { /* nested fences probably broke it — try greedy */ }
     }
+
+    // Strategy 2: Greedy (largest block) — handles nested ``` inside thinkingPrompt etc.
+    const fenceMatchLong = response.match(/```(?:json|JSON|js|javascript)?\s*\n([\s\S]*)```/);
+    if (fenceMatchLong) {
+      try {
+        const config = JSON.parse(fenceMatchLong[1].trim());
+        if (config.guidance) return config;
+      } catch { /* fall through */ }
+    }
+
+    // Strategy 3: Find outermost JSON object containing "guidance" via brace matching
+    const rawMatch = response.match(/\{[\s\S]*?"guidance"\s*:/);
+    if (rawMatch) {
+      const startIdx = response.indexOf(rawMatch[0]);
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      for (let i = startIdx; i < response.length; i++) {
+        const ch = response[i];
+        if (escape) { escape = false; continue; }
+        if (ch === '\\' && inString) { escape = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            try {
+              const config = JSON.parse(response.slice(startIdx, i + 1));
+              if (config.guidance) return config;
+            } catch { break; }
+          }
+        }
+      }
+    }
+
+    return null;
   }
 }
 
