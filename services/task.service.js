@@ -248,7 +248,7 @@ class TaskService {
         recipient: newAssignee,
         taskId: after.id,
         commentId: null,
-        type: 'status_changed',
+        type: `moved_to_${after.status}`,
       });
     }
   }
