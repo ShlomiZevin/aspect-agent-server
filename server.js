@@ -1322,7 +1322,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             thinkingService.addStep(
               conversationId,
               'thinking_advisor',
-              'מנתח את השיחה...'
+              'Analyzing the conversation...'
             );
           }
 

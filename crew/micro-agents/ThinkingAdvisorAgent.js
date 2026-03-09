@@ -51,7 +51,7 @@ class ThinkingAdvisorAgent {
         const result = JSON.parse(responseText);
         // Enforce _thinkingDescription for UI display
         if (!result._thinkingDescription) {
-          result._thinkingDescription = 'Thinking...';
+          result._thinkingDescription = 'Analysis complete';
         }
         return result;
       }

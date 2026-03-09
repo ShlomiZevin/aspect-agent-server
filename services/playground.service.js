@@ -37,7 +37,7 @@ class PlaygroundService {
       displayName: config.displayName || 'Playground Crew',
       description: config.description || 'Playground test crew',
       guidance: this._buildGuidance(config),
-      model: config.model || 'gpt-5',
+      model: config.model || 'gpt-4o',
       maxTokens: config.maxTokens || 2048,
       isDefault: false, // Don't interfere with agent's real default crew
       knowledgeBase: config.kbSources && config.kbSources.length > 0 ? {
@@ -278,7 +278,7 @@ class ${className} extends CrewMember {
       displayName: '${(config.displayName || 'Playground Crew').replace(/'/g, "\\'")}',
       description: '${(config.description || '').replace(/'/g, "\\'")}',
       isDefault: true,
-      model: '${config.model || 'gpt-5'}',
+      model: '${config.model || 'gpt-4o'}',
       maxTokens: ${config.maxTokens || 2048},
       knowledgeBase: ${kbConfig},
       tools: [
