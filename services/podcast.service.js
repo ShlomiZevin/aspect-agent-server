@@ -38,7 +38,7 @@ class PodcastService {
   async getEpisode(id) {
     const result = await db.query(
       `SELECT * FROM podcast_episodes WHERE id = $1`,
-      [id]
+      [parseInt(id)]
     );
     return result.rows[0] || null;
   }
@@ -57,7 +57,7 @@ class PodcastService {
            transcribed_at      = CASE WHEN $1 = 'completed' THEN NOW() ELSE transcribed_at END
        WHERE id = $6
        RETURNING *`,
-      [status, url || null, text || null, provider || null, error || null, id]
+      [status, url || null, text || null, provider || null, error || null, parseInt(id)]
     );
     return result.rows[0];
   }
@@ -78,7 +78,7 @@ class PodcastService {
            summarized_at    = CASE WHEN $1 = 'completed' THEN NOW() ELSE summarized_at END
        WHERE id = $8
        RETURNING *`,
-      [status, url || null, text || null, provider || null, model || null, prompt || null, error || null, id]
+      [status, url || null, text || null, provider || null, model || null, prompt || null, error || null, parseInt(id)]
     );
     return result.rows[0];
   }
@@ -89,7 +89,7 @@ class PodcastService {
   async deleteEpisode(id) {
     const result = await db.query(
       `DELETE FROM podcast_episodes WHERE id = $1 RETURNING *`,
-      [id]
+      [parseInt(id)]
     );
     return result.rows[0] || null;
   }
