@@ -25,6 +25,8 @@ const commentsService = require('./services/comments.service');
 const notificationsService = require('./services/notifications.service');
 const boardEventsService = require('./services/boardEvents.service');
 const demoService = require('./services/demo.service');
+const podcastService = require('./services/podcast.service');
+const transcriptionService = require('./services/transcription.service');
 
 // WhatsApp bridge
 const { handleIncomingMessage } = require('./whatsapp/bridge.service');
@@ -41,6 +43,14 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: 50 * 1024 * 1024 // 50MB limit
+  }
+});
+
+// Separate multer instance for large podcast/audio files (up to 500MB)
+const uploadAudio = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 500 * 1024 * 1024 // 500MB limit
   }
 });
 
@@ -3037,6 +3047,288 @@ app.post('/api/lybi/contact', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PODCAST ROUTES
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DEFAULT_SUMMARY_PROMPT = `You are processing a podcast transcript about menopause. Your task is to extract and organize only the medically and health-relevant content from this transcript.
+
+Instructions:
+1. IGNORE: Small talk, jokes, advertisements, off-topic conversations, greetings, and any content unrelated to menopause, women's health, or relevant medical topics.
+2. EXTRACT: All information about menopause symptoms, treatments, hormonal changes, medical research, expert recommendations, nutrition, lifestyle advice, mental health aspects, and related women's health topics.
+3. ORGANIZE the extracted content into clear, structured sections.
+
+Please structure your summary as follows:
+
+## Key Topics Covered
+[List the main menopause-related topics discussed in this episode]
+
+## Medical & Health Information
+[Symptoms discussed, hormonal changes, medical facts, research findings]
+
+## Treatments & Therapies
+[HRT, alternative treatments, medications, lifestyle interventions mentioned]
+
+## Expert Advice & Recommendations
+[Practical advice given to listeners]
+
+## Nutrition & Lifestyle
+[Diet, exercise, sleep, and wellness recommendations]
+
+## Important Questions Addressed
+[Key questions raised and answered during the episode]
+
+## Key Takeaways
+[2-5 most important insights from this episode]
+
+Be concise and clinical. Use bullet points where appropriate. Only include information that would be valuable for someone seeking to understand menopause and women's health.`;
+
+/**
+ * POST /api/podcast/episodes
+ * Upload an audio file and create an episode record.
+ * Body (multipart): file (audio), title (string)
+ */
+app.post('/api/podcast/episodes', uploadAudio.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No audio file uploaded' });
+    }
+
+    const { buffer, originalname, size, mimetype } = req.file;
+    const title = req.body.title || originalname;
+
+    // Upload to GCS under podcast-episodes/ folder
+    const storageService = require('./services/storage.service');
+    const timestamp = Date.now();
+    const safeName = originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const gcsPath = `podcast-episodes/${timestamp}-${safeName}`;
+
+    const bucket = storageService.getBucket();
+    const gcsFile = bucket.file(gcsPath);
+    await gcsFile.save(buffer, {
+      metadata: { contentType: mimetype || 'audio/mpeg' },
+    });
+    console.log(`✅ Podcast audio uploaded to GCS: ${gcsPath}`);
+
+    const episode = await podcastService.createEpisode({
+      title,
+      audioFileName: originalname,
+      audioFileUrl: gcsPath,
+      audioFileSize: size,
+      audioMimeType: mimetype,
+    });
+
+    res.json({ success: true, episode });
+  } catch (err) {
+    console.error('❌ Podcast upload error:', err.message);
+    res.status(500).json({ error: 'Upload failed: ' + err.message });
+  }
+});
+
+/**
+ * GET /api/podcast/episodes
+ * List all podcast episodes.
+ */
+app.get('/api/podcast/episodes', async (req, res) => {
+  try {
+    const episodes = await podcastService.listEpisodes();
+    res.json({ episodes });
+  } catch (err) {
+    console.error('❌ Podcast list error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/podcast/episodes/:id
+ * Get a single episode by ID.
+ */
+app.get('/api/podcast/episodes/:id', async (req, res) => {
+  try {
+    const episode = await podcastService.getEpisode(req.params.id);
+    if (!episode) return res.status(404).json({ error: 'Episode not found' });
+    res.json({ episode });
+  } catch (err) {
+    console.error('❌ Podcast get error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * DELETE /api/podcast/episodes/:id
+ * Delete an episode record (does not delete GCS files).
+ */
+app.delete('/api/podcast/episodes/:id', async (req, res) => {
+  try {
+    const episode = await podcastService.deleteEpisode(req.params.id);
+    if (!episode) return res.status(404).json({ error: 'Episode not found' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Podcast delete error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/podcast/episodes/:id/transcribe
+ * Start async transcription. Returns immediately with status 'pending'.
+ * Client should poll GET /api/podcast/episodes/:id for status updates.
+ *
+ * Body: { provider: 'openai' | 'google' }
+ */
+app.post('/api/podcast/episodes/:id/transcribe', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { provider = 'openai' } = req.body;
+
+    const episode = await podcastService.getEpisode(id);
+    if (!episode) return res.status(404).json({ error: 'Episode not found' });
+    if (!episode.audio_file_url) return res.status(400).json({ error: 'No audio file on this episode' });
+
+    if (episode.transcript_status === 'running' || episode.transcript_status === 'pending') {
+      return res.status(409).json({ error: 'Transcription already in progress' });
+    }
+
+    // Mark as pending and return immediately
+    await podcastService.updateTranscriptStatus(id, { status: 'pending', provider });
+    res.json({ success: true, status: 'pending' });
+
+    // Fire-and-forget async transcription
+    _runTranscriptionAsync(id, episode, provider).catch(err => {
+      console.error(`❌ Transcription job ${id} crashed:`, err.message);
+    });
+  } catch (err) {
+    console.error('❌ Transcribe start error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Async transcription worker — runs in background after route responds.
+ */
+async function _runTranscriptionAsync(id, episode, provider) {
+  try {
+    await podcastService.updateTranscriptStatus(id, { status: 'running', provider });
+
+    const storageService = require('./services/storage.service');
+
+    // Download audio from GCS
+    console.log(`📥 [Podcast] Downloading audio for episode ${id} from GCS...`);
+    const audioBuffer = await storageService.downloadFile(episode.audio_file_url);
+
+    let transcriptText;
+    if (provider === 'google') {
+      transcriptText = await transcriptionService.transcribeWithGoogle(
+        audioBuffer,
+        episode.audio_file_name,
+        episode.audio_mime_type
+      );
+    } else {
+      transcriptText = await transcriptionService.transcribeWithOpenAI(
+        audioBuffer,
+        episode.audio_file_name,
+        episode.audio_mime_type
+      );
+    }
+
+    // Save transcript text to GCS
+    const ts = Date.now();
+    const baseName = (episode.audio_file_name || 'episode').replace(/\.[^.]+$/, '');
+    const transcriptPath = `podcast-episodes/transcripts/${ts}-${baseName}.txt`;
+    const transcriptBuffer = Buffer.from(transcriptText, 'utf-8');
+    const bucket = storageService.getBucket();
+    await bucket.file(transcriptPath).save(transcriptBuffer, {
+      metadata: { contentType: 'text/plain; charset=utf-8' },
+    });
+
+    await podcastService.updateTranscriptStatus(id, {
+      status: 'completed',
+      provider,
+      url: transcriptPath,
+      text: transcriptText,
+    });
+
+    console.log(`✅ [Podcast] Episode ${id} transcription complete (${transcriptText.length} chars)`);
+  } catch (err) {
+    console.error(`❌ [Podcast] Episode ${id} transcription failed:`, err.message);
+    await podcastService.updateTranscriptStatus(id, {
+      status: 'failed',
+      error: err.message,
+    });
+  }
+}
+
+/**
+ * POST /api/podcast/episodes/:id/summarize
+ * Summarize the transcript using the chosen LLM provider/model.
+ * Synchronous — waits for the LLM response.
+ *
+ * Body: { provider: 'openai'|'google'|'anthropic', model: string, prompt: string }
+ */
+app.post('/api/podcast/episodes/:id/summarize', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      provider = 'anthropic',
+      model = 'claude-opus-4-6',
+      prompt = DEFAULT_SUMMARY_PROMPT,
+    } = req.body;
+
+    const episode = await podcastService.getEpisode(id);
+    if (!episode) return res.status(404).json({ error: 'Episode not found' });
+    if (!episode.transcript_text) {
+      return res.status(400).json({ error: 'No transcript available. Run transcription first.' });
+    }
+
+    await podcastService.updateSummaryStatus(id, { status: 'running', provider, model, prompt });
+
+    let summaryText;
+    try {
+      summaryText = await llmService.sendOneShot(prompt, episode.transcript_text, {
+        model,
+        maxTokens: 8192,
+        context: 'podcast-summarize',
+      });
+    } catch (llmErr) {
+      await podcastService.updateSummaryStatus(id, { status: 'failed', error: llmErr.message });
+      return res.status(500).json({ error: 'LLM summarization failed: ' + llmErr.message });
+    }
+
+    // Save summary to GCS
+    const storageService = require('./services/storage.service');
+    const ts = Date.now();
+    const baseName = (episode.audio_file_name || 'episode').replace(/\.[^.]+$/, '');
+    const summaryPath = `podcast-episodes/summaries/${ts}-${baseName}-summary.md`;
+    const bucket = storageService.getBucket();
+    await bucket.file(summaryPath).save(Buffer.from(summaryText, 'utf-8'), {
+      metadata: { contentType: 'text/markdown; charset=utf-8' },
+    });
+
+    const updated = await podcastService.updateSummaryStatus(id, {
+      status: 'completed',
+      provider,
+      model,
+      prompt,
+      url: summaryPath,
+      text: summaryText,
+    });
+
+    res.json({ success: true, episode: updated });
+  } catch (err) {
+    console.error('❌ Summarize error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/podcast/default-summary-prompt
+ * Returns the default summarization prompt so the client can pre-fill it.
+ */
+app.get('/api/podcast/default-summary-prompt', (req, res) => {
+  res.json({ prompt: DEFAULT_SUMMARY_PROMPT });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Initialize database and start server
 async function startServer() {
   try {
