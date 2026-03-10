@@ -3085,8 +3085,9 @@ Be concise and clinical. Use bullet points where appropriate. Only include infor
 
 /**
  * GET /api/podcast/upload-url
- * Generate a GCS signed URL for direct browser-to-GCS upload (bypasses Cloud Run 32MB limit).
- * Creates a pending episode record and returns the signed URL + episode ID.
+ * Generate a GCS resumable upload URI for direct browser-to-GCS upload.
+ * Uses resumable upload (no iam.signBlob permission needed, unlike signed URLs).
+ * Creates an episode record and returns the upload URI + episode ID.
  *
  * Query params: filename, mimeType, fileSize, title
  */
@@ -3102,13 +3103,13 @@ app.get('/api/podcast/upload-url', async (req, res) => {
     const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
     const gcsPath = `podcast-episodes/${timestamp}-${safeName}`;
 
-    // Generate a v4 signed URL for PUT (valid 30 minutes)
+    // Create a resumable upload session — no signing permission required,
+    // works with any Cloud Run / ADC service account that has storage write access.
     const bucket = storageService.getBucket();
-    const [signedUrl] = await bucket.file(gcsPath).getSignedUrl({
-      version: 'v4',
-      action: 'write',
-      expires: Date.now() + 30 * 60 * 1000,
-      contentType: mimeType,
+    const origin = req.headers.origin || 'https://aspect-agents.web.app';
+    const [uploadUrl] = await bucket.file(gcsPath).createResumableUpload({
+      metadata: { contentType: mimeType },
+      origin,
     });
 
     // Create the episode record immediately so client gets an ID
@@ -3120,10 +3121,10 @@ app.get('/api/podcast/upload-url', async (req, res) => {
       audioMimeType: mimeType,
     });
 
-    console.log(`✅ Signed URL generated for podcast episode ${episode.id}: ${gcsPath}`);
-    res.json({ signedUrl, gcsPath, episode });
+    console.log(`✅ Resumable upload URL created for podcast episode ${episode.id}: ${gcsPath}`);
+    res.json({ uploadUrl, gcsPath, episode });
   } catch (err) {
-    console.error('❌ Podcast signed URL error:', err.message);
+    console.error('❌ Podcast upload URL error:', err.message);
     res.status(500).json({ error: 'Failed to generate upload URL: ' + err.message });
   }
 });
