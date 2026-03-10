@@ -49,12 +49,12 @@ class PodcastService {
   async updateTranscriptStatus(id, { status, url, text, provider, error }) {
     const result = await db.query(
       `UPDATE podcast_episodes
-       SET transcript_status   = $1,
+       SET transcript_status   = $1::text,
            transcript_url      = COALESCE($2, transcript_url),
            transcript_text     = COALESCE($3, transcript_text),
            transcript_provider = COALESCE($4, transcript_provider),
            transcript_error    = $5,
-           transcribed_at      = CASE WHEN $1 = 'completed' THEN NOW() ELSE transcribed_at END
+           transcribed_at      = CASE WHEN $1::text = 'completed' THEN NOW() ELSE transcribed_at END
        WHERE id = $6
        RETURNING *`,
       [status, url || null, text || null, provider || null, error || null, parseInt(id)]
@@ -68,14 +68,14 @@ class PodcastService {
   async updateSummaryStatus(id, { status, url, text, provider, model, prompt, error }) {
     const result = await db.query(
       `UPDATE podcast_episodes
-       SET summary_status   = $1,
+       SET summary_status   = $1::text,
            summary_url      = COALESCE($2, summary_url),
            summary_text     = COALESCE($3, summary_text),
            summary_provider = COALESCE($4, summary_provider),
            summary_model    = COALESCE($5, summary_model),
            summary_prompt   = COALESCE($6, summary_prompt),
            summary_error    = $7,
-           summarized_at    = CASE WHEN $1 = 'completed' THEN NOW() ELSE summarized_at END
+           summarized_at    = CASE WHEN $1::text = 'completed' THEN NOW() ELSE summarized_at END
        WHERE id = $8
        RETURNING *`,
       [status, url || null, text || null, provider || null, model || null, prompt || null, error || null, parseInt(id)]
