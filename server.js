@@ -3084,44 +3084,47 @@ Please structure your summary as follows:
 Be concise and clinical. Use bullet points where appropriate. Only include information that would be valuable for someone seeking to understand menopause and women's health.`;
 
 /**
- * POST /api/podcast/episodes
- * Upload an audio file and create an episode record.
- * Body (multipart): file (audio), title (string)
+ * GET /api/podcast/upload-url
+ * Generate a GCS signed URL for direct browser-to-GCS upload (bypasses Cloud Run 32MB limit).
+ * Creates a pending episode record and returns the signed URL + episode ID.
+ *
+ * Query params: filename, mimeType, fileSize, title
  */
-app.post('/api/podcast/episodes', uploadAudio.single('file'), async (req, res) => {
+app.get('/api/podcast/upload-url', async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No audio file uploaded' });
+    const { filename, mimeType, fileSize, title } = req.query;
+    if (!filename || !mimeType) {
+      return res.status(400).json({ error: 'filename and mimeType are required' });
     }
 
-    const { buffer, originalname, size, mimetype } = req.file;
-    const title = req.body.title || originalname;
-
-    // Upload to GCS under podcast-episodes/ folder
     const storageService = require('./services/storage.service');
     const timestamp = Date.now();
-    const safeName = originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
     const gcsPath = `podcast-episodes/${timestamp}-${safeName}`;
 
+    // Generate a v4 signed URL for PUT (valid 30 minutes)
     const bucket = storageService.getBucket();
-    const gcsFile = bucket.file(gcsPath);
-    await gcsFile.save(buffer, {
-      metadata: { contentType: mimetype || 'audio/mpeg' },
+    const [signedUrl] = await bucket.file(gcsPath).getSignedUrl({
+      version: 'v4',
+      action: 'write',
+      expires: Date.now() + 30 * 60 * 1000,
+      contentType: mimeType,
     });
-    console.log(`✅ Podcast audio uploaded to GCS: ${gcsPath}`);
 
+    // Create the episode record immediately so client gets an ID
     const episode = await podcastService.createEpisode({
-      title,
-      audioFileName: originalname,
+      title: title || filename,
+      audioFileName: filename,
       audioFileUrl: gcsPath,
-      audioFileSize: size,
-      audioMimeType: mimetype,
+      audioFileSize: fileSize ? parseInt(fileSize) : null,
+      audioMimeType: mimeType,
     });
 
-    res.json({ success: true, episode });
+    console.log(`✅ Signed URL generated for podcast episode ${episode.id}: ${gcsPath}`);
+    res.json({ signedUrl, gcsPath, episode });
   } catch (err) {
-    console.error('❌ Podcast upload error:', err.message);
-    res.status(500).json({ error: 'Upload failed: ' + err.message });
+    console.error('❌ Podcast signed URL error:', err.message);
+    res.status(500).json({ error: 'Failed to generate upload URL: ' + err.message });
   }
 });
 
@@ -3339,6 +3342,26 @@ async function startServer() {
 
     // Seed default assignees for task board
     await taskService.seedDefaultAssignees();
+
+    // Configure GCS CORS for direct browser uploads (podcast signed URLs)
+    try {
+      const storageService = require('./services/storage.service');
+      await storageService.getBucket().setCorsConfiguration([{
+        maxAgeSeconds: 3600,
+        method: ['GET', 'PUT', 'HEAD'],
+        origin: [
+          'https://aspect-agents.web.app',
+          'https://freeda.ai',
+          'https://www.freeda.ai',
+          'http://localhost:5173',
+          'http://localhost:3000',
+        ],
+        responseHeader: ['Content-Type', 'Authorization'],
+      }]);
+      console.log('✅ GCS CORS configured for direct browser uploads');
+    } catch (corsErr) {
+      console.warn('⚠️ Could not set GCS CORS (non-critical):', corsErr.message);
+    }
 
     // Start Express server
     app.listen(PORT, () => {
