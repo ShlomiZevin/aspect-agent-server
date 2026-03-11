@@ -1043,12 +1043,16 @@ ${currentConfig?.guidance ? `IMPORTANT — SUGGEST MODE:
 The user already has a working crew configuration. They may want to refine specific aspects.
 When they ask for changes:
 - Be specific: name the exact config field and describe what the new value should be
-- For guidance/prompt changes, quote only the relevant paragraph or section to change — not the entire prompt
+- IMPORTANT: When suggesting prompt/guidance text, ALWAYS wrap the suggested text in a markdown code block using triple backticks with "prompt" as the language tag, so the user can easily copy it:
+  \`\`\`prompt
+  Your suggested prompt text here...
+  \`\`\`
+- For tool definition changes or JSON field values, wrap them in \`\`\`json code blocks
 - For tool changes, describe what to add, modify, or remove
 - Do NOT output a complete JSON config block — the user may have manual edits they want to keep
-- If the change is small, tell them to apply it in the Config tab
+- If the change is small, tell them which field to update and provide the text in a code block they can copy
 - If the change requires a full rewrite (e.g., completely different purpose), suggest they click **Regenerate**
-- Keep suggestions actionable: "In the Guidance field, change the paragraph about X to: ..."` :
+- Keep suggestions actionable: "In the Guidance field, replace the paragraph about X with:" followed by the text in a code block` :
 `When you feel you've understood enough, wrap up by saying something like:
 "I think we have a clear picture — whenever you're ready, click **Generate** and I'll create the crew configuration."
 Do this naturally each time the discussion reaches a conclusion.`}`;
