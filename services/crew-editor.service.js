@@ -958,7 +958,7 @@ If the fix requires changes to infrastructure, the dispatcher, the base class, t
     const response = await claudeService.sendOneShot(
       systemPrompt,
       userContent,
-      { maxTokens: mode === 'generate' ? 4096 : 1024 }
+      { model: mode === 'generate' ? 'claude-opus-4-6' : 'claude-sonnet-4-6', maxTokens: mode === 'generate' ? 16384 : 2048 }
     );
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -1039,9 +1039,19 @@ then dig into specifics one area at a time.
 CURRENT CONFIG (what we have so far):
 ${currentConfig ? JSON.stringify(currentConfig, null, 2) : '(nothing yet — starting fresh)'}
 
-When you feel you've understood enough, wrap up by saying something like:
+${currentConfig?.guidance ? `IMPORTANT — SUGGEST MODE:
+The user already has a working crew configuration. They may want to refine specific aspects.
+When they ask for changes:
+- Be specific: name the exact config field and describe what the new value should be
+- For guidance/prompt changes, quote only the relevant paragraph or section to change — not the entire prompt
+- For tool changes, describe what to add, modify, or remove
+- Do NOT output a complete JSON config block — the user may have manual edits they want to keep
+- If the change is small, tell them to apply it in the Config tab
+- If the change requires a full rewrite (e.g., completely different purpose), suggest they click **Regenerate**
+- Keep suggestions actionable: "In the Guidance field, change the paragraph about X to: ..."` :
+`When you feel you've understood enough, wrap up by saying something like:
 "I think we have a clear picture — whenever you're ready, click **Generate** and I'll create the crew configuration."
-Do this naturally each time the discussion reaches a conclusion.`;
+Do this naturally each time the discussion reaches a conclusion.`}`;
   }
 
   /**

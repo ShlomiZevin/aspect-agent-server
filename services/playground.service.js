@@ -42,7 +42,7 @@ class PlaygroundService {
       isDefault: false, // Don't interfere with agent's real default crew
       knowledgeBase: config.kbSources && config.kbSources.length > 0 ? {
         enabled: true,
-        sources: config.kbSources
+        sources: config.kbSources.map(s => typeof s === 'string' ? s : s.name)
       } : null,
       fieldsToCollect: config.fieldsToCollect || [],
       transitionTo: config.transitionTo || null,
