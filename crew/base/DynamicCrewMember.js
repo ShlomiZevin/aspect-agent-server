@@ -5,15 +5,10 @@
  * Used for crews created via the dashboard (not file-based) and
  * by the Playground for ephemeral crew testing.
  *
- * Supports thinker mode: when usesThinker is true, buildContext()
- * calls ThinkingAdvisorAgent to get strategic advice before the
- * talker responds.
- *
+ * Thinker mode is handled by the base CrewMember class.
  * For advanced logic, export the crew to a file and customize there.
  */
 const CrewMember = require('./CrewMember');
-const thinkingAdvisor = require('../micro-agents/ThinkingAdvisorAgent');
-const conversationService = require('../../services/conversation.service');
 
 class DynamicCrewMember extends CrewMember {
   /**
@@ -79,68 +74,6 @@ class DynamicCrewMember extends CrewMember {
     }
     const allCollected = this.fieldsToCollect.every(f => collectedFields[f.name] != null);
     return allCollected;
-  }
-
-  /**
-   * Override buildContext to support thinker mode.
-   * When usesThinker is enabled, fetches conversation history,
-   * calls ThinkingAdvisorAgent, and injects advice into context.
-   */
-  async buildContext(params) {
-    const baseContext = await super.buildContext(params);
-
-    if (!this.usesThinker || !this.thinkingPrompt) {
-      return baseContext;
-    }
-
-    // Build conversation context string for the thinker
-    let historyText = '(no history yet)';
-    try {
-      const externalId = params.conversation?.externalId;
-      if (externalId) {
-        const history = await conversationService.getConversationHistory(externalId, 20);
-        if (history && history.length > 0) {
-          historyText = history
-            .map(m => `${m.role}: ${m.content}`)
-            .join('\n');
-        }
-      }
-    } catch (err) {
-      console.warn('   ⚠️ [DynamicCrewMember] Could not fetch history for thinker:', err.message);
-    }
-
-    const contextStr = `## Conversation History\n${historyText}`;
-
-    // Auto-inject _thinkingDescription instruction if not already present
-    let enhancedPrompt = this.thinkingPrompt;
-    if (!enhancedPrompt.includes('_thinkingDescription')) {
-      enhancedPrompt += `\n\nIMPORTANT: Your JSON response MUST include a "_thinkingDescription" field as the first key. This is a short English summary (5-15 words) of your decision for this turn, shown in the UI. Use present tense and be specific. Example: "Recommending savings plan based on income" or "Asking about employment status".`;
-    }
-
-    // Run the thinking advisor
-    let thinkingAdvice = { fallback: true };
-    try {
-      console.log(`   🧠 [DynamicCrewMember] Running thinker with model: ${this.thinkingModel || 'claude-sonnet-4-20250514'}`);
-      thinkingAdvice = await thinkingAdvisor.think(
-        { thinkingPrompt: enhancedPrompt, context: contextStr },
-        { model: this.thinkingModel || 'claude-sonnet-4-20250514' }
-      );
-    } catch (err) {
-      console.error('   ❌ [DynamicCrewMember] Thinker error:', err.message);
-    }
-
-    // Provide fallback if thinker errored
-    if (thinkingAdvice.fallback || thinkingAdvice.error) {
-      thinkingAdvice = {
-        _thinkingDescription: 'Analysis complete (fallback)',
-        approach: 'Respond naturally to the user message'
-      };
-    }
-
-    return {
-      ...baseContext,
-      thinkingAdvice
-    };
   }
 
   /**

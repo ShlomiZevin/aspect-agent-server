@@ -1,15 +1,9 @@
 /**
- * Banking Onboarder V2 - Welcome Crew
+ * Banking Onboarder V2 - Welcome & Onboarding
  *
- * First contact. Build trust, check eligibility, get consent.
- *
- * Fields: name, age, account_type_intent, consent
- * Gates: age >= 16, account type = private individual current account
- * Flow: greet → name → age → account type → (gates pass) → explain service + consent → transition
- *
- * Transitions:
- * - All fields + both gates + consent → 'main-conversation'
- * - Age < 16 / unsupported account type / consent declined → end gracefully
+ * First crew in the flow. Warm introduction, eligibility check, consent.
+ * Collects: user_name, gender, age, account_type, service_consent
+ * Transitions to: advisor (when all gates pass)
  */
 const CrewMember = require('../../../crew/base/CrewMember');
 const { getPersona } = require('../banking-onboarder-v2-persona');
@@ -17,98 +11,122 @@ const { getPersona } = require('../banking-onboarder-v2-persona');
 class WelcomeCrew extends CrewMember {
   constructor() {
     super({
-      persona: getPersona(),
       name: 'welcome',
-      displayName: 'קבלת פנים',
-      description: 'ברכת שלום, בדיקת זכאות והסכמה',
+      displayName: 'ברוכים הבאים',
+      description: 'Warm introduction and eligibility qualification for bank account opening',
       isDefault: true,
-      model: 'gpt-5-chat-latest',
-      maxTokens: 1024,
-
-      fieldsToCollect: [
-        {
-          name: 'user_name',
-          description: "The customer's name or preferred name"
-        },
-        {
-          name: 'age',
-          description: "The customer's age as a number"
-        },
-        {
-          name: 'account_type_intent',
-          description: "What type of account the customer wants. Values: 'private_current' for private individual current account (חשבון עו\"ש פרטי / חשבון רגיל / חשבון פרטי), 'business' for business account, 'joint' for joint account, 'savings' for savings account, 'other' for anything else"
-        },
-        {
-          name: 'consent',
-          description: "Explicit consent to proceed with the AI banking service. Set to 'yes' only when the customer clearly agrees AFTER being informed about the service (כן, בואו נתחיל, מסכים/ה, אשמח, קדימה). Set to 'declined' if they refuse."
-        }
-      ],
-
-      transitionTo: 'main-conversation',
-
-      guidance: `Welcome the customer and check eligibility. This is a trust-building moment, not a data-collection moment.
-
-## FLOW
-1. Greet warmly. Introduce yourself as a digital banking assistant. Explain briefly: "I can help you find the right account, compare options, and open one — all here." Ask their name.
-2. After name — ask age. Frame it as access: "כדי לוודא שאני יכול/ה לפתוח לך חשבון, מה הגיל שלך?"
-3. After age — ask what type of account they're looking for. Keep it casual: "מה סוג החשבון שמעניין אותך?"
-4. Check gates:
-   - Age < 16 → explain warmly, offer a "come back later" hook, end gracefully
-   - Unsupported account type (business/joint/savings) → acknowledge the bank offers it, explain this flow handles private current accounts, provide contact: "אפשר לפנות לסניף בטלפון 03-1234567 או באתר example.com/business", close warmly
-5. Both gates pass → Present what you offer: you can compare account plans and explain the differences, find what fits their specific needs, walk them through every step, and they can ask anything along the way. This is a real conversation, not a form. Then ask if they'd like to get started.
-6. Consent declined → explain consent is needed for the service to operate, offer once more. If declined again → close warmly, leave the door open.
-
-## RULES
-- Lead with warmth before any data collection
-- Don't mention products or upsell
-- Don't use regulatory or legal language
-- Don't ask for consent before both gates are cleared
-- Keep this stage short — every extra second is drop risk
-- Normalize exploring: "בלי התחייבות, רק נבדוק ביחד"`,
-
+      model: 'gemini-2.5-flash',
+      maxTokens: 2048,
+      persona: getPersona(),
+      knowledgeBase: null,
       tools: [],
-      knowledgeBase: null
+      fieldsToCollect: [
+        { name: 'user_name', description: "The user's name or preferred nickname for personal interaction" },
+        { name: 'gender', description: "User's gender for proper Hebrew language agreement (ask early in conversation)" },
+        { name: 'age', description: "User's age or date of birth to verify eligibility (must be 16+)" },
+        { name: 'account_type', description: "Type of account requested - must be 'personal' to proceed" },
+        { name: 'service_consent', type: 'boolean', description: "User's consent to use LYBI service. true if agreed, false if refused." }
+      ],
+      transitionTo: 'advisor',
     });
   }
 
-  async preMessageTransfer(collectedFields) {
-    if (!collectedFields.user_name || !collectedFields.age) return false;
+  get guidance() {
+    return `You are ליבי (LYBI), the bank's AI assistant for account opening. You operate in Hebrew only - never switch languages regardless of how the user writes. Hebrew must feel native, not translated.
 
+Your personality is warm, confident, and direct. Helpful without being eager. Personal without being familiar. Never bureaucratic, never salesy, never cold.
+
+## GENDER LANGUAGE RULES:
+
+1. LYBI's own gender: LYBI is always female. All self-references use feminine form at all times (אני עוזרת, אני כאן).
+
+2. Default language before user gender is known:
+   - Use gender-neutral Hebrew constructions where possible ("אפשר לעזור", "כדאי לדעת")
+   - Use combined form where gendered word is unavoidable: "ברוך/ה", "מוזמן/ת", "פנוי/ה"
+   - Do NOT default to masculine. Do NOT guess unless confidence is ≥99%.
+
+3. Inference from name:
+   - May infer gender from user's name only if confidence ≥ 99%
+   - "דניאל", "יובל", "נועם", "תום", "שקד" → do NOT infer, ask
+   - "משה", "שרה", "אורי" (clear cases) → may infer silently
+   - When in doubt → ask. No assumption is better than a wrong one.
+
+4. When to ask gender:
+   - As early as possible - ideally first or second exchange
+   - Use this exact phrasing: "רק שאלה קטנה לפני שממשיכים – איך נכון לפנות אליך, בלשון זכר או נקבה? זה יעזור לי לדבר איתך בצורה נוחה יותר בעברית"
+
+5. After gender confirmation:
+   - Apply consistently and immediately. No slippage back to neutral forms.
+
+Your mission in this crew is straightforward: welcome users warmly, collect essential information, and prepare them for the account opening process.
+
+## Introduction Flow:
+1. Give a brief, warm self-introduction covering:
+   - Who you are (ליבי, the bank's AI agent)
+   - Your expertise in account opening and bank products
+   - That you can answer questions throughout the process
+   - Your goal is to find the right fit for this specific user
+   - That they can stop and return anytime (conversation resumes from where they left off)
+
+2. Ask for their name or nickname naturally
+
+3. Ask for gender early using the phrasing above
+
+4. Ask for their age - explain briefly why it's needed
+   - If under 16: explain limitation warmly, offer to answer banking questions
+   - If 16+: continue
+
+5. Ask what type of account they want to open (personal or other)
+   - If personal: continue
+   - If business/other: explain scope clearly and warmly
+
+6. Collect mandatory service consent - explain purpose in plain language
+   - If refused: explain warmly why the process cannot continue without it, allow one reconsideration, if still refused exit gracefully
+
+
+Once all mandatory fields are collected, transition smoothly to the advisor.`;
+  }
+
+  /**
+   * Always re-extract service_consent so user can revoke after giving it.
+   */
+  getFieldsForExtraction(collectedFields) {
+    return this.fieldsToCollect.filter(
+      f => f.name === 'service_consent' || !collectedFields[f.name]
+    );
+  }
+
+  async preMessageTransfer(collectedFields) {
+    // All fields must be present
+    if (!collectedFields.user_name || !collectedFields.gender || !collectedFields.age ||
+        !collectedFields.account_type || !collectedFields.service_consent) {
+      return false;
+    }
+
+    // Age gate: must be 16+
     const age = parseInt(collectedFields.age, 10);
     if (isNaN(age) || age < 16) return false;
 
-    // Must be private individual current account
-    const intent = (collectedFields.account_type_intent || '').toLowerCase();
-    if (intent !== 'private_current') return false;
+    // Account type gate: must be personal
+    const accountType = (collectedFields.account_type || '').toLowerCase();
+    if (!accountType.includes('personal') && !accountType.includes('אישי') && !accountType.includes('פרטי')) {
+      return false;
+    }
 
-    // Must have explicit consent
-    if (collectedFields.consent !== 'yes') return false;
+    // Consent gate: must be true
+    if (collectedFields.service_consent !== 'true') return false;
 
+    // All gates pass — persist profile for downstream crews
     await this.writeContext('onboarding_profile', {
       name: collectedFields.user_name,
+      gender: collectedFields.gender,
       age,
-      accountType: 'private_current',
+      accountType: 'personal',
       startedAt: new Date().toISOString()
     }, true);
 
-    console.log(`   ✅ Welcome complete: ${collectedFields.user_name}, age ${age}, consent given`);
+    console.log(`   ✅ Welcome complete: ${collectedFields.user_name}, age ${age}, gender ${collectedFields.gender}`);
     return true;
-  }
-
-  async buildContext(params) {
-    const baseContext = await super.buildContext(params);
-    const cf = params.collectedFields || {};
-    const age = cf.age ? parseInt(cf.age, 10) : null;
-
-    return {
-      ...baseContext,
-      role: 'Welcome & Eligibility',
-      customerName: cf.user_name || null,
-      age,
-      eligible: age !== null ? age >= 16 : null,
-      accountTypeIntent: cf.account_type_intent || null,
-      consentGiven: cf.consent === 'yes'
-    };
   }
 }
 

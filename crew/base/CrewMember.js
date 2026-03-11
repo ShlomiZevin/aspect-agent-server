@@ -15,6 +15,14 @@
  * - oneShot: If true, delivers one response then auto-transitions on next message
  * - persona: Shared character/voice text injected into context for all crews of an agent
  * - isDefault: Whether this is the default crew member for the agent
+ * - usesThinker: Whether to auto-run ThinkingAdvisorAgent in buildContext
+ * - thinkingPrompt: System prompt for the thinker
+ * - thinkingModel: LLM model for the thinker
+ *
+ * Thinker hooks (override in subclasses for domain-specific behavior):
+ * - buildThinkerContext(params): What context to send to the thinker (default: conversation history)
+ * - onThinkingComplete(advice, params): Called after thinker returns (default: no-op)
+ * - getAdditionalContext(params): Extra context merged before returning (default: empty)
  *
  * Context methods (available after dispatcher sets _userId):
  * - getContext(namespace): Read context data from DB
@@ -22,6 +30,8 @@
  * - mergeContext(namespace, data): Merge data into existing context
  */
 const contextService = require('../../services/context.service');
+const thinkingAdvisor = require('../micro-agents/ThinkingAdvisorAgent');
+const conversationService = require('../../services/conversation.service');
 
 class CrewMember {
   /**
@@ -43,6 +53,9 @@ class CrewMember {
    * @param {boolean} options.oneShot - If true, crew delivers one response then auto-transitions on next user message
    * @param {string} options.persona - Shared character/voice text for the agent (injected into context automatically by buildContext)
    * @param {Array} options.transitionRules - Optional structured rules for debug visualization [{id, type, condition: {description, fields, evaluate}, result, priority}]
+   * @param {boolean} options.usesThinker - Whether to auto-run ThinkingAdvisorAgent in buildContext (default: false)
+   * @param {string} options.thinkingPrompt - System prompt for the thinker (required if usesThinker is true)
+   * @param {string} options.thinkingModel - LLM model for the thinker (default: claude-sonnet-4-6)
    */
   constructor(options = {}) {
     // Identity
@@ -51,7 +64,11 @@ class CrewMember {
     this.description = options.description || '';
 
     // Guidance (the prompt that defines this crew member's behavior)
-    this.guidance = options.guidance || '';
+    // Skip if subclass defines a getter (e.g. `get guidance()`)
+    const hasGetter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(this), 'guidance')?.get;
+    if (!hasGetter) {
+      this.guidance = options.guidance || '';
+    }
 
     // Model configuration
     this.model = options.model || 'gpt-4';
@@ -100,6 +117,13 @@ class CrewMember {
     // If defined, debug panel shows structured pass/fail evaluation
     // If not defined, debug panel shows raw function code as fallback
     this.transitionRules = options.transitionRules || [];
+
+    // Thinker configuration
+    // When usesThinker is true and thinkingPrompt is set, buildContext()
+    // auto-runs ThinkingAdvisorAgent and injects thinkingAdvice into context.
+    this.usesThinker = options.usesThinker || false;
+    this.thinkingPrompt = options.thinkingPrompt || null;
+    this.thinkingModel = options.thinkingModel || null;
 
     // Context service state (set by dispatcher before use)
     this._userId = null;
@@ -187,8 +211,63 @@ class CrewMember {
   }
 
   /**
-   * Build context for the LLM call
-   * Override in subclasses for custom context building
+   * Build the context string sent to the ThinkingAdvisorAgent.
+   * Default: conversation history only.
+   * Override in domain crews to add profile, state, catalog, etc.
+   *
+   * @param {Object} params - Same params passed to buildContext
+   * @returns {Promise<string>} - Context string for the thinker
+   */
+  async buildThinkerContext(params) {
+    let historyText = '(no history yet)';
+    try {
+      const externalId = params.conversation?.externalId || this._externalConversationId;
+      if (externalId) {
+        const history = await conversationService.getConversationHistory(externalId, 20);
+        if (history && history.length > 0) {
+          historyText = history
+            .map(m => `${m.role}: ${m.content}`)
+            .join('\n');
+        }
+      }
+    } catch (err) {
+      console.warn(`   ⚠️ [${this.name}] Could not fetch history for thinker:`, err.message);
+    }
+
+    return `## Conversation History\n${historyText}`;
+  }
+
+  /**
+   * Called after ThinkingAdvisorAgent returns successfully.
+   * Default: no-op.
+   * Override in domain crews to persist state (e.g., writeContext('advisor_state', ...)).
+   *
+   * @param {Object} advice - Parsed JSON advice from the thinker
+   * @param {Object} params - Same params passed to buildContext
+   * @returns {Promise<void>}
+   */
+  async onThinkingComplete(advice, params) {
+    // No-op by default. Domain crews override to persist state.
+  }
+
+  /**
+   * Return additional context to merge into the LLM context object.
+   * Called after thinker (if any) completes, before returning context.
+   * Default: empty object (no extra context).
+   * Override in domain crews to inject talker-visible data without overriding buildContext.
+   *
+   * @param {Object} params - Same params passed to buildContext
+   * @returns {Promise<Object>} - Object merged into context
+   */
+  async getAdditionalContext(params) {
+    return {};
+  }
+
+  /**
+   * Build context for the LLM call.
+   * Handles persona injection, thinker auto-wiring, and additional context hooks.
+   * Prefer overriding the hooks (buildThinkerContext, onThinkingComplete, getAdditionalContext)
+   * instead of overriding this method directly.
    *
    * @param {Object} params - Context parameters
    * @param {Object} params.conversation - Conversation data
@@ -207,6 +286,42 @@ class CrewMember {
     if (this.persona) {
       context.characterGuidance = this.persona;
     }
+
+    // Auto-wire thinker if configured
+    if (this.usesThinker && this.thinkingPrompt) {
+      const contextStr = await this.buildThinkerContext(params);
+
+      // Auto-inject _thinkingDescription instruction if missing from prompt
+      let enhancedPrompt = this.thinkingPrompt;
+      if (!enhancedPrompt.includes('_thinkingDescription')) {
+        enhancedPrompt += `\n\nIMPORTANT: Your JSON response MUST include a "_thinkingDescription" field as the first key. This is a short English summary (5-15 words) of your decision for this turn, shown in the UI. Use present tense and be specific. Example: "Recommending savings plan based on income" or "Asking about employment status".`;
+      }
+
+      let thinkingAdvice = { fallback: true };
+      try {
+        console.log(`   🧠 [${this.name}] Running thinker with model: ${this.thinkingModel || 'claude-sonnet-4-6'}`);
+        thinkingAdvice = await thinkingAdvisor.think(
+          { thinkingPrompt: enhancedPrompt, context: contextStr },
+          { model: this.thinkingModel || 'claude-sonnet-4-6' }
+        );
+      } catch (err) {
+        console.error(`   ❌ [${this.name}] Thinker error:`, err.message);
+      }
+
+      if (thinkingAdvice.fallback || thinkingAdvice.error) {
+        thinkingAdvice = {
+          _thinkingDescription: 'Analysis complete (fallback)',
+          approach: 'Respond naturally to the user message'
+        };
+      }
+
+      context.thinkingAdvice = thinkingAdvice;
+      await this.onThinkingComplete(thinkingAdvice, params);
+    }
+
+    // Merge additional context from domain crews
+    const extra = await this.getAdditionalContext(params);
+    Object.assign(context, extra);
 
     return context;
   }

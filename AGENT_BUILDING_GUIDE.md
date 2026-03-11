@@ -1,4 +1,4 @@
-# Agent Building Guide v2.1
+# Agent Building Guide v2.3
 
 This guide explains how to add new agents and crew members to the Aspect platform. It is intended to be read by an AI assistant (e.g., Claude Code) so it can build the actual code files from a description.
 
@@ -1161,136 +1161,127 @@ module.exports = MyAgentAssessmentCrew;
 
 ## Part 9: Thinker+Talker Crews (ThinkingAdvisorAgent)
 
-A **thinker+talker** crew uses two LLMs per message: a **thinker** (Claude) that analyzes the conversation and produces structured advice, and a **talker** (GPT-5) that speaks to the user naturally based on that advice. This pattern is useful for crews that need strategic reasoning (e.g., sales conversations, complex assessments) without exposing the reasoning to the user.
+A **thinker+talker** crew uses two LLMs per message: a **thinker** (Claude) that analyzes the conversation and produces structured advice, and a **talker** (GPT-5, Gemini, etc.) that speaks to the user naturally based on that advice. This pattern is useful for crews that need strategic reasoning (e.g., sales conversations, complex assessments) without exposing the reasoning to the user.
 
 ### 9.1 How It Works
 
 ```
 User message → Dispatcher → buildContext() → Thinker (Claude) → advice JSON
-                                            → Talker (GPT-5) sees advice in context → response
+                                            → Talker sees advice in context → response
 ```
 
-The thinker runs inside `buildContext()` — which is already async and executes before the LLM call. No dispatcher changes are needed.
+The thinker runs automatically inside `buildContext()` when `usesThinker` is set. The base `CrewMember` class handles all the wiring — crews only need to override hooks for domain-specific behavior.
 
 ### 9.2 ThinkingAdvisorAgent (Micro-Agent)
 
-Located at `crew/micro-agents/ThinkingAdvisorAgent.js`. A general-purpose reusable micro-agent (like FieldsExtractorAgent). Any crew can use it.
+Located at `crew/micro-agents/ThinkingAdvisorAgent.js`. A general-purpose reusable micro-agent (like FieldsExtractorAgent). Called automatically by `CrewMember.buildContext()` when `usesThinker` is enabled.
 
 The thinker receives **two inputs**:
 - **`thinkingPrompt`** (system prompt) — defines the reasoning task, JSON schema, and strategy rules
 - **`context`** (user message) — the data to reason about (conversation history, profile, domain data)
 
-Nothing else is injected. The only addition is a `jsonOutput` instruction appended by the LLM service ("Respond with valid JSON only").
-
-```js
-const thinkingAdvisor = require('../../../crew/micro-agents/ThinkingAdvisorAgent');
-
-// Inside buildContext():
-const advice = await thinkingAdvisor.think({
-  thinkingPrompt: THINKING_PROMPT,  // System prompt with JSON schema
-  context: thinkerContext            // Domain data + conversation history
-});
-// advice is the parsed JSON object
-```
-
-Options (second argument):
+Options:
 - `model` — default: `'claude-sonnet-4-20250514'`
 - `maxTokens` — default: `1024`
 - `jsonOutput` — default: `true` (parses response as JSON)
 
 ### 9.3 Crew Setup
 
-A thinker crew has three key differences from a standard crew:
-
-**1. `this.usesThinker = true`** — Set this flag in the constructor (after `super()`). This tells the dispatcher to emit a `thinking_advisor_start` SSE event before `buildContext()` runs, so the client shows a thinking indicator ("מנתח את השיחה...") during the 1-2 second thinker wait. Without this flag, the UI appears stalled.
+A thinker crew passes three properties in the constructor:
 
 ```js
+const THINKING_PROMPT = `You are a strategic advisor. Return JSON: { ... }`;
+
 class MyThinkerCrew extends CrewMember {
   constructor() {
     super({
       name: 'my-crew',
       model: 'gpt-5-chat-latest',
-      fieldsToCollect: [],  // Thinker replaces the field extractor
+      fieldsToCollect: [],           // Thinker replaces the field extractor
+      usesThinker: true,             // Enables auto-wiring in buildContext
+      thinkingPrompt: THINKING_PROMPT, // System prompt for the thinker
+      thinkingModel: 'claude-sonnet-4-20250514', // Optional, this is the default
       guidance: `You receive "thinkingAdvice" in context. Follow it...`,
       // ...
     });
-
-    this.usesThinker = true;        // Must be set AFTER super()
-    this.thinkingPrompt = THINKING_PROMPT;  // Store for debug override support
   }
 }
 ```
 
-> **Important:** `usesThinker` and `thinkingPrompt` must be set after the `super()` call, not inside the options object. The base `CrewMember` constructor only stores known properties — arbitrary options are silently ignored.
+These are proper constructor options — no need to set them after `super()`.
 
-**2. `fieldsToCollect: []`** — The thinker replaces the field extractor. The dispatcher skips parallel extraction when `fieldsToCollect` is empty. All data collection happens through conversation analysis by the thinker.
+**`fieldsToCollect: []`** — The thinker replaces the field extractor. The dispatcher skips parallel extraction when `fieldsToCollect` is empty. All data collection happens through conversation analysis by the thinker.
 
-**3. `this.thinkingPrompt`** — Store your thinking prompt constant on the instance. The dispatcher uses this for debug session overrides — it temporarily replaces `this.thinkingPrompt` before `buildContext()` runs, then restores the original after. In `buildContext()`, always use `this.thinkingPrompt` (not the constant directly) so overrides take effect:
+**`thinkingPrompt`** — The dispatcher uses this for debug session overrides — it temporarily replaces `this.thinkingPrompt` before `buildContext()` runs, then restores the original after.
 
-```js
-// ✅ Correct — supports debug overrides
-thinkingAdvisor.think({ thinkingPrompt: this.thinkingPrompt, context: thinkerContext });
+### 9.4 Thinker Hooks (No buildContext Override Needed)
 
-// ❌ Wrong — ignores debug overrides
-thinkingAdvisor.think({ thinkingPrompt: THINKING_PROMPT, context: thinkerContext });
-```
+The base `CrewMember.buildContext()` automatically handles the thinker flow. Domain crews customize behavior via three hooks:
 
-**4. `buildContext()` calls the thinker** — The thinker runs inside `buildContext`, returns structured advice, and the advice is included in the context for the talker.
+#### `buildThinkerContext(params)` — What to send the thinker
 
-### 9.4 buildContext Pattern
+Default: conversation history only. Override to add domain-specific data (profile, state, catalog).
 
 ```js
-async buildContext(params) {
-  const baseContext = await super.buildContext(params);
-
-  // Gather data for the thinker
+async buildThinkerContext(params) {
   const profile = await this.getContext('my_profile', true) || {};
   const prevState = await this.getContext('advisor_state', true) || {};
+
   let historyText = '(no history)';
-  if (this._externalConversationId) {
-    const history = await conversationService.getConversationHistory(
-      this._externalConversationId, 20
-    );
+  const externalId = params.conversation?.externalId || this._externalConversationId;
+  if (externalId) {
+    const conversationService = require('../../../services/conversation.service');
+    const history = await conversationService.getConversationHistory(externalId, 20);
     historyText = history.map(m => `[${m.role.toUpperCase()}]: ${m.content}`).join('\n\n');
   }
 
-  // When thinking prompt is overridden (debug), send only conversation history.
-  // Including previous state / domain data would bias the thinker toward the
-  // original JSON schema, defeating the purpose of the override.
-  const isThinkingOverridden = this.thinkingPrompt !== THINKING_PROMPT;
-
-  const thinkerContext = isThinkingOverridden
-    ? `## Conversation\n${historyText}`
-    : `## Customer\n${JSON.stringify(profile)}\n\n## Previous State\n${JSON.stringify(prevState)}\n\n## Conversation\n${historyText}`;
-
-  // Run the thinker — use this.thinkingPrompt (not the constant) for override support
-  let thinkingAdvice = { fallback: true };
-  try {
-    thinkingAdvice = await thinkingAdvisor.think({
-      thinkingPrompt: this.thinkingPrompt,
-      context: thinkerContext
-    });
-  } catch (err) {
-    console.error('Thinker error:', err.message);
-  }
-
-  // Fallback if thinker failed
-  if (thinkingAdvice.fallback || thinkingAdvice.error) {
-    thinkingAdvice = { nextQuestion: 'Ask a basic question.', /* ... */ };
-  }
-
-  // Persist state for postThinkingTransfer
-  await this.writeContext('advisor_state', {
-    recommendedOffer: thinkingAdvice.recommendedOffer || null,
-    offerAccepted: thinkingAdvice.offerAccepted === true
-  }, true);
-
-  return {
-    ...baseContext,
-    thinkingAdvice,  // Talker sees this in context
-  };
+  return `## Customer\n${JSON.stringify(profile)}\n\n## State\n${JSON.stringify(prevState)}\n\n## Conversation\n${historyText}`;
 }
 ```
+
+#### `onThinkingComplete(advice, params)` — Persist state from the thinker
+
+Default: no-op. Override to save thinker output to context.
+
+```js
+async onThinkingComplete(advice, params) {
+  await this.writeContext('advisor_state', {
+    recommendedOffer: advice.recommendedOffer || null,
+    offerAccepted: advice.offerAccepted === true
+  }, true);
+}
+```
+
+#### `getAdditionalContext(params)` — Extra context for the talker
+
+Default: empty object. Override to inject domain data the talker needs that isn't part of the thinker output.
+
+```js
+async getAdditionalContext(params) {
+  const profile = await this.getContext('my_profile', true) || {};
+  return { customerName: profile.name, role: 'Account Advisor' };
+}
+```
+
+### 9.4.1 The buildContext Flow (for reference)
+
+You rarely need to override `buildContext()` directly. The base class does:
+
+```
+1. Build base context (collectedData, timestamp)
+2. Inject persona as characterGuidance
+3. If usesThinker && thinkingPrompt:
+   a. buildThinkerContext(params) → context string
+   b. Auto-inject _thinkingDescription instruction if missing
+   c. thinkingAdvisor.think() with thinkingModel
+   d. Handle fallback on error
+   e. context.thinkingAdvice = advice
+   f. onThinkingComplete(advice, params)
+4. Merge getAdditionalContext(params) into context
+5. Return context
+```
+
+If you need full control, you can still override `buildContext()` — but prefer the hooks for standard cases.
 
 ### 9.5 Writing a Thinking Prompt
 
@@ -1372,9 +1363,10 @@ The `_thinkingDescription` field from the thinker's JSON response is displayed a
 
 | File | Purpose |
 |------|---------|
+| `crew/base/CrewMember.js` | Base class with thinker auto-wiring and hooks |
 | `crew/micro-agents/ThinkingAdvisorAgent.js` | Reusable thinker micro-agent |
-| `agents/banking-onboarder-v2/crew/main-conversation.crew.js` | Complete example of a thinker+talker crew |
-| `agents/banking-onboarder-v2/offers-catalog.js` | Static data module passed to thinker |
+| `agents/banking-onboarder-v2/crew/advisor.crew.js` | Complete example: thinker hooks, KB, state persistence |
+| `agents/banking-onboarder-v2/offers-catalog.js` | Static data module passed to thinker via `buildThinkerContext` |
 
 ---
 
@@ -1414,11 +1406,18 @@ The `_thinkingDescription` field from the thinker's JSON response is displayed a
 | One-shot transitional crew | `agents/freeda/crew/assessment-closure.crew.js` |
 | Split tools for clarity | `functions/symptom-group-completion.js` |
 | Context persistence | `agents/freeda/crew/profiler.crew.js` |
-| Thinker+talker crew | `agents/banking-onboarder-v2/crew/main-conversation.crew.js` |
+| Thinker+talker crew (hooks pattern) | `agents/banking-onboarder-v2/crew/advisor.crew.js` |
 
 ---
 
 ## Changelog
+
+### v2.3 (2026-03)
+- **Thinker auto-wiring moved to base `CrewMember`** — file-based crews no longer need a `buildContext()` override for thinker support. Set `usesThinker`, `thinkingPrompt`, `thinkingModel` in constructor options.
+- **Three new hooks**: `buildThinkerContext(params)`, `onThinkingComplete(advice, params)`, `getAdditionalContext(params)` — override only what you need.
+- **`DynamicCrewMember` simplified** — removed duplicate thinker wiring (inherits from base). Playground crews unaffected.
+- Updated **Part 9** sections 9.1–9.4 to document hook-based pattern. Old `buildContext()` override pattern replaced.
+- Updated **Key Files** and **Key Examples** references to use `advisor.crew.js` (replaces `main-conversation.crew.js`)
 
 ### v2.2 (2026-03)
 - Added **Part 9: Thinker+Talker Crews** - ThinkingAdvisorAgent micro-agent, `usesThinker` flag, thinker-driven transitions, debug integration
