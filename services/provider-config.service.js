@@ -134,8 +134,8 @@ class ProviderConfigService {
   }
 
   /**
-   * Set a config key in the DB and invalidate cache.
-   * Takes effect immediately.
+   * Set a config key in the DB and update in-memory cache immediately.
+   * LLM services will pick up the new key on the very next call.
    */
   async set(key, value) {
     if (!ALL_KEYS.includes(key)) {
@@ -151,7 +151,17 @@ class ProviderConfigService {
         set: { value: value || null, updatedAt: new Date() },
       });
 
-    this.invalidateCache();
+    // Update in-memory cache directly — no DB re-read needed
+    if (this._cacheLoaded && this._cache) {
+      if (value) {
+        this._cache.set(key, value);
+      } else {
+        this._cache.delete(key);
+      }
+    } else {
+      // Cache not yet loaded — force reload on next access
+      this.invalidateCache();
+    }
   }
 
   /**
@@ -160,7 +170,21 @@ class ProviderConfigService {
   async delete(key) {
     const drizzle = this._getDrizzle();
     await drizzle.delete(providerConfig).where(eq(providerConfig.key, key));
-    this.invalidateCache();
+
+    // Remove from in-memory cache directly
+    if (this._cacheLoaded && this._cache) {
+      this._cache.delete(key);
+    } else {
+      this.invalidateCache();
+    }
+  }
+
+  /**
+   * Pre-load cache from DB. Call once on server startup so getCached()
+   * is always ready before the first LLM request.
+   */
+  async initialize() {
+    await this._ensureCache();
   }
 
   /**

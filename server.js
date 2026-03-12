@@ -3485,6 +3485,10 @@ async function startServer() {
     await db.initialize();
     console.log('✅ Database connected successfully');
 
+    // Pre-load provider config (API keys) into memory
+    await providerConfigService.initialize();
+    console.log('✅ Provider config loaded into memory');
+
     // Seed default assignees for task board
     await taskService.seedDefaultAssignees();
 
