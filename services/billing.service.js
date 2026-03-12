@@ -65,7 +65,7 @@ class BillingService {
 
     const { startTs, endTs } = getCurrentMonthRange();
     // Fetch completions usage (chat/completions, responses)
-    const completionsUrl = `https://api.openai.com/v1/organization/usage/completions?start_time=${startTs}&end_time=${endTs}&bucket_width=1d`;
+    const completionsUrl = `https://api.openai.com/v1/organization/usage/completions?start_time=${startTs}&end_time=${endTs}&bucket_width=1d&group_by[]=model`;
     // Fetch embeddings usage
     const embeddingsUrl = `https://api.openai.com/v1/organization/usage/embeddings?start_time=${startTs}&end_time=${endTs}&bucket_width=1d`;
 
@@ -88,7 +88,8 @@ class BillingService {
         for (const result of (bucket.results || [])) {
           totalInputTokens += result.input_tokens || 0;
           totalOutputTokens += result.output_tokens || 0;
-          const model = result.model_id || 'unknown';
+          const model = result.model_id;
+          if (!model) continue;
           if (!modelBreakdown[model]) modelBreakdown[model] = { input_tokens: 0, output_tokens: 0 };
           modelBreakdown[model].input_tokens += result.input_tokens || 0;
           modelBreakdown[model].output_tokens += result.output_tokens || 0;
@@ -102,7 +103,7 @@ class BillingService {
       totalCostUsd = 0;
       for (const bucket of costsResult.data) {
         for (const result of (bucket.results || [])) {
-          totalCostUsd += (result.amount?.value || 0);
+          totalCostUsd += parseFloat(result.amount?.value || 0);
         }
       }
     }
@@ -137,7 +138,7 @@ class BillingService {
     };
 
     // Fetch usage via the usage report endpoint
-    const usageUrl = `https://api.anthropic.com/v1/organizations/usage_report/messages?start_time=${start}T00:00:00Z&end_time=${end}T23:59:59Z`;
+    const usageUrl = `https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at=${start}`;
 
     let usageData = null;
     let usageError = null;
@@ -160,15 +161,16 @@ class BillingService {
         totalInputTokens += inputTokens;
         totalOutputTokens += outputTokens;
 
-        const model = entry.model || 'unknown';
+        if (entry.cost_usd != null) totalCostUsd += entry.cost_usd;
+
+        // Skip entries without a model name (aggregate rows)
+        const model = entry.model;
+        if (!model) continue;
+
         if (!modelBreakdown[model]) modelBreakdown[model] = { input_tokens: 0, output_tokens: 0, cost_usd: 0 };
         modelBreakdown[model].input_tokens += inputTokens;
         modelBreakdown[model].output_tokens += outputTokens;
-
-        if (entry.cost_usd != null) {
-          totalCostUsd += entry.cost_usd;
-          modelBreakdown[model].cost_usd += entry.cost_usd;
-        }
+        if (entry.cost_usd != null) modelBreakdown[model].cost_usd += entry.cost_usd;
       }
     }
 
@@ -198,7 +200,9 @@ class BillingService {
     if (!billingAccountId || !serviceAccountJson) {
       return {
         provider: 'google',
-        error: 'not_configured',
+        status: 'not_configured',
+        message: 'Google Cloud billing is not configured yet. Requires a service account with Billing Account Viewer role.',
+        setupUrl: 'https://console.cloud.google.com/billing',
       };
     }
 
@@ -235,31 +239,36 @@ class BillingService {
       return { provider: 'google', error: e.message };
     }
 
-    // Parse cost from response
-    const totalCostNis = reportData?.costSummary?.aggregatedCost?.nanos != null
-      ? (reportData.costSummary.aggregatedCost.units || 0) + (reportData.costSummary.aggregatedCost.nanos / 1e9)
-      : null;
+    // Google Money type: units is int64 string, nanos is int32
+    const parseMoney = (money) => {
+      if (!money) return null;
+      return parseInt(money.units || '0', 10) + (money.nanos || 0) / 1e9;
+    };
 
-    const totalCostUsd = reportData?.costSummary?.aggregatedCostInPricingCurrency?.nanos != null
-      ? (reportData.costSummary.aggregatedCostInPricingCurrency.units || 0) + (reportData.costSummary.aggregatedCostInPricingCurrency.nanos / 1e9)
-      : null;
+    // Parse cost from response (local currency, e.g. ILS)
+    const totalCostLocal = parseMoney(reportData?.costSummary?.aggregatedCost);
 
-    // Build service breakdown
+    // Parse cost in pricing currency (USD)
+    const totalCostUsd = parseMoney(reportData?.costSummary?.aggregatedCostInPricingCurrency);
+
+    const currency = reportData?.costSummary?.aggregatedCost?.currencyCode || null;
+
+    // Build service breakdown from billingAccountCosts
     const serviceBreakdown = {};
     for (const entry of (reportData?.billingAccountCosts || [])) {
       const svc = entry.serviceName || entry.service || 'Unknown';
-      const cost = (entry.cost?.units || 0) + ((entry.cost?.nanos || 0) / 1e9);
+      const cost = parseMoney(entry.cost) || 0;
       serviceBreakdown[svc] = (serviceBreakdown[svc] || 0) + cost;
     }
 
     return {
       provider: 'google',
       period: { start, end },
-      totalCostUsd,
-      totalCostNis,
+      totalCostUsd: totalCostUsd ?? totalCostLocal, // fallback to local if no USD
+      totalCostLocal,
       billingAccountId,
       serviceBreakdown,
-      currency: reportData?.costSummary?.aggregatedCost?.currencyCode || 'ILS',
+      currency,
     };
   }
 
