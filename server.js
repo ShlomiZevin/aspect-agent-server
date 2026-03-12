@@ -3334,6 +3334,76 @@ app.get('/api/podcast/default-summary-prompt', (req, res) => {
   res.json({ prompt: DEFAULT_SUMMARY_PROMPT });
 });
 
+/**
+ * POST /api/podcast/episodes/:id/add-to-kb
+ * Add the episode summary to a knowledge base as a text file.
+ *
+ * Body: { kbId: number }
+ */
+app.post('/api/podcast/episodes/:id/add-to-kb', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { kbId } = req.body;
+
+    if (!kbId) return res.status(400).json({ error: 'kbId is required' });
+
+    const episode = await podcastService.getEpisode(id);
+    if (!episode) return res.status(404).json({ error: 'Episode not found' });
+    if (!episode.summary_text) {
+      return res.status(400).json({ error: 'No summary available. Run summarization first.' });
+    }
+
+    const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
+    if (!kb) return res.status(404).json({ error: 'Knowledge base not found' });
+
+    const baseName = (episode.audio_file_name || episode.title || 'episode').replace(/\.[^.]+$/, '');
+    const filename = `${baseName}-summary.md`;
+    const buffer = Buffer.from(episode.summary_text, 'utf-8');
+    const mimetype = 'text/markdown';
+    const size = buffer.length;
+
+    console.log(`📤 Adding podcast summary to KB ${kbId}: ${filename} (${size} bytes)`);
+
+    let openaiFileId = null;
+    let googleDocumentId = null;
+    let originalFileUrl = null;
+
+    if (kb.provider === 'openai' || kb.provider === 'both') {
+      const result = await llmService.addFileToVectorStore(buffer, filename, kb.vectorStoreId);
+      openaiFileId = result.fileId;
+      console.log(`✅ Uploaded to OpenAI: ${openaiFileId}`);
+    }
+
+    if (kb.provider === 'google' || kb.provider === 'both') {
+      const result = await googleKBService.uploadFile(kb.googleCorpusId, buffer, filename, mimetype);
+      googleDocumentId = result.documentId;
+      console.log(`✅ Uploaded to Google: ${googleDocumentId}`);
+    }
+
+    try {
+      originalFileUrl = await storageService.uploadFile(buffer, filename, mimetype, kbId);
+    } catch (gcsErr) {
+      console.warn(`⚠️ GCS backup failed (non-critical): ${gcsErr.message}`);
+    }
+
+    const dbFile = await kbService.addFile(
+      parseInt(kbId),
+      filename,
+      size,
+      'md',
+      { openaiFileId, googleDocumentId, originalFileUrl },
+      [],
+      'completed'
+    );
+
+    console.log(`✅ Podcast summary added to KB - DB ID: ${dbFile.id}`);
+    res.json({ success: true, file: { id: dbFile.id, fileName: filename, fileSize: size } });
+  } catch (err) {
+    console.error('❌ Add to KB error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Admin: Billing
 
