@@ -8,6 +8,7 @@
  */
 
 const https = require('https');
+const providerConfigService = require('./provider-config.service');
 
 /**
  * Helper: perform an HTTPS GET request and return parsed JSON.
@@ -278,8 +279,8 @@ class BillingService {
    * Fetch billing data from all providers.
    */
   async getAllBilling() {
-    const openaiApiKey = process.env.OPENAI_ADMIN_API_KEY || process.env.OPENAI_API_KEY;
-    const anthropicAdminApiKey = process.env.ANTHROPIC_ADMIN_API_KEY;
+    const openaiApiKey = providerConfigService.getCached('openai_api_key') || process.env.OPENAI_ADMIN_API_KEY || process.env.OPENAI_API_KEY;
+    const anthropicAdminApiKey = providerConfigService.getCached('anthropic_admin_api_key') || process.env.ANTHROPIC_ADMIN_API_KEY;
 
     const [openai, anthropic, google] = await Promise.allSettled([
       openaiApiKey ? this.getOpenAIBilling(openaiApiKey) : Promise.resolve({ provider: 'openai', error: 'API key not configured' }),

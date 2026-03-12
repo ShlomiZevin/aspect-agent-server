@@ -15,19 +15,25 @@
 // Cached SDK module and client
 let GoogleGenAI = null;
 let client = null;
+let clientApiKey = null;
+
+const providerConfigService = require('./provider-config.service');
 
 /**
  * Lazily initialize the Google GenAI client
  * Uses dynamic import() for ESM compatibility
+ * Recreates client if API key has changed.
  */
 async function getClient() {
-  if (client) return client;
+  const currentKey = providerConfigService.getCached('gemini_api_key') || process.env.GEMINI_API_KEY;
+  if (client && clientApiKey === currentKey) return client;
 
   // Dynamic import for ESM module
   const genai = await import('@google/genai');
   GoogleGenAI = genai.GoogleGenAI;
 
-  client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  client = new GoogleGenAI({ apiKey: currentKey });
+  clientApiKey = currentKey;
   console.log('✅ Google GenAI client initialized');
   return client;
 }

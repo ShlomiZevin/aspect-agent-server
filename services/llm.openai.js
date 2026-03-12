@@ -3,6 +3,7 @@ const { toFile } = require('openai/uploads');
 const { File } = require('node:buffer');
 const functionRegistry = require('./function-registry');
 const conversationService = require('./conversation.service');
+const providerConfigService = require('./provider-config.service');
 
 // Polyfill for File in Node.js < 20
 if (typeof globalThis.File === 'undefined') {
@@ -21,7 +22,8 @@ if (typeof globalThis.File === 'undefined') {
  */
 class OpenAIService {
   constructor() {
-    this.client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    this._client = null;
+    this._clientApiKey = null;
 
     // You can configure these in .env if needed
     this.model = process.env.OPENAI_MODEL || 'gpt-4';
@@ -32,6 +34,15 @@ class OpenAIService {
 
     // Reference to function registry for executing function calls
     this.functionRegistry = functionRegistry;
+  }
+
+  get client() {
+    const currentKey = providerConfigService.getCached('openai_api_key') || process.env.OPENAI_API_KEY;
+    if (currentKey !== this._clientApiKey || !this._client) {
+      this._clientApiKey = currentKey;
+      this._client = new OpenAI({ apiKey: currentKey });
+    }
+    return this._client;
   }
 
   /**

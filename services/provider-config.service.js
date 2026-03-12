@@ -73,6 +73,20 @@ class ProviderConfigService {
   }
 
   /**
+   * Get the effective value for a config key synchronously from in-memory cache.
+   * Returns null if cache is not yet loaded (before first async get/list call).
+   * Priority: DB value > env variable > null
+   */
+  getCached(key) {
+    const dbValue = this._cache?.get(key);
+    if (dbValue !== undefined && dbValue !== null && dbValue !== '') {
+      return dbValue;
+    }
+    const envKey = ENV_FALLBACKS[key];
+    return envKey ? (process.env[envKey] || null) : null;
+  }
+
+  /**
    * Get the effective value for a config key.
    * Priority: DB value > env variable > null
    */

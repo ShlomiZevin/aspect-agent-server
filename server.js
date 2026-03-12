@@ -3432,6 +3432,51 @@ app.get('/api/admin/billing', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Provider Config (API Keys) admin routes
+
+/**
+ * GET /api/admin/provider-config
+ * List all API keys with sources and masked values.
+ */
+app.get('/api/admin/provider-config', async (req, res) => {
+  try {
+    const configs = await providerConfigService.list();
+    res.json(configs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/admin/provider-config/:key
+ * Set a config value in DB (overrides env var).
+ */
+app.post('/api/admin/provider-config/:key', async (req, res) => {
+  try {
+    const { key } = req.params;
+    const { value } = req.body;
+    await providerConfigService.set(key, value);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/**
+ * DELETE /api/admin/provider-config/:key
+ * Remove DB override — falls back to env var.
+ */
+app.delete('/api/admin/provider-config/:key', async (req, res) => {
+  try {
+    const { key } = req.params;
+    await providerConfigService.delete(key);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Initialize database and start server
 async function startServer() {
   try {

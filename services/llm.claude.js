@@ -1,6 +1,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const path = require('path');
+const providerConfigService = require('./provider-config.service');
 
 /**
  * Claude/Anthropic LLM Service
@@ -12,12 +13,20 @@ const path = require('path');
  */
 class ClaudeService {
   constructor() {
-    this.client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY
-    });
+    this._client = null;
+    this._clientApiKey = null;
 
     // Default model - can be overridden per request
     this.model = process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514';
+  }
+
+  get client() {
+    const currentKey = providerConfigService.getCached('anthropic_api_key') || process.env.ANTHROPIC_API_KEY;
+    if (currentKey !== this._clientApiKey || !this._client) {
+      this._clientApiKey = currentKey;
+      this._client = new Anthropic({ apiKey: currentKey });
+    }
+    return this._client;
   }
 
   /**
