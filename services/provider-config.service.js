@@ -19,6 +19,7 @@ const { eq } = require('drizzle-orm');
 // Keys that map to environment variable fallbacks
 const ENV_FALLBACKS = {
   openai_api_key:                    'OPENAI_API_KEY',
+  openai_admin_api_key:              'OPENAI_ADMIN_API_KEY',
   openai_org_id:                     'OPENAI_ORG_ID',
   openai_project_id:                 'OPENAI_PROJECT_ID',
   anthropic_api_key:                 'ANTHROPIC_API_KEY',
@@ -35,6 +36,7 @@ const ALL_KEYS = Object.keys(ENV_FALLBACKS);
 // Sensitive keys — value is masked in GET responses
 const SENSITIVE_KEYS = new Set([
   'openai_api_key',
+  'openai_admin_api_key',
   'anthropic_api_key',
   'anthropic_admin_api_key',
   'gemini_api_key',

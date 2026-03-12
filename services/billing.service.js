@@ -279,7 +279,7 @@ class BillingService {
    * Fetch billing data from all providers.
    */
   async getAllBilling() {
-    const openaiApiKey = providerConfigService.getCached('openai_api_key') || process.env.OPENAI_ADMIN_API_KEY || process.env.OPENAI_API_KEY;
+    const openaiApiKey = providerConfigService.getCached('openai_admin_api_key') || process.env.OPENAI_ADMIN_API_KEY || process.env.OPENAI_API_KEY;
     const anthropicAdminApiKey = providerConfigService.getCached('anthropic_admin_api_key') || process.env.ANTHROPIC_ADMIN_API_KEY;
 
     const [openai, anthropic, google] = await Promise.allSettled([
