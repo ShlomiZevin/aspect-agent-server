@@ -723,10 +723,13 @@ class DispatcherService {
     // Get already collected fields
     const collectedFields = await agentContextService.getCollectedFields(conversationId);
 
-    // Check if all fields already collected (skip extraction - but not in form mode, which supports corrections)
+    // Check if extraction is needed
+    // Skip only when: all fields collected AND crew doesn't request re-extraction via getFieldsForExtraction
     const isFormMode = crew.extractionMode === 'form';
     const missingFields = await agentContextService.getMissingFields(conversationId, crew.fieldsToCollect);
-    if (missingFields.length === 0 && !isFormMode) {
+    const activeFields = crew.getFieldsForExtraction(collectedFields);
+    const hasReExtractFields = activeFields.some(f => collectedFields[f.name] != null);
+    if (missingFields.length === 0 && !isFormMode && !hasReExtractFields) {
       console.log('✅ All fields already collected, skipping extraction');
       return { newFields: {}, allCollected: collectedFields, remainingFields: [] };
     }
@@ -745,11 +748,10 @@ class DispatcherService {
 
     // Use getFieldsForExtraction to let crews control which fields are active
     // In form mode, send all active fields (supports corrections like rejected→approved)
-    // In conversational mode, only send missing active fields (prevents re-extraction)
-    const activeFields = crew.getFieldsForExtraction(collectedFields);
+    // In conversational mode, send missing fields + any re-extract fields the crew explicitly included
     const fieldsStillNeeded = isFormMode
       ? activeFields
-      : activeFields.filter(f => !collectedFields[f.name]);
+      : activeFields.filter(f => !collectedFields[f.name] || hasReExtractFields);
 
     // Run extractor
     console.log(`🔍 Running fields extractor for ${fieldsStillNeeded.length} fields (mode: ${crew.extractionMode || 'conversational'})`);
@@ -762,12 +764,14 @@ class DispatcherService {
 
     // Identify newly extracted fields
     // Filter out empty/null/undefined values - these are not real extractions
-    // In form mode, allow overwrites — getFieldsForExtraction already controls which fields
-    // are active, so if a field is returned, the crew wants it (re-)evaluated
+    // Allow overwrites when: form mode OR crew explicitly re-requested the field via getFieldsForExtraction
+    const reExtractFieldNames = new Set(activeFields.filter(f => collectedFields[f.name] != null).map(f => f.name));
     const newFields = {};
     for (const [field, value] of Object.entries(result.extractedFields)) {
       if (value !== null && value !== undefined && value !== '') {
-        if (!collectedFields[field] || (isFormMode && collectedFields[field] !== value)) {
+        const isNew = !collectedFields[field];
+        const isOverwrite = collectedFields[field] !== value && (isFormMode || reExtractFieldNames.has(field));
+        if (isNew || isOverwrite) {
           newFields[field] = value;
         }
       }

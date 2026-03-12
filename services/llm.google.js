@@ -314,6 +314,8 @@ class GoogleService {
           maxOutputTokens: effectiveMaxTokens,
           temperature: 0.7,
           tools: geminiTools.length > 0 ? geminiTools : undefined,
+          // Disable Gemini's built-in thinking — we use our own thinker (ThinkingAdvisorAgent)
+          thinkingConfig: isThinkingModel ? { thinkingBudget: 0 } : undefined,
         },
       });
 
