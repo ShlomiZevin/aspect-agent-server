@@ -27,6 +27,8 @@ const boardEventsService = require('./services/boardEvents.service');
 const demoService = require('./services/demo.service');
 const podcastService = require('./services/podcast.service');
 const transcriptionService = require('./services/transcription.service');
+const billingService = require('./services/billing.service');
+const providerConfigService = require('./services/provider-config.service');
 
 // WhatsApp bridge
 const { handleIncomingMessage } = require('./whatsapp/bridge.service');
@@ -3330,6 +3332,23 @@ app.post('/api/podcast/episodes/:id/summarize', async (req, res) => {
  */
 app.get('/api/podcast/default-summary-prompt', (req, res) => {
   res.json({ prompt: DEFAULT_SUMMARY_PROMPT });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin: Billing
+
+/**
+ * GET /api/admin/billing
+ * Fetch current month billing from all providers.
+ */
+app.get('/api/admin/billing', async (req, res) => {
+  try {
+    const data = await billingService.getAllBilling();
+    res.json(data);
+  } catch (err) {
+    console.error('Billing fetch error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

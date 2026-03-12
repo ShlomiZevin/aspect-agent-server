@@ -305,6 +305,14 @@ const demoMockups = pgTable('demo_mockups', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Provider configuration - API keys and settings stored in DB (override env vars)
+const providerConfig = pgTable('provider_config', {
+  id: serial('id').primaryKey(),
+  key: varchar('key', { length: 100 }).notNull().unique(),
+  value: text('value'),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -326,4 +334,5 @@ module.exports = {
   taskComments,
   taskNotifications,
   demoMockups,
+  providerConfig,
 };
