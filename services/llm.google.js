@@ -293,10 +293,15 @@ class GoogleService {
       const messageText = typeof message === 'string' ? message : String(message);
 
       // Fetch conversation history from DB
+      // Drop the last message if it's from the user — it's the current turn,
+      // which will be sent separately via sendMessageStream()
       const conversationService = require('./conversation.service');
       let historyMessages = [];
       try {
         const history = await conversationService.getConversationHistory(conversationId, 50);
+        if (history.length > 0 && history[history.length - 1].role === 'user') {
+          history.pop();
+        }
         historyMessages = this._convertHistoryToGemini(history);
       } catch (err) {
         console.warn('⚠️ Could not load conversation history from DB:', err.message);
@@ -314,7 +319,7 @@ class GoogleService {
           maxOutputTokens: effectiveMaxTokens,
           temperature: 0.7,
           tools: geminiTools.length > 0 ? geminiTools : undefined,
-          // Disable Gemini's built-in thinking — we use our own thinker (ThinkingAdvisorAgent)
+          // Thinking models: disable internal reasoning to prevent THOUGHT leakage
           thinkingConfig: isThinkingModel ? { thinkingBudget: 0 } : undefined,
         },
       });
@@ -330,8 +335,11 @@ class GoogleService {
       let functionCalls = [];
 
       // Process initial stream
+      // Gemini 2.5 sometimes outputs "THOUGHT:..." as plain text — buffer and strip it
       let fileSearchResultsEmitted = false;
       let chunkCount = 0;
+      let thoughtBuffer = '';        // buffer to detect THOUGHT prefix
+      let thoughtStripped = false;   // once determined, stop buffering
       for await (const chunk of stream) {
         chunkCount++;
 
@@ -350,10 +358,49 @@ class GoogleService {
           console.log(`📊 Google usage: prompt=${usage.promptTokenCount}, output=${usage.candidatesTokenCount}, thoughts=${usage.thoughtsTokenCount || 0}, total=${usage.totalTokenCount}`);
         }
 
-        if (chunk.text) {
-          fullReply += chunk.text;
-          yield chunk.text;
+        // Extract text from chunk (filter SDK thought parts if present)
+        let chunkText = '';
+        const parts = chunk.candidates?.[0]?.content?.parts || [];
+        if (parts.length > 0) {
+          for (const part of parts) {
+            if (part.thought) continue;
+            if (part.text) chunkText += part.text;
+          }
+        } else if (chunk.text) {
+          chunkText = chunk.text;
         }
+
+        if (chunkText) {
+          // Strip "THOUGHT:..." prefix that Gemini 2.5 sometimes outputs as plain text
+          if (!thoughtStripped) {
+            thoughtBuffer += chunkText;
+            // Wait until we have enough text to check (or stream is ending)
+            if (thoughtBuffer.length >= 8 || finishReason) {
+              const trimmed = thoughtBuffer.trimStart();
+              if (/^THOUGHT[\s:]/i.test(trimmed)) {
+                // Find where the actual response starts (after double newline)
+                const splitIdx = trimmed.search(/\n[^\n\s*THOUGHT]/);
+                if (splitIdx !== -1) {
+                  const cleanText = trimmed.substring(splitIdx + 1);
+                  console.log(`🧹 Stripped THOUGHT prefix (${splitIdx} chars)`);
+                  fullReply += cleanText;
+                  yield cleanText;
+                  thoughtStripped = true;
+                }
+                // else: still buffering, haven't found end of thought section yet
+              } else {
+                // No THOUGHT prefix — flush buffer normally
+                fullReply += thoughtBuffer;
+                yield thoughtBuffer;
+                thoughtStripped = true;
+              }
+            }
+          } else {
+            fullReply += chunkText;
+            yield chunkText;
+          }
+        }
+
         if (chunk.functionCalls && chunk.functionCalls.length > 0) {
           functionCalls.push(...chunk.functionCalls);
         }
@@ -373,6 +420,28 @@ class GoogleService {
             yield { type: 'file_search_results', files };
             fileSearchResultsEmitted = true;
           }
+        }
+      }
+
+      // Flush any remaining buffered text (thought section that never ended)
+      if (!thoughtStripped && thoughtBuffer.length > 0) {
+        const trimmed = thoughtBuffer.trimStart();
+        if (/^THOUGHT[\s:]/i.test(trimmed)) {
+          // Best effort: find last paragraph as the actual response
+          const lastPara = trimmed.lastIndexOf('\n\n');
+          if (lastPara !== -1) {
+            const cleanText = trimmed.substring(lastPara + 2);
+            console.log(`🧹 Stripped THOUGHT prefix from final buffer`);
+            fullReply += cleanText;
+            yield cleanText;
+          } else {
+            // Can't find response — yield everything as fallback
+            fullReply += thoughtBuffer;
+            yield thoughtBuffer;
+          }
+        } else {
+          fullReply += thoughtBuffer;
+          yield thoughtBuffer;
         }
       }
 
@@ -453,7 +522,16 @@ class GoogleService {
 
         // Process response to function results
         for await (const chunk of responseStream) {
-          if (chunk.text) {
+          const parts = chunk.candidates?.[0]?.content?.parts || [];
+          if (parts.length > 0) {
+            for (const part of parts) {
+              if (part.thought) continue;
+              if (part.text) {
+                fullReply += part.text;
+                yield part.text;
+              }
+            }
+          } else if (chunk.text) {
             fullReply += chunk.text;
             yield chunk.text;
           }

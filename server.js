@@ -1306,6 +1306,11 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             thinkingService.addFunctionCallStep(conversationId, funcName, chunk.params, description);
           }
 
+          // Handle function result with description - add as thinking step
+          if (chunk.type === 'function_result' && chunk.result?.description) {
+            thinkingService.addProcessingStep(conversationId, chunk.result.description);
+          }
+
           // Handle file search results - show which KB files were referenced
           if (chunk.type === 'file_search_results' && chunk.files?.length > 0) {
             const topFiles = chunk.files.slice(0, 3);
@@ -1519,6 +1524,11 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
               chunk.params,
               description
             );
+          }
+
+          // Handle function result with description - add as thinking step
+          if (chunk.type === 'function_result' && chunk.result?.description) {
+            thinkingService.addProcessingStep(conversationId, chunk.result.description);
           }
 
           // Send function call events as special SSE messages

@@ -118,10 +118,15 @@ class ClaudeService {
       const systemText = typeof systemPrompt === 'string' ? systemPrompt : String(systemPrompt);
 
       // Fetch conversation history from DB
+      // Drop the last message if it's from the user — it's the current turn,
+      // which is appended separately in the messages array
       const conversationService = require('./conversation.service');
       let historyMessages = [];
       try {
         const history = await conversationService.getConversationHistory(conversationId, 50);
+        if (history.length > 0 && history[history.length - 1].role === 'user') {
+          history.pop();
+        }
         historyMessages = history.map(m => ({
           role: m.role,
           content: m.content

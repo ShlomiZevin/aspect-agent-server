@@ -753,12 +753,21 @@ class DispatcherService {
       ? activeFields
       : activeFields.filter(f => !collectedFields[f.name] || hasReExtractFields);
 
+    // For re-extract fields, remove them from collectedFields so the extractor
+    // treats them as new (otherwise it sees them as "already collected" and skips)
+    const collectedForExtractor = { ...collectedFields };
+    for (const f of activeFields) {
+      if (collectedFields[f.name] != null) {
+        delete collectedForExtractor[f.name];
+      }
+    }
+
     // Run extractor
     console.log(`🔍 Running fields extractor for ${fieldsStillNeeded.length} fields (mode: ${crew.extractionMode || 'conversational'})`);
     const result = await fieldsExtractor.extract({
       recentMessages,
       fieldsToCollect: fieldsStillNeeded,
-      collectedFields,
+      collectedFields: collectedForExtractor,
       extractionMode: crew.extractionMode
     });
 

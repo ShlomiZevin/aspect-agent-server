@@ -457,9 +457,14 @@ class OpenAIService {
       }
 
       // Fetch conversation history from our DB (not OpenAI)
+      // Drop the last message if it's from the user — it's the current turn,
+      // which is appended separately as currentUserMessage
       let historyMessages = [];
       try {
         const history = await conversationService.getConversationHistory(conversationId, 50);
+        if (history.length > 0 && history[history.length - 1].role === 'user') {
+          history.pop();
+        }
         historyMessages = history.map(m => ({
           role: m.role,
           // user and developer roles use input_text, assistant uses output_text
