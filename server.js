@@ -2271,12 +2271,13 @@ app.post('/api/admin/optimization-jobs', async (req, res) => {
 // Get all users with filters
 app.get('/api/admin/users', async (req, res) => {
   try {
-    const { source, tenant, subscription, search, limit, offset } = req.query;
+    const { source, tenant, subscription, search, limit, offset, agentName } = req.query;
     const filters = {
       source,
       tenant,
       subscription,
       search,
+      agentName,
       limit: limit ? parseInt(limit, 10) : 100,
       offset: offset ? parseInt(offset, 10) : 0,
     };

@@ -1,5 +1,5 @@
 const db = require('./db.pg');
-const { users, conversations, messages, thinkingSteps } = require('../db/schema');
+const { users, conversations, messages, thinkingSteps, agents } = require('../db/schema');
 const { eq, and, or, like, desc, asc, sql, count, inArray } = require('drizzle-orm');
 
 /**
@@ -26,6 +26,7 @@ class AdminService {
    * @param {string} filters.tenant - Filter by tenant
    * @param {string} filters.subscription - Filter by subscription (demo/pro)
    * @param {string} filters.search - Search in phone, email, name, externalId
+   * @param {string} filters.agentName - Filter by agent (url_slug or name)
    * @param {number} filters.limit - Max results (default 100)
    * @param {number} filters.offset - Offset for pagination
    * @returns {Promise<Object>} - { users: Array, total: number }
@@ -33,7 +34,7 @@ class AdminService {
   async getUsers(filters = {}) {
     if (!this.drizzle) this.initialize();
 
-    const { source, tenant, subscription, search, limit = 100, offset = 0 } = filters;
+    const { source, tenant, subscription, search, agentName, limit = 100, offset = 0 } = filters;
 
     // Build WHERE conditions
     const conditions = [];
@@ -59,6 +60,17 @@ class AdminService {
           like(users.name, searchPattern),
           like(users.externalId, searchPattern)
         )
+      );
+    }
+
+    if (agentName) {
+      const agentSlug = agentName.toLowerCase();
+      conditions.push(
+        sql`${users.id} IN (
+          SELECT DISTINCT c.user_id FROM conversations c
+          JOIN agents a ON a.id = c.agent_id
+          WHERE LOWER(a.url_slug) = ${agentSlug} OR LOWER(a.name) = ${agentSlug}
+        )`
       );
     }
 
