@@ -497,30 +497,45 @@ class AdminService {
    * Get admin dashboard stats
    * @returns {Promise<Object>} - Stats object
    */
-  async getStats() {
+  async getStats(agentName = null) {
     if (!this.drizzle) this.initialize();
 
-    const [totalUsers] = await this.drizzle.select({ count: count() }).from(users);
+    const agentFilter = agentName
+      ? sql`id IN (
+          SELECT DISTINCT c.user_id FROM conversations c
+          JOIN agents a ON a.id = c.agent_id
+          WHERE LOWER(a.url_slug) = ${agentName.toLowerCase()} OR LOWER(a.name) = ${agentName.toLowerCase()}
+        )`
+      : undefined;
+
+    const agentConvFilter = agentName
+      ? sql`agent_id IN (SELECT id FROM agents WHERE LOWER(url_slug) = ${agentName.toLowerCase()} OR LOWER(name) = ${agentName.toLowerCase()})`
+      : undefined;
+
+    const [totalUsers] = await this.drizzle
+      .select({ count: count() })
+      .from(users)
+      .where(agentFilter);
 
     const [webUsers] = await this.drizzle
       .select({ count: count() })
       .from(users)
-      .where(eq(users.source, 'web'));
+      .where(agentFilter ? and(eq(users.source, 'web'), agentFilter) : eq(users.source, 'web'));
 
     const [whatsappUsers] = await this.drizzle
       .select({ count: count() })
       .from(users)
-      .where(eq(users.source, 'whatsapp'));
+      .where(agentFilter ? and(eq(users.source, 'whatsapp'), agentFilter) : eq(users.source, 'whatsapp'));
 
     const [proUsers] = await this.drizzle
       .select({ count: count() })
       .from(users)
-      .where(eq(users.subscription, 'pro'));
+      .where(agentFilter ? and(eq(users.subscription, 'pro'), agentFilter) : eq(users.subscription, 'pro'));
 
     const [totalConversations] = await this.drizzle
       .select({ count: count() })
       .from(conversations)
-      .where(eq(conversations.status, 'active'));
+      .where(agentConvFilter ? and(eq(conversations.status, 'active'), agentConvFilter) : eq(conversations.status, 'active'));
 
     return {
       totalUsers: totalUsers?.count || 0,

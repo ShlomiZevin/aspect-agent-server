@@ -2293,7 +2293,8 @@ app.get('/api/admin/users', async (req, res) => {
 // Get admin dashboard stats
 app.get('/api/admin/stats', async (req, res) => {
   try {
-    const stats = await adminService.getStats();
+    const { agentName } = req.query;
+    const stats = await adminService.getStats(agentName || null);
     res.json(stats);
   } catch (err) {
     console.error('❌ Error fetching stats:', err.message);
