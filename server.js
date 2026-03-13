@@ -3188,6 +3188,32 @@ app.delete('/api/podcast/episodes/:id', async (req, res) => {
 });
 
 /**
+ * POST /api/voice/transcribe
+ * Transcribe a short audio clip from the chat "Press to Talk" button.
+ * Accepts multipart/form-data with a single `audio` file field.
+ * Returns { text: "..." } synchronously (short recordings only — up to ~2 min).
+ */
+app.post('/api/voice/transcribe', uploadAudio.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No audio file uploaded' });
+    }
+
+    const { buffer, originalname, mimetype } = req.file;
+    console.log(`🎙️ Voice transcribe request: ${originalname} (${(buffer.length / 1024).toFixed(0)}KB, ${mimetype})`);
+
+    const text = await transcriptionService.transcribeWithOpenAI(buffer, originalname || 'recording.webm', mimetype || 'audio/webm');
+
+    console.log(`✅ Voice transcription complete: "${text.substring(0, 80)}..."`);
+    res.json({ text: text.trim() });
+
+  } catch (err) {
+    console.error('❌ Voice transcription error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /api/podcast/episodes/:id/transcribe
  * Start async transcription. Returns immediately with status 'pending'.
  * Client should poll GET /api/podcast/episodes/:id for status updates.
