@@ -192,7 +192,7 @@ read ECONNRESET
 
 ## Testing Guide
 
-See [TEST-ZER4U-DATA.md](TEST-ZER4U-DATA.md) for complete testing instructions.
+See [TEST-ZER4U-DATA.md](../reference/TEST-ZER4U-DATA.md) for complete testing instructions.
 
 **Quick Test:**
 1. Go to https://aspect-agents.web.app

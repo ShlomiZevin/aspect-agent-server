@@ -199,7 +199,7 @@ class CrewEditorService {
 
     if (mode === 'generate') {
       // Full prompt — load building guide
-      const guidePath = path.join(__dirname, '..', 'AGENT_BUILDING_GUIDE.md');
+      const guidePath = path.join(__dirname, '..', 'docs', 'guides', 'AGENT_BUILDING_GUIDE.md');
       let guideContent = '';
       try {
         guideContent = fs.readFileSync(guidePath, 'utf8');

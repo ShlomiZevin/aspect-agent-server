@@ -177,7 +177,7 @@ Zer4U schema has text/integer mismatches in join columns. The SQL generator auto
 ```sql
 sales."מס.חנות SALES"::integer = stores."מס.חנות"
 ```
-See `FIXES-TYPE-CASTING.md` for details.
+See `docs/reference/FIXES-TYPE-CASTING.md` for details.
 
 ## Query Optimizer (Admin Feature)
 
@@ -331,7 +331,7 @@ cloud_sql_proxy -instances=aspect-agents:europe-west1:aspect-agents-db=tcp:5432
 | Claude API errors | Check `ANTHROPIC_API_KEY`; ensure model name starts with `claude-` |
 | Streaming not working | Check CORS, verify `text/event-stream` content type |
 | Query timeout immediately | Check `QUERY_TIMEOUT_MS` env var (default: 15000ms) |
-| SQL type mismatch | See `FIXES-TYPE-CASTING.md` — ensure SQL generator adds `::integer` casts |
+| SQL type mismatch | See `docs/reference/FIXES-TYPE-CASTING.md` — ensure SQL generator adds `::integer` casts |
 
 ## Related Projects
 

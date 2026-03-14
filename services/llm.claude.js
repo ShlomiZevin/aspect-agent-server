@@ -312,8 +312,8 @@ class ClaudeService {
 
     try {
       // Load context documents
-      const guideContent = this._loadContextFile('AGENT_BUILDING_GUIDE.md');
-      const architectureContent = this._loadContextFile('DYNAMIC_CREW_ARCHITECTURE.md');
+      const guideContent = this._loadContextFile('docs/guides/AGENT_BUILDING_GUIDE.md');
+      const architectureContent = this._loadContextFile('docs/guides/DYNAMIC_CREW_ARCHITECTURE.md');
       const exampleCrew = this._loadExampleCrew();
 
       // Build the system prompt
