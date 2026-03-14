@@ -25,9 +25,10 @@ const ENV_FALLBACKS = {
   anthropic_api_key:                 'ANTHROPIC_API_KEY',
   anthropic_admin_api_key:           'ANTHROPIC_ADMIN_API_KEY',
   gemini_api_key:                    'GEMINI_API_KEY',
+  gcp_billing_account_id:            'GCP_BILLING_ACCOUNT_ID',
   gcp_billing_project_id:            'GCP_BILLING_PROJECT_ID',
   gcp_billing_dataset:               'GCP_BILLING_DATASET',
-  gcp_billing_service_account_json:  'GCP_BILLING_SERVICE_ACCOUNT_JSON',
+  gcp_billing_service_account_json:  'GCP_SERVICE_ACCOUNT_JSON',
 };
 
 // All known config keys (in display order)

@@ -191,19 +191,34 @@ class BillingService {
 
   /**
    * Fetch Google Cloud billing for the current month.
-   * Uses Cloud Billing v1beta API with a service account.
-   * Requires: GCP_BILLING_ACCOUNT_ID and GCP_SERVICE_ACCOUNT_JSON env vars.
+   * Queries BigQuery billing export data via the googleapis BigQuery client.
+   *
+   * Required config (via providerConfigService or env vars):
+   *   gcp_billing_project_id  — GCP project that hosts the BigQuery dataset
+   *   gcp_billing_dataset     — BigQuery dataset name (e.g. "billing_export")
+   *   gcp_billing_account_id  — Billing account ID (e.g. "01FD2D-A3AC57-1B721E")
+   *   gcp_billing_service_account_json — Service account JSON key
+   *
+   * One-time setup: enable "Standard usage cost" export in GCP Console →
+   *   Billing → Billing export → BigQuery export.
    */
   async getGoogleBilling() {
-    const billingAccountId = process.env.GCP_BILLING_ACCOUNT_ID;
-    const serviceAccountJson = process.env.GCP_SERVICE_ACCOUNT_JSON;
+    const projectId = providerConfigService.getCached('gcp_billing_project_id');
+    const dataset = providerConfigService.getCached('gcp_billing_dataset');
+    const billingAccountId = providerConfigService.getCached('gcp_billing_account_id');
+    const serviceAccountJson = providerConfigService.getCached('gcp_billing_service_account_json');
 
-    if (!billingAccountId || !serviceAccountJson) {
+    if (!projectId || !dataset || !serviceAccountJson) {
       return {
         provider: 'google',
         status: 'not_configured',
-        message: 'Google Cloud billing is not configured yet. Requires a service account with Billing Account Viewer role.',
+        message: 'Google Cloud billing requires BigQuery billing export. Configure: project ID, dataset name, billing account ID, and service account JSON.',
         setupUrl: 'https://console.cloud.google.com/billing',
+        missingKeys: [
+          ...(!projectId ? ['gcp_billing_project_id'] : []),
+          ...(!dataset ? ['gcp_billing_dataset'] : []),
+          ...(!serviceAccountJson ? ['gcp_billing_service_account_json'] : []),
+        ],
       };
     }
 
@@ -213,64 +228,94 @@ class BillingService {
     try {
       credentials = JSON.parse(serviceAccountJson);
     } catch (e) {
-      return { provider: 'google', error: 'Invalid GCP_SERVICE_ACCOUNT_JSON: not valid JSON' };
+      return { provider: 'google', error: 'Invalid service account JSON: not valid JSON' };
     }
 
     const auth = new google.auth.GoogleAuth({
       credentials,
-      scopes: ['https://www.googleapis.com/auth/cloud-billing.readonly'],
+      scopes: ['https://www.googleapis.com/auth/bigquery.readonly'],
     });
 
+    const bigquery = google.bigquery({ version: 'v2', auth });
+
     const { start, end } = getCurrentMonthRange();
+    // End filter: first day of next month (exclusive upper bound)
+    const now = new Date();
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const endExclusive = nextMonth.toISOString().split('T')[0];
 
-    // Use Cloud Billing v1beta reports API
-    const authClient = await auth.getClient();
-    const accessToken = await authClient.getAccessToken();
+    // Table name: gcp_billing_export_v1_XXXXXX_YYYYYY_ZZZZZZ
+    const tableSuffix = billingAccountId
+      ? billingAccountId.replace(/-/g, '_')
+      : '*';
+    const fullTable = `\`${projectId}.${dataset}.gcp_billing_export_v1_${tableSuffix}\``;
 
-    const accountName = `billingAccounts/${billingAccountId}`;
-    const url = `https://cloudbilling.googleapis.com/v1beta/${accountName}/reports?dateRange.startDate.year=${start.slice(0,4)}&dateRange.startDate.month=${parseInt(start.slice(5,7))}&dateRange.startDate.day=1&dateRange.endDate.year=${end.slice(0,4)}&dateRange.endDate.month=${parseInt(end.slice(5,7))}&dateRange.endDate.day=${parseInt(end.slice(8,10))}`;
+    const query = `
+      SELECT
+        service.description AS service_name,
+        SUM(cost) AS total_cost,
+        SUM((SELECT SUM(c.amount) FROM UNNEST(credits) c)) AS total_credits,
+        currency
+      FROM ${fullTable}
+      WHERE usage_start_time >= TIMESTAMP('${start}')
+        AND usage_start_time < TIMESTAMP('${endExclusive}')
+      GROUP BY service_name, currency
+      ORDER BY total_cost DESC
+    `;
 
-    let reportData;
     try {
-      reportData = await httpsGet(url, {
-        'Authorization': `Bearer ${accessToken.token}`,
-        'Content-Type': 'application/json',
+      const response = await bigquery.jobs.query({
+        projectId,
+        requestBody: {
+          query,
+          useLegacySql: false,
+          timeoutMs: 30000,
+        },
       });
+
+      const rows = response.data.rows || [];
+      const fields = response.data.schema?.fields || [];
+
+      // Parse BigQuery response rows
+      let totalCost = 0;
+      let totalCredits = 0;
+      let currency = null;
+      const serviceBreakdown = {};
+
+      for (const row of rows) {
+        const serviceName = row.f[0]?.v || 'Unknown';
+        const cost = parseFloat(row.f[1]?.v || '0');
+        const credits = parseFloat(row.f[2]?.v || '0');
+        const cur = row.f[3]?.v || null;
+
+        totalCost += cost;
+        totalCredits += credits;
+        if (cur) currency = cur;
+
+        serviceBreakdown[serviceName] = {
+          cost: Math.round(cost * 100) / 100,
+          credits: Math.round(credits * 100) / 100,
+          net: Math.round((cost + credits) * 100) / 100, // credits are negative
+        };
+      }
+
+      const netCost = totalCost + totalCredits; // credits are negative amounts
+
+      return {
+        provider: 'google',
+        period: { start, end },
+        totalCostUsd: Math.round(totalCost * 100) / 100,
+        totalCredits: Math.round(totalCredits * 100) / 100,
+        netCostUsd: Math.round(netCost * 100) / 100,
+        billingAccountId,
+        currency,
+        serviceBreakdown,
+        rowCount: rows.length,
+      };
     } catch (e) {
-      return { provider: 'google', error: e.message };
+      const msg = e.response?.data?.error?.message || e.message;
+      return { provider: 'google', error: msg };
     }
-
-    // Google Money type: units is int64 string, nanos is int32
-    const parseMoney = (money) => {
-      if (!money) return null;
-      return parseInt(money.units || '0', 10) + (money.nanos || 0) / 1e9;
-    };
-
-    // Parse cost from response (local currency, e.g. ILS)
-    const totalCostLocal = parseMoney(reportData?.costSummary?.aggregatedCost);
-
-    // Parse cost in pricing currency (USD)
-    const totalCostUsd = parseMoney(reportData?.costSummary?.aggregatedCostInPricingCurrency);
-
-    const currency = reportData?.costSummary?.aggregatedCost?.currencyCode || null;
-
-    // Build service breakdown from billingAccountCosts
-    const serviceBreakdown = {};
-    for (const entry of (reportData?.billingAccountCosts || [])) {
-      const svc = entry.serviceName || entry.service || 'Unknown';
-      const cost = parseMoney(entry.cost) || 0;
-      serviceBreakdown[svc] = (serviceBreakdown[svc] || 0) + cost;
-    }
-
-    return {
-      provider: 'google',
-      period: { start, end },
-      totalCostUsd: totalCostUsd ?? totalCostLocal, // fallback to local if no USD
-      totalCostLocal,
-      billingAccountId,
-      serviceBreakdown,
-      currency,
-    };
   }
 
   // ─── Combined ────────────────────────────────────────────────────────────────
