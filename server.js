@@ -2271,12 +2271,13 @@ app.post('/api/admin/optimization-jobs', async (req, res) => {
 // Get all users with filters
 app.get('/api/admin/users', async (req, res) => {
   try {
-    const { source, tenant, subscription, search, limit, offset } = req.query;
+    const { source, tenant, subscription, search, limit, offset, agentName } = req.query;
     const filters = {
       source,
       tenant,
       subscription,
       search,
+      agentName,
       limit: limit ? parseInt(limit, 10) : 100,
       offset: offset ? parseInt(offset, 10) : 0,
     };
@@ -2292,7 +2293,8 @@ app.get('/api/admin/users', async (req, res) => {
 // Get admin dashboard stats
 app.get('/api/admin/stats', async (req, res) => {
   try {
-    const stats = await adminService.getStats();
+    const { agentName } = req.query;
+    const stats = await adminService.getStats(agentName || null);
     res.json(stats);
   } catch (err) {
     console.error('❌ Error fetching stats:', err.message);
@@ -3181,6 +3183,32 @@ app.delete('/api/podcast/episodes/:id', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error('❌ Podcast delete error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/voice/transcribe
+ * Transcribe a short audio clip from the chat "Press to Talk" button.
+ * Accepts multipart/form-data with a single `audio` file field.
+ * Returns { text: "..." } synchronously (short recordings only — up to ~2 min).
+ */
+app.post('/api/voice/transcribe', uploadAudio.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No audio file uploaded' });
+    }
+
+    const { buffer, originalname, mimetype } = req.file;
+    console.log(`🎙️ Voice transcribe request: ${originalname} (${(buffer.length / 1024).toFixed(0)}KB, ${mimetype})`);
+
+    const text = await transcriptionService.transcribeWithOpenAI(buffer, originalname || 'recording.webm', mimetype || 'audio/webm');
+
+    console.log(`✅ Voice transcription complete: "${text.substring(0, 80)}..."`);
+    res.json({ text: text.trim() });
+
+  } catch (err) {
+    console.error('❌ Voice transcription error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

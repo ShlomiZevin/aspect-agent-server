@@ -1,5 +1,5 @@
 const db = require('./db.pg');
-const { users, conversations, messages, thinkingSteps } = require('../db/schema');
+const { users, conversations, messages, thinkingSteps, agents } = require('../db/schema');
 const { eq, and, or, like, desc, asc, sql, count, inArray } = require('drizzle-orm');
 
 /**
@@ -26,6 +26,7 @@ class AdminService {
    * @param {string} filters.tenant - Filter by tenant
    * @param {string} filters.subscription - Filter by subscription (demo/pro)
    * @param {string} filters.search - Search in phone, email, name, externalId
+   * @param {string} filters.agentName - Filter by agent (url_slug or name)
    * @param {number} filters.limit - Max results (default 100)
    * @param {number} filters.offset - Offset for pagination
    * @returns {Promise<Object>} - { users: Array, total: number }
@@ -33,7 +34,7 @@ class AdminService {
   async getUsers(filters = {}) {
     if (!this.drizzle) this.initialize();
 
-    const { source, tenant, subscription, search, limit = 100, offset = 0 } = filters;
+    const { source, tenant, subscription, search, agentName, limit = 100, offset = 0 } = filters;
 
     // Build WHERE conditions
     const conditions = [];
@@ -59,6 +60,17 @@ class AdminService {
           like(users.name, searchPattern),
           like(users.externalId, searchPattern)
         )
+      );
+    }
+
+    if (agentName) {
+      const agentSlug = agentName.toLowerCase();
+      conditions.push(
+        sql`${users.id} IN (
+          SELECT DISTINCT c.user_id FROM conversations c
+          JOIN agents a ON a.id = c.agent_id
+          WHERE LOWER(a.url_slug) = ${agentSlug} OR LOWER(a.name) = ${agentSlug}
+        )`
       );
     }
 
@@ -485,30 +497,45 @@ class AdminService {
    * Get admin dashboard stats
    * @returns {Promise<Object>} - Stats object
    */
-  async getStats() {
+  async getStats(agentName = null) {
     if (!this.drizzle) this.initialize();
 
-    const [totalUsers] = await this.drizzle.select({ count: count() }).from(users);
+    const agentFilter = agentName
+      ? sql`id IN (
+          SELECT DISTINCT c.user_id FROM conversations c
+          JOIN agents a ON a.id = c.agent_id
+          WHERE LOWER(a.url_slug) = ${agentName.toLowerCase()} OR LOWER(a.name) = ${agentName.toLowerCase()}
+        )`
+      : undefined;
+
+    const agentConvFilter = agentName
+      ? sql`agent_id IN (SELECT id FROM agents WHERE LOWER(url_slug) = ${agentName.toLowerCase()} OR LOWER(name) = ${agentName.toLowerCase()})`
+      : undefined;
+
+    const [totalUsers] = await this.drizzle
+      .select({ count: count() })
+      .from(users)
+      .where(agentFilter);
 
     const [webUsers] = await this.drizzle
       .select({ count: count() })
       .from(users)
-      .where(eq(users.source, 'web'));
+      .where(agentFilter ? and(eq(users.source, 'web'), agentFilter) : eq(users.source, 'web'));
 
     const [whatsappUsers] = await this.drizzle
       .select({ count: count() })
       .from(users)
-      .where(eq(users.source, 'whatsapp'));
+      .where(agentFilter ? and(eq(users.source, 'whatsapp'), agentFilter) : eq(users.source, 'whatsapp'));
 
     const [proUsers] = await this.drizzle
       .select({ count: count() })
       .from(users)
-      .where(eq(users.subscription, 'pro'));
+      .where(agentFilter ? and(eq(users.subscription, 'pro'), agentFilter) : eq(users.subscription, 'pro'));
 
     const [totalConversations] = await this.drizzle
       .select({ count: count() })
       .from(conversations)
-      .where(eq(conversations.status, 'active'));
+      .where(agentConvFilter ? and(eq(conversations.status, 'active'), agentConvFilter) : eq(conversations.status, 'active'));
 
     return {
       totalUsers: totalUsers?.count || 0,
