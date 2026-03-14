@@ -150,6 +150,33 @@ async function seed() {
       console.log('✅ Banking Onboarder V2 created successfully (ID:', insertedV2.id, ')');
     }
 
+    // Create TikTok Comedy agent
+    console.log('Creating TikTok Comedy agent...');
+
+    const tiktokAgent = {
+      name: 'TikTok Comedy',
+      domain: 'content-creation',
+      urlSlug: 'tiktok',
+      description: 'Comedy brainstorming partner for TikTok content - parody, satire, caricature, and real-life comedy situations. Hebrew-first.',
+      promptId: null,
+      config: {
+        model: process.env.OPENAI_MODEL || 'gpt-4o',
+        vectorStoreId: null,
+        features: ['comedy_brainstorming', 'script_writing', 'character_development'],
+        supportedLanguages: ['he']
+      },
+      isActive: true
+    };
+
+    const existingTiktok = await drizzle.select().from(agents).where(eq(agents.name, 'TikTok Comedy'));
+
+    if (existingTiktok.length > 0) {
+      console.log('✅ TikTok Comedy already exists (ID:', existingTiktok[0].id, ')');
+    } else {
+      const [insertedTiktok] = await drizzle.insert(agents).values(tiktokAgent).returning();
+      console.log('✅ TikTok Comedy created successfully (ID:', insertedTiktok.id, ')');
+    }
+
     console.log('');
     console.log('🎉 Seed completed successfully!');
     process.exit(0);

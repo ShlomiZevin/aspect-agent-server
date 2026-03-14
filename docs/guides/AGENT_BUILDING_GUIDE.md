@@ -109,6 +109,9 @@ Reference the `AgentConfig` interface in `aspect-react-client/src/types/agent.ts
 ```ts
 import type { AgentConfig } from '../types';
 
+// Use VITE_API_URL env var with production fallback
+const BASE_URL = import.meta.env.VITE_API_URL || 'https://aspect-agent-server-1018338671074.europe-west1.run.app';
+
 export const bankingConfig: AgentConfig = {
   // Identity - agentName MUST match the DB agent name exactly
   agentName: 'Banking Pro',
@@ -116,7 +119,7 @@ export const bankingConfig: AgentConfig = {
   storagePrefix: 'banking_',
 
   // Server
-  baseURL: 'https://your-server-url.run.app',  // or 'http://localhost:3001' for dev
+  baseURL: BASE_URL,
 
   // Page meta
   pageTitle: 'Banking Pro - AI Finance Assistant',
@@ -132,11 +135,15 @@ export const bankingConfig: AgentConfig = {
   welcomeMessage: 'I can help you with budgeting, investments, and financial planning.',
   inputPlaceholder: 'Ask about your finances...',
 
+  // Quick questions - two formats supported:
+  // 1. Inline text: { icon: '💰', text: 'Display text', question: 'Full question to send' }
+  // 2. i18n keys:   { icon: '💰', textKey: 'quick.agent.budget.text', questionKey: 'quick.agent.budget.question' }
   quickQuestions: [
-    { text: 'How should I budget?', icon: '💰' },
-    { text: 'Investment basics', icon: '📈' },
+    { icon: '💰', text: 'How should I budget?', question: 'Help me create a monthly budget' },
+    { icon: '📈', text: 'Investment basics', question: 'What are the basics of investing?' },
   ],
 
+  // Thinking steps - random rotation, each sub-array is one possible sequence
   thinkingSteps: [
     ['Analyzing your question...', 'Checking financial data...', 'Preparing advice...'],
     ['Processing request...', 'Reviewing information...', 'Generating response...'],
@@ -149,28 +156,44 @@ export const bankingConfig: AgentConfig = {
     hasLogoUpload: false,        // true if agent supports logo upload
     hasFileUpload: false,        // true if agent supports file upload
     hasChatHistory: true,        // true to show chat history sidebar
+    showFullJourney: false,      // true to show full crew journey instead of current + next
   },
 
   // Theming - must match a CSS class in styles/themes/
+  // Use 'theme-default' if no custom theme is needed
   themeClass: 'theme-banking',
 };
 ```
 
-### 1.6 Client: Create the Agent Page
+### 1.6 Client: Export from agents/index.ts
 
-Create `aspect-react-client/src/pages/BankingPage.tsx`:
+Add the config export to `aspect-react-client/src/agents/index.ts`:
+
+```ts
+export { bankingConfig } from './banking.config';
+```
+
+### 1.7 Client: Create the Agent Page
+
+Create `aspect-react-client/src/pages/BankingPage.tsx`.
+
+**Important:** The page must wrap the chat with the full provider hierarchy: `ThemeProvider → LanguageProvider → UserProvider → AgentProvider → ChatProvider`. The page should also support embed mode via `?embed=true` query param or iframe detection.
 
 ```tsx
-import { bankingConfig } from '../agents/banking.config';
+import { AgentProvider, ThemeProvider, UserProvider, ChatProvider } from '../context';
+import { LanguageProvider } from '../context/LanguageContext';
+import { AppLayout } from '../components/layout';
+import { ChatContainer } from '../components/chat';
+import { bankingConfig } from '../agents';
 import { useDocumentMeta } from '../hooks';
-import { ThemeProvider } from '../context/ThemeContext';
-import { UserProvider } from '../context/UserContext';
-import { AgentProvider } from '../context/AgentContext';
-import { ChatProvider } from '../context/ChatContext';
-import { AppLayout } from '../components/layout/AppLayout';
-import { ChatContainer } from '../components/chat/ChatContainer';
+import { useSearchParams } from 'react-router-dom';
 
 export function BankingPage() {
+  const [searchParams] = useSearchParams();
+  // Support embed mode via URL param or iframe detection
+  const isEmbed = searchParams.get('embed') === 'true' ||
+    (typeof window !== 'undefined' && window.self !== window.top);
+
   useDocumentMeta({
     title: bankingConfig.pageTitle,
     favicon: bankingConfig.favicon,
@@ -179,33 +202,46 @@ export function BankingPage() {
 
   return (
     <ThemeProvider storagePrefix={bankingConfig.storagePrefix}>
-      <UserProvider storagePrefix={bankingConfig.storagePrefix} baseURL={bankingConfig.baseURL}>
-        <AgentProvider config={bankingConfig}>
-          <ChatProvider>
-            <AppLayout>
-              {/* Pass showCrewSelector={true} if agent has crew members */}
-              <ChatContainer showCrewSelector={true} />
-            </AppLayout>
-          </ChatProvider>
-        </AgentProvider>
-      </UserProvider>
+      <LanguageProvider storagePrefix={bankingConfig.storagePrefix}>
+        <UserProvider storagePrefix={bankingConfig.storagePrefix} baseURL={bankingConfig.baseURL}>
+          <AgentProvider config={bankingConfig}>
+            <ChatProvider>
+              <AppLayout>
+                <ChatContainer showCrewSelector={!isEmbed} />
+              </AppLayout>
+            </ChatProvider>
+          </AgentProvider>
+        </UserProvider>
+      </LanguageProvider>
     </ThemeProvider>
   );
 }
 ```
 
-### 1.7 Client: Add Route
+### 1.8 Client: Export from pages/index.ts
 
-In `aspect-react-client/src/App.tsx`, add the route:
+Add the page export to `aspect-react-client/src/pages/index.ts`:
 
-```tsx
-import { BankingPage } from './pages/BankingPage';
-
-// Inside <Routes>:
-<Route path="/banking" element={<BankingPage />} />
+```ts
+export { BankingPage } from './BankingPage';
 ```
 
-### 1.8 Client: Create Theme (Optional)
+### 1.9 Client: Add Routes
+
+In `aspect-react-client/src/App.tsx`:
+
+1. Add the import (pages are imported from the barrel `./pages`):
+```tsx
+import { ..., BankingPage, ... } from './pages';
+```
+
+2. Add both routes inside `<Routes>` — the base route and the conversation history route:
+```tsx
+<Route path="/banking" element={<BankingPage />} />
+<Route path="/banking/conversations/:conversationId" element={<BankingPage />} />
+```
+
+### 1.10 Client: Create Theme (Optional)
 
 Create `aspect-react-client/src/styles/themes/<agent-name>-theme.css`:
 
