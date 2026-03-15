@@ -251,6 +251,20 @@ class CrewMember {
   }
 
   /**
+   * Called after the field extractor completes, before the LLM response is flushed.
+   * Override to derive additional fields from extracted values (e.g., infer gender from name).
+   * Returned fields are saved to collected fields and count for ditchIfCollected.
+   * Default: empty object (no derived fields).
+   *
+   * @param {Object} newFields - Fields extracted in this turn { name: value }
+   * @param {Object} allFields - All collected fields including new ones
+   * @returns {Promise<Object>} - Additional fields to save { fieldName: value } or empty {}
+   */
+  async onFieldsExtracted(newFields, allFields) {
+    return {};
+  }
+
+  /**
    * Return additional context to merge into the LLM context object.
    * Called after thinker (if any) completes, before returning context.
    * Default: empty object (no extra context).
@@ -279,6 +293,7 @@ class CrewMember {
   async buildContext(params) {
     const context = {
       collectedData: params.collectedData || {},
+      collectedFields: params.collectedFields || {},
       timestamp: new Date().toISOString()
     };
 

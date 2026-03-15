@@ -252,7 +252,26 @@ class DispatcherService {
           break;
         }
 
-        // No transfer → yield field events, flush buffer, continue streaming
+        // Check if any ditchIfCollected field was newly extracted
+        // If so, ditch the buffered response and re-run with updated fields in context
+        const ditchFields = crew.fieldsToCollect.filter(f => f.ditchIfCollected);
+        const shouldDitch = ditchFields.some(f => f.name in extractorResult.newFields);
+
+        if (shouldDitch) {
+          const ditchedFieldNames = ditchFields.filter(f => f.name in extractorResult.newFields).map(f => f.name);
+          console.log(`🔄 ditchIfCollected triggered for fields [${ditchedFieldNames.join(', ')}], discarding response and re-running`);
+
+          // Yield field events before re-run so client sees the update
+          for (const [field, value] of Object.entries(extractorResult.newFields)) {
+            yield { type: 'field_extracted', field, value };
+          }
+
+          // Re-run crew stream — it will pick up the newly collected fields from DB
+          yield* this._streamCrew(crew, params);
+          return;
+        }
+
+        // No transfer, no ditch → yield field events, flush buffer, continue streaming
         for (const [field, value] of Object.entries(extractorResult.newFields)) {
           yield { type: 'field_extracted', field, value };
         }
@@ -281,6 +300,22 @@ class DispatcherService {
       shouldTransfer = await crew.preMessageTransfer(extractorResult.allCollected);
 
       if (!shouldTransfer) {
+        // Check ditchIfCollected (same logic as in-loop)
+        const ditchFields = crew.fieldsToCollect.filter(f => f.ditchIfCollected);
+        const shouldDitch = ditchFields.some(f => f.name in extractorResult.newFields);
+
+        if (shouldDitch) {
+          const ditchedFieldNames = ditchFields.filter(f => f.name in extractorResult.newFields).map(f => f.name);
+          console.log(`🔄 ditchIfCollected (post-loop) triggered for fields [${ditchedFieldNames.join(', ')}], re-running`);
+
+          for (const [field, value] of Object.entries(extractorResult.newFields)) {
+            yield { type: 'field_extracted', field, value };
+          }
+
+          yield* this._streamCrew(crew, params);
+          return;
+        }
+
         // Yield field events and flush buffer
         for (const [field, value] of Object.entries(extractorResult.newFields)) {
           yield { type: 'field_extracted', field, value };
@@ -826,6 +861,16 @@ class DispatcherService {
       if (Object.keys(newFields).length > 0) {
         console.log(`📝 Extracted ${Object.keys(newFields).length} new fields:`, Object.keys(newFields).join(', '));
       }
+    }
+
+    // Post-extraction hook: let crews derive additional fields from extracted values
+    // (e.g., infer gender from user_name)
+    const derivedFields = await crew.onFieldsExtracted(fieldsToUpdate, allCollected);
+    if (derivedFields && Object.keys(derivedFields).length > 0) {
+      console.log(`🔗 Derived ${Object.keys(derivedFields).length} fields from extraction:`, Object.keys(derivedFields).join(', '));
+      allCollected = await agentContextService.updateCollectedFields(conversationId, derivedFields);
+      // Merge derived fields into newFields so ditchIfCollected sees them
+      Object.assign(fieldsToUpdate, derivedFields);
     }
 
     return {
