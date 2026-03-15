@@ -92,7 +92,7 @@ class DispatcherService {
    * @param {string} params.conversationId - External conversation ID
    * @param {string} params.agentName - Name of the agent
    * @param {string} params.overrideCrewMember - Optional crew override
-   * @param {boolean} params.useKnowledgeBase - Whether client wants KB (toggle)
+   * @param {Object} params.kbOverrides - Debug panel KB overrides: { crewName: string[] }
    * @param {Object} params.agentConfig - Agent config from database (provider-specific details)
    * @returns {AsyncGenerator} - Stream of response chunks
    */
@@ -348,13 +348,13 @@ class DispatcherService {
       message,
       conversationId,
       agentName,
-      useKnowledgeBase = false,
       agentConfig = {},
       promptOverrides = {}, // Session overrides: { crewName: prompt }
       modelOverrides = {},  // Session overrides: { crewName: modelName }
       personaOverride,      // Session override: string (agent-level, applies to all crews)
       kbOverrides = {},     // Session override: { crewName: string[] } - same pattern as modelOverrides
       thinkingPromptOverrides = {}, // Session override: { crewName: thinkingPrompt }
+      thinkerDisabled = {},         // Session override: { crewName: true } to disable thinker
       agentId               // Agent DB ID for KB resolver
     } = params;
 
@@ -384,6 +384,14 @@ class DispatcherService {
     // ========== RESOLVE THINKING PROMPT ==========
     // Session override replaces the crew's thinkingPrompt for this request
     const originalThinkingPrompt = crew.thinkingPrompt;
+    const originalUsesThinker = crew.usesThinker;
+
+    // Debug panel can disable thinker entirely for this session
+    if (crew.usesThinker && thinkerDisabled[crew.name]) {
+      crew.usesThinker = false;
+      console.log(`   🧠 Thinker DISABLED by debug override for "${crew.name}"`);
+    }
+
     if (crew.usesThinker && thinkingPromptOverrides[crew.name]) {
       crew.thinkingPrompt = thinkingPromptOverrides[crew.name];
       console.log(`   🧠 Thinking prompt override applied for "${crew.name}"`);
@@ -403,9 +411,10 @@ class DispatcherService {
       metadata: {}
     });
 
-    // Restore original persona and thinking prompt
+    // Restore original persona, thinking prompt, and thinker flag
     crew.persona = originalPersona;
     crew.thinkingPrompt = originalThinkingPrompt;
+    crew.usesThinker = originalUsesThinker;
 
     // Emit thinking advisor step if context contains thinking advice
     if (context.thinkingAdvice && !context.thinkingAdvice.error) {
@@ -515,17 +524,26 @@ class DispatcherService {
     }
 
     // ========== RESOLVE KNOWLEDGE BASE ==========
-    // Priority: debug session override > crew file config
+    // Priority: debug session override > context dynamic selection > crew file config
     // Model-aware: openai→storeIds, google→corpusIds, anthropic→skip
     const crewKBEnabled = crew.knowledgeBase?.enabled !== false;
 
-    // Determine KB sources: debug panel override > crew file sources
+    // Determine KB sources: debug panel override > context dynamic > crew file sources
     // Uses same pattern as modelOverrides: { crewName: sources[] }
     // Check key presence (not length) so an empty array [] means "disable KB for this session"
     const hasKBOverride = kbOverrides != null && crew.name in kbOverrides;
-    const kbSources = hasKBOverride
+    const hasDynamicKB = Array.isArray(context.knowledgeBaseSources) && context.knowledgeBaseSources.length > 0;
+    const rawKBSources = hasKBOverride
       ? (kbOverrides[crew.name] || [])
-      : (crew.knowledgeBase?.sources || []);
+      : hasDynamicKB
+        ? context.knowledgeBaseSources
+        : (crew.knowledgeBase?.sources || []);
+    // Normalize: sources can be strings or { name: string } objects
+    const kbSources = rawKBSources.map(s => typeof s === 'string' ? s : s.name);
+
+    if (hasDynamicKB && !hasKBOverride) {
+      console.log(`🧠 [${crew.name}] Dynamic KB selection: [${kbSources.join(', ')}]`);
+    }
 
     if (hasKBOverride) {
       console.log(`🔧 [${crew.name}] KB override active: [${kbSources.join(', ') || 'none — KB disabled'}]`);
@@ -533,7 +551,7 @@ class DispatcherService {
 
     let resolvedKB = null;
 
-    if (useKnowledgeBase && crewKBEnabled && kbSources.length > 0 && agentId) {
+    if (crewKBEnabled && kbSources.length > 0 && agentId) {
       const modelProvider = kbResolver.getModelProvider(resolvedModel);
 
       if (modelProvider === 'anthropic') {
@@ -552,7 +570,7 @@ class DispatcherService {
           console.log(`📚 [${crew.name}] KB resolved for ${modelProvider}: ${JSON.stringify(resolvedKB.storeIds || resolvedKB.corpusIds)}`);
         }
       }
-    } else if (!hasKBOverride && useKnowledgeBase && crewKBEnabled && kbSources.length === 0 && crew.knowledgeBase?.storeId) {
+    } else if (!hasKBOverride && crewKBEnabled && kbSources.length === 0 && crew.knowledgeBase?.storeId) {
       // Legacy fallback: crew still has old-style storeId hardcoded (not yet migrated)
       console.log(`⚠️ [${crew.name}] Using legacy storeId (not yet migrated to sources[])`);
       resolvedKB = {

@@ -258,7 +258,8 @@ class GoogleService {
 
     // Gemini 2.5 "thinking" models use part of maxOutputTokens for internal
     // reasoning. Boost the limit so visible output isn't starved.
-    const isThinkingModel = model.includes('2.5-pro') || model.includes('2.5-flash');
+    // Note: flash-lite is NOT a thinking model despite the 2.5 prefix.
+    const isThinkingModel = (model.includes('2.5-pro') || model.includes('2.5-flash')) && !model.includes('lite');
     const effectiveMaxTokens = isThinkingModel
       ? Math.max(maxTokens * 8, 8192)
       : maxTokens;
@@ -313,8 +314,12 @@ class GoogleService {
         console.warn('⚠️ Could not load conversation history from DB:', err.message);
       }
 
-      const toolCount = geminiTools.length > 0 ? geminiTools[0].functionDeclarations?.length || 0 : 0;
-      console.log(`🤖 Google streaming with prompt (${systemPrompt.length} chars), ${toolCount} tools, ${historyMessages.length} history messages`);
+      const funcDeclCount = geminiTools.reduce((n, t) => n + (t.functionDeclarations?.length || 0), 0);
+      const hasFileSearch = geminiTools.some(t => t.fileSearch);
+      console.log(`🤖 Google streaming with prompt (${systemPrompt.length} chars), ${funcDeclCount} function tools, fileSearch: ${hasFileSearch}, ${historyMessages.length} history messages`);
+      if (hasFileSearch) {
+        console.log(`🔍 Google tools payload:`, JSON.stringify(geminiTools, null, 2));
+      }
 
       // Create chat session with the new SDK
       const chat = ai.chats.create({

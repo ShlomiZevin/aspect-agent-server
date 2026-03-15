@@ -445,6 +445,7 @@ class CrewMember {
       source: this.source || 'file',
       usesThinker: this.usesThinker || false,
       thinkingPrompt: this.thinkingPrompt || null,
+      thinkingModel: this.thinkingModel || null,
     };
   }
 }

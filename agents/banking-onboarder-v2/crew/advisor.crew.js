@@ -60,6 +60,8 @@ Return JSON format:
     "creditCard": "pending|accepted|declined"
   },
 
+  "relevantKBs": ["pick up to 2 from the available list — only the ones most relevant for THIS turn"],
+
   "offerAccepted": false,
   "readyToTransfer": false,
   "reasoning": "why this approach fits this user"
@@ -76,6 +78,24 @@ Exception: if the customer explicitly asks you to recommend or shows clear impat
 - Layer 1 (account plan): match offer to customer. One specific recommendation with a customer-specific reason. Must be agreed before layer 2.
 - Layer 2 (card + checkbook): offer ONLY after layer 1 agreed. Card: always offer. Checkbook: based on need.
 - Layer 3 (deposits/loans): don't close here. Mention as value arguments only.
+
+## KNOWLEDGE BASE SELECTION
+You must select which knowledge bases (up to 5) are relevant for this turn. The talker will search only the ones you pick.
+Available KBs:
+- "Handling principles lean" — how to handle different user types and situations
+- "Banking terms" — banking jargon definitions and explanations
+- "IL Banks marketing" — competitor bank profiles and marketing info
+- "Operational" — KYC policies, consent processes, identity verification
+- "Customers data mockup" — demo customer personas for testing
+- "products" — bank product catalog (accounts, cards, plans, pricing)
+- "IL banks directory" — phone numbers, websites of all banks in Israel
+
+Pick based on what the conversation needs NOW. Examples:
+- Profiling stage → "Handling principles lean"
+- User asks about a banking term → "Banking terms"
+- Ready to recommend → "products", "Handling principles lean"
+- User mentions another bank → "IL Banks marketing", "IL banks directory"
+- KYC/consent questions → "Operational"
 
 ## STRATEGY RULES
 - Lead with value. Price is last resort.
@@ -213,9 +233,15 @@ ${historyText}`;
   }
 
   /**
-   * Persist advisor state after each thinker run.
+   * Persist advisor state and set dynamic KB selection after each thinker run.
    */
   async onThinkingComplete(advice, params) {
+    // Dynamic KB selection: thinker picks relevant KBs for this turn
+    // Set on params so buildContext returns it in context for the dispatcher
+    if (Array.isArray(advice.relevantKBs) && advice.relevantKBs.length > 0) {
+      this._dynamicKBs = advice.relevantKBs.slice(0, 2);
+    }
+
     await this.writeContext('advisor_state', {
       recommendedOffer: advice.recommendedOffer || null,
       offerPitch: advice.offerPitch || '',
@@ -245,12 +271,20 @@ ${historyText}`;
    */
   async getAdditionalContext(params) {
     const profile = await this.getContext('onboarding_profile', true) || {};
-    return {
+    const extra = {
       role: 'Account Advisor',
       customerName: profile.name || null,
       customerGender: profile.gender || null,
       customerAge: profile.age || null
     };
+
+    // Pass thinker's KB selection to dispatcher via context
+    if (this._dynamicKBs) {
+      extra.knowledgeBaseSources = this._dynamicKBs;
+      this._dynamicKBs = null; // Clear after use — per-request only
+    }
+
+    return extra;
   }
 
   /**

@@ -1188,7 +1188,7 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, useKnowledgeBase, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, personaOverride, kbOverrides, thinkingPromptOverrides } = req.body;
+  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkerDisabled } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -1265,13 +1265,6 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         thinkingService.addStep(conversationId, 'crew_routing', `Routing to: ${crewInfo.displayName}`);
       }
 
-      // Add KB access step if using knowledge base
-      // For crew-based routing, the storeId is configured in the crew member file
-      if (useKnowledgeBase && crewInfo?.hasKnowledgeBase) {
-        const kbSources = crewInfo.knowledgeBase?.sources || [];
-        const kbDisplayName = kbSources.length > 0 ? kbSources.join(', ') : null;
-        thinkingService.addKnowledgeBaseStep(conversationId, kbDisplayName);
-      }
 
       // Track if a pre-transfer transition happened during dispatch
       let inlineTransition = null;
@@ -1282,7 +1275,6 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         conversationId,
         agentName: agentNameToUse,
         overrideCrewMember,
-        useKnowledgeBase,
         agentConfig,
         debug,
         promptOverrides: promptOverrides || {},
@@ -1290,6 +1282,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         personaOverride: personaOverride || undefined,
         kbOverrides: kbOverrides || {},
         thinkingPromptOverrides: thinkingPromptOverrides || {},
+        thinkerDisabled: thinkerDisabled || {},
         agentId: agent?.id || null
       })) {
         // Check if chunk is a function call event (object) or text (string)
@@ -1499,13 +1492,10 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
 
     } else {
       // ========== LEGACY NON-CREW ROUTING ==========
-      // Add KB access step if using knowledge base
-      if (useKnowledgeBase && agentConfig.vectorStoreId) {
-        thinkingService.addKnowledgeBaseStep(conversationId, agentConfig.vectorStoreId);
-      }
+      const legacyUseKB = !!agentConfig.vectorStoreId;
 
       // Stream the response and accumulate full reply with agent-specific config
-      for await (const chunk of llmService.sendMessageStream(message, conversationId, useKnowledgeBase, agentConfig)) {
+      for await (const chunk of llmService.sendMessageStream(message, conversationId, legacyUseKB, agentConfig)) {
         // Check if chunk is a function call event (object) or text (string)
         if (typeof chunk === 'object' && chunk.type) {
           // Handle function call - add thinking step
@@ -1997,6 +1987,61 @@ app.post('/api/kb/:kbId/sync', async (req, res) => {
   } catch (err) {
     console.error('❌ Sync Error:', err.message);
     res.status(500).json({ error: 'Error syncing knowledge base: ' + err.message });
+  }
+});
+
+// Detach a provider from a KB (removes the store/corpus without deleting files from the other provider)
+app.post('/api/kb/:kbId/detach', async (req, res) => {
+  try {
+    const { kbId } = req.params;
+    const { provider: providerToDetach } = req.body; // 'openai' | 'google'
+
+    if (!['openai', 'google'].includes(providerToDetach)) {
+      return res.status(400).json({ error: 'provider must be openai or google' });
+    }
+
+    const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
+
+    if (kb.provider !== 'both') {
+      return res.status(400).json({ error: 'Can only detach from a KB that has both providers' });
+    }
+
+    // Delete the provider's store — fail the entire operation if this fails
+    if (providerToDetach === 'google' && kb.googleCorpusId) {
+      await googleKBService.deleteStore(kb.googleCorpusId);
+    } else if (providerToDetach === 'openai' && kb.vectorStoreId) {
+      await llmService.client.vectorStores.del(kb.vectorStoreId);
+    }
+
+    // Clear provider IDs on files
+    const files = await kbService.getFilesByKnowledgeBase(parseInt(kbId));
+    for (const file of files) {
+      if (providerToDetach === 'google') {
+        await kbService.updateFileProviderIds(file.id, { googleDocumentId: null });
+      } else {
+        await kbService.updateFileProviderIds(file.id, { openaiFileId: null });
+      }
+    }
+
+    // Update KB: clear the detached provider ID, set provider to the remaining one
+    const remainingProvider = providerToDetach === 'google' ? 'openai' : 'google';
+    await kbService.updateKBProviderIds(parseInt(kbId), {
+      vectorStoreId: providerToDetach === 'openai' ? null : kb.vectorStoreId,
+      googleCorpusId: providerToDetach === 'google' ? null : kb.googleCorpusId,
+      provider: remainingProvider,
+    });
+
+    const updatedKB = await kbService.getKnowledgeBaseById(parseInt(kbId));
+    console.log(`✅ Detached ${providerToDetach} from KB "${kb.name}"`);
+
+    res.json({
+      success: true,
+      detachedProvider: providerToDetach,
+      knowledgeBase: _formatKB(updatedKB),
+    });
+  } catch (err) {
+    console.error('❌ Detach Error:', err.message);
+    res.status(500).json({ error: 'Error detaching provider: ' + err.message });
   }
 });
 

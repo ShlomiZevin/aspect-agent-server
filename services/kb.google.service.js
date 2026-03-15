@@ -9,8 +9,15 @@
  * - Upload files to the store → each file becomes a "document"
  * - Use the store in Gemini chat via the file_search tool
  *
+ * Note: Google's file search cannot properly parse binary formats like .xlsx
+ * and .docx — it returns raw binary instead of text. This service automatically
+ * converts these formats to text-friendly equivalents before uploading.
+ *
  * Environment variable: GEMINI_API_KEY
  */
+
+const XLSX = require('xlsx');
+const mammoth = require('mammoth');
 
 let GoogleGenAI = null;
 let client = null;
@@ -53,7 +60,7 @@ class GoogleKBService {
   async getStore(storeId) {
     try {
       const ai = await getClient();
-      return await ai.fileSearchStores.get(storeId);
+      return await ai.fileSearchStores.get({ name: storeId });
     } catch (err) {
       console.error('❌ Error getting Google KB store:', err.message);
       throw new Error(`Failed to get Google KB: ${err.message}`);
@@ -82,7 +89,7 @@ class GoogleKBService {
   async deleteStore(storeId) {
     try {
       const ai = await getClient();
-      await ai.fileSearchStores.delete(storeId);
+      await ai.fileSearchStores.delete({ name: storeId, config: { force: true } });
       console.log(`✅ Google File Search Store deleted: ${storeId}`);
     } catch (err) {
       console.error('❌ Error deleting Google KB store:', err.message);
@@ -104,15 +111,18 @@ class GoogleKBService {
     try {
       const ai = await getClient();
 
-      // Create a Blob from the buffer for the SDK
-      const blob = new Blob([buffer], { type: mimeType || 'application/octet-stream' });
+      // Convert binary formats that Google can't parse properly
+      const converted = await this._convertForGoogle(buffer, fileName, mimeType);
 
-      console.log(`📤 Uploading ${fileName} (${buffer.length} bytes) to Google store ${storeId}`);
+      // Create a Blob from the (possibly converted) buffer for the SDK
+      const blob = new Blob([converted.buffer], { type: converted.mimeType });
+
+      console.log(`📤 Uploading ${converted.fileName} (${converted.buffer.length} bytes) to Google store ${storeId}${converted.wasConverted ? ` (converted from ${fileName})` : ''}`);
 
       const operation = await ai.fileSearchStores.uploadToFileSearchStore({
         fileSearchStoreName: storeId,
         file: blob,
-        config: { displayName: fileName },
+        config: { displayName: converted.fileName },
       });
 
       // The upload returns an Operation - poll until done
@@ -161,6 +171,57 @@ class GoogleKBService {
       console.error('❌ Error deleting Google KB document:', err.message);
       throw new Error(`Failed to delete Google KB document: ${err.message}`);
     }
+  }
+
+  /**
+   * Convert binary file formats to text-friendly equivalents for Google.
+   * Google's file search can't properly parse xlsx/docx — returns raw binary.
+   * OpenAI handles these natively, so this is Google-specific.
+   *
+   * @param {Buffer} buffer - Original file content
+   * @param {string} fileName - Original file name
+   * @param {string} mimeType - Original MIME type
+   * @returns {Promise<{ buffer: Buffer, fileName: string, mimeType: string, wasConverted: boolean }>}
+   * @private
+   */
+  async _convertForGoogle(buffer, fileName, mimeType) {
+    const ext = fileName.split('.').pop().toLowerCase();
+
+    // xlsx/xls → CSV (all sheets concatenated)
+    if (ext === 'xlsx' || ext === 'xls') {
+      try {
+        const workbook = XLSX.read(buffer, { type: 'buffer' });
+        const csvParts = [];
+        for (const sheetName of workbook.SheetNames) {
+          const sheet = workbook.Sheets[sheetName];
+          const csv = XLSX.utils.sheet_to_csv(sheet);
+          if (csv.trim()) {
+            csvParts.push(`--- Sheet: ${sheetName} ---\n${csv}`);
+          }
+        }
+        const csvContent = csvParts.join('\n\n');
+        const csvFileName = fileName.replace(/\.xlsx?$/i, '.csv');
+        console.log(`🔄 Converted ${fileName} → ${csvFileName} (${workbook.SheetNames.length} sheets, ${csvContent.length} chars)`);
+        return { buffer: Buffer.from(csvContent, 'utf-8'), fileName: csvFileName, mimeType: 'text/csv', wasConverted: true };
+      } catch (err) {
+        console.warn(`⚠️ Failed to convert ${fileName} to CSV, uploading as-is:`, err.message);
+      }
+    }
+
+    // docx → plain text
+    if (ext === 'docx') {
+      try {
+        const result = await mammoth.extractRawText({ buffer });
+        const textFileName = fileName.replace(/\.docx$/i, '.txt');
+        console.log(`🔄 Converted ${fileName} → ${textFileName} (${result.value.length} chars)`);
+        return { buffer: Buffer.from(result.value, 'utf-8'), fileName: textFileName, mimeType: 'text/plain', wasConverted: true };
+      } catch (err) {
+        console.warn(`⚠️ Failed to convert ${fileName} to text, uploading as-is:`, err.message);
+      }
+    }
+
+    // All other formats — pass through unchanged
+    return { buffer, fileName, mimeType: mimeType || 'application/octet-stream', wasConverted: false };
   }
 
   /**

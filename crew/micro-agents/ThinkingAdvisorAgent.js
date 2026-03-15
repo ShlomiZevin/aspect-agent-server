@@ -48,7 +48,9 @@ class ThinkingAdvisorAgent {
       console.log(`   🧠 [ThinkingAdvisor] Response received (${responseText.length} chars)`);
 
       if (jsonOutput) {
-        const result = JSON.parse(responseText);
+        // Strip markdown code fences if the model wraps JSON in ```json ... ```
+        const cleaned = responseText.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+        const result = JSON.parse(cleaned);
         // Enforce _thinkingDescription for UI display
         if (!result._thinkingDescription) {
           result._thinkingDescription = 'Analysis complete';
