@@ -25,10 +25,22 @@ echo "   Region: $REGION"
 # Set the active project
 gcloud config set project $PROJECT_ID
 
-# Read .env.production and create --set-env-vars argument
-# This will read all KEY=VALUE pairs and format them for gcloud
-# Remove carriage returns (\r) for Windows compatibility
-ENV_VARS=$(grep -v '^#' .env.production | grep -v '^$' | tr -d '\r' | xargs | tr ' ' ',')
+# Generate a YAML env vars file from .env.production
+# This handles JSON values and special characters correctly
+ENV_YAML_FILE=$(mktemp /tmp/env-vars-XXXXXX.yaml)
+trap "rm -f $ENV_YAML_FILE" EXIT
+
+while IFS= read -r line; do
+  # Skip comments and empty lines
+  line=$(echo "$line" | tr -d '\r')
+  [[ -z "$line" || "$line" =~ ^# ]] && continue
+
+  key="${line%%=*}"
+  value="${line#*=}"
+
+  # Quote the value to handle JSON, spaces, and special characters
+  echo "$key: '$value'" >> "$ENV_YAML_FILE"
+done < .env.production
 
 echo "   Environment variables loaded from .env.production"
 
@@ -44,7 +56,7 @@ gcloud run deploy $SERVICE_NAME \
   --memory 2Gi \
   --timeout 3600 \
   --set-cloudsql-instances $CLOUD_SQL_INSTANCE \
-  --set-env-vars "$ENV_VARS"
+  --env-vars-file "$ENV_YAML_FILE"
 
 echo ""
 echo "✅ Deployment complete!"
