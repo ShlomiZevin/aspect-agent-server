@@ -101,7 +101,13 @@ class AdvisorCrew extends CrewMember {
       knowledgeBase: {
         enabled: true,
         sources: [
-          { vectorStoreId: 'vs_69b0195711e4819199ed5de532c8e735', name: 'onboarding' }
+          { name: 'Handling principles lean' },
+          { name: 'Banking terms' },
+          { name: 'IL Banks marketing' },
+          { name: 'Operational' },
+          { name: 'Customers data mockup' },
+          { name: 'products' },
+          { name: 'IL banks directory' },
         ]
       },
       tools: [],

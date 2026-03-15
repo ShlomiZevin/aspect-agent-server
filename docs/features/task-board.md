@@ -20,7 +20,8 @@ The Task Board is an integrated project management tool built into the Aspect pl
 8. [Completion Workflow](#completion-workflow)
 9. [Assignee Management](#assignee-management)
 10. [Domain Filtering](#domain-filtering)
-11. [Quick Bug Reporting](#quick-bug-reporting)
+11. [Goals & Priorities Sidebar](#goals--priorities-sidebar)
+12. [Quick Bug Reporting](#quick-bug-reporting)
 12. [API Reference](#api-reference)
 13. [Database Schema](#database-schema)
 
@@ -33,6 +34,7 @@ The Task Board is an integrated project management tool built into the Aspect pl
 - **Feature** - New functionality to implement
 - **Task** - General work items
 - **Idea** - Proposals or concepts for future consideration
+- **Goal** - Team goals and priorities set during meetings (displayed in the Goals sidebar)
 
 ### Task Statuses
 - **Todo** - Not started yet
@@ -287,6 +289,40 @@ Switching domain filter while on a Lybi page shows all Lybi domains by default.
 - **All Domains** - All known domains + general
 - **General (Engine)** - Only platform-level tasks
 - Individual domains (when "All Domains" enabled via Ctrl+Shift+A)
+
+---
+
+## Goals & Priorities Sidebar
+
+The task board includes an always-visible **Goals sidebar** on the right side. This is where the team tracks goals and priorities set during meetings.
+
+### How It Works
+- Goals are regular tasks with `type: 'goal'` — they use the same data model, API, and infrastructure as all other tasks.
+- Goals appear **only** in the sidebar, not in the kanban columns or list view.
+- Each goal can be a **standalone description** (free-text) or **linked to an existing board task** via the "Linked Task" field (stored as `dependsOn`).
+
+### Meeting Date
+- Every goal carries a meeting date tag (`meetingDate:YYYY-MM-DD`) in its `tags` array.
+- The sidebar header shows the most recent meeting date across all visible goals.
+- Editing the meeting date in the header batch-updates all goals in the current filter.
+- When creating a goal from the sidebar, today's date is auto-set as the meeting date.
+
+### Creating Goals
+1. Click **"+ Add"** in the Goals sidebar header.
+2. The task form opens pre-filled with `type: Goal` and `priority: High`.
+3. Optionally link to an existing task using the **"Linked Task"** autocomplete.
+4. Set or adjust the meeting date.
+
+### Goal Items Display
+- **Checkbox** — marks the goal as completed (`isCompleted`).
+- **Title** — clickable to edit in the task form.
+- **Priority dot** — color-coded by priority level.
+- **Status badge** — Todo, Active, or Done.
+- **Linked task chip** — if linked, shows the task ID, title, and current status with a status icon. Clicking opens the linked task.
+- **Description preview** — for standalone goals without a linked task.
+
+### Ordering
+Goals are sorted by priority (critical first), then by creation date (newest first).
 
 ---
 

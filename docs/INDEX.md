@@ -26,7 +26,7 @@ aspect-agent-server/
 ## Category Descriptions
 
 ### `docs/guides/`
-How-to guides for building and understanding the platform. Covers agent building, crew architecture, playground usage, task board, and data loading.
+How-to guides for building and understanding the platform. Covers agent building, crew architecture, playground usage, and data loading.
 
 ### `docs/features/`
 Documentation of existing features in the system. Each file describes what a feature does, how it works, and how to use it.
