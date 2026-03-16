@@ -247,12 +247,11 @@ class GoogleService {
    */
   async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
     const {
-      prompt = '',
+      prompt: systemPrompt = '',
       model = this.model,
       maxTokens = 4096,
       tools: crewTools = [],
       toolHandlers = {},
-      context = {},
       knowledgeBase = null,
     } = config;
 
@@ -271,19 +270,6 @@ class GoogleService {
 
     try {
       const ai = await getClient();
-
-      // Build system prompt with context
-      let systemPrompt = prompt;
-      const { characterGuidance, promptNotes, ...remainingContext } = context;
-      if (characterGuidance) {
-        systemPrompt += `\n\n## Persona\n${characterGuidance}`;
-      }
-      if (Object.keys(remainingContext).length > 0) {
-        systemPrompt += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;
-      }
-      if (promptNotes) {
-        systemPrompt += `\n\n${promptNotes}`;
-      }
 
       // Convert tools to Gemini format
       const geminiTools = this._convertToolsToGeminiFormat(crewTools);

@@ -635,39 +635,36 @@ class DispatcherService {
       }
     }
 
-    // promptNotes: kept on context, extracted by LLM services and appended
-    // as plain text AFTER persona and JSON context (last thing the model sees)
+    // ========== ASSEMBLE FINAL PROMPT ==========
+    // Build the complete prompt string once — all providers receive the same text.
+    // Order: guidance → persona → context JSON → promptNotes
+    const { characterGuidance, promptNotes, ...remainingContext } = context;
+    let assembledPrompt = resolvedPrompt;
+    if (characterGuidance) {
+      assembledPrompt += `\n\n## Persona\n${characterGuidance}`;
+    }
+    if (Object.keys(remainingContext).length > 0) {
+      assembledPrompt += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;
+    }
+    if (promptNotes) {
+      assembledPrompt += `\n\n${promptNotes}`;
+    }
 
     // Build LLM config from crew member (provider-agnostic)
     const llmConfig = {
-      prompt: resolvedPrompt,
+      prompt: assembledPrompt,
       model: resolvedModel,
       maxTokens: crew.maxTokens,
       tools: crew.getToolSchemas(),
       toolHandlers,
       knowledgeBase: resolvedKB,
       agentConfig,
-      context,
       transitionSystemPrompt: resolvedTransitionPrompt,
       isNewCrewTransition
     };
 
     // Emit debug data if requested (before LLM call)
     if (params.debug) {
-      // Build fullInstructions exactly as llm.openai.js does
-      let fullInstructions = resolvedPrompt;
-
-      // Extract persona from context for readable display (matches LLM service format)
-      const { characterGuidance: _cg, promptNotes: _pn, ...debugRemainingContext } = context;
-      if (context.characterGuidance) {
-        fullInstructions += `\n\n## Persona\n${context.characterGuidance}`;
-      }
-      if (Object.keys(debugRemainingContext).length > 0) {
-        fullInstructions += `\n\n## Current Context\n${JSON.stringify(debugRemainingContext, null, 2)}`;
-      }
-      if (context.promptNotes) {
-        fullInstructions += `\n\n${context.promptNotes}`;
-      }
 
       // Build transition logic debug data
       const transitionLogic = this._buildTransitionDebugData(crew, collectedFields);
@@ -677,7 +674,7 @@ class DispatcherService {
         data: {
           crewName: crew.name,
           crewDisplayName: crew.displayName,
-          fullInstructions,
+          fullInstructions: assembledPrompt,
           promptSource,
           model: resolvedModel,
           modelSource, // 'session_override' or 'crew_default'

@@ -425,29 +425,13 @@ class OpenAIService {
     try {
       // Extract config
       const {
-        prompt = '',
+        prompt: fullInstructions = '',
         model = this.model,
         maxTokens = 2048,
         tools: crewTools = [],
         toolHandlers = {},
         knowledgeBase = null,
-        context = {}
       } = config;
-
-      // Build full instructions: prompt + persona (readable) + context (JSON)
-      let fullInstructions = prompt;
-
-      // Extract persona from context and add as readable section (not JSON)
-      const { characterGuidance, promptNotes, ...remainingContext } = context;
-      if (characterGuidance) {
-        fullInstructions += `\n\n## Persona\n${characterGuidance}`;
-      }
-      if (Object.keys(remainingContext).length > 0) {
-        fullInstructions += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;
-      }
-      if (promptNotes) {
-        fullInstructions += `\n\n${promptNotes}`;
-      }
 
       // Build tools array
       const tools = [];
@@ -695,29 +679,13 @@ class OpenAIService {
 
       // Extract config
       const {
-        prompt = '',
+        prompt: fullInstructions = '',
         model = this.model,
         maxTokens = 2048,
         tools: crewTools = [],
         toolHandlers = {},
         knowledgeBase = null,
-        context = {}
       } = config;
-
-      // Build full instructions: prompt + persona (readable) + context (JSON)
-      let fullInstructions = prompt;
-
-      // Extract persona from context and add as readable section (not JSON)
-      const { characterGuidance, promptNotes, ...remainingContext } = context;
-      if (characterGuidance) {
-        fullInstructions += `\n\n## Persona\n${characterGuidance}`;
-      }
-      if (Object.keys(remainingContext).length > 0) {
-        fullInstructions += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;
-      }
-      if (promptNotes) {
-        fullInstructions += `\n\n${promptNotes}`;
-      }
 
       // Build tools array
       const tools = [];

@@ -90,20 +90,14 @@ class ClaudeService {
    */
   async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
     const {
-      prompt = '',
+      prompt: systemPrompt = '',
       model = this.model,
       maxTokens = 4096,
       tools: crewTools = [],
       toolHandlers = {},
-      context = {}
     } = config;
 
     try {
-      // Build system prompt with context
-      let systemPrompt = prompt;
-      if (Object.keys(context).length > 0) {
-        systemPrompt += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
-      }
 
       // Convert tools from OpenAI format to Claude format
       const tools = [];
