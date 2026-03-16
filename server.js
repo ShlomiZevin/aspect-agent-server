@@ -404,13 +404,14 @@ app.get('/api/agents/:agentName/prompts', async (req, res) => {
       if (dbData) {
         // Has DB versions - prepend code default as v0 so user can revert
         const crewMember = await crewService.getCrewMember(agentName, crew.name);
+        const hasActiveDbVersion = dbData.currentVersion != null;
         const codeVersion = crewMember?.guidance ? {
           id: `code-${crew.name}`,
           version: 0,
           name: 'Code default',
           prompt: crewMember.guidance,
           persona: crewMember.persona || null,
-          isActive: false,
+          isActive: !hasActiveDbVersion,
           createdAt: null,
           updatedAt: null,
         } : null;
@@ -418,9 +419,9 @@ app.get('/api/agents/:agentName/prompts', async (req, res) => {
           crewMemberId: crew.name,
           crewMemberName: crew.name,
           displayName: crew.displayName,
-          model: crew.model, // Include the crew's model
+          model: crew.model,
           versions: [...dbData.versions, ...(codeVersion ? [codeVersion] : [])],
-          currentVersion: dbData.currentVersion,
+          currentVersion: hasActiveDbVersion ? dbData.currentVersion : codeVersion,
         });
       } else {
         // No DB versions - get from code and show as v0
