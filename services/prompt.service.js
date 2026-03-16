@@ -126,6 +126,11 @@ class PromptService {
         name: crewPrompts.name,
         prompt: crewPrompts.prompt,
         transitionSystemPrompt: crewPrompts.transitionSystemPrompt,
+        model: crewPrompts.model,
+        provider: crewPrompts.provider,
+        kbSources: crewPrompts.kbSources,
+        persona: crewPrompts.persona,
+        thinkingPrompt: crewPrompts.thinkingPrompt,
         isActive: crewPrompts.isActive,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
@@ -332,6 +337,21 @@ class PromptService {
       createdAt: activated.createdAt?.toISOString(),
       updatedAt: activated.updatedAt?.toISOString(),
     };
+  }
+
+  /**
+   * Deactivate all versions for a crew member (revert to code default)
+   */
+  async deactivateAll(agentName, crewMemberName) {
+    if (!this.drizzle) this.initialize();
+    const agent = await this.getAgentByName(agentName);
+    await this.drizzle
+      .update(crewPrompts)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(and(
+        eq(crewPrompts.agentId, agent.id),
+        eq(crewPrompts.crewMemberName, crewMemberName)
+      ));
   }
 
   /**

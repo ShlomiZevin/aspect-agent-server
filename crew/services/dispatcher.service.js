@@ -411,15 +411,27 @@ class DispatcherService {
       crew.setContextUser(conversation.userId, conversation.id, conversationId);
     }
 
+    // ========== LOAD DB PROMPT (needed for persona + prompt resolution) ==========
+    let dbPrompt = null;
+    if (!promptOverrides[crew.name]) {
+      try {
+        dbPrompt = await promptService.getActivePrompt(agentName, crew.name);
+      } catch (err) {
+        // DB not available - will fall back to code default
+      }
+    }
+
     // ========== RESOLVE PERSONA ==========
-    // Session override replaces the crew's persona in context
-    const resolvedPersona = personaOverride || crew.persona || null;
-    const personaSource = personaOverride ? 'session_override' : (crew.persona ? 'code' : 'none');
+    // Priority: 1. Session override → 2. DB prompt persona → 3. Crew code persona
+    const dbPersona = dbPrompt?.persona || null;
+    const resolvedPersona = personaOverride || dbPersona || crew.persona || null;
+    const personaSource = personaOverride ? 'session_override' : (dbPersona ? 'database' : (crew.persona ? 'code' : 'none'));
+    console.log(`🎭 Persona resolution: sessionOverride=${!!personaOverride}, dbPersona=${!!dbPersona}, crewPersona=${!!crew.persona}, source=${personaSource}`);
 
     // Temporarily apply persona override for buildContext
     const originalPersona = crew.persona;
-    if (personaOverride) {
-      crew.persona = personaOverride;
+    if (personaOverride || dbPersona) {
+      crew.persona = personaOverride || dbPersona;
     }
 
     // ========== RESOLVE THINKING PROMPT ==========
@@ -431,6 +443,12 @@ class DispatcherService {
     if (crew.usesThinker && thinkerDisabled[crew.name]) {
       crew.usesThinker = false;
       console.log(`   🧠 Thinker DISABLED by debug override for "${crew.name}"`);
+    }
+
+    // Apply DB thinking prompt if no session override
+    if (crew.usesThinker && dbPrompt?.thinkingPrompt && !thinkingPromptOverrides[crew.name]) {
+      crew.thinkingPrompt = dbPrompt.thinkingPrompt;
+      console.log(`   🧠 Using DB thinking prompt for "${crew.name}"`);
     }
 
     if (crew.usesThinker && thinkingPromptOverrides[crew.name]) {
@@ -506,27 +524,17 @@ class DispatcherService {
       console.log(`🔍 Override for "${crew.name}" exists:`, crew.name in promptOverrides);
     }
 
-    // Variables to track DB prompt for transition system prompt resolution
-    let dbPrompt = null;
-
     // Check for session override
     if (promptOverrides[crew.name]) {
       resolvedPrompt = promptOverrides[crew.name];
       promptSource = 'session_override';
       console.log(`📝 Using session override prompt for ${crew.name} (${resolvedPrompt.substring(0, 50)}...)`);
+    } else if (dbPrompt) {
+      resolvedPrompt = dbPrompt.prompt;
+      promptSource = 'database';
+      console.log(`📝 Using DB prompt for ${crew.name} (v${dbPrompt.version})`);
     } else {
-      // Try to get active prompt from database
-      try {
-        dbPrompt = await promptService.getActivePrompt(agentName, crew.name);
-        if (dbPrompt) {
-          resolvedPrompt = dbPrompt.prompt;
-          promptSource = 'database';
-          console.log(`📝 Using DB prompt for ${crew.name} (v${dbPrompt.version})`);
-        }
-      } catch (err) {
-        // DB not available or error - use code default
-        console.log(`📝 Using code-defined prompt for ${crew.name} (DB unavailable)`);
-      }
+      console.log(`📝 Using code-defined prompt for ${crew.name}`);
     }
 
     // ========== RESOLVE MODEL ==========

@@ -402,13 +402,24 @@ app.get('/api/agents/:agentName/prompts', async (req, res) => {
     for (const crew of crewList) {
       const dbData = dbPrompts.find(p => p.crewMemberId === crew.name);
       if (dbData) {
-        // Has DB versions - use them, include model from crew
+        // Has DB versions - prepend code default as v0 so user can revert
+        const crewMember = await crewService.getCrewMember(agentName, crew.name);
+        const codeVersion = crewMember?.guidance ? {
+          id: `code-${crew.name}`,
+          version: 0,
+          name: 'Code default',
+          prompt: crewMember.guidance,
+          persona: crewMember.persona || null,
+          isActive: false,
+          createdAt: null,
+          updatedAt: null,
+        } : null;
         result.push({
           crewMemberId: crew.name,
           crewMemberName: crew.name,
           displayName: crew.displayName,
           model: crew.model, // Include the crew's model
-          versions: dbData.versions,
+          versions: [...dbData.versions, ...(codeVersion ? [codeVersion] : [])],
           currentVersion: dbData.currentVersion,
         });
       } else {
@@ -425,6 +436,7 @@ app.get('/api/agents/:agentName/prompts', async (req, res) => {
               version: 0,
               name: 'Code default',
               prompt: crewMember.guidance,
+              persona: crewMember.persona || null,
               isActive: true,
               createdAt: null,
               updatedAt: null,
@@ -434,6 +446,7 @@ app.get('/api/agents/:agentName/prompts', async (req, res) => {
               version: 0,
               name: 'Code default',
               prompt: crewMember.guidance,
+              persona: crewMember.persona || null,
               isActive: true,
               createdAt: null,
               updatedAt: null,
@@ -607,6 +620,19 @@ app.post('/api/agents/:agentName/crew/:crewName/prompts/:versionId/activate', as
   } catch (err) {
     console.error('❌ Error activating prompt version:', err.message);
     res.status(500).json({ error: 'Error activating prompt version: ' + err.message });
+  }
+});
+
+// Deactivate all prompt versions (revert to code default)
+app.post('/api/agents/:agentName/crew/:crewName/prompts/revert-to-code', async (req, res) => {
+  const { agentName, crewName } = req.params;
+  try {
+    await promptService.deactivateAll(agentName, crewName);
+    console.log(`✅ Reverted to code default: ${crewName}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error reverting to code:', err.message);
+    res.status(500).json({ error: 'Error reverting to code: ' + err.message });
   }
 });
 
