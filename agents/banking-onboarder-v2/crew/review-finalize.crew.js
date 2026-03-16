@@ -65,7 +65,7 @@ class ReviewFinalizeCrew extends CrewMember {
           { name: 'Onboarding KB' },
         ]
       },
-      tools: [
+      tools: []/*[
         {
           name: 'request_signature',
           description: 'Triggers the digital signature process for the account opening agreement. Returns the signature status.',
@@ -95,7 +95,7 @@ class ReviewFinalizeCrew extends CrewMember {
             };
           }
         }
-      ],
+      ]*/,
       fieldsToCollect: [
         { name: 'details_confirmed', type: 'boolean', description: 'User confirmed all personal details are correct' },
         { name: 'consent_granted', type: 'boolean', description: 'User explicitly consented to account terms' },
