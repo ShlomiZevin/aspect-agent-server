@@ -2664,11 +2664,11 @@ app.delete('/api/playground/:sessionId', async (req, res) => {
 // Save playground config to GCS
 app.post('/api/playground/save', async (req, res) => {
   try {
-    const { agentName, name, config } = req.body;
+    const { agentName, name, config, id } = req.body;
     if (!agentName || !name || !config) {
       return res.status(400).json({ error: 'Missing agentName, name, or config' });
     }
-    const result = await playgroundService.saveToGCS(agentName, name, config);
+    const result = await playgroundService.saveToGCS(agentName, name, config, id);
     res.json(result);
   } catch (err) {
     console.error('❌ Error saving playground config:', err.message);

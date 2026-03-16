@@ -154,8 +154,8 @@ class PlaygroundService {
    * @param {object} config - The playground config to save
    * @returns {Promise<{id: string, name: string, savedAt: string}>}
    */
-  async saveToGCS(agentName, name, config) {
-    const id = Date.now().toString();
+  async saveToGCS(agentName, name, config, existingId) {
+    const id = existingId || Date.now().toString();
     const gcsPath = `${GCS_PLAYGROUND_PREFIX}/${agentName}/${id}.json`;
 
     const data = JSON.stringify({ name, config, savedAt: new Date().toISOString() }, null, 2);
