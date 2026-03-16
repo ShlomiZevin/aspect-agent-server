@@ -530,7 +530,7 @@ app.get('/api/agents/:agentName/crew/:crewName/prompts/active', async (req, res)
 // Create new prompt version (Save as New Version)
 app.post('/api/agents/:agentName/crew/:crewName/prompts', async (req, res) => {
   const { agentName, crewName } = req.params;
-  const { prompt, name, transitionSystemPrompt } = req.body;
+  const { prompt, name, transitionSystemPrompt, model, provider, kbSources, persona, thinkingPrompt } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: 'Prompt text is required' });
@@ -543,7 +543,8 @@ app.post('/api/agents/:agentName/crew/:crewName/prompts', async (req, res) => {
       prompt,
       name || null,
       null, // createdBy
-      transitionSystemPrompt || null
+      transitionSystemPrompt || null,
+      { model: model || null, provider: provider || null, kbSources: kbSources || null, persona: persona || null, thinkingPrompt: thinkingPrompt || null }
     );
 
     console.log(`✅ Created new prompt version: ${crewName} v${newVersion.version}`);
@@ -560,7 +561,7 @@ app.post('/api/agents/:agentName/crew/:crewName/prompts', async (req, res) => {
 // Update existing prompt version (Save/Overwrite)
 app.patch('/api/agents/:agentName/crew/:crewName/prompts/:versionId', async (req, res) => {
   const { agentName, crewName, versionId } = req.params;
-  const { prompt, transitionSystemPrompt } = req.body;
+  const { prompt, transitionSystemPrompt, model, provider, kbSources, persona, thinkingPrompt } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: 'Prompt text is required' });
@@ -572,7 +573,8 @@ app.patch('/api/agents/:agentName/crew/:crewName/prompts/:versionId', async (req
       crewName,
       parseInt(versionId),
       prompt,
-      transitionSystemPrompt // Can be undefined (not updated) or string/null (update)
+      transitionSystemPrompt,
+      { model, provider, kbSources, persona, thinkingPrompt }
     );
 
     console.log(`✅ Updated prompt version: ${crewName} v${updated.version}`);
