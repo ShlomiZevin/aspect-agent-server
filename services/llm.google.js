@@ -274,8 +274,15 @@ class GoogleService {
 
       // Build system prompt with context
       let systemPrompt = prompt;
-      if (Object.keys(context).length > 0) {
-        systemPrompt += `\n\n## Current Context\n${JSON.stringify(context, null, 2)}`;
+      const { characterGuidance, promptNotes, ...remainingContext } = context;
+      if (characterGuidance) {
+        systemPrompt += `\n\n## Persona\n${characterGuidance}`;
+      }
+      if (Object.keys(remainingContext).length > 0) {
+        systemPrompt += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;
+      }
+      if (promptNotes) {
+        systemPrompt += `\n\n${promptNotes}`;
       }
 
       // Convert tools to Gemini format

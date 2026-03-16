@@ -438,12 +438,15 @@ class OpenAIService {
       let fullInstructions = prompt;
 
       // Extract persona from context and add as readable section (not JSON)
-      const { characterGuidance, ...remainingContext } = context;
+      const { characterGuidance, promptNotes, ...remainingContext } = context;
       if (characterGuidance) {
         fullInstructions += `\n\n## Persona\n${characterGuidance}`;
       }
       if (Object.keys(remainingContext).length > 0) {
         fullInstructions += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;
+      }
+      if (promptNotes) {
+        fullInstructions += `\n\n${promptNotes}`;
       }
 
       // Build tools array
@@ -500,6 +503,7 @@ class OpenAIService {
         });
         console.log(`🔄 Injected transition system prompt (${config.transitionSystemPrompt.length} chars) as developer message`);
       }
+
 
       console.log(`🤖 Crew streaming with inline prompt (${fullInstructions.length} chars), ${tools.length} tools, ${historyMessages.length} history messages`);
 
@@ -704,12 +708,15 @@ class OpenAIService {
       let fullInstructions = prompt;
 
       // Extract persona from context and add as readable section (not JSON)
-      const { characterGuidance, ...remainingContext } = context;
+      const { characterGuidance, promptNotes, ...remainingContext } = context;
       if (characterGuidance) {
         fullInstructions += `\n\n## Persona\n${characterGuidance}`;
       }
       if (Object.keys(remainingContext).length > 0) {
         fullInstructions += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;
+      }
+      if (promptNotes) {
+        fullInstructions += `\n\n${promptNotes}`;
       }
 
       // Build tools array

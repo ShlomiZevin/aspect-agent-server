@@ -175,7 +175,7 @@ Extract any field values from the conversation above. Return JSON.`;
       const responseText = await llmService.sendOneShot(
         systemPrompt,
         userMessage,
-        { model, maxTokens: 512, jsonOutput: true, context: 'field-extractor' }
+        { model, maxTokens: 1024, jsonOutput: true, context: 'field-extractor' }
       );
 
       console.log(`   🔍 [FieldsExtractor] Raw response: ${responseText}`);

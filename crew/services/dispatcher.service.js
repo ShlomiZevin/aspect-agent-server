@@ -635,12 +635,8 @@ class DispatcherService {
       }
     }
 
-    // Append plain text prompt notes from context (if any crew set them)
-    // Remove from context so it doesn't appear in the JSON block too
-    if (context.promptNotes) {
-      resolvedPrompt += `\n\n${context.promptNotes}`;
-      delete context.promptNotes;
-    }
+    // promptNotes: kept on context, extracted by LLM services and appended
+    // as plain text AFTER persona and JSON context (last thing the model sees)
 
     // Build LLM config from crew member (provider-agnostic)
     const llmConfig = {
@@ -662,12 +658,15 @@ class DispatcherService {
       let fullInstructions = resolvedPrompt;
 
       // Extract persona from context for readable display (matches LLM service format)
-      const { characterGuidance: _cg, ...debugRemainingContext } = context;
+      const { characterGuidance: _cg, promptNotes: _pn, ...debugRemainingContext } = context;
       if (context.characterGuidance) {
         fullInstructions += `\n\n## Persona\n${context.characterGuidance}`;
       }
       if (Object.keys(debugRemainingContext).length > 0) {
         fullInstructions += `\n\n## Current Context\n${JSON.stringify(debugRemainingContext, null, 2)}`;
+      }
+      if (context.promptNotes) {
+        fullInstructions += `\n\n${context.promptNotes}`;
       }
 
       // Build transition logic debug data
