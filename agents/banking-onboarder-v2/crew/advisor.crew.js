@@ -124,7 +124,7 @@ class AdvisorCrew extends CrewMember {
         { name: 'customerType', description: 'Overall read of the customer' },
         { name: 'signals', description: 'Mood, hesitation, urgency, confidence' },
       ],
-      transitionTo: null,  // Third crew is TBD
+      transitionTo: 'review-finalize',
     });
   }
 
@@ -272,9 +272,7 @@ ${historyText}`;
   }
 
   /**
-   * Check if thinker decided we're ready to transition.
-   * Currently inactive because transitionTo is null (third crew TBD).
-   * When third crew is added, set transitionTo in constructor and this activates.
+   * Check if thinker decided we're ready to transition to review-finalize.
    */
   async postThinkingTransfer(context) {
     const advice = context.thinkingAdvice;

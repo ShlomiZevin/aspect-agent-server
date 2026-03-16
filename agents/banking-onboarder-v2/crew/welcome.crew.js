@@ -30,7 +30,7 @@ class WelcomeCrew extends CrewMember {
         { name: 'user_name', description: "The user's name or preferred nickname for personal interaction" },
         { name: 'gender', allowedValues: ['male', 'female'], ditchIfCollected: true, description: "User's gender. Extract only if user explicitly states it (זכר/נקבה). Do NOT infer from name." },
         { name: 'age', description: "User's age or date of birth to verify eligibility (must be 16+)" },
-        { name: 'account_type', description: "Type of account requested - must be 'personal' to proceed" },
+        { name: 'account_type', allowedValues: ['personal', 'business', 'joint', 'other'], description: "Type of account. Map: אישי/רגיל/פרטי → personal, עסקי → business, משותף → joint, else → other" },
         { name: 'service_consent', type: 'boolean', description: "User's consent to LYBI service terms. true = agrees, false = refuses." }
       ],
       extractionMode: 'form',
@@ -143,6 +143,9 @@ Once all mandatory fields are collected, transition smoothly to the advisor.`;
     // Age gate: must be 16+
     const age = parseInt(collectedFields.age, 10);
     if (isNaN(age) || age < 16) return false;
+
+    // Account type gate: must be personal
+    if (collectedFields.account_type !== 'personal') return false;
 
     // Consent gate: must be true
     if (collectedFields.service_consent !== 'true') return false;

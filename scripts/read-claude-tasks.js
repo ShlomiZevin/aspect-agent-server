@@ -1,9 +1,12 @@
 /**
  * Read all tasks assigned to Claude with their comments.
  *
- * Usage: node scripts/read-claude-tasks.js
+ * Usage:
+ *   node scripts/read-claude-tasks.js           # shows only in_progress (default)
+ *   node scripts/read-claude-tasks.js all        # shows all statuses
+ *   node scripts/read-claude-tasks.js done       # shows only done
  *
- * Output: All tasks assigned to "Claude" with full descriptions and comments,
+ * Output: Tasks assigned to "Claude" with full descriptions and comments,
  * formatted for easy reading in a Claude Code session.
  */
 require('dotenv').config();
@@ -26,19 +29,50 @@ function stripHtml(html) {
     .trim();
 }
 
+function printTask(task, commentsByTask) {
+  console.log(`${'─'.repeat(60)}`);
+  console.log(`TASK ${task.id}: ${task.title}`);
+  console.log(`Status: ${task.status} | Created: ${new Date(task.created_at).toLocaleDateString()}`);
+  console.log(`${'─'.repeat(60)}`);
+
+  const desc = stripHtml(task.description);
+  if (desc) {
+    console.log(`\n${desc}\n`);
+  } else {
+    console.log('\n(no description)\n');
+  }
+
+  const comments = commentsByTask[task.id];
+  if (comments && comments.length > 0) {
+    console.log(`--- ${comments.length} comment(s) ---`);
+    for (const c of comments) {
+      const date = new Date(c.created_at).toLocaleDateString();
+      console.log(`\n[${c.author} — ${date}]`);
+      console.log(stripHtml(c.content));
+    }
+    console.log('');
+  }
+}
+
 async function readClaudeTasks() {
+  const statusFilter = process.argv[2] || 'in_progress';
+
   await db.initialize();
 
   // Fetch tasks
-  const tasksResult = await db.query(
-    `SELECT id, title, status, description, created_at, updated_at
-     FROM tasks
-     WHERE LOWER(assignee) LIKE '%claude%'
-     ORDER BY id`
-  );
+  const query = statusFilter === 'all'
+    ? `SELECT id, title, status, description, created_at FROM tasks
+       WHERE LOWER(assignee) LIKE '%claude%'
+       ORDER BY CASE status WHEN 'in_progress' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END, id`
+    : `SELECT id, title, status, description, created_at FROM tasks
+       WHERE LOWER(assignee) LIKE '%claude%' AND status = $1
+       ORDER BY id`;
+
+  const params = statusFilter === 'all' ? [] : [statusFilter];
+  const tasksResult = await db.query(query, params);
 
   if (tasksResult.rows.length === 0) {
-    console.log('No tasks assigned to Claude.');
+    console.log(`No tasks assigned to Claude with status: ${statusFilter}`);
     await db.close();
     return;
   }
@@ -61,34 +95,13 @@ async function readClaudeTasks() {
   }
 
   // Output
+  const showing = statusFilter === 'all' ? 'ALL' : statusFilter.toUpperCase();
   console.log(`\n${'='.repeat(60)}`);
-  console.log(`CLAUDE TASKS — ${tasksResult.rows.length} task(s) found`);
-  console.log(`${'='.repeat(60)}\n`);
+  console.log(`CLAUDE TASKS [${showing}] — ${tasksResult.rows.length} task(s)`);
+  console.log(`${'='.repeat(60)}`);
 
   for (const task of tasksResult.rows) {
-    console.log(`${'─'.repeat(60)}`);
-    console.log(`TASK ${task.id}: ${task.title}`);
-    console.log(`Status: ${task.status}`);
-    console.log(`Created: ${new Date(task.created_at).toLocaleDateString()}`);
-    console.log(`${'─'.repeat(60)}`);
-
-    const desc = stripHtml(task.description);
-    if (desc) {
-      console.log(`\n${desc}\n`);
-    } else {
-      console.log('\n(no description)\n');
-    }
-
-    const comments = commentsByTask[task.id];
-    if (comments && comments.length > 0) {
-      console.log(`--- ${comments.length} comment(s) ---`);
-      for (const c of comments) {
-        const date = new Date(c.created_at).toLocaleDateString();
-        console.log(`\n[${c.author} — ${date}]`);
-        console.log(stripHtml(c.content));
-      }
-      console.log('');
-    }
+    printTask(task, commentsByTask);
   }
 
   console.log(`${'='.repeat(60)}`);
