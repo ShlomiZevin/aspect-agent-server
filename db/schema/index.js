@@ -150,6 +150,11 @@ const crewPrompts = pgTable('crew_prompts', {
   name: varchar('name', { length: 255 }), // Version name/tag (e.g., "Added empathy guidelines")
   prompt: text('prompt').notNull(), // The actual prompt text
   transitionSystemPrompt: text('transition_system_prompt'), // System prompt injected once when transitioning to this crew
+  model: varchar('model', { length: 100 }),        // LLM model override (e.g., 'gpt-4o', 'claude-sonnet-4-6')
+  provider: varchar('provider', { length: 50 }),   // LLM provider ('openai', 'anthropic', 'google')
+  kbSources: jsonb('kb_sources'),                  // Active KB sources list (array of strings)
+  persona: text('persona'),                        // Agent-level persona override for this crew version
+  thinkingPrompt: text('thinking_prompt'),         // Thinker prompt for thinking-crew architecture
   isActive: boolean('is_active').default(false).notNull(), // Only one version should be active per crew member
   createdBy: integer('created_by').references(() => users.id), // Who created this version
   createdAt: timestamp('created_at').defaultNow().notNull(),

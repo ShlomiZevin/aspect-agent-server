@@ -54,6 +54,11 @@ class PromptService {
         name: crewPrompts.name,
         prompt: crewPrompts.prompt,
         transitionSystemPrompt: crewPrompts.transitionSystemPrompt,
+        model: crewPrompts.model,
+        provider: crewPrompts.provider,
+        kbSources: crewPrompts.kbSources,
+        persona: crewPrompts.persona,
+        thinkingPrompt: crewPrompts.thinkingPrompt,
         isActive: crewPrompts.isActive,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
@@ -84,6 +89,11 @@ class PromptService {
         name: crewPrompts.name,
         prompt: crewPrompts.prompt,
         transitionSystemPrompt: crewPrompts.transitionSystemPrompt,
+        model: crewPrompts.model,
+        provider: crewPrompts.provider,
+        kbSources: crewPrompts.kbSources,
+        persona: crewPrompts.persona,
+        thinkingPrompt: crewPrompts.thinkingPrompt,
         isActive: crewPrompts.isActive,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
@@ -142,6 +152,11 @@ class PromptService {
         name: prompt.name,
         prompt: prompt.prompt,
         transitionSystemPrompt: prompt.transitionSystemPrompt,
+        model: prompt.model,
+        provider: prompt.provider,
+        kbSources: prompt.kbSources,
+        persona: prompt.persona,
+        thinkingPrompt: prompt.thinkingPrompt,
         isActive: prompt.isActive,
         createdAt: prompt.createdAt?.toISOString(),
         updatedAt: prompt.updatedAt?.toISOString(),
@@ -163,7 +178,7 @@ class PromptService {
    * @param {number} createdBy - User ID who created this version
    * @param {string} transitionSystemPrompt - System prompt injected on crew transition
    */
-  async createPromptVersion(agentName, crewMemberName, prompt, name = null, createdBy = null, transitionSystemPrompt = null) {
+  async createPromptVersion(agentName, crewMemberName, prompt, name = null, createdBy = null, transitionSystemPrompt = null, { model = null, provider = null, kbSources = null, persona = null, thinkingPrompt = null } = {}) {
     if (!this.drizzle) this.initialize();
 
     const agent = await this.getAgentByName(agentName);
@@ -191,6 +206,11 @@ class PromptService {
         name,
         prompt,
         transitionSystemPrompt,
+        model,
+        provider,
+        kbSources,
+        persona,
+        thinkingPrompt,
         isActive: true,
         createdBy,
       })
@@ -202,6 +222,11 @@ class PromptService {
       name: newVersion.name,
       prompt: newVersion.prompt,
       transitionSystemPrompt: newVersion.transitionSystemPrompt,
+      model: newVersion.model,
+      provider: newVersion.provider,
+      kbSources: newVersion.kbSources,
+      persona: newVersion.persona,
+      thinkingPrompt: newVersion.thinkingPrompt,
       isActive: newVersion.isActive,
       createdAt: newVersion.createdAt?.toISOString(),
       updatedAt: newVersion.updatedAt?.toISOString(),
@@ -216,7 +241,7 @@ class PromptService {
    * @param {string} prompt - Main prompt text
    * @param {string} transitionSystemPrompt - System prompt injected on crew transition (optional)
    */
-  async updatePromptVersion(agentName, crewMemberName, versionId, prompt, transitionSystemPrompt = undefined) {
+  async updatePromptVersion(agentName, crewMemberName, versionId, prompt, transitionSystemPrompt = undefined, { model = undefined, provider = undefined, kbSources = undefined, persona = undefined, thinkingPrompt = undefined } = {}) {
     if (!this.drizzle) this.initialize();
 
     const agent = await this.getAgentByName(agentName);
@@ -226,10 +251,13 @@ class PromptService {
       updatedAt: new Date(),
     };
 
-    // Only update transitionSystemPrompt if explicitly provided (allows setting to null)
-    if (transitionSystemPrompt !== undefined) {
-      updateData.transitionSystemPrompt = transitionSystemPrompt;
-    }
+    // Only update optional fields if explicitly provided (allows setting to null)
+    if (transitionSystemPrompt !== undefined) updateData.transitionSystemPrompt = transitionSystemPrompt;
+    if (model !== undefined) updateData.model = model;
+    if (provider !== undefined) updateData.provider = provider;
+    if (kbSources !== undefined) updateData.kbSources = kbSources;
+    if (persona !== undefined) updateData.persona = persona;
+    if (thinkingPrompt !== undefined) updateData.thinkingPrompt = thinkingPrompt;
 
     const [updated] = await this.drizzle
       .update(crewPrompts)
@@ -251,6 +279,11 @@ class PromptService {
       name: updated.name,
       prompt: updated.prompt,
       transitionSystemPrompt: updated.transitionSystemPrompt,
+      model: updated.model,
+      provider: updated.provider,
+      kbSources: updated.kbSources,
+      persona: updated.persona,
+      thinkingPrompt: updated.thinkingPrompt,
       isActive: updated.isActive,
       createdAt: updated.createdAt?.toISOString(),
       updatedAt: updated.updatedAt?.toISOString(),
