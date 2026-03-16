@@ -163,8 +163,8 @@ ${messagesText}
 
 Extract any field values from the conversation above. Return JSON.`;
 
-    // Use gpt-4o for form mode (more precise), gpt-4o-mini for conversational (faster/cheaper)
-    const model = isFormMode ? 'gpt-4o' : 'gpt-4o-mini';
+    // Use claude-sonnet for form mode (better Hebrew understanding), gpt-4o-mini for conversational (faster/cheaper)
+    const model = isFormMode ? 'claude-sonnet-4-6' : 'gpt-4o-mini';
 
     try {
       console.log(`   🔍 [FieldsExtractor] Mode: ${extractionMode}, Model: ${model}`);
@@ -172,15 +172,27 @@ Extract any field values from the conversation above. Return JSON.`;
       console.log(`   🔍 [FieldsExtractor] Already collected: ${collectedSummary}`);
       console.log(`   🔍 [FieldsExtractor] Messages count: ${relevantMessages.length}`);
 
-      const responseText = await llmService.sendOneShot(
+      let responseText = await llmService.sendOneShot(
         systemPrompt,
         userMessage,
         { model, maxTokens: 1024, jsonOutput: true, context: 'field-extractor' }
       );
 
+      // Retry once if response is empty (transient API failure)
+      if (!responseText || responseText.trim() === '') {
+        console.warn(`   ⚠️ [FieldsExtractor] Empty response, retrying...`);
+        responseText = await llmService.sendOneShot(
+          systemPrompt,
+          userMessage,
+          { model, maxTokens: 1024, jsonOutput: true, context: 'field-extractor' }
+        );
+      }
+
       console.log(`   🔍 [FieldsExtractor] Raw response: ${responseText}`);
 
-      const parsed = JSON.parse(responseText);
+      // Strip markdown code fences if the model wraps JSON in ```json ... ```
+      const cleaned = responseText.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+      const parsed = JSON.parse(cleaned);
 
       console.log(`   🔍 [FieldsExtractor] Extracted: ${JSON.stringify(parsed.extractedFields || {})}`);
       if (parsed.corrections && Object.keys(parsed.corrections).length > 0) {

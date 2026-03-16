@@ -638,6 +638,11 @@ class DispatcherService {
     // ========== ASSEMBLE FINAL PROMPT ==========
     // Build the complete prompt string once — all providers receive the same text.
     // Order: guidance → persona → context JSON → promptNotes
+    // Re-read guidance after buildContext — crews may switch to a minimal prompt dynamically
+    if (promptSource === 'code' && crew.guidance !== resolvedPrompt) {
+      resolvedPrompt = crew.guidance;
+      crew._useMinimalGuidance = false; // Reset after reading
+    }
     const { characterGuidance, promptNotes, ...remainingContext } = context;
     let assembledPrompt = resolvedPrompt;
     if (characterGuidance) {
@@ -648,6 +653,10 @@ class DispatcherService {
     }
     if (promptNotes) {
       assembledPrompt += `\n\n${promptNotes}`;
+      // Emit prompt notes as a debug event so client can display them
+      if (params.debug) {
+        yield { type: 'debug_prompt_notes', data: { notes: promptNotes } };
+      }
     }
 
     // Build LLM config from crew member (provider-agnostic)

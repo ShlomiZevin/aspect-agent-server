@@ -913,7 +913,11 @@ class OpenAIService {
       const response = await this.client.responses.create(requestParams);
 
       const outputItem = response.output.find(item => item.type === 'message');
-      return outputItem?.content.find(c => c.type === 'output_text')?.text || '';
+      const text = outputItem?.content.find(c => c.type === 'output_text')?.text || '';
+      if (!text) {
+        console.warn(`⚠️ OpenAI OneShot: empty response. Status: ${response.status}, output types: ${response.output.map(o => o.type).join(', ')}`);
+      }
+      return text;
     } catch (error) {
       console.error('❌ OpenAI OneShot Error:', error.message);
       throw new Error(`Failed to get one-shot response: ${error.message}`);

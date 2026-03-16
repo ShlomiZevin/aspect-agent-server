@@ -38,14 +38,17 @@ class WelcomeCrew extends CrewMember {
     });
   }
 
-  get guidance() {
-    return `You are ליבי (LYBI), the bank's AI assistant for account opening. You operate in Hebrew only - never switch languages regardless of how the user writes. Hebrew must feel native, not translated.
+  // Store the full guidance for normal flow, and a minimal one for post-gender re-run
+  _fullGuidance = `You are ליבי (LYBI), the bank's AI assistant for account opening. You operate in Hebrew only - never switch languages regardless of how the user writes. Hebrew must feel native, not translated.
 
 Your personality is warm, confident, and direct. Helpful without being eager. Personal without being familiar. Never bureaucratic, never salesy, never cold.
 
 LYBI is always female: "אני עוזרת", "אני כאן".
 
 Your mission in this crew is straightforward: welcome users warmly, collect essential information, and prepare them for the account opening process.
+
+## Knowledge Base
+You have access to a knowledge base. When the user asks about consent, terms, fees, account types, bank channels, or any banking-related question — always answer from the KB. Do not make up information. If the KB doesn't have the answer, say you'll check and move on.
 
 ## Introduction Flow:
 1. Give a brief, warm self-introduction covering:
@@ -54,7 +57,6 @@ Your mission in this crew is straightforward: welcome users warmly, collect esse
    - That you can answer questions throughout the process
    - Your goal is to find the right fit for this specific user
    - That they can stop and return anytime (conversation resumes from where they left off)
-   - In this first message you don't know the user's gender. Use ONLY impersonal phrasing: "אפשר לעצור ולחזור", "חשוב לדעת ש...", "ניתן לשאול". Avoid any second-person singular form entirely — no שתדע, שתדעי, תוכל, תוכלי, תתחבר, תתחברי.
 
 2. Ask for their name naturally
 
@@ -75,6 +77,35 @@ Your mission in this crew is straightforward: welcome users warmly, collect esse
 **If the user asks about fees or account types before entering the process** → try once to explain the answer depends on their profile. If they insist → share a brief general overview from the KB, note it's not personalized, then invite them back to the process.
 
 Once all mandatory fields are collected, transition smoothly to the advisor.`;
+
+  // Minimal prompt for the re-run after gender is detected — just greet and ask for consent
+  _minimalGuidance = `את ליבי, עוזרת דיגיטלית של הבנק לפתיחת חשבונות. דברי על עצמך בלשון נקבה.
+הלקוח כבר הציג את עצמו. אל תציגי את עצמך שוב. המשיכי את השיחה בטבעיות — פני אליו בשמו ובקשי את הסכמתו לתנאי השירות של ליבי כערוץ לפתיחת חשבון. הסבירי בקצרה למה הוא מסכים ובקשי תשובה ברורה של כן או לא.`;
+
+  get guidance() {
+    // _useMinimalGuidance is set by buildContext when gender is known (re-run after ditch)
+    return this._useMinimalGuidance ? this._minimalGuidance : this._fullGuidance;
+  }
+
+  /**
+   * When gender is known, use minimal prompt without persona for focused gender-correct response.
+   */
+  async buildContext(params) {
+    const collectedFields = params.collectedFields || {};
+
+    if (collectedFields.gender && !collectedFields.service_consent) {
+      // First response after gender detected — use minimal prompt, no persona
+      this._useMinimalGuidance = true;
+      const savedPersona = this.persona;
+      this.persona = null;
+      const context = await super.buildContext(params);
+      this.persona = savedPersona;
+      // Don't clear _useMinimalGuidance here — dispatcher needs it when re-reading guidance
+      return context;
+    }
+
+    this._useMinimalGuidance = false;
+    return super.buildContext(params);
   }
 
   /**
@@ -86,11 +117,9 @@ Once all mandatory fields are collected, transition smoothly to the advisor.`;
 
     if (collectedFields.gender) {
       const form = collectedFields.gender === 'female' ? 'נקבה' : 'זכר';
-      notes.push(`IMPORTANT: User gender is ${collectedFields.gender}. Address the user in ${form} form only.`);
-    } else if (collectedFields.user_name) {
-      notes.push(`IMPORTANT: User gender is UNKNOWN. You must ask the user for their gender now. Use impersonal forms until they answer.`);
+      notes.push(`IMPORTANT: The user's gender is ${form}. Use ${form} forms when addressing them. Do not mention or acknowledge the gender — just use it naturally.`);
     } else {
-      notes.push(`IMPORTANT: User gender is UNKNOWN. Use only impersonal forms when addressing the user.`);
+      notes.push(`Note: User gender is unknown. Use gender-neutral Hebrew when addressing the user ("אפשר", "כדאי", "ניתן") or combined forms ("ברוך/ה", "מוזמן/ת"). Do not default to masculine or feminine.`);
     }
     if (collectedFields.user_name) {
       notes.push(`שם הלקוח: ${collectedFields.user_name}`);

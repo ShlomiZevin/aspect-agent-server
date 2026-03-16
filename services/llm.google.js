@@ -314,6 +314,8 @@ class GoogleService {
         console.log(`🔍 Google tools payload:`, JSON.stringify(geminiTools, null, 2));
       }
 
+
+
       // Create chat session with the new SDK
       const chat = ai.chats.create({
         model,
@@ -323,8 +325,8 @@ class GoogleService {
           maxOutputTokens: effectiveMaxTokens,
           temperature: 0.7,
           tools: geminiTools.length > 0 ? geminiTools : undefined,
-          // Thinking models: disable internal reasoning to prevent THOUGHT leakage
-          thinkingConfig: isThinkingModel ? { thinkingBudget: 0 } : undefined,
+          // Thinking models: let the model reason properly for better instruction following
+          thinkingConfig: isThinkingModel ? { thinkingBudget: 8192 } : undefined,
         },
       });
 

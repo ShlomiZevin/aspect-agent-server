@@ -1,4 +1,4 @@
-const WelcomeCrew = require('./welcome.crew');
+const WelcomeCrew = require('./welcome.heb.crew');
 const AdvisorCrew = require('./advisor.crew');
 const ReviewFinalizeCrew = require('./review-finalize.crew');
 

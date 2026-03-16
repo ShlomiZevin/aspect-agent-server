@@ -1327,6 +1327,15 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             );
           }
 
+          // Handle prompt notes injection (debug mode only)
+          if (chunk.type === 'debug_prompt_notes') {
+            thinkingService.addStep(
+              conversationId,
+              'prompt_notes',
+              chunk.data.notes
+            );
+          }
+
           // Handle thinking advisor start — show indicator while thinker processes
           if (chunk.type === 'thinking_advisor_start') {
             thinkingService.addStep(
