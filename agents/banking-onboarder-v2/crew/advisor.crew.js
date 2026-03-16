@@ -17,8 +17,8 @@ const { getOffersCatalog } = require('../offers-catalog');
 const THINKING_PROMPT = `You are LYBI's strategy brain for the advisor stage. Analyze the conversation and return JSON with your assessment and recommendations.
 
 Analyze:
-1. **Profile completeness**: What financial information do we have vs. what's still needed?
-2. **User type & handling**: Which handling principle applies (first account, young user, bad experience, etc.)?
+1. **User type & handling**: Which handling principle applies (first account, young user, bad experience, etc.)? The KB has a detailed playbook for each
+2. **Profile completeness**: What financial information do we have vs. what's still needed?
 3. **Readiness for recommendations**: Do we understand their needs well enough to make personalized offers?
 4. **Current conversation state**: Are we building profile, making recommendations, or handling objections?
 5. **Product acceptance status**: What have they accepted/declined so far?
@@ -28,6 +28,8 @@ Return JSON format:
 {
   "_thinkingDescription": "short summary of decision — e.g. 'Profiling: asking about employment' or 'Recommending Plus plan'",
 
+  "contextGathered": false,
+  "userIntent": "why they're here — free text, null if unknown",
   "profileCompleteness": "assessment of what we know vs need",
   "userType": "which handling principle applies",
   "conversationState": "building_profile|making_recommendations|handling_objections",
@@ -60,8 +62,6 @@ Return JSON format:
     "creditCard": "pending|accepted|declined"
   },
 
-  "relevantKBs": ["pick up to 2 from the available list — only the ones most relevant for THIS turn"],
-
   "offerAccepted": false,
   "readyToTransfer": false,
   "reasoning": "why this approach fits this user"
@@ -79,31 +79,14 @@ Exception: if the customer explicitly asks you to recommend or shows clear impat
 - Layer 2 (card + checkbook): offer ONLY after layer 1 agreed. Card: always offer. Checkbook: based on need.
 - Layer 3 (deposits/loans): don't close here. Mention as value arguments only.
 
-## KNOWLEDGE BASE SELECTION
-You must select which knowledge bases (up to 5) are relevant for this turn. The talker will search only the ones you pick.
-Available KBs:
-- "Handling principles lean" — how to handle different user types and situations
-- "Banking terms" — banking jargon definitions and explanations
-- "IL Banks marketing" — competitor bank profiles and marketing info
-- "Operational" — KYC policies, consent processes, identity verification
-- "Customers data mockup" — demo customer personas for testing
-- "products" — bank product catalog (accounts, cards, plans, pricing)
-- "IL banks directory" — phone numbers, websites of all banks in Israel
-
-Pick based on what the conversation needs NOW. Examples:
-- Profiling stage → "Handling principles lean"
-- User asks about a banking term → "Banking terms"
-- Ready to recommend → "products", "Handling principles lean"
-- User mentions another bank → "IL Banks marketing", "IL banks directory"
-- KYC/consent questions → "Operational"
-
 ## STRATEGY RULES
 - Lead with value. Price is last resort.
 - One recommendation at a time. Never present a menu.
 - Set offerAccepted=true ONLY on explicit agreement (כן, מתאים, אני רוצה, בואו נעשה את זה). Interest ≠ acceptance.
 - If customer rejects: reset layer1Agreed=false, keep going. Ask what didn't fit.
 - Set readyToTransfer=true ONLY when layer1Agreed AND layer2Complete.
-- layer2Complete=true when both card and checkbook have a response (accepted/refused/skipped).`;
+- layer2Complete=true when both card and checkbook have a response (accepted/refused/skipped).
+- If contextGathered is false → nextQuestion must be about their story or motivation, not financial data. Set contextGathered=true only after the user has shared what brought them here.`;
 
 class AdvisorCrew extends CrewMember {
   constructor() {
@@ -121,17 +104,26 @@ class AdvisorCrew extends CrewMember {
       knowledgeBase: {
         enabled: true,
         sources: [
-          { name: 'Handling principles lean' },
-          { name: 'Banking terms' },
-          { name: 'IL Banks marketing' },
-          { name: 'Operational' },
-          { name: 'Customers data mockup' },
-          { name: 'products' },
-          { name: 'IL banks directory' },
+          { name: 'Onboarding KB' },
         ]
       },
       tools: [],
-      fieldsToCollect: [], // Thinker handles all state — not the field extractor
+      fieldsToCollect: [
+        { name: 'userIntent', description: 'Reason for opening the account' },
+        { name: 'userType', description: 'Identified handling principle (first account, young user, bad experience, etc.)' },
+        { name: 'employment', description: 'Employment status (employed / self-employed / student / other)' },
+        { name: 'incomeRange', description: 'Approximate income range' },
+        { name: 'expensesRange', description: 'Approximate expenses range' },
+        { name: 'mainExpenseTypes', description: 'Main expense types' },
+        { name: 'financialCommitments', description: 'Existing financial commitments (high level)' },
+        { name: 'expectedAccountUsage', description: 'Expected account usage' },
+        { name: 'recommendedOffer', description: 'Selected account track (basic / plus / premium)' },
+        { name: 'offerAccepted', description: 'Account track acceptance status' },
+        { name: 'cardResponse', description: 'Credit card — offered / response' },
+        { name: 'checkbookResponse', description: 'Checkbook — offered / response' },
+        { name: 'customerType', description: 'Overall read of the customer' },
+        { name: 'signals', description: 'Mood, hesitation, urgency, confidence' },
+      ],
       transitionTo: null,  // Third crew is TBD
     });
   }
@@ -151,6 +143,8 @@ You receive "thinkingAdvice" in your context — follow it. Ask what it suggests
 
 **Recommend with reason** - Every product you offer has a specific, personal reason tied to what they shared. No generic offers ever.
 
+**Bank advocate** — You genuinely believe this is the right bank for them. When it fits naturally, let the bank's strengths surface within your recommendation — not as a pitch, but as part of why this is a good match.
+
 **One clear offer at a time** - Introduce products progressively. Let each offer land before moving to the next.
 
 Keep each message focused on one topic or question. Build their financial profile gradually through natural conversation, not interrogation. Let them respond to one thing before moving to the next.
@@ -158,20 +152,22 @@ Keep each message focused on one topic or question. Build their financial profil
 ## Conversation Flow:
 
 ### 1. Intent & Context
-Open by understanding why they're here. Not a direct question - natural conversation that surfaces their motivation, context, and starting point. Identify which handling principle applies from your persona (first account, young user, bad bank experience, etc.) and adjust accordingly.
+Always open with one warm question about their story — what brought them here, what prompted this now. This is not a financial question. Listen for handling principle signals (first account, young user, bad bank experience, browsing, specific purpose, adding account, offer-driven, life event) and let that shape everything that follows.
+
+Once you identify the handling principle, consult your knowledge base for the detailed playbook. The KB contains handling principles for each user type, product catalog, banking terms, competitor info, and operational policies. Use it whenever you need accurate details — for product recommendations, banking concept explanations, competitor comparisons, or handling principle guidance. Only after they've shared their context, let financial profiling flow naturally from what they said.
 
 ### 2. Financial Profile Building
 Build their profile to support recommendations - not maximum completeness. Collect naturally:
 - Employment status and type
 - Income range (not exact)
-- Expenses range (not exact)
+- Expenses range (not exact) - not before income
 - Main expense types
 - Existing financial commitments (high level)
 - Expected account usage
 - Relevant context (student, irregular income, etc.)
 
 ### 3. Product Recommendations
-Based on their profile, present personalized packages. Use your knowledge base.
+Based on their profile, present personalized packages. Use the KB — for product recommendations, banking concept explanations, and handling principle guidance.
 
 **Layer 1 - Account Setup (mandatory to offer):**
 Account track, fees, benefits, terms, credit limit
@@ -236,13 +232,9 @@ ${historyText}`;
    * Persist advisor state and set dynamic KB selection after each thinker run.
    */
   async onThinkingComplete(advice, params) {
-    // Dynamic KB selection: thinker picks relevant KBs for this turn
-    // Set on params so buildContext returns it in context for the dispatcher
-    if (Array.isArray(advice.relevantKBs) && advice.relevantKBs.length > 0) {
-      this._dynamicKBs = advice.relevantKBs.slice(0, 2);
-    }
-
     await this.writeContext('advisor_state', {
+      contextGathered: advice.contextGathered === true,
+      userIntent: advice.userIntent || null,
       recommendedOffer: advice.recommendedOffer || null,
       offerPitch: advice.offerPitch || '',
       offerAccepted: advice.offerAccepted === true,
@@ -271,20 +263,12 @@ ${historyText}`;
    */
   async getAdditionalContext(params) {
     const profile = await this.getContext('onboarding_profile', true) || {};
-    const extra = {
+    return {
       role: 'Account Advisor',
       customerName: profile.name || null,
       customerGender: profile.gender || null,
       customerAge: profile.age || null
     };
-
-    // Pass thinker's KB selection to dispatcher via context
-    if (this._dynamicKBs) {
-      extra.knowledgeBaseSources = this._dynamicKBs;
-      this._dynamicKBs = null; // Clear after use — per-request only
-    }
-
-    return extra;
   }
 
   /**

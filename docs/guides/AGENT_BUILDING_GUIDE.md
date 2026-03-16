@@ -308,7 +308,7 @@ Pass these to `super({...})` in the constructor:
 | `maxTokens` | `number` | No | Max response tokens (default: `2048`) |
 | `tools` | `array` | No | Tool definitions. Each: `{ name, description, parameters, handler }` |
 | `knowledgeBase` | `object\|null` | No | `{ enabled: true, storeId: "vs_..." }` or `null` |
-| `fieldsToCollect` | `array` | No | Fields to extract from conversation: `[{ name: "age", description: "User's age" }]` |
+| `fieldsToCollect` | `array` | No | Fields to extract from conversation: `[{ name: "age", description: "User's age" }]`. Optional per-field flags: `ditchIfCollected: true` (discard LLM response and re-run when this field is extracted mid-turn), `allowedValues: [...]`, `type: 'boolean'`. For thinker crews: fields are extracted from thinker output instead of the extractor. |
 | `transitionTo` | `string` | No | Target crew name for automatic transition |
 | `transitionSystemPrompt` | `string` | No | System prompt injected once when transitioning TO this crew (see 3.6) |
 | `oneShot` | `boolean` | No | If `true`, crew delivers one response then auto-transitions on next user message (see 3.7) |
@@ -1296,6 +1296,36 @@ Default: empty object. Override to inject domain data the talker needs that isn'
 async getAdditionalContext(params) {
   const profile = await this.getContext('my_profile', true) || {};
   return { customerName: profile.name, role: 'Account Advisor' };
+}
+```
+
+##### `promptNotes` — Plain text notes appended to the prompt
+
+If `getAdditionalContext` returns a `promptNotes` string, it is appended as **plain text** directly to the LLM prompt (not inside the JSON context block). Use this for high-priority instructions the model must not miss — e.g., language agreement, confirmed user attributes.
+
+```js
+async getAdditionalContext(params) {
+  const fields = params.collectedFields || {};
+  if (fields.gender) {
+    return { promptNotes: `שים לב: הלקוח הוא ${fields.gender === 'female' ? 'נקבה' : 'זכר'}. תענה בהתאם.` };
+  }
+  return {};
+}
+```
+
+This is more visible to the model than JSON context because it appears as part of the prompt text itself.
+
+#### `onFieldsExtracted(newFields, allFields)` — Derive fields post-extraction
+
+Default: empty object. Override to derive additional fields from extracted values (e.g., infer gender from name). Returned fields are saved and count for `ditchIfCollected`.
+
+```js
+async onFieldsExtracted(newFields, allFields) {
+  if (newFields.user_name && !allFields.gender) {
+    const gender = await inferGender(newFields.user_name);
+    if (gender) return { gender };
+  }
+  return {};
 }
 ```
 

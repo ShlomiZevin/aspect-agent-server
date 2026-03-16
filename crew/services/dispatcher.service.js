@@ -164,6 +164,12 @@ class DispatcherService {
       return;
     }
 
+    // Thinker crews with fields: skip extractor, extract fields from thinker output instead
+    if (crew.usesThinker && hasFieldsToCollect) {
+      yield* this._streamCrewWithThinkerFields(crew, params);
+      return;
+    }
+
     // ========== EARLY PRE-TRANSFER CHECK ==========
     // If all fields were already collected (from previous messages),
     // transition immediately without starting the crew stream or extractor.
@@ -629,6 +635,13 @@ class DispatcherService {
       }
     }
 
+    // Append plain text prompt notes from context (if any crew set them)
+    // Remove from context so it doesn't appear in the JSON block too
+    if (context.promptNotes) {
+      resolvedPrompt += `\n\n${context.promptNotes}`;
+      delete context.promptNotes;
+    }
+
     // Build LLM config from crew member (provider-agnostic)
     const llmConfig = {
       prompt: resolvedPrompt,
@@ -878,6 +891,65 @@ class DispatcherService {
       allCollected,
       remainingFields: result.remainingFields
     };
+  }
+
+  /**
+   * Stream crew response and extract fields from thinker output.
+   * Used when crew has both usesThinker and fieldsToCollect — the thinker
+   * acts as the field extractor, no separate extractor call needed.
+   *
+   * @param {Object} crew - CrewMember instance
+   * @param {Object} params - Dispatch parameters
+   * @private
+   */
+  async *_streamCrewWithThinkerFields(crew, params) {
+    const { conversationId } = params;
+
+    console.log(`🧠 Crew ${crew.name} uses thinker for field extraction (${crew.fieldsToCollect.length} fields)`);
+
+    // Stream the crew response (thinker runs inside buildContext)
+    yield* this._streamCrew(crew, params);
+
+    // After stream completes, read the persisted thinker state and map to collected fields
+    const conversation = await conversationService.getConversationByExternalId(conversationId);
+    if (conversation?.userId) {
+      crew.setContextUser(conversation.userId, conversation.id, conversationId);
+    }
+
+    // Read the thinker's persisted state (written by onThinkingComplete)
+    // Each crew decides which context namespace to use — we check common patterns
+    const fieldNames = crew.fieldsToCollect.map(f => f.name);
+    const existingFields = await agentContextService.getCollectedFields(conversationId);
+
+    // Try to get thinker state from the crew's context namespaces
+    let thinkerState = null;
+    for (const ns of ['advisor_state', 'thinker_state', 'state']) {
+      thinkerState = await crew.getContext(ns, true);
+      if (thinkerState && Object.keys(thinkerState).length > 0) break;
+    }
+
+    if (!thinkerState) return;
+
+    // Map thinker fields to collected fields
+    const newFields = {};
+    for (const fieldName of fieldNames) {
+      const value = thinkerState[fieldName];
+      if (value !== null && value !== undefined && value !== '' && value !== false) {
+        // Only update if new or changed
+        if (existingFields[fieldName] !== String(value)) {
+          newFields[fieldName] = String(value);
+        }
+      }
+    }
+
+    if (Object.keys(newFields).length > 0) {
+      await agentContextService.updateCollectedFields(conversationId, newFields);
+      console.log(`🧠 Thinker extracted ${Object.keys(newFields).length} fields:`, Object.keys(newFields).join(', '));
+
+      for (const [field, value] of Object.entries(newFields)) {
+        yield { type: 'field_extracted', field, value };
+      }
+    }
   }
 
   /**
