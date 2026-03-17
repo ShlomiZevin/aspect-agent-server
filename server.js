@@ -11,6 +11,7 @@ const db = require('./services/db.pg');
 const conversationService = require('./services/conversation.service');
 const kbService = require('./services/kb.service');
 const googleKBService = require('./services/kb.google.service');
+const anthropicKBService = require('./services/kb.anthropic.service');
 const storageService = require('./services/storage.service');
 const thinkingService = require('./services/thinking.service');
 const feedbackService = require('./services/feedback.service');
@@ -1662,7 +1663,7 @@ app.post('/webhook', (req, res) => {
 
 // ========== KNOWLEDGE BASE MANAGEMENT ENDPOINTS ==========
 
-// Create a new knowledge base (supports provider: 'openai' | 'google' | 'both')
+// Create a new knowledge base (supports provider: 'openai' | 'google' | 'both' | 'anthropic')
 app.post('/api/kb/create', async (req, res) => {
   try {
     const { agentName, name, description, provider = 'openai' } = req.body;
@@ -1670,8 +1671,8 @@ app.post('/api/kb/create', async (req, res) => {
     if (!agentName || !name) {
       return res.status(400).json({ error: 'Agent name and KB name are required' });
     }
-    if (!['openai', 'google', 'both'].includes(provider)) {
-      return res.status(400).json({ error: 'Invalid provider. Must be openai, google, or both' });
+    if (!['openai', 'google', 'both', 'anthropic'].includes(provider)) {
+      return res.status(400).json({ error: 'Invalid provider. Must be openai, google, both, or anthropic' });
     }
 
     const agent = await kbService.getAgentByName(agentName);
@@ -1729,6 +1730,7 @@ app.get('/api/kb/:kbId/files', async (req, res) => {
       id: dbFile.id,
       openaiFileId: dbFile.openaiFileId ?? null,
       googleDocumentId: dbFile.googleDocumentId ?? null,
+      anthropicFileId: dbFile.anthropicFileId ?? null,
       originalFileUrl: dbFile.originalFileUrl ?? null,
       fileName: dbFile.fileName,
       fileSize: dbFile.fileSize,
@@ -1764,6 +1766,7 @@ app.post('/api/kb/:kbId/upload', upload.single('file'), async (req, res) => {
 
     let openaiFileId = null;
     let googleDocumentId = null;
+    let anthropicFileId = null;
     let originalFileUrl = null;
 
     // Upload to OpenAI if KB uses OpenAI
@@ -1780,6 +1783,13 @@ app.post('/api/kb/:kbId/upload', upload.single('file'), async (req, res) => {
       console.log(`✅ Uploaded to Google: ${googleDocumentId}`);
     }
 
+    // Upload to Anthropic Files API if KB uses Anthropic
+    if (kb.provider === 'anthropic') {
+      const result = await anthropicKBService.uploadFile(buffer, originalname, mimetype);
+      anthropicFileId = result.fileId;
+      console.log(`✅ Uploaded to Anthropic: ${anthropicFileId}`);
+    }
+
     // Save original to GCS for sync capability
     try {
       originalFileUrl = await storageService.uploadFile(buffer, originalname, mimetype, kbId);
@@ -1792,7 +1802,7 @@ app.post('/api/kb/:kbId/upload', upload.single('file'), async (req, res) => {
       originalname,
       size,
       fileType,
-      { openaiFileId, googleDocumentId, originalFileUrl },
+      { openaiFileId, googleDocumentId, anthropicFileId, originalFileUrl },
       tags,
       'completed'
     );
@@ -1804,6 +1814,7 @@ app.post('/api/kb/:kbId/upload', upload.single('file'), async (req, res) => {
         id: dbFile.id,
         openaiFileId,
         googleDocumentId,
+        anthropicFileId,
         fileName: originalname,
         fileSize: size,
         fileType,
@@ -1875,6 +1886,10 @@ app.delete('/api/kb/:kbId', async (req, res) => {
         try { await googleKBService.deleteDocument(file.googleDocumentId); }
         catch (err) { console.warn(`⚠️ Could not delete from Google: ${err.message}`); }
       }
+      if (file.anthropicFileId) {
+        try { await anthropicKBService.deleteFile(file.anthropicFileId); }
+        catch (err) { console.warn(`⚠️ Could not delete from Anthropic: ${err.message}`); }
+      }
       if (file.originalFileUrl) {
         try { await storageService.deleteFile(file.originalFileUrl); }
         catch (err) { console.warn(`⚠️ Could not delete from GCS: ${err.message}`); }
@@ -1938,6 +1953,15 @@ app.delete('/api/kb/:kbId/files/:fileId', async (req, res) => {
         await googleKBService.deleteDocument(file.googleDocumentId);
       } catch (err) {
         console.warn(`⚠️ Could not delete from Google: ${err.message}`);
+      }
+    }
+
+    // Delete from Anthropic Files API if applicable
+    if (file.anthropicFileId) {
+      try {
+        await anthropicKBService.deleteFile(file.anthropicFileId);
+      } catch (err) {
+        console.warn(`⚠️ Could not delete from Anthropic: ${err.message}`);
       }
     }
 

@@ -69,6 +69,7 @@ class KBResolverService {
       const resolvedSources = [];
       const storeIds = [];
       const corpusIds = [];
+      const kbIds = []; // For Anthropic: DB KB IDs to fetch file IDs at inference time
 
       for (const name of sourceNames) {
         const kb = kbByName.get(name);
@@ -95,6 +96,14 @@ class KBResolverService {
             console.warn(`⚠️ [KB Resolver] KB "${name}" has no googleCorpusId for Google`);
             resolvedSources.push({ name, resolved: false, reason: 'no googleCorpusId' });
           }
+        } else if (modelProvider === 'anthropic') {
+          if (kb.provider === 'anthropic') {
+            kbIds.push(kb.id);
+            resolvedSources.push({ name, resolved: true, id: kb.id });
+          } else {
+            console.warn(`⚠️ [KB Resolver] KB "${name}" is not an Anthropic KB (provider: ${kb.provider})`);
+            resolvedSources.push({ name, resolved: false, reason: `KB provider is ${kb.provider}, not anthropic` });
+          }
         }
       }
 
@@ -110,6 +119,13 @@ class KBResolverService {
           enabled: corpusIds.length > 0,
           provider: 'google',
           corpusIds,
+          resolvedSources
+        };
+      } else if (modelProvider === 'anthropic') {
+        return {
+          enabled: kbIds.length > 0,
+          provider: 'anthropic',
+          kbIds,
           resolvedSources
         };
       }

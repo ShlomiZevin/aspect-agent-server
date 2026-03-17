@@ -99,6 +99,7 @@ const knowledgeBaseFiles = pgTable('knowledge_base_files', {
   fileType: varchar('file_type', { length: 100 }),
   openaiFileId: varchar('openai_file_id', { length: 255 }), // OpenAI file reference
   googleDocumentId: varchar('google_document_id', { length: 255 }), // Google document name
+  anthropicFileId: varchar('anthropic_file_id', { length: 255 }), // Anthropic Files API file ID
   originalFileUrl: varchar('original_file_url', { length: 1024 }), // GCS path for sync
   status: varchar('status', { length: 50 }).default('processing').notNull(), // processing, completed, failed
   metadata: jsonb('metadata'),

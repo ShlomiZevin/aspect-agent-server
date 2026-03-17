@@ -95,6 +95,7 @@ class ClaudeService {
       maxTokens = 4096,
       tools: crewTools = [],
       toolHandlers = {},
+      anthropicDocuments = [], // Anthropic file IDs to inject as document blocks
     } = config;
 
     try {
@@ -141,10 +142,25 @@ class ClaudeService {
       // Clean history for Claude (only user/assistant roles)
       const cleanedHistory = this._cleanHistoryForClaude(historyMessages);
 
+      // Build user message content — prepend document blocks for Anthropic KB
+      let userContent;
+      if (anthropicDocuments && anthropicDocuments.length > 0) {
+        userContent = [
+          ...anthropicDocuments.map(fileId => ({
+            type: 'document',
+            source: { type: 'file', file_id: fileId }
+          })),
+          { type: 'text', text: messageText }
+        ];
+        console.log(`📎 Injecting ${anthropicDocuments.length} document block(s) into Claude request`);
+      } else {
+        userContent = messageText;
+      }
+
       // Build messages array: history + current message
       const messages = [
         ...cleanedHistory,
-        { role: 'user', content: messageText }
+        { role: 'user', content: userContent }
       ];
 
       console.log(`🤖 Claude streaming with prompt (${systemText.length} chars), ${tools.length} tools, ${cleanedHistory.length}/${historyMessages.length} history messages`);
@@ -167,7 +183,15 @@ class ClaudeService {
           requestParams.tools = tools;
         }
 
-        const stream = await this.client.messages.stream(requestParams);
+        // Use beta.messages when document blocks are present (requires Files API beta)
+        const messagesApi = anthropicDocuments && anthropicDocuments.length > 0
+          ? this.client.beta.messages
+          : this.client.messages;
+        if (anthropicDocuments && anthropicDocuments.length > 0) {
+          requestParams.betas = ['files-api-2025-04-14'];
+        }
+
+        const stream = await messagesApi.stream(requestParams);
 
         let fullReply = '';
         const pendingToolCalls = [];

@@ -169,7 +169,7 @@ class KnowledgeBaseService {
    */
   async addFile(kbId, fileName, fileSize, fileType, providerIds = {}, tags = [], status = 'processing') {
     try {
-      const { openaiFileId = null, googleDocumentId = null, originalFileUrl = null } = providerIds;
+      const { openaiFileId = null, googleDocumentId = null, originalFileUrl = null, anthropicFileId = null } = providerIds;
 
       const [file] = await dbService.db
         .insert(knowledgeBaseFiles)
@@ -180,6 +180,7 @@ class KnowledgeBaseService {
           fileType,
           openaiFileId,
           googleDocumentId,
+          anthropicFileId,
           originalFileUrl,
           status,
           metadata: { tags }

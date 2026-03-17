@@ -21,6 +21,7 @@ const fieldsExtractor = require('../micro-agents/FieldsExtractorAgent');
 const promptService = require('../../services/prompt.service');
 const CrewMember = require('../base/CrewMember');
 const kbResolver = require('../../services/kb.resolver');
+const kbService = require('../../services/kb.service');
 
 class DispatcherService {
   constructor() {
@@ -602,21 +603,29 @@ class DispatcherService {
 
     if (crewKBEnabled && kbSources.length > 0 && agentId) {
       const modelProvider = kbResolver.getModelProvider(resolvedModel);
+      resolvedKB = await kbResolver.resolve(kbSources, modelProvider, agentId);
 
-      if (modelProvider === 'anthropic') {
-        console.log(`ℹ️ [${crew.name}] KB skipped for Anthropic model (not supported)`);
+      if (!resolvedKB.enabled) {
+        console.warn(`⚠️ [${crew.name}] No KB IDs resolved for ${modelProvider} model`);
+        resolvedKB = null;
       } else {
-        resolvedKB = await kbResolver.resolve(kbSources, modelProvider, agentId);
+        const unresolved = resolvedKB.resolvedSources.filter(s => !s.resolved);
+        if (unresolved.length > 0) {
+          console.warn(`⚠️ [${crew.name}] Some KB sources could not be resolved:`, unresolved);
+        }
+        console.log(`📚 [${crew.name}] KB resolved for ${modelProvider}: ${JSON.stringify(resolvedKB.storeIds || resolvedKB.corpusIds || resolvedKB.kbIds)}`);
 
-        if (!resolvedKB.enabled) {
-          console.warn(`⚠️ [${crew.name}] No KB IDs resolved for ${modelProvider} model`);
-          resolvedKB = null;
-        } else {
-          const unresolved = resolvedKB.resolvedSources.filter(s => !s.resolved);
-          if (unresolved.length > 0) {
-            console.warn(`⚠️ [${crew.name}] Some KB sources could not be resolved:`, unresolved);
+        // For Anthropic: fetch Anthropic file IDs from DB and attach to resolvedKB
+        if (modelProvider === 'anthropic' && resolvedKB.kbIds?.length > 0) {
+          const anthropicFileIds = [];
+          for (const kbId of resolvedKB.kbIds) {
+            const files = await kbService.getFilesByKnowledgeBase(kbId);
+            for (const f of files) {
+              if (f.anthropicFileId) anthropicFileIds.push(f.anthropicFileId);
+            }
           }
-          console.log(`📚 [${crew.name}] KB resolved for ${modelProvider}: ${JSON.stringify(resolvedKB.storeIds || resolvedKB.corpusIds)}`);
+          resolvedKB.anthropicFileIds = anthropicFileIds;
+          console.log(`📎 [${crew.name}] Anthropic KB files: ${anthropicFileIds.length} file(s)`);
         }
       }
     } else if (!hasKBOverride && crewKBEnabled && kbSources.length === 0 && crew.knowledgeBase?.storeId) {
@@ -675,6 +684,7 @@ class DispatcherService {
       tools: crew.getToolSchemas(),
       toolHandlers,
       knowledgeBase: resolvedKB,
+      anthropicDocuments: resolvedKB?.provider === 'anthropic' ? (resolvedKB.anthropicFileIds || []) : [],
       agentConfig,
       transitionSystemPrompt: resolvedTransitionPrompt,
       isNewCrewTransition
