@@ -1712,23 +1712,7 @@ app.get('/api/kb/list/:agentName', async (req, res) => {
     const agent = await kbService.getAgentByName(agentName);
     const kbs = await kbService.getKnowledgeBasesByAgent(agent.id);
 
-    // Enrich with live OpenAI file count where available
-    const enrichedKBs = await Promise.all(
-      kbs.map(async (kb) => {
-        let fileCount = kb.fileCount;
-        if (kb.vectorStoreId && (kb.provider === 'openai' || kb.provider === 'both')) {
-          try {
-            const vsData = await llmService.getVectorStore(kb.vectorStoreId);
-            fileCount = vsData.fileCount;
-          } catch {
-            // Use DB count as fallback
-          }
-        }
-        return { ..._formatKB(kb), fileCount };
-      })
-    );
-
-    res.json({ knowledgeBases: enrichedKBs });
+    res.json({ knowledgeBases: kbs.map(_formatKB) });
   } catch (err) {
     console.error('❌ Error listing knowledge bases:', err.message);
     res.status(500).json({ error: 'Error listing knowledge bases: ' + err.message });
