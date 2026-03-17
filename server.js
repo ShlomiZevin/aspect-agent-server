@@ -1874,6 +1874,40 @@ app.get('/api/kb/:kbId/files/:fileId/download', async (req, res) => {
 });
 
 // Delete legacy file by openaiFileId (no DB record — file lives only in OpenAI VS)
+// Delete entire knowledge base (all files + providers + DB record)
+app.delete('/api/kb/:kbId', async (req, res) => {
+  try {
+    const { kbId } = req.params;
+    const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
+    const files = await kbService.getFilesByKnowledgeBase(parseInt(kbId));
+
+    // Delete all files from providers
+    for (const file of files) {
+      if (file.openaiFileId && kb.vectorStoreId) {
+        try { await llmService.deleteVectorStoreFile(kb.vectorStoreId, file.openaiFileId); }
+        catch (err) { console.warn(`⚠️ Could not delete from OpenAI: ${err.message}`); }
+      }
+      if (file.googleDocumentId) {
+        try { await googleKBService.deleteDocument(file.googleDocumentId); }
+        catch (err) { console.warn(`⚠️ Could not delete from Google: ${err.message}`); }
+      }
+      if (file.originalFileUrl) {
+        try { await storageService.deleteFile(file.originalFileUrl); }
+        catch (err) { console.warn(`⚠️ Could not delete from GCS: ${err.message}`); }
+      }
+    }
+
+    // Delete KB + all files from DB
+    await kbService.deleteKnowledgeBase(parseInt(kbId));
+
+    console.log(`✅ Knowledge base deleted: ${kbId}`);
+    res.json({ success: true, kbId });
+  } catch (err) {
+    console.error('❌ Delete KB Error:', err.message);
+    res.status(500).json({ error: 'Error deleting knowledge base: ' + err.message });
+  }
+});
+
 app.delete('/api/kb/:kbId/files/openai/:openaiFileId', async (req, res) => {
   try {
     const { kbId, openaiFileId } = req.params;

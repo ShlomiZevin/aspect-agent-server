@@ -280,6 +280,29 @@ class KnowledgeBaseService {
   }
 
   /**
+   * Delete an entire knowledge base and all its files from the database
+   * @param {number} kbId - Knowledge base ID
+   * @returns {Promise<boolean>}
+   */
+  async deleteKnowledgeBase(kbId) {
+    try {
+      await dbService.db
+        .delete(knowledgeBaseFiles)
+        .where(eq(knowledgeBaseFiles.knowledgeBaseId, kbId));
+
+      await dbService.db
+        .delete(knowledgeBases)
+        .where(eq(knowledgeBases.id, kbId));
+
+      console.log(`✅ Knowledge base deleted from DB: ${kbId}`);
+      return true;
+    } catch (error) {
+      console.error('❌ Error deleting knowledge base:', error.message);
+      throw new Error(`Failed to delete knowledge base: ${error.message}`);
+    }
+  }
+
+  /**
    * Delete a file from the knowledge base
    * @param {number} fileId - DB file ID
    * @returns {Promise<boolean>}
