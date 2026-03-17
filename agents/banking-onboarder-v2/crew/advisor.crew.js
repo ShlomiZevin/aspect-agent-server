@@ -29,32 +29,17 @@ Return JSON format:
   "_thinkingDescription": "short summary of decision — e.g. 'Profiling: asking about employment' or 'Recommending Plus plan'",
 
   "contextGathered": false,
-  "userIntent": "why they're here — free text, null if unknown",
   "profileCompleteness": "assessment of what we know vs need",
-  "userType": "which handling principle applies",
   "conversationState": "building_profile|making_recommendations|handling_objections",
-
-  "employment": "free text, null if unknown",
-  "incomeRange": "approximate range, null if unknown",
-  "expensesRange": "approximate range, null if unknown",
-  "mainExpenseTypes": "free text, null if unknown",
-  "financialCommitments": "free text, null if unknown",
-  "expectedAccountUsage": "free text, null if unknown",
-
-  "customerType": "your overall read of this customer",
-  "signals": "mood, hesitation, urgency, confidence — anything relevant",
 
   "nextQuestion": "the single Hebrew question to ask next, or null if recommending",
   "strategy": "what to do next and why — one sentence",
   "toneNotes": "tone adjustment if needed",
 
-  "recommendedOffer": "basic|plus|premium — from the offers catalog, null if not ready",
   "offerPitch": "why this offer fits THIS customer",
   "layer1Agreed": false,
   "cardOffered": false,
-  "cardResponse": "what the customer said about the card, null if not offered",
   "checkbookOffered": false,
-  "checkbookResponse": "what the customer said about the checkbook, null if not offered",
   "layer2Complete": false,
 
   "productStatus": {
@@ -62,7 +47,6 @@ Return JSON format:
     "creditCard": "pending|accepted|declined"
   },
 
-  "offerAccepted": false,
   "readyToTransfer": false,
   "reasoning": "why this approach fits this user"
 }
@@ -226,36 +210,6 @@ ${JSON.stringify(getOffersCatalog(), null, 2)}
 
 ## Conversation
 ${historyText}`;
-  }
-
-  /**
-   * Persist advisor state and set dynamic KB selection after each thinker run.
-   */
-  async onThinkingComplete(advice, params) {
-    await this.writeContext('advisor_state', {
-      contextGathered: advice.contextGathered === true,
-      userIntent: advice.userIntent || null,
-      recommendedOffer: advice.recommendedOffer || null,
-      offerPitch: advice.offerPitch || '',
-      offerAccepted: advice.offerAccepted === true,
-      layer1Agreed: advice.layer1Agreed === true,
-      cardOffered: advice.cardOffered === true,
-      cardResponse: advice.cardResponse || null,
-      checkbookOffered: advice.checkbookOffered === true,
-      checkbookResponse: advice.checkbookResponse || null,
-      layer2Complete: advice.layer2Complete === true,
-      readyToTransfer: advice.readyToTransfer === true,
-      customerType: advice.customerType || 'general',
-      employment: advice.employment || null,
-      incomeRange: advice.incomeRange || null,
-      expensesRange: advice.expensesRange || null,
-      mainExpenseTypes: advice.mainExpenseTypes || null,
-      financialCommitments: advice.financialCommitments || null,
-      expectedAccountUsage: advice.expectedAccountUsage || null,
-      profileCompleteness: advice.profileCompleteness || null,
-      conversationState: advice.conversationState || null,
-      productStatus: advice.productStatus || null
-    }, true);
   }
 
   /**

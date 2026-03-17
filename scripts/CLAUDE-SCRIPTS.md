@@ -4,6 +4,13 @@ Scripts in this folder that Claude Code uses when working on tasks. Run from the
 
 ## Task Management
 
+### `create-claude-kb-task.js`
+Create (or re-seed) the Claude KB Files API task in the DB. Safe to re-run — updates description if already exists.
+
+```bash
+node scripts/create-claude-kb-task.js
+```
+
 ### `read-claude-tasks.js`
 Read tasks assigned to Claude from the database, with full descriptions and comments.
 

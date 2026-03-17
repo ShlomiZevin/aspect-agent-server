@@ -312,6 +312,14 @@ class CrewMember {
         enhancedPrompt += `\n\nIMPORTANT: Your JSON response MUST include a "_thinkingDescription" field as the first key. This is a short English summary (5-15 words) of your decision for this turn, shown in the UI. Use present tense and be specific. Example: "Recommending savings plan based on income" or "Asking about employment status".`;
       }
 
+      // Auto-inject fieldsToCollect into thinker prompt
+      if (this.fieldsToCollect && this.fieldsToCollect.length > 0) {
+        const fieldsList = this.fieldsToCollect
+          .map(f => `${f.name}${f.description ? ` (${f.description})` : ''}`)
+          .join(', ');
+        enhancedPrompt += `\n\nAlso include these fields in your JSON: ${fieldsList}. Return null for any field not yet known.`;
+      }
+
       let thinkingAdvice = { fallback: true };
       try {
         console.log(`   🧠 [${this.name}] Running thinker with model: ${this.thinkingModel || 'claude-sonnet-4-6'}`);
@@ -331,6 +339,14 @@ class CrewMember {
       }
 
       context.thinkingAdvice = thinkingAdvice;
+
+      // Auto-persist full thinker output to {crewName}_state context
+      try {
+        await this.writeContext(`${this.name}_state`, thinkingAdvice, true);
+      } catch (err) {
+        console.error(`   ⚠️ [${this.name}] Failed to auto-persist thinker state:`, err.message);
+      }
+
       await this.onThinkingComplete(thinkingAdvice, params);
     }
 
