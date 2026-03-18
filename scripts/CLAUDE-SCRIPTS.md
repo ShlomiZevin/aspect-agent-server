@@ -24,11 +24,38 @@ node scripts/create-task.js --title "Read This" --type "read" --assignee "Kosta"
 - `--description` — HTML description
 - `--status` — todo | in_progress | done (default: todo)
 - `--priority` — low | medium | high | critical (default: medium)
-- `--type` — task | feature | bug | idea | goal | agenda | read (default: task)
+- `--type` — task | feature | bug | idea | goal | agenda | read | test (default: task)
 - `--domain` — general | freeda | banking | etc. (default: general)
 - `--assignee` — Person name
 - `--opener` — Who opened it (default: same as assignee)
 - `--tags` — Comma-separated tags
+
+**Special task types:**
+- `read` — Opens in read-only view with "Mark as Read" button. Use for announcements.
+- `test` — Regular task with test-specific features: "Tests Task" field links to the task being tested. Use the ☑ checklist button in the rich text editor to add test steps with checkboxes. Moving to Done warns if checkboxes are unchecked.
+
+**Creating a test task — IMPORTANT:**
+Test tasks MUST use real HTML `<input type="checkbox">` elements, NOT Unicode characters (☐ ☑ ✓ etc.).
+The system tracks checked/unchecked state via HTML attributes and warns when moving to Done with unchecked steps.
+Unicode checkboxes look similar but are just text — the system cannot detect or toggle them.
+
+Each checklist item must follow this exact HTML structure:
+```html
+<div><div class="checklist-item" style="display:flex;align-items:flex-start;gap:6px;padding:2px 0;">
+  <input type="checkbox" style="margin-top:3px;cursor:pointer;accent-color:#2563eb;flex-shrink:0;">
+  <span>Your test step text here</span>
+</div></div>
+```
+
+**Example:**
+```bash
+node scripts/create-task.js --title "Test crew transitions" --type "test" --assignee "Noa" --opener "Shlomi" --description "<p>Test the following:</p><div><div class='checklist-item' style='display:flex;align-items:flex-start;gap:6px;padding:2px 0;'><input type='checkbox' style='margin-top:3px;cursor:pointer;accent-color:#2563eb;flex-shrink:0;'><span>Send greeting and verify response</span></div></div><div><div class='checklist-item' style='display:flex;align-items:flex-start;gap:6px;padding:2px 0;'><input type='checkbox' style='margin-top:3px;cursor:pointer;accent-color:#2563eb;flex-shrink:0;'><span>Verify crew switches to profiler</span></div></div>"
+```
+
+**Note:** The script upserts by title — if a task with the same title exists, it updates it. For creating multiple tasks with the same title (e.g. for different assignees), use the API directly:
+```bash
+curl -X POST http://localhost:3000/api/tasks -H "Content-Type: application/json" -d '{"title":"...","type":"read","assignee":"Noa","opener":"Shlomi","description":"<p>...</p>"}'
+```
 
 ### `read-claude-tasks.js`
 Read tasks assigned to Claude from the database, with full descriptions and comments.

@@ -35,6 +35,9 @@ The Task Board is an integrated project management tool built into the Aspect pl
 - **Task** - General work items
 - **Idea** - Proposals or concepts for future consideration
 - **Goal** - Team goals and priorities set during meetings (displayed in the Goals sidebar)
+- **Agenda** - Items for the next meeting (displayed in the Agenda sidebar)
+- **Read** - Informational tasks (announcements, changelogs). Opens read-only with "Mark as Read" button
+- **Test** - Regular tasks with test scenarios. Uses checklist checkboxes (☑ toolbar button). Warns when moved to Done with unchecked steps. "Tests Task" field links to the task being tested
 
 ### Task Statuses
 - **Todo** - Not started yet
