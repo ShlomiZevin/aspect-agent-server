@@ -231,9 +231,11 @@ class TaskService {
    */
   async _createUpdateNotifications(before, after, updatedBy = null) {
     const newAssignee = after.assignee;
+    // Case-insensitive check: is this person the one who made the change?
+    const isSelf = (name) => !!(name && updatedBy && name.toLowerCase() === updatedBy.toLowerCase());
 
     // Assignee changed → notify the new assignee (unless they assigned themselves)
-    if (newAssignee && newAssignee !== before.assignee && newAssignee !== updatedBy) {
+    if (newAssignee && newAssignee !== before.assignee && !isSelf(newAssignee)) {
       const assigner = updatedBy || after.opener || null;
       await notificationsService.createNotification({
         recipient: newAssignee,
@@ -246,22 +248,22 @@ class TaskService {
     // Status changed → notify assignee and opener
     if (after.status !== before.status) {
       const notificationType = `moved_to_${after.status}`;
-      const notified = new Set();
+      const notifiedLower = new Set();
 
       // Notify assignee (if same as before, not the one who changed it)
-      if (newAssignee && newAssignee === before.assignee && newAssignee !== updatedBy) {
+      if (newAssignee && newAssignee === before.assignee && !isSelf(newAssignee)) {
         await notificationsService.createNotification({
           recipient: newAssignee,
           taskId: after.id,
           commentId: null,
           type: notificationType,
         });
-        notified.add(newAssignee);
+        notifiedLower.add(newAssignee.toLowerCase());
       }
 
       // Notify opener (if set, not the one who changed it, and not already notified)
       const opener = after.opener;
-      if (opener && opener !== updatedBy && !notified.has(opener)) {
+      if (opener && !isSelf(opener) && !notifiedLower.has(opener.toLowerCase())) {
         await notificationsService.createNotification({
           recipient: opener,
           taskId: after.id,
