@@ -11,6 +11,25 @@ Create (or re-seed) the Claude KB Files API task in the DB. Safe to re-run — u
 node scripts/create-claude-kb-task.js
 ```
 
+### `create-task.js`
+Create (or update) a task in the DB via CLI args. Safe to re-run — updates if title already exists.
+
+```bash
+node scripts/create-task.js --title "My Task" --assignee "Noa" --type "feature" --priority "high"
+node scripts/create-task.js --title "Read This" --type "read" --assignee "Kosta" --opener "Shlomi" --description "<p>Content here</p>"
+```
+
+**Flags** (all optional except `--title`):
+- `--title` — Task title (required)
+- `--description` — HTML description
+- `--status` — todo | in_progress | done (default: todo)
+- `--priority` — low | medium | high | critical (default: medium)
+- `--type` — task | feature | bug | idea | goal | agenda | read (default: task)
+- `--domain` — general | freeda | banking | etc. (default: general)
+- `--assignee` — Person name
+- `--opener` — Who opened it (default: same as assignee)
+- `--tags` — Comma-separated tags
+
 ### `read-claude-tasks.js`
 Read tasks assigned to Claude from the database, with full descriptions and comments.
 

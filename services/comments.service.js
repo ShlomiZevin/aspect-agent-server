@@ -164,11 +164,15 @@ class CommentsService {
     const needsAttention = [];
     const identityLower = identity.toLowerCase();
 
-    // Also fetch tasks to check opener
-    const allTasks = await this.drizzle.select({ id: tasks.id, opener: tasks.opener }).from(tasks);
+    // Also fetch tasks to check opener and read tasks
+    const allTasks = await this.drizzle.select({ id: tasks.id, opener: tasks.opener, type: tasks.type, assignee: tasks.assignee, isCompleted: tasks.isCompleted }).from(tasks);
     const openerMap = new Map();
     for (const t of allTasks) {
       if (t.opener) openerMap.set(t.id, t.opener.toLowerCase());
+      // Unread "read" tasks assigned to this identity need attention
+      if (t.type === 'read' && !t.isCompleted && t.assignee && t.assignee.toLowerCase() === identityLower) {
+        needsAttention.push(t.id);
+      }
     }
 
     for (const [taskId, comments] of byTask) {
