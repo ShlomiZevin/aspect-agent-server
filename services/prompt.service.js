@@ -52,6 +52,7 @@ class PromptService {
         id: crewPrompts.id,
         version: crewPrompts.version,
         name: crewPrompts.name,
+        description: crewPrompts.description,
         prompt: crewPrompts.prompt,
         transitionSystemPrompt: crewPrompts.transitionSystemPrompt,
         model: crewPrompts.model,
@@ -87,6 +88,7 @@ class PromptService {
         id: crewPrompts.id,
         version: crewPrompts.version,
         name: crewPrompts.name,
+        description: crewPrompts.description,
         prompt: crewPrompts.prompt,
         transitionSystemPrompt: crewPrompts.transitionSystemPrompt,
         model: crewPrompts.model,
@@ -124,6 +126,7 @@ class PromptService {
         crewMemberName: crewPrompts.crewMemberName,
         version: crewPrompts.version,
         name: crewPrompts.name,
+        description: crewPrompts.description,
         prompt: crewPrompts.prompt,
         transitionSystemPrompt: crewPrompts.transitionSystemPrompt,
         model: crewPrompts.model,
@@ -155,6 +158,7 @@ class PromptService {
         id: String(prompt.id),
         version: prompt.version,
         name: prompt.name,
+        description: prompt.description,
         prompt: prompt.prompt,
         transitionSystemPrompt: prompt.transitionSystemPrompt,
         model: prompt.model,
@@ -183,7 +187,7 @@ class PromptService {
    * @param {number} createdBy - User ID who created this version
    * @param {string} transitionSystemPrompt - System prompt injected on crew transition
    */
-  async createPromptVersion(agentName, crewMemberName, prompt, name = null, createdBy = null, transitionSystemPrompt = null, { model = null, provider = null, kbSources = null, persona = null, thinkingPrompt = null } = {}) {
+  async createPromptVersion(agentName, crewMemberName, prompt, name = null, createdBy = null, transitionSystemPrompt = null, { model = null, provider = null, kbSources = null, persona = null, thinkingPrompt = null, description = null } = {}) {
     if (!this.drizzle) this.initialize();
 
     const agent = await this.getAgentByName(agentName);
@@ -209,6 +213,7 @@ class PromptService {
         crewMemberName,
         version: nextVersion,
         name,
+        description,
         prompt,
         transitionSystemPrompt,
         model,
@@ -225,6 +230,7 @@ class PromptService {
       id: String(newVersion.id),
       version: newVersion.version,
       name: newVersion.name,
+      description: newVersion.description,
       prompt: newVersion.prompt,
       transitionSystemPrompt: newVersion.transitionSystemPrompt,
       model: newVersion.model,
@@ -246,7 +252,7 @@ class PromptService {
    * @param {string} prompt - Main prompt text
    * @param {string} transitionSystemPrompt - System prompt injected on crew transition (optional)
    */
-  async updatePromptVersion(agentName, crewMemberName, versionId, prompt, transitionSystemPrompt = undefined, { model = undefined, provider = undefined, kbSources = undefined, persona = undefined, thinkingPrompt = undefined } = {}) {
+  async updatePromptVersion(agentName, crewMemberName, versionId, prompt, transitionSystemPrompt = undefined, { model = undefined, provider = undefined, kbSources = undefined, persona = undefined, thinkingPrompt = undefined, description = undefined } = {}) {
     if (!this.drizzle) this.initialize();
 
     const agent = await this.getAgentByName(agentName);
@@ -263,6 +269,7 @@ class PromptService {
     if (kbSources !== undefined) updateData.kbSources = kbSources;
     if (persona !== undefined) updateData.persona = persona;
     if (thinkingPrompt !== undefined) updateData.thinkingPrompt = thinkingPrompt;
+    if (description !== undefined) updateData.description = description;
 
     const [updated] = await this.drizzle
       .update(crewPrompts)
@@ -282,6 +289,7 @@ class PromptService {
       id: String(updated.id),
       version: updated.version,
       name: updated.name,
+      description: updated.description,
       prompt: updated.prompt,
       transitionSystemPrompt: updated.transitionSystemPrompt,
       model: updated.model,
@@ -331,6 +339,7 @@ class PromptService {
       id: String(activated.id),
       version: activated.version,
       name: activated.name,
+      description: activated.description,
       prompt: activated.prompt,
       transitionSystemPrompt: activated.transitionSystemPrompt,
       isActive: activated.isActive,

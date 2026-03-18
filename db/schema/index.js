@@ -149,6 +149,7 @@ const crewPrompts = pgTable('crew_prompts', {
   crewMemberName: varchar('crew_member_name', { length: 100 }).notNull(), // e.g., "receptionist", "general"
   version: integer('version').notNull(), // Version number (1, 2, 3, ...)
   name: varchar('name', { length: 255 }), // Version name/tag (e.g., "Added empathy guidelines")
+  description: text('description'), // Free-text note about what changed in this version
   prompt: text('prompt').notNull(), // The actual prompt text
   transitionSystemPrompt: text('transition_system_prompt'), // System prompt injected once when transitioning to this crew
   model: varchar('model', { length: 100 }),        // LLM model override (e.g., 'gpt-4o', 'claude-sonnet-4-6')
