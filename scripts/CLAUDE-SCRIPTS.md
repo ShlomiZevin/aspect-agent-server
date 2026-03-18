@@ -47,6 +47,14 @@ Each checklist item must follow this exact HTML structure:
 </div></div>
 ```
 
+**Three-state checkbox system:** Each checklist item cycles through states when clicked:
+- ☐ Unchecked → ✅ Pass (strikethrough) → ❌ Fail (with note input) → ☐ Unchecked
+- State is stored as `data-state="unchecked|pass|fail"` on the `.checklist-item` div
+- Fail notes are stored in a `.checklist-note-wrap` div after the item with an `<input class="checklist-note" value="...">`
+- Moving to Done warns if any items are still unchecked (pass and fail are both OK)
+
+**IMPORTANT:** Do NOT use Unicode checkbox characters (☐ ☑ ✓ ✗). They look similar but are just text — the system cannot detect or toggle them. Must use real HTML `<input type="checkbox">` elements.
+
 **Example:**
 ```bash
 node scripts/create-task.js --title "Test crew transitions" --type "test" --assignee "Noa" --opener "Shlomi" --description "<p>Test the following:</p><div><div class='checklist-item' style='display:flex;align-items:flex-start;gap:6px;padding:2px 0;'><input type='checkbox' style='margin-top:3px;cursor:pointer;accent-color:#2563eb;flex-shrink:0;'><span>Send greeting and verify response</span></div></div><div><div class='checklist-item' style='display:flex;align-items:flex-start;gap:6px;padding:2px 0;'><input type='checkbox' style='margin-top:3px;cursor:pointer;accent-color:#2563eb;flex-shrink:0;'><span>Verify crew switches to profiler</span></div></div>"
