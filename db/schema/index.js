@@ -279,6 +279,7 @@ const taskComments = pgTable('task_comments', {
   taskId: integer('task_id').references(() => tasks.id).notNull(),
   author: varchar('author', { length: 100 }).notNull(),
   content: text('content').notNull(),
+  likedBy: jsonb('liked_by').default([]),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

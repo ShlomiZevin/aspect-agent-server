@@ -132,6 +132,119 @@ class CommentsService {
   }
 
   /**
+   * Get task IDs that need attention from a specific identity.
+   * A task needs attention if:
+   * - The last comment @mentions the identity
+   * - The identity hasn't commented after that mention
+   */
+  async getTasksNeedingAttention(identity) {
+    if (!this.drizzle) this.initialize();
+    if (!identity) return [];
+
+    // Get all comments grouped by task, ordered by creation time
+    const allComments = await this.drizzle
+      .select({
+        id: taskComments.id,
+        taskId: taskComments.taskId,
+        author: taskComments.author,
+        content: taskComments.content,
+        likedBy: taskComments.likedBy,
+        createdAt: taskComments.createdAt,
+      })
+      .from(taskComments)
+      .orderBy(asc(taskComments.createdAt));
+
+    // Group by task
+    const byTask = new Map();
+    for (const c of allComments) {
+      if (!byTask.has(c.taskId)) byTask.set(c.taskId, []);
+      byTask.get(c.taskId).push(c);
+    }
+
+    const needsAttention = [];
+    const identityLower = identity.toLowerCase();
+
+    // Also fetch tasks to check opener
+    const allTasks = await this.drizzle.select({ id: tasks.id, opener: tasks.opener }).from(tasks);
+    const openerMap = new Map();
+    for (const t of allTasks) {
+      if (t.opener) openerMap.set(t.id, t.opener.toLowerCase());
+    }
+
+    for (const [taskId, comments] of byTask) {
+      const lastComment = comments[comments.length - 1];
+      const lastAuthorLower = lastComment.author.toLowerCase();
+
+      // Skip if I wrote the last comment — nothing to respond to
+      if (lastAuthorLower === identityLower) continue;
+
+      // Check if I liked the last comment — that's an ack, skip
+      const lastLikedBy = (lastComment.likedBy || []).map(n => n.toLowerCase());
+      if (lastLikedBy.includes(identityLower)) continue;
+
+      // Case 1: I'm the opener and there's an unresponded comment
+      const isOpener = openerMap.get(taskId) === identityLower;
+      if (isOpener) {
+        needsAttention.push(taskId);
+        continue;
+      }
+
+      // Case 2: The last comment (by someone else) @mentions me and I haven't replied after
+      let lastMentionIndex = -1;
+      for (let i = comments.length - 1; i >= 0; i--) {
+        const plain = comments[i].content.replace(/<[^>]+>/g, ' ');
+        const mentionRegex = new RegExp(`@${identity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        if (mentionRegex.test(plain) && comments[i].author.toLowerCase() !== identityLower) {
+          lastMentionIndex = i;
+          break;
+        }
+      }
+
+      if (lastMentionIndex === -1) continue;
+
+      // Check if I replied or liked the mentioning comment
+      const mentionComment = comments[lastMentionIndex];
+      const mentionLikedBy = (mentionComment.likedBy || []).map(n => n.toLowerCase());
+      if (mentionLikedBy.includes(identityLower)) continue;
+
+      const hasReplied = comments.slice(lastMentionIndex + 1).some(
+        c => c.author.toLowerCase() === identityLower
+      );
+
+      if (!hasReplied) {
+        needsAttention.push(taskId);
+      }
+    }
+
+    return needsAttention;
+  }
+
+  /**
+   * Toggle like on a comment
+   */
+  async toggleLike(commentId, identity) {
+    if (!this.drizzle) this.initialize();
+    if (!identity?.trim()) throw new Error('Identity is required');
+
+    const [comment] = await this.drizzle.select().from(taskComments).where(eq(taskComments.id, commentId)).limit(1);
+    if (!comment) throw new Error('Comment not found');
+
+    const likedBy = comment.likedBy || [];
+    const alreadyLiked = likedBy.includes(identity.trim());
+    const newLikedBy = alreadyLiked
+      ? likedBy.filter(n => n !== identity.trim())
+      : [...likedBy, identity.trim()];
+
+    const [updated] = await this.drizzle
+      .update(taskComments)
+      .set({ likedBy: newLikedBy })
+      .where(eq(taskComments.id, commentId))
+      .returning();
+
+    return updated;
+  }
+
+  /**
    * Delete a comment by ID
    */
   async deleteComment(commentId) {

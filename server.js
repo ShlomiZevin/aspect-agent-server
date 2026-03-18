@@ -2852,6 +2852,32 @@ app.delete('/api/tasks/:id', async (req, res) => {
 
 // ─── Task Comments ───────────────────────────────────────────────────────────
 
+// Get task IDs that need attention from a specific identity
+app.get('/api/tasks/needs-attention', async (req, res) => {
+  try {
+    const { identity } = req.query;
+    if (!identity) return res.status(400).json({ error: 'identity query param required' });
+    const taskIds = await commentsService.getTasksNeedingAttention(identity);
+    res.json(taskIds);
+  } catch (err) {
+    console.error('Failed to get needs-attention tasks:', err);
+    res.status(500).json({ error: 'Failed to get needs-attention tasks' });
+  }
+});
+
+// Toggle like on a comment
+app.post('/api/comments/:commentId/like', async (req, res) => {
+  try {
+    const { identity } = req.body;
+    if (!identity) return res.status(400).json({ error: 'identity is required' });
+    const comment = await commentsService.toggleLike(parseInt(req.params.commentId), identity);
+    res.json(comment);
+  } catch (err) {
+    console.error('Failed to toggle like:', err);
+    res.status(500).json({ error: 'Failed to toggle like' });
+  }
+});
+
 // Get comments for a task
 app.get('/api/tasks/:taskId/comments', async (req, res) => {
   try {
