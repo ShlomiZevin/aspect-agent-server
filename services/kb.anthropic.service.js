@@ -22,10 +22,26 @@ class KBAnthropicService {
    * @returns {Promise<{ fileId: string }>}
    */
   async uploadFile(buffer, filename, mimetype) {
-    const file = new File([buffer], filename, { type: mimetype || 'text/plain' });
+    // Anthropic only supports PDF and plaintext — convert .md to .txt
+    let safeFilename = filename;
+    let safeMimetype = mimetype || 'text/plain';
+    if (filename.endsWith('.md') || mimetype === 'text/markdown') {
+      safeFilename = filename.replace(/\.md$/, '.txt');
+      safeMimetype = 'text/plain';
+    }
+    const file = new File([buffer], safeFilename, { type: safeMimetype });
     const result = await this.client.beta.files.upload({ file });
     console.log(`✅ Uploaded to Anthropic Files API: ${result.id}`);
     return { fileId: result.id };
+  }
+
+  /**
+   * List all files on Anthropic Files API.
+   * @returns {Promise<Array<{ id: string, filename: string, size_bytes: number, created_at: string, mime_type: string }>>}
+   */
+  async listFiles() {
+    const result = await this.client.beta.files.list();
+    return result.data || [];
   }
 
   /**

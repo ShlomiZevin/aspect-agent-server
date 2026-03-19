@@ -324,7 +324,7 @@ class DynamicKBService {
         kbId: dynamicKBAttachments.knowledgeBaseId,
         kbFileId: dynamicKBAttachments.kbFileId,
         kbName: knowledgeBases.name,
-        kbProvider: knowledgeBases.provider,
+        kbProvider: knowledgeBases.providers,
       })
       .from(dynamicKBAttachments)
       .innerJoin(knowledgeBases, eq(dynamicKBAttachments.knowledgeBaseId, knowledgeBases.id))
@@ -358,19 +358,20 @@ class DynamicKBService {
     let googleDocumentId = null;
     let anthropicFileId = null;
 
-    if (kb.provider === 'openai' || kb.provider === 'both') {
+    const { hasProvider } = require('./kb.helpers');
+    if (hasProvider(kb, 'openai')) {
       const result = await llmService.addFileToVectorStore(buffer, fileName, kb.vectorStoreId);
       openaiFileId = result.fileId;
       console.log(`✅ [DynamicKB] Uploaded to OpenAI: ${openaiFileId}`);
     }
 
-    if (kb.provider === 'google' || kb.provider === 'both') {
+    if (hasProvider(kb, 'google')) {
       const result = await googleKBService.uploadFile(kb.googleCorpusId, buffer, fileName, mimetype);
       googleDocumentId = result.documentId;
       console.log(`✅ [DynamicKB] Uploaded to Google: ${googleDocumentId}`);
     }
 
-    if (kb.provider === 'anthropic') {
+    if (hasProvider(kb, 'anthropic')) {
       const result = await anthropicKBService.uploadFile(buffer, fileName, mimetype);
       anthropicFileId = result.fileId;
       console.log(`✅ [DynamicKB] Uploaded to Anthropic: ${anthropicFileId}`);
@@ -490,15 +491,16 @@ class DynamicKBService {
         let googleDocumentId = null;
         let anthropicFileId = null;
 
-        if (kb.provider === 'openai' || kb.provider === 'both') {
+        const { hasProvider } = require('./kb.helpers');
+    if (hasProvider(kb, 'openai')) {
           const result = await llmService.addFileToVectorStore(buffer, mdFileName, kb.vectorStoreId);
           openaiFileId = result.fileId;
         }
-        if (kb.provider === 'google' || kb.provider === 'both') {
+        if (hasProvider(kb, 'google')) {
           const result = await googleKBService.uploadFile(kb.googleCorpusId, buffer, mdFileName, mimetype);
           googleDocumentId = result.documentId;
         }
-        if (kb.provider === 'anthropic') {
+        if (hasProvider(kb, 'anthropic')) {
           const result = await anthropicKBService.uploadFile(buffer, mdFileName, mimetype);
           anthropicFileId = result.fileId;
         }

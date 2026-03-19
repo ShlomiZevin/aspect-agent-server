@@ -97,12 +97,13 @@ class KBResolverService {
             resolvedSources.push({ name, resolved: false, reason: 'no googleCorpusId' });
           }
         } else if (modelProvider === 'anthropic') {
-          if (kb.provider === 'anthropic') {
+          const { hasProvider } = require('./kb.helpers');
+          if (hasProvider(kb, 'anthropic')) {
             kbIds.push(kb.id);
             resolvedSources.push({ name, resolved: true, id: kb.id });
           } else {
-            console.warn(`⚠️ [KB Resolver] KB "${name}" is not an Anthropic KB (provider: ${kb.provider})`);
-            resolvedSources.push({ name, resolved: false, reason: `KB provider is ${kb.provider}, not anthropic` });
+            console.warn(`⚠️ [KB Resolver] KB "${name}" does not have anthropic provider`);
+            resolvedSources.push({ name, resolved: false, reason: 'KB does not have anthropic provider' });
           }
         }
       }

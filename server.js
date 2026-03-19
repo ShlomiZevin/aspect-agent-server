@@ -1663,16 +1663,20 @@ app.post('/webhook', (req, res) => {
 
 // ========== KNOWLEDGE BASE MANAGEMENT ENDPOINTS ==========
 
-// Create a new knowledge base (supports provider: 'openai' | 'google' | 'both' | 'anthropic')
+// Create a new knowledge base (providers: array of 'openai' | 'google' | 'anthropic')
 app.post('/api/kb/create', async (req, res) => {
   try {
-    const { agentName, name, description, provider = 'openai' } = req.body;
+    const { agentName, name, description } = req.body;
+    let providers = req.body.providers || ['openai'];
+    if (!Array.isArray(providers)) providers = [providers];
+    const validProviders = ['openai', 'google', 'anthropic'];
+    providers = providers.filter(p => validProviders.includes(p));
 
     if (!agentName || !name) {
       return res.status(400).json({ error: 'Agent name and KB name are required' });
     }
-    if (!['openai', 'google', 'both', 'anthropic'].includes(provider)) {
-      return res.status(400).json({ error: 'Invalid provider. Must be openai, google, both, or anthropic' });
+    if (providers.length === 0) {
+      return res.status(400).json({ error: 'At least one provider required (openai, google, anthropic)' });
     }
 
     const agent = await kbService.getAgentByName(agentName);
@@ -1681,19 +1685,19 @@ app.post('/api/kb/create', async (req, res) => {
     let googleCorpusId = null;
 
     // Create OpenAI vector store if needed
-    if (provider === 'openai' || provider === 'both') {
+    if (providers.includes('openai')) {
       const vectorStore = await llmService.createVectorStore(name, description);
       vectorStoreId = vectorStore.id;
     }
 
     // Create Google File Search Store if needed
-    if (provider === 'google' || provider === 'both') {
+    if (providers.includes('google')) {
       const store = await googleKBService.createStore(name);
       googleCorpusId = store.storeId;
     }
 
     const kb = await kbService.createKnowledgeBase(
-      agent.id, name, description, provider, vectorStoreId, googleCorpusId
+      agent.id, name, description, providers, vectorStoreId, googleCorpusId
     );
 
     res.json({
@@ -1769,22 +1773,24 @@ app.post('/api/kb/:kbId/upload', upload.single('file'), async (req, res) => {
     let anthropicFileId = null;
     let originalFileUrl = null;
 
+    const { hasProvider } = require('./services/kb.helpers');
+
     // Upload to OpenAI if KB uses OpenAI
-    if (kb.provider === 'openai' || kb.provider === 'both') {
+    if (hasProvider(kb, 'openai')) {
       const result = await llmService.addFileToVectorStore(buffer, originalname, kb.vectorStoreId);
       openaiFileId = result.fileId;
       console.log(`✅ Uploaded to OpenAI: ${openaiFileId}`);
     }
 
     // Upload to Google if KB uses Google
-    if (kb.provider === 'google' || kb.provider === 'both') {
+    if (hasProvider(kb, 'google')) {
       const result = await googleKBService.uploadFile(kb.googleCorpusId, buffer, originalname, mimetype);
       googleDocumentId = result.documentId;
       console.log(`✅ Uploaded to Google: ${googleDocumentId}`);
     }
 
     // Upload to Anthropic Files API if KB uses Anthropic
-    if (kb.provider === 'anthropic') {
+    if (hasProvider(kb, 'anthropic')) {
       const result = await anthropicKBService.uploadFile(buffer, originalname, mimetype);
       anthropicFileId = result.fileId;
       console.log(`✅ Uploaded to Anthropic: ${anthropicFileId}`);
@@ -1993,24 +1999,21 @@ app.delete('/api/kb/:kbId/files/:fileId', async (req, res) => {
   }
 });
 
-// Sync KB to another provider (adds the missing provider to an existing KB)
+// Sync KB to another provider (adds a missing provider to an existing KB)
 app.post('/api/kb/:kbId/sync', async (req, res) => {
   try {
     const { kbId } = req.params;
-    const { targetProvider } = req.body; // 'openai' | 'google'
+    const { targetProvider } = req.body; // 'openai' | 'google' | 'anthropic'
+    const { hasProvider: hasP3, getProviders: getP } = require('./services/kb.helpers');
 
-    if (!['openai', 'google'].includes(targetProvider)) {
-      return res.status(400).json({ error: 'targetProvider must be openai or google' });
+    if (!['openai', 'google', 'anthropic'].includes(targetProvider)) {
+      return res.status(400).json({ error: 'targetProvider must be openai, google, or anthropic' });
     }
 
     const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
 
-    // Validate: target provider should not already be set
-    if (targetProvider === 'openai' && kb.vectorStoreId) {
-      return res.status(400).json({ error: 'KB already has an OpenAI vector store' });
-    }
-    if (targetProvider === 'google' && kb.googleCorpusId) {
-      return res.status(400).json({ error: 'KB already has a Google corpus' });
+    if (hasP3(kb, targetProvider)) {
+      return res.status(400).json({ error: `KB already has ${targetProvider}` });
     }
 
     const files = await kbService.getFilesByKnowledgeBase(parseInt(kbId));
@@ -2024,29 +2027,52 @@ app.post('/api/kb/:kbId/sync', async (req, res) => {
     if (targetProvider === 'openai') {
       const vs = await llmService.createVectorStore(kb.name, kb.description);
       newVectorStoreId = vs.id;
-    } else {
+    } else if (targetProvider === 'google') {
       const store = await googleKBService.createStore(kb.name);
       newGoogleCorpusId = store.storeId;
     }
+    // Anthropic doesn't need a store — files are uploaded individually
 
     // Sync each file
     for (const file of files) {
       try {
-        // Download original from GCS
-        if (!file.originalFileUrl) {
-          errors.push({ file: file.fileName, error: 'No original file in GCS for sync' });
+        let buffer;
+        if (file.originalFileUrl) {
+          buffer = await storageService.downloadFile(file.originalFileUrl);
+        } else {
+          // Try dynamic KB source — file might have been attached from Dynamic KB
+          const { dynamicKBAttachments: dkaTable } = require('./db/schema');
+          const { eq: eqDka } = require('drizzle-orm');
+          const dbPgDka = require('./services/db.pg');
+          const [att] = await dbPgDka.db.select().from(dkaTable).where(eqDka(dkaTable.kbFileId, file.id)).limit(1);
+          if (att) {
+            const dynFile = await dynamicKBService.getFileById(att.dynamicFileId);
+            if (dynFile?.gcsPath) {
+              buffer = await storageService.downloadFile(dynFile.gcsPath);
+            }
+          }
+        }
+
+        if (!buffer) {
+          errors.push({ file: file.fileName, error: 'No file content available for sync' });
           continue;
         }
 
-        const buffer = await storageService.downloadFile(file.originalFileUrl);
         const mimeType = `application/${file.fileType}`;
 
         if (targetProvider === 'openai') {
           const result = await llmService.addFileToVectorStore(buffer, file.fileName, newVectorStoreId);
           await kbService.updateFileProviderIds(file.id, { openaiFileId: result.fileId });
-        } else {
+        } else if (targetProvider === 'google') {
           const result = await googleKBService.uploadFile(newGoogleCorpusId, buffer, file.fileName, mimeType);
           await kbService.updateFileProviderIds(file.id, { googleDocumentId: result.documentId });
+        } else if (targetProvider === 'anthropic') {
+          const result = await anthropicKBService.uploadFile(buffer, file.fileName, mimeType);
+          // anthropicFileId not in updateFileProviderIds — update directly
+          const dbPgSync = require('./services/db.pg');
+          const { knowledgeBaseFiles: kbfTable } = require('./db/schema');
+          const { eq: eqSync } = require('drizzle-orm');
+          await dbPgSync.db.update(kbfTable).set({ anthropicFileId: result.fileId, updatedAt: new Date() }).where(eqSync(kbfTable.id, file.id));
         }
         syncedCount++;
       } catch (err) {
@@ -2055,11 +2081,12 @@ app.post('/api/kb/:kbId/sync', async (req, res) => {
       }
     }
 
-    // Update KB record with new provider ID and update provider to 'both'
+    // Update KB: add the new provider to the providers array + set new IDs
+    const updatedProviders = [...getP(kb), targetProvider];
     await kbService.updateKBProviderIds(parseInt(kbId), {
       vectorStoreId: newVectorStoreId || kb.vectorStoreId,
       googleCorpusId: newGoogleCorpusId || kb.googleCorpusId,
-      provider: 'both',
+      providers: updatedProviders,
       lastSyncedAt: new Date(),
     });
 
@@ -2082,41 +2109,55 @@ app.post('/api/kb/:kbId/sync', async (req, res) => {
 app.post('/api/kb/:kbId/detach', async (req, res) => {
   try {
     const { kbId } = req.params;
-    const { provider: providerToDetach } = req.body; // 'openai' | 'google'
+    const { provider: providerToDetach } = req.body; // 'openai' | 'google' | 'anthropic'
+    const { hasProvider: hasP4, getProviders: getP2 } = require('./services/kb.helpers');
 
-    if (!['openai', 'google'].includes(providerToDetach)) {
-      return res.status(400).json({ error: 'provider must be openai or google' });
+    if (!['openai', 'google', 'anthropic'].includes(providerToDetach)) {
+      return res.status(400).json({ error: 'provider must be openai, google, or anthropic' });
     }
 
     const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
 
-    if (kb.provider !== 'both') {
-      return res.status(400).json({ error: 'Can only detach from a KB that has both providers' });
+    if (!hasP4(kb, providerToDetach)) {
+      return res.status(400).json({ error: `KB does not have ${providerToDetach}` });
     }
 
-    // Delete the provider's store — fail the entire operation if this fails
+    const currentProviders = getP2(kb);
+    if (currentProviders.length <= 1) {
+      return res.status(400).json({ error: 'Cannot detach the last provider' });
+    }
+
+    // Delete the provider's store
     if (providerToDetach === 'google' && kb.googleCorpusId) {
       await googleKBService.deleteStore(kb.googleCorpusId);
     } else if (providerToDetach === 'openai' && kb.vectorStoreId) {
-      await llmService.client.vectorStores.del(kb.vectorStoreId);
+      const openaiService = require('./services/llm.openai');
+      await openaiService.client.vectorStores.del(kb.vectorStoreId);
     }
+    // Anthropic has no store to delete — files are individual
 
     // Clear provider IDs on files
     const files = await kbService.getFilesByKnowledgeBase(parseInt(kbId));
+    const dbPgDetach = require('./services/db.pg');
+    const { knowledgeBaseFiles: kbfDetach } = require('./db/schema');
+    const { eq: eqDetach } = require('drizzle-orm');
     for (const file of files) {
       if (providerToDetach === 'google') {
         await kbService.updateFileProviderIds(file.id, { googleDocumentId: null });
-      } else {
+      } else if (providerToDetach === 'openai') {
         await kbService.updateFileProviderIds(file.id, { openaiFileId: null });
+      } else if (providerToDetach === 'anthropic' && file.anthropicFileId) {
+        try { await anthropicKBService.deleteFile(file.anthropicFileId); } catch {}
+        await dbPgDetach.db.update(kbfDetach).set({ anthropicFileId: null, updatedAt: new Date() }).where(eqDetach(kbfDetach.id, file.id));
       }
     }
 
-    // Update KB: clear the detached provider ID, set provider to the remaining one
-    const remainingProvider = providerToDetach === 'google' ? 'openai' : 'google';
+    // Update KB: remove provider from array, clear IDs
+    const remainingProviders = currentProviders.filter(p => p !== providerToDetach);
     await kbService.updateKBProviderIds(parseInt(kbId), {
       vectorStoreId: providerToDetach === 'openai' ? null : kb.vectorStoreId,
       googleCorpusId: providerToDetach === 'google' ? null : kb.googleCorpusId,
-      provider: remainingProvider,
+      providers: remainingProviders,
     });
 
     const updatedKB = await kbService.getKnowledgeBaseById(parseInt(kbId));
@@ -2156,7 +2197,7 @@ function _formatKB(kb) {
     id: kb.id,
     name: kb.name,
     description: kb.description,
-    provider: kb.provider,
+    providers: kb.providers,
     vectorStoreId: kb.vectorStoreId,
     googleCorpusId: kb.googleCorpusId,
     syncedFromId: kb.syncedFromId,
@@ -2351,54 +2392,42 @@ app.post('/api/dynamic-kb/import/spreadsheet', upload.single('file'), async (req
 app.get('/api/kb/:kbId/provider-files', async (req, res) => {
   try {
     const kb = await kbService.getKnowledgeBaseById(parseInt(req.params.kbId));
+    const { hasProvider: hasP } = require('./services/kb.helpers');
     const result = { openai: null, google: null, anthropic: null };
 
-    // OpenAI: list files from vector store
-    if (kb.vectorStoreId && (kb.provider === 'openai' || kb.provider === 'both')) {
+    if (kb.vectorStoreId && hasP(kb, 'openai')) {
       try {
         const files = await llmService.listVectorStoreFiles(kb.vectorStoreId);
         result.openai = files.map(f => ({
-          id: f.id,
-          fileName: f.fileName,
-          fileSize: f.fileSize,
-          status: f.status,
-          createdAt: f.createdAt,
+          id: f.id, fileName: f.fileName, fileSize: f.fileSize, status: f.status, createdAt: f.createdAt,
         }));
-      } catch (err) {
-        result.openai = { error: err.message };
-      }
+      } catch (err) { result.openai = { error: err.message }; }
     }
 
-    // Google: list documents from corpus
-    if (kb.googleCorpusId && (kb.provider === 'google' || kb.provider === 'both')) {
+    if (kb.googleCorpusId && hasP(kb, 'google')) {
       try {
         const docs = await googleKBService.listDocuments(kb.googleCorpusId);
         result.google = docs.map(d => ({
-          id: d.name,
-          displayName: d.displayName,
-          createTime: d.createTime,
-          updateTime: d.updateTime,
-          sizeBytes: d.sizeBytes,
-          state: d.state,
+          id: d.name, displayName: d.displayName, createTime: d.createTime, updateTime: d.updateTime, sizeBytes: d.sizeBytes, state: d.state,
         }));
-      } catch (err) {
-        result.google = { error: err.message };
-      }
+      } catch (err) { result.google = { error: err.message }; }
     }
 
-    // Anthropic: no list API — return DB records with anthropicFileId
-    if (kb.provider === 'anthropic') {
-      const dbFiles = await kbService.getFilesByKnowledgeBase(kb.id);
-      result.anthropic = dbFiles
-        .filter(f => f.anthropicFileId)
-        .map(f => ({
-          id: f.anthropicFileId,
-          fileName: f.fileName,
-          fileSize: f.fileSize,
-        }));
+    if (hasP(kb, 'anthropic')) {
+      try {
+        // Get all Anthropic files, then filter to ones that belong to this KB
+        const dbFiles = await kbService.getFilesByKnowledgeBase(kb.id);
+        const kbAnthropicIds = new Set(dbFiles.filter(f => f.anthropicFileId).map(f => f.anthropicFileId));
+        const allFiles = await anthropicKBService.listFiles();
+        result.anthropic = allFiles
+          .filter(f => kbAnthropicIds.has(f.id))
+          .map(f => ({
+            id: f.id, fileName: f.filename, fileSize: f.size_bytes, createdAt: f.created_at,
+          }));
+      } catch (err) { result.anthropic = { error: err.message }; }
     }
 
-    res.json({ provider: kb.provider, ...result });
+    res.json({ providers: kb.providers, ...result });
   } catch (err) {
     console.error('❌ Provider files error:', err.message);
     res.status(500).json({ error: err.message });
@@ -3898,13 +3927,14 @@ app.post('/api/podcast/episodes/:id/add-to-kb', async (req, res) => {
     let googleDocumentId = null;
     let originalFileUrl = null;
 
-    if (kb.provider === 'openai' || kb.provider === 'both') {
+    const { hasProvider: hasP2 } = require('./services/kb.helpers');
+    if (hasP2(kb, 'openai')) {
       const result = await llmService.addFileToVectorStore(buffer, filename, kb.vectorStoreId);
       openaiFileId = result.fileId;
       console.log(`✅ Uploaded to OpenAI: ${openaiFileId}`);
     }
 
-    if (kb.provider === 'google' || kb.provider === 'both') {
+    if (hasP2(kb, 'google')) {
       const result = await googleKBService.uploadFile(kb.googleCorpusId, buffer, filename, mimetype);
       googleDocumentId = result.documentId;
       console.log(`✅ Uploaded to Google: ${googleDocumentId}`);

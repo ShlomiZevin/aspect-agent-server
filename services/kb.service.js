@@ -5,7 +5,7 @@ const dbService = require('./db.pg');
 /**
  * Knowledge Base Service
  * Handles database operations for knowledge bases and their files.
- * Supports multi-provider: 'openai', 'google', or 'both'.
+ * Supports multi-provider via `providers` JSON array: ["openai", "google", "anthropic"]
  */
 class KnowledgeBaseService {
   /**
@@ -13,12 +13,12 @@ class KnowledgeBaseService {
    * @param {number} agentId
    * @param {string} name
    * @param {string} description
-   * @param {string} provider - 'openai' | 'google' | 'both'
+   * @param {string[]} providers - Array of providers, e.g. ["openai", "google"]
    * @param {string|null} vectorStoreId - OpenAI vector store ID
    * @param {string|null} googleCorpusId - Google File Search Store name
    * @returns {Promise<Object>}
    */
-  async createKnowledgeBase(agentId, name, description, provider = 'openai', vectorStoreId = null, googleCorpusId = null) {
+  async createKnowledgeBase(agentId, name, description, providers = ['openai'], vectorStoreId = null, googleCorpusId = null) {
     try {
       const [kb] = await dbService.db
         .insert(knowledgeBases)
@@ -26,7 +26,7 @@ class KnowledgeBaseService {
           agentId,
           name,
           description,
-          provider,
+          providers: JSON.stringify(providers),
           vectorStoreId,
           googleCorpusId,
           fileCount: 0,
@@ -34,7 +34,7 @@ class KnowledgeBaseService {
         })
         .returning();
 
-      console.log(`✅ Knowledge base created in DB: ${kb.id} (provider: ${provider})`);
+      console.log(`✅ Knowledge base created in DB: ${kb.id} (providers: ${JSON.stringify(providers)})`);
       return kb;
     } catch (error) {
       console.error('❌ Error creating knowledge base in DB:', error.message);
@@ -45,7 +45,7 @@ class KnowledgeBaseService {
   /**
    * Update provider IDs on a knowledge base (used after sync)
    * @param {number} kbId
-   * @param {Object} updates - { vectorStoreId?, googleCorpusId?, provider?, lastSyncedAt? }
+   * @param {Object} updates - { vectorStoreId?, googleCorpusId?, providers?, lastSyncedAt? }
    * @returns {Promise<Object>}
    */
   async updateKBProviderIds(kbId, updates) {
@@ -53,7 +53,7 @@ class KnowledgeBaseService {
       const setValues = { updatedAt: new Date() };
       if (updates.vectorStoreId !== undefined) setValues.vectorStoreId = updates.vectorStoreId;
       if (updates.googleCorpusId !== undefined) setValues.googleCorpusId = updates.googleCorpusId;
-      if (updates.provider !== undefined) setValues.provider = updates.provider;
+      if (updates.providers !== undefined) setValues.providers = JSON.stringify(updates.providers);
       if (updates.lastSyncedAt !== undefined) setValues.lastSyncedAt = updates.lastSyncedAt;
 
       const [kb] = await dbService.db

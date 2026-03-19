@@ -76,8 +76,8 @@ const knowledgeBases = pgTable('knowledge_bases', {
   agentId: integer('agent_id').references(() => agents.id).notNull(),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
-  // Provider: 'openai' | 'google' | 'both'
-  provider: varchar('provider', { length: 50 }).default('openai').notNull(),
+  // Providers: JSON array e.g. ["openai", "google", "anthropic"]
+  providers: jsonb('providers').default('["openai"]').notNull(),
   vectorStoreId: varchar('vector_store_id', { length: 255 }), // OpenAI vector store ID
   googleCorpusId: varchar('google_corpus_id', { length: 255 }), // Google File Search Store name
   // Sync tracking
