@@ -182,40 +182,35 @@ class CommentsService {
       // Skip if I wrote the last comment — nothing to respond to
       if (lastAuthorLower === identityLower) continue;
 
-      // Check if I liked the last comment — that's an ack, skip
-      const lastLikedBy = (lastComment.likedBy || []).map(n => n.toLowerCase());
-      if (lastLikedBy.includes(identityLower)) continue;
-
-      // Case 1: I'm the opener and there's an unresponded comment
       const isOpener = openerMap.get(taskId) === identityLower;
-      if (isOpener) {
-        needsAttention.push(taskId);
-        continue;
-      }
 
-      // Case 2: The last comment (by someone else) @mentions me and I haven't replied after
-      let lastMentionIndex = -1;
-      for (let i = comments.length - 1; i >= 0; i--) {
-        const plain = comments[i].content.replace(/<[^>]+>/g, ' ');
-        const mentionRegex = new RegExp(`@${identity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-        if (mentionRegex.test(plain) && comments[i].author.toLowerCase() !== identityLower) {
-          lastMentionIndex = i;
+      // Did I ever comment on this task?
+      const myLastCommentIndex = (() => {
+        for (let i = comments.length - 1; i >= 0; i--) {
+          if (comments[i].author.toLowerCase() === identityLower) return i;
+        }
+        return -1;
+      })();
+
+      // Not opener and never commented — no attention needed
+      if (!isOpener && myLastCommentIndex === -1) continue;
+
+      // Find my last interaction: latest of my last comment or my last like
+      let lastInteractionIndex = myLastCommentIndex;
+      for (let i = comments.length - 1; i > lastInteractionIndex; i--) {
+        const likedBy = (comments[i].likedBy || []).map(n => n.toLowerCase());
+        if (likedBy.includes(identityLower)) {
+          lastInteractionIndex = i;
           break;
         }
       }
 
-      if (lastMentionIndex === -1) continue;
-
-      // Check if I replied or liked the mentioning comment
-      const mentionComment = comments[lastMentionIndex];
-      const mentionLikedBy = (mentionComment.likedBy || []).map(n => n.toLowerCase());
-      if (mentionLikedBy.includes(identityLower)) continue;
-
-      const hasReplied = comments.slice(lastMentionIndex + 1).some(
-        c => c.author.toLowerCase() === identityLower
+      // Are there comments after my last interaction that aren't by me?
+      const hasNewAfter = comments.slice(lastInteractionIndex + 1).some(
+        c => c.author.toLowerCase() !== identityLower
       );
 
-      if (!hasReplied) {
+      if (hasNewAfter) {
         needsAttention.push(taskId);
       }
     }
