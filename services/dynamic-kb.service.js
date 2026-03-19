@@ -94,17 +94,15 @@ class DynamicKBService {
         }
         currentRow.push(value);
       } else if (line === '---') {
-        if (currentRow !== null && currentRow.length > 0) {
+        if (currentRow !== null && currentHeading) {
           // Reconstruct first two columns from heading
           let col1 = '', col2 = '';
-          if (currentHeading) {
-            const dashIdx = currentHeading.indexOf(' — ');
-            if (dashIdx >= 0) {
-              col1 = currentHeading.substring(0, dashIdx);
-              col2 = currentHeading.substring(dashIdx + 3);
-            } else {
-              col1 = currentHeading;
-            }
+          const dashIdx = currentHeading.indexOf(' — ');
+          if (dashIdx >= 0) {
+            col1 = currentHeading.substring(0, dashIdx);
+            col2 = currentHeading.substring(dashIdx + 3);
+          } else {
+            col1 = currentHeading;
           }
           rows.push([col1, col2, ...currentRow]);
         }
@@ -113,7 +111,7 @@ class DynamicKBService {
       }
     }
     // Flush last row
-    if (currentRow !== null && currentRow.length > 0) {
+    if (currentRow !== null && currentHeading) {
       let col1 = '', col2 = '';
       if (currentHeading) {
         const dashIdx = currentHeading.indexOf(' — ');

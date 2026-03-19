@@ -3220,6 +3220,48 @@ app.delete('/api/tasks/:id', async (req, res) => {
   }
 });
 
+// ─── Deploy Tracking ─────────────────────────────────────────────────────────
+
+// Mark a task as deployed
+app.post('/api/tasks/:id/deploy', async (req, res) => {
+  try {
+    const { identity } = req.body;
+    const task = await taskService.markDeployed(parseInt(req.params.id), identity);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    res.json({ task });
+  } catch (err) {
+    console.error('Failed to mark task as deployed:', err);
+    res.status(500).json({ error: 'Failed to mark as deployed' });
+  }
+});
+
+// Get "What's New" — deployed tasks not yet reviewed by identity
+app.get('/api/tasks/whats-new', async (req, res) => {
+  try {
+    const { identity } = req.query;
+    if (!identity) return res.status(400).json({ error: 'identity query param required' });
+    const tasks = await taskService.getWhatsNew(identity);
+    res.json({ tasks });
+  } catch (err) {
+    console.error('Failed to get whats-new tasks:', err);
+    res.status(500).json({ error: 'Failed to get whats-new' });
+  }
+});
+
+// Dismiss a deployed task from "What's New"
+app.post('/api/tasks/:id/dismiss-deployed', async (req, res) => {
+  try {
+    const { identity } = req.body;
+    if (!identity) return res.status(400).json({ error: 'identity is required' });
+    const task = await taskService.dismissDeployed(parseInt(req.params.id), identity);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    res.json({ task });
+  } catch (err) {
+    console.error('Failed to dismiss deployed task:', err);
+    res.status(500).json({ error: 'Failed to dismiss' });
+  }
+});
+
 // ─── Task Comments ───────────────────────────────────────────────────────────
 
 // Get task IDs that need attention from a specific identity

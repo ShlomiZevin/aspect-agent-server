@@ -271,6 +271,8 @@ const tasks = pgTable('tasks', {
   isDraft: boolean('is_draft').default(false).notNull(), // Draft mode - only visible to creator
   createdBy: varchar('created_by', { length: 255 }), // Browser-based user identifier
   opener: varchar('opener', { length: 100 }), // Human-readable name of who opened the task ("who you are" identity)
+  deployedAt: timestamp('deployed_at'), // When this task was deployed to production
+  deployedReviewedBy: jsonb('deployed_reviewed_by').default([]), // Names of users who dismissed from "What's New"
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

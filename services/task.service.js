@@ -210,6 +210,8 @@ class TaskService {
     if (updates.crewMember !== undefined) updateData.crewMember = updates.crewMember || null;
     if (updates.isDraft !== undefined) updateData.isDraft = updates.isDraft;
     if (updates.createdBy !== undefined) updateData.createdBy = updates.createdBy || null;
+    if (updates.deployedAt !== undefined) updateData.deployedAt = updates.deployedAt || null;
+    if (updates.deployedReviewedBy !== undefined) updateData.deployedReviewedBy = updates.deployedReviewedBy;
 
     const [task] = await this.drizzle
       .update(tasks)
@@ -274,6 +276,81 @@ class TaskService {
         });
       }
     }
+  }
+
+  /**
+   * Mark a task as deployed — sets deployedAt and notifies commenters/assignee/opener
+   */
+  async markDeployed(id, deployedBy) {
+    if (!this.drizzle) this.initialize();
+
+    const [task] = await this.drizzle
+      .update(tasks)
+      .set({ deployedAt: new Date(), deployedReviewedBy: [], updatedAt: new Date() })
+      .where(eq(tasks.id, id))
+      .returning();
+
+    if (!task) return null;
+
+    // Notify everyone involved (assignee, opener, commenters) except the deployer
+    const { taskComments } = require('../db/schema');
+    const comments = await this.drizzle.select({ author: taskComments.author }).from(taskComments).where(eq(taskComments.taskId, id));
+
+    const recipients = new Set();
+    if (task.assignee) recipients.add(task.assignee);
+    if (task.opener) recipients.add(task.opener);
+    for (const c of comments) {
+      if (c.author) recipients.add(c.author);
+    }
+    if (deployedBy) recipients.delete(deployedBy);
+
+    for (const recipient of recipients) {
+      notificationsService.createNotification({
+        recipient,
+        taskId: id,
+        commentId: null,
+        type: 'deployed',
+      }).catch(err => console.error('[notifications] Failed to create deploy notification:', err));
+    }
+
+    boardEventsService.emit({ type: 'task_updated', task });
+    return task;
+  }
+
+  /**
+   * Get tasks that were deployed and not yet reviewed by the given identity
+   */
+  async getWhatsNew(identity) {
+    if (!this.drizzle) this.initialize();
+    if (!identity) return [];
+
+    const allTasks = await this.drizzle.select().from(tasks).orderBy(desc(tasks.deployedAt));
+    return allTasks.filter(t => {
+      if (!t.deployedAt) return false;
+      const reviewedBy = t.deployedReviewedBy || [];
+      return !reviewedBy.includes(identity);
+    });
+  }
+
+  /**
+   * Dismiss a deployed task from a user's "What's New" list
+   */
+  async dismissDeployed(id, identity) {
+    if (!this.drizzle) this.initialize();
+
+    const [task] = await this.drizzle.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+    if (!task) return null;
+
+    const reviewedBy = task.deployedReviewedBy || [];
+    if (reviewedBy.includes(identity)) return task;
+
+    const [updated] = await this.drizzle
+      .update(tasks)
+      .set({ deployedReviewedBy: [...reviewedBy, identity] })
+      .where(eq(tasks.id, id))
+      .returning();
+
+    return updated;
   }
 
   /**
