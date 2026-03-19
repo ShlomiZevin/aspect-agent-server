@@ -90,6 +90,23 @@ class StorageService {
   }
 
   /**
+   * Upload a buffer to GCS at a fixed path (for dynamic KB files).
+   * Unlike uploadFile, this does NOT auto-generate a timestamped path.
+   * @param {Buffer} buffer - File content
+   * @param {string} gcsPath - Exact GCS path to use (e.g. "dynamic-files/42/7.md")
+   * @param {string} [mimeType] - MIME type (defaults to text/markdown)
+   * @returns {Promise<string>} - The same gcsPath passed in
+   */
+  async uploadDynamicFile(buffer, gcsPath, mimeType = 'text/markdown') {
+    const file = this.getBucket().file(gcsPath);
+    await file.save(buffer, {
+      metadata: { contentType: mimeType },
+    });
+    console.log(`✅ Dynamic file saved to GCS: ${gcsPath}`);
+    return gcsPath;
+  }
+
+  /**
    * Check if GCS is configured and reachable.
    * @returns {Promise<boolean>}
    */
