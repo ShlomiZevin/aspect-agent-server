@@ -150,14 +150,16 @@ class KBResolverService {
         .from(knowledgeBases)
         .where(eq(knowledgeBases.agentId, agentId));
 
+      const { getProviders, hasProvider } = require('./kb.helpers');
       return rows.map(kb => ({
         id: kb.id,
         name: kb.name,
-        provider: kb.provider,
+        providers: getProviders(kb),
         fileCount: kb.fileCount || 0,
         totalSize: kb.totalSize || 0,
         hasOpenAI: !!kb.vectorStoreId,
         hasGoogle: !!kb.googleCorpusId,
+        hasAnthropic: hasProvider(kb, 'anthropic'),
       }));
     } catch (error) {
       console.error('❌ [KB Resolver] Error fetching available KBs:', error.message);
