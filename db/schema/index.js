@@ -265,6 +265,7 @@ const tasks = pgTable('tasks', {
   atRisk: boolean('at_risk').default(false).notNull(), // Flag for tasks at risk of missing deadline
   isCompleted: boolean('is_completed').default(false).notNull(), // PM approval - task fully completed and reviewed
   dependsOn: integer('depends_on'), // ID of task this depends on (must be done first)
+  linkedTasks: jsonb('linked_tasks').default([]), // array of task IDs (related tasks, not blocking)
   tags: jsonb('tags').default([]), // array of strings
   crewMember: varchar('crew_member', { length: 100 }), // Crew member related to this task
   isDraft: boolean('is_draft').default(false).notNull(), // Draft mode - only visible to creator
