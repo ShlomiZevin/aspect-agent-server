@@ -321,6 +321,28 @@ const providerConfig = pgTable('provider_config', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Dynamic KB files — admin-created files editable in the dashboard
+const dynamicKBFiles = pgTable('dynamic_kb_files', {
+  id: serial('id').primaryKey(),
+  agentId: integer('agent_id').references(() => agents.id).notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  fileType: varchar('file_type', { length: 20 }).notNull(), // 'text' | 'table'
+  gcsPath: varchar('gcs_path', { length: 1024 }),
+  fileSize: integer('file_size').default(0),
+  metadata: jsonb('metadata'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Junction: which dynamic files are attached to which KBs
+const dynamicKBAttachments = pgTable('dynamic_kb_attachments', {
+  id: serial('id').primaryKey(),
+  dynamicFileId: integer('dynamic_file_id').references(() => dynamicKBFiles.id).notNull(),
+  knowledgeBaseId: integer('knowledge_base_id').references(() => knowledgeBases.id).notNull(),
+  kbFileId: integer('kb_file_id').references(() => knowledgeBaseFiles.id),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -343,4 +365,6 @@ module.exports = {
   taskNotifications,
   demoMockups,
   providerConfig,
+  dynamicKBFiles,
+  dynamicKBAttachments,
 };

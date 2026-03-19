@@ -62,7 +62,7 @@ const app = express();
 if (process.env.NODE_ENV === 'development') {
   app.use(cors({
     origin: '*',
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type']
   }));
 } else {
@@ -85,7 +85,7 @@ if (process.env.NODE_ENV === 'development') {
         callback(new Error('Not allowed by CORS'));
       }
     },
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type']
   }));
 }
@@ -1974,6 +1974,14 @@ app.delete('/api/kb/:kbId/files/:fileId', async (req, res) => {
       }
     }
 
+    // Clean up dynamic_kb_attachments that reference this file
+    const { dynamicKBAttachments } = require('./db/schema');
+    const { eq: eqOp } = require('drizzle-orm');
+    const dbPg = require('./services/db.pg');
+    await dbPg.db
+      .delete(dynamicKBAttachments)
+      .where(eqOp(dynamicKBAttachments.kbFileId, file.id));
+
     // Delete from database
     await kbService.deleteFile(file.id);
 
@@ -2159,6 +2167,339 @@ function _formatKB(kb) {
     updatedAt: kb.updatedAt
   };
 }
+
+// ========== DYNAMIC KB ENDPOINTS ==========
+
+const dynamicKBService = require('./services/dynamic-kb.service');
+
+// List all dynamic files for an agent
+app.get('/api/dynamic-kb/:agentName/files', async (req, res) => {
+  try {
+    const agent = await dynamicKBService.getAgentByName(req.params.agentName);
+    const files = await dynamicKBService.getFilesByAgent(agent.id);
+    res.json({ files });
+  } catch (err) {
+    console.error('❌ [DynamicKB] List error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a new dynamic file
+app.post('/api/dynamic-kb/:agentName/files', async (req, res) => {
+  try {
+    const { name, fileType } = req.body;
+    if (!name || !fileType) return res.status(400).json({ error: 'name and fileType required' });
+    const agent = await dynamicKBService.getAgentByName(req.params.agentName);
+    const file = await dynamicKBService.createFile(agent.id, name, fileType);
+    res.json({ file });
+  } catch (err) {
+    console.error('❌ [DynamicKB] Create error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get file metadata
+app.get('/api/dynamic-kb/files/:fileId', async (req, res) => {
+  try {
+    const file = await dynamicKBService.getFileById(parseInt(req.params.fileId));
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    res.json({ file });
+  } catch (err) {
+    console.error('❌ [DynamicKB] Get error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Load file content
+app.get('/api/dynamic-kb/files/:fileId/content', async (req, res) => {
+  try {
+    const content = await dynamicKBService.loadContent(parseInt(req.params.fileId));
+    res.json({ content });
+  } catch (err) {
+    console.error('❌ [DynamicKB] Load content error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Save file content (triggers auto-sync)
+app.put('/api/dynamic-kb/files/:fileId/content', async (req, res) => {
+  try {
+    const { content } = req.body;
+    const result = await dynamicKBService.saveContent(parseInt(req.params.fileId), content);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ [DynamicKB] Save content error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update file metadata (name)
+app.put('/api/dynamic-kb/files/:fileId', async (req, res) => {
+  try {
+    const file = await dynamicKBService.updateFile(parseInt(req.params.fileId), req.body);
+    res.json({ file });
+  } catch (err) {
+    console.error('❌ [DynamicKB] Update error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete file + detach from all KBs
+app.delete('/api/dynamic-kb/files/:fileId', async (req, res) => {
+  try {
+    await dynamicKBService.deleteFile(parseInt(req.params.fileId));
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ [DynamicKB] Delete error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List KB attachments for a dynamic file
+app.get('/api/dynamic-kb/files/:fileId/attachments', async (req, res) => {
+  try {
+    const attachments = await dynamicKBService.getAttachments(parseInt(req.params.fileId));
+    res.json({ attachments });
+  } catch (err) {
+    console.error('❌ [DynamicKB] Attachments error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Attach dynamic file to a KB
+app.post('/api/dynamic-kb/files/:fileId/attach/:kbId', async (req, res) => {
+  try {
+    const kbFile = await dynamicKBService.attachToKB(
+      parseInt(req.params.fileId),
+      parseInt(req.params.kbId)
+    );
+    res.json({ success: true, kbFile });
+  } catch (err) {
+    console.error('❌ [DynamicKB] Attach error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Detach dynamic file from a KB
+app.delete('/api/dynamic-kb/files/:fileId/attach/:kbId', async (req, res) => {
+  try {
+    await dynamicKBService.detachFromKB(
+      parseInt(req.params.fileId),
+      parseInt(req.params.kbId)
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ [DynamicKB] Detach error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Import .doc/.docx → extract text
+app.post('/api/dynamic-kb/import/doc', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  try {
+    const mammoth = require('mammoth');
+    const result = await mammoth.extractRawText({ buffer: req.file.buffer });
+    res.json({ text: result.value });
+  } catch (err) {
+    console.error('❌ [DynamicKB] Doc import error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Import .csv/.xls/.xlsx → parse to table JSON
+// Auto-detects the real header row (first row where >50% cells are non-empty)
+app.post('/api/dynamic-kb/import/spreadsheet', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  try {
+    const XLSX = require('xlsx');
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+    if (jsonData.length === 0) return res.json({ headers: [], rows: [] });
+
+    // Find the real header row: first row where >50% of cells are non-empty strings
+    let headerIdx = 0;
+    for (let i = 0; i < Math.min(jsonData.length, 10); i++) {
+      const row = jsonData[i];
+      const filled = row.filter(c => String(c).trim()).length;
+      if (filled > row.length * 0.5) {
+        headerIdx = i;
+        break;
+      }
+    }
+
+    const headers = jsonData[headerIdx].map(String);
+    const dataRows = jsonData.slice(headerIdx + 1).map(row => row.map(String));
+
+    // Filter out junk rows below header (>50% empty)
+    const cleanRows = dataRows.filter(row => {
+      const filled = row.filter(c => c && c.trim()).length;
+      return filled > row.length * 0.5;
+    });
+
+    res.json({ headers, rows: cleanRows });
+  } catch (err) {
+    console.error('❌ [DynamicKB] Spreadsheet import error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get actual files from provider(s) for a KB — "truth check" view
+app.get('/api/kb/:kbId/provider-files', async (req, res) => {
+  try {
+    const kb = await kbService.getKnowledgeBaseById(parseInt(req.params.kbId));
+    const result = { openai: null, google: null, anthropic: null };
+
+    // OpenAI: list files from vector store
+    if (kb.vectorStoreId && (kb.provider === 'openai' || kb.provider === 'both')) {
+      try {
+        const files = await llmService.listVectorStoreFiles(kb.vectorStoreId);
+        result.openai = files.map(f => ({
+          id: f.id,
+          fileName: f.fileName,
+          fileSize: f.fileSize,
+          status: f.status,
+          createdAt: f.createdAt,
+        }));
+      } catch (err) {
+        result.openai = { error: err.message };
+      }
+    }
+
+    // Google: list documents from corpus
+    if (kb.googleCorpusId && (kb.provider === 'google' || kb.provider === 'both')) {
+      try {
+        const docs = await googleKBService.listDocuments(kb.googleCorpusId);
+        result.google = docs.map(d => ({
+          id: d.name,
+          displayName: d.displayName,
+          createTime: d.createTime,
+          updateTime: d.updateTime,
+          sizeBytes: d.sizeBytes,
+          state: d.state,
+        }));
+      } catch (err) {
+        result.google = { error: err.message };
+      }
+    }
+
+    // Anthropic: no list API — return DB records with anthropicFileId
+    if (kb.provider === 'anthropic') {
+      const dbFiles = await kbService.getFilesByKnowledgeBase(kb.id);
+      result.anthropic = dbFiles
+        .filter(f => f.anthropicFileId)
+        .map(f => ({
+          id: f.anthropicFileId,
+          fileName: f.fileName,
+          fileSize: f.fileSize,
+        }));
+    }
+
+    res.json({ provider: kb.provider, ...result });
+  } catch (err) {
+    console.error('❌ Provider files error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Preview file content — from GCS (DB files) or from OpenAI (provider files)
+app.get('/api/kb/:kbId/files/:fileId/preview', async (req, res) => {
+  try {
+    const file = await kbService.getFileById(parseInt(req.params.fileId));
+    if (!file) return res.status(404).json({ error: 'File not found' });
+
+    if (file.originalFileUrl) {
+      const buffer = await storageService.downloadFile(file.originalFileUrl);
+      return res.json({ content: buffer.toString('utf-8'), source: 'gcs' });
+    }
+
+    // For dynamic KB files: find the source dynamic file and load from its GCS path
+    const { dynamicKBAttachments } = require('./db/schema');
+    const { eq: eqOp2 } = require('drizzle-orm');
+    const dbPg2 = require('./services/db.pg');
+    const [attachment] = await dbPg2.db
+      .select({ dynamicFileId: dynamicKBAttachments.dynamicFileId })
+      .from(dynamicKBAttachments)
+      .where(eqOp2(dynamicKBAttachments.kbFileId, file.id))
+      .limit(1);
+
+    if (attachment) {
+      // Load raw markdown from GCS (don't parse back to table JSON)
+      const dynFile = await dynamicKBService.getFileById(attachment.dynamicFileId);
+      if (dynFile?.gcsPath) {
+        const buffer = await storageService.downloadFile(dynFile.gcsPath);
+        return res.json({ content: buffer.toString('utf-8'), source: 'dynamic-kb' });
+      }
+    }
+
+    res.status(404).json({ error: 'No content source available for this file' });
+  } catch (err) {
+    console.error('❌ Preview error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Preview a provider file directly by provider file ID
+app.get('/api/kb/provider-preview', async (req, res) => {
+  try {
+    const { provider, fileId } = req.query;
+    if (!provider || !fileId) return res.status(400).json({ error: 'provider and fileId required' });
+
+    if (provider === 'openai') {
+      const openaiService = require('./services/llm.openai');
+      const response = await openaiService.client.files.content(fileId);
+      const text = await response.text();
+      return res.json({ content: text, source: 'openai' });
+    }
+
+    if (provider === 'google') {
+      // Google doesn't expose document content via API
+      return res.status(404).json({ error: 'Google does not support content preview via API' });
+    }
+
+    if (provider === 'anthropic') {
+      const response = await anthropicKBService.client.beta.files.content(fileId);
+      const text = await response.text();
+      return res.json({ content: text, source: 'anthropic' });
+    }
+
+    res.status(400).json({ error: `Unknown provider: ${provider}` });
+  } catch (err) {
+    console.error('❌ Provider preview error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a file directly from a provider (by provider file ID)
+// Uses separate approach because Google IDs contain slashes (fileSearchStores/.../documents/...)
+// The fileId is passed as a query param instead of a path param
+app.delete('/api/kb/:kbId/provider-files/:provider', async (req, res) => {
+  try {
+    const kb = await kbService.getKnowledgeBaseById(parseInt(req.params.kbId));
+    const { provider } = req.params;
+    const fileId = req.query.fileId;
+    if (!fileId) return res.status(400).json({ error: 'fileId query param required' });
+
+    if (provider === 'openai') {
+      await llmService.deleteVectorStoreFile(kb.vectorStoreId, fileId);
+    } else if (provider === 'google') {
+      await googleKBService.deleteDocument(fileId);
+    } else if (provider === 'anthropic') {
+      await anthropicKBService.deleteFile(fileId);
+    } else {
+      return res.status(400).json({ error: `Unknown provider: ${provider}` });
+    }
+
+    console.log(`✅ Deleted ${fileId} from ${provider}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(`❌ Provider file delete error:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ========== FEEDBACK ENDPOINTS ==========
 

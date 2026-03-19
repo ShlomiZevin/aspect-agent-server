@@ -128,7 +128,7 @@ class GoogleKBService {
       // The upload returns an Operation - poll until done
       const result = await this._waitForOperation(operation);
 
-      const documentId = result?.response?.name || result?.name || `${storeId}/documents/unknown`;
+      const documentId = result?.response?.documentName || result?.response?.name || result?.name || `${storeId}/documents/unknown`;
       console.log(`✅ File uploaded to Google KB: ${documentId}`);
 
       return {
@@ -151,7 +151,16 @@ class GoogleKBService {
     try {
       const ai = await getClient();
       const response = await ai.fileSearchStores.documents.list({ parent: storeId });
-      return response.fileSearchStoreDocuments || [];
+      // The SDK returns a paginated iterator with data in pageInternal
+      if (response.pageInternal) return response.pageInternal;
+      if (response.fileSearchStoreDocuments) return response.fileSearchStoreDocuments;
+      // Try iterating if it's an async iterator
+      if (typeof response[Symbol.asyncIterator] === 'function') {
+        const docs = [];
+        for await (const doc of response) docs.push(doc);
+        return docs;
+      }
+      return Array.isArray(response) ? response : [];
     } catch (err) {
       console.error('❌ Error listing Google KB documents:', err.message);
       throw new Error(`Failed to list Google KB documents: ${err.message}`);
@@ -165,7 +174,7 @@ class GoogleKBService {
   async deleteDocument(documentId) {
     try {
       const ai = await getClient();
-      await ai.fileSearchStores.documents.delete(documentId);
+      await ai.fileSearchStores.documents.delete({ name: documentId, config: { force: true } });
       console.log(`✅ Google KB document deleted: ${documentId}`);
     } catch (err) {
       console.error('❌ Error deleting Google KB document:', err.message);
