@@ -1207,10 +1207,13 @@ class DispatcherService {
    */
   _isRetryableError(err) {
     const status = err.status || err.statusCode;
-    if (status) {
-      return status === 429 || (status >= 500 && status <= 599);
-    }
     const msg = (err.message || '').toLowerCase();
+    if (status) {
+      if (status === 429 || (status >= 500 && status <= 599)) return true;
+      // 400 "model does not exist" — treat as retryable so fallback kicks in
+      if (status === 400 && (msg.includes('does not exist') || msg.includes('model not found'))) return true;
+      return false;
+    }
     return msg.includes('timeout') || msg.includes('rate limit') ||
       msg.includes('service unavailable') || msg.includes('overloaded') ||
       msg.includes('503') || msg.includes('502') || msg.includes('500');
