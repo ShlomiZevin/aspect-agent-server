@@ -2375,32 +2375,55 @@ app.post('/api/dynamic-kb/import/spreadsheet', upload.single('file'), async (req
   try {
     const XLSX = require('xlsx');
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    const isMultiSheet = workbook.SheetNames.length > 1;
 
-    if (jsonData.length === 0) return res.json({ headers: [], rows: [] });
+    // Helper: parse one sheet into { headers, rows }
+    const parseSheet = (sheetName) => {
+      const sheet = workbook.Sheets[sheetName];
+      const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+      if (jsonData.length === 0) return { headers: [], rows: [] };
 
-    // Find the real header row: first row where >50% of cells are non-empty strings
-    let headerIdx = 0;
-    for (let i = 0; i < Math.min(jsonData.length, 10); i++) {
-      const row = jsonData[i];
-      const filled = row.filter(c => String(c).trim()).length;
-      if (filled > row.length * 0.5) {
-        headerIdx = i;
-        break;
+      // Find the real header row: first row where >50% of cells are non-empty strings
+      let headerIdx = 0;
+      for (let i = 0; i < Math.min(jsonData.length, 10); i++) {
+        const row = jsonData[i];
+        const filled = row.filter(c => String(c).trim()).length;
+        if (filled > row.length * 0.5) { headerIdx = i; break; }
       }
-    }
 
-    const headers = jsonData[headerIdx].map(String);
-    const dataRows = jsonData.slice(headerIdx + 1).map(row => row.map(String));
+      const headers = jsonData[headerIdx].map(h => isMultiSheet ? `${sheetName}-${String(h)}` : String(h));
+      const dataRows = jsonData.slice(headerIdx + 1)
+        .map(row => row.map(String))
+        .filter(row => row.some(c => c && c.trim()));
 
-    // Filter out completely empty rows (keep any row with at least one non-empty cell)
-    const cleanRows = dataRows.filter(row => {
-      return row.some(c => c && c.trim());
+      return { headers, rows: dataRows };
+    };
+
+    // Merge all sheets
+    const allHeaders = [];
+    const sheetData = workbook.SheetNames.map(name => {
+      const { headers, rows } = parseSheet(name);
+      allHeaders.push(...headers);
+      return { headers, rows };
     });
 
-    res.json({ headers, rows: cleanRows });
+    if (allHeaders.length === 0) return res.json({ headers: [], rows: [] });
+
+    // Align rows across sheets: pad shorter rows, merge side-by-side
+    const maxRows = Math.max(...sheetData.map(s => s.rows.length));
+    const mergedRows = [];
+    for (let i = 0; i < maxRows; i++) {
+      const mergedRow = [];
+      for (const { headers, rows } of sheetData) {
+        const row = rows[i] || [];
+        // Pad row to match header count for this sheet
+        while (row.length < headers.length) row.push('');
+        mergedRow.push(...row);
+      }
+      mergedRows.push(mergedRow);
+    }
+
+    res.json({ headers: allHeaders, rows: mergedRows });
   } catch (err) {
     console.error('❌ [DynamicKB] Spreadsheet import error:', err.message);
     res.status(500).json({ error: err.message });
