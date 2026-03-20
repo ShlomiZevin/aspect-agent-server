@@ -40,10 +40,11 @@ function httpsGet(url, headers) {
  */
 function getCurrentMonthRange() {
   const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const startUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+  const start = new Date(startUtc);
   const fmt = d => d.toISOString().split('T')[0];
-  return { start: fmt(start), end: fmt(end), startTs: Math.floor(start.getTime() / 1000), endTs: Math.floor(end.getTime() / 1000) };
+  const nowTs = Math.floor(now.getTime() / 1000);
+  return { start: fmt(start), end: fmt(now), startTs: Math.floor(startUtc / 1000), endTs: nowTs };
 }
 
 class BillingService {
@@ -304,9 +305,9 @@ class BillingService {
       return {
         provider: 'google',
         period: { start, end },
-        totalCostUsd: Math.round(totalCost * 100) / 100,
+        totalCost: Math.round(totalCost * 100) / 100,
         totalCredits: Math.round(totalCredits * 100) / 100,
-        netCostUsd: Math.round(netCost * 100) / 100,
+        netCost: Math.round(netCost * 100) / 100,
         billingAccountId,
         currency,
         serviceBreakdown,

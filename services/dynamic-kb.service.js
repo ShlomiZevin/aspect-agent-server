@@ -22,15 +22,14 @@ class DynamicKBService {
    *
    * Heading uses col1 + col2 for uniqueness (e.g. "## הפועלים — דיגיטל בסיסי").
    * Skips first two columns from list items (already in heading).
-   * Skips rows where >50% of cells are empty (junk/disclaimer rows).
+   * Skips completely empty rows.
    */
   tableToMarkdown(name, headers, rows) {
     const now = new Date().toISOString().split('T')[0];
 
-    // Filter out junk rows (>50% empty cells)
+    // Filter out completely empty rows
     const dataRows = rows.filter(row => {
-      const filled = row.filter(c => c && c.trim()).length;
-      return filled > row.length * 0.5;
+      return row.some(c => c && c.trim());
     });
 
     // Store original first two header names in metadata for lossless round-trip

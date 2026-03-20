@@ -2375,10 +2375,9 @@ app.post('/api/dynamic-kb/import/spreadsheet', upload.single('file'), async (req
     const headers = jsonData[headerIdx].map(String);
     const dataRows = jsonData.slice(headerIdx + 1).map(row => row.map(String));
 
-    // Filter out junk rows below header (>50% empty)
+    // Filter out completely empty rows (keep any row with at least one non-empty cell)
     const cleanRows = dataRows.filter(row => {
-      const filled = row.filter(c => c && c.trim()).length;
-      return filled > row.length * 0.5;
+      return row.some(c => c && c.trim());
     });
 
     res.json({ headers, rows: cleanRows });
