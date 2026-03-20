@@ -342,6 +342,8 @@ class CrewMember {
 
       let thinkingAdvice = { fallback: true };
       const primaryThinkingModel = this.thinkingModel || 'claude-sonnet-4-6';
+      let thinkerModelUsed = primaryThinkingModel;
+      let thinkerFallbackUsed = false;
       try {
         console.log(`   🧠 [${this.name}] Running thinker with model: ${primaryThinkingModel}`);
         thinkingAdvice = await thinkingAdvisor.think(
@@ -358,6 +360,8 @@ class CrewMember {
               { thinkingPrompt: enhancedPrompt, context: contextStr },
               { model: fallbackModel }
             );
+            thinkerModelUsed = fallbackModel;
+            thinkerFallbackUsed = true;
             console.log(`   ✅ [${this.name}] Thinker fallback "${fallbackModel}" succeeded`);
           } catch (fallbackErr) {
             console.error(`   ❌ [${this.name}] Thinker fallback also failed:`, fallbackErr.message);
@@ -373,6 +377,10 @@ class CrewMember {
           approach: 'Respond naturally to the user message'
         };
       }
+
+      // Annotate which model the thinker actually used (for debug panel)
+      thinkingAdvice._thinkerModelUsed = thinkerModelUsed;
+      if (thinkerFallbackUsed) thinkingAdvice._thinkerFallbackUsed = true;
 
       context.thinkingAdvice = thinkingAdvice;
 

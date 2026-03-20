@@ -1218,7 +1218,7 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkerDisabled } = req.body;
+  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -1314,6 +1314,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         personaOverride: personaOverride || undefined,
         kbOverrides: kbOverrides || {},
         thinkingPromptOverrides: thinkingPromptOverrides || {},
+        thinkingModelOverrides: thinkingModelOverrides || {},
         thinkerDisabled: thinkerDisabled || {},
         agentId: agent?.id || null
       })) {

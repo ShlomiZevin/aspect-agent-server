@@ -397,6 +397,7 @@ class DispatcherService {
       personaOverride,             // Session override: string (agent-level, applies to all crews)
       kbOverrides = {},            // Session override: { crewName: string[] } - same pattern as modelOverrides
       thinkingPromptOverrides = {}, // Session override: { crewName: thinkingPrompt }
+      thinkingModelOverrides = {},  // Session override: { crewName: thinkingModel }
       thinkerDisabled = {},         // Session override: { crewName: true } to disable thinker
       agentId                      // Agent DB ID for KB resolver
     } = params;
@@ -456,6 +457,11 @@ class DispatcherService {
     if (crew.usesThinker && thinkingPromptOverrides[crew.name]) {
       crew.thinkingPrompt = thinkingPromptOverrides[crew.name];
       console.log(`   🧠 Thinking prompt override applied for "${crew.name}"`);
+    }
+
+    if (crew.usesThinker && thinkingModelOverrides[crew.name]) {
+      crew.thinkingModel = thinkingModelOverrides[crew.name];
+      console.log(`   🧠 Thinking model override applied for "${crew.name}": ${crew.thinkingModel}`);
     }
 
     // Emit thinking start event so client can show indicator during buildContext
