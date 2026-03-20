@@ -3289,6 +3289,18 @@ app.post('/api/comments/:commentId/like', async (req, res) => {
   }
 });
 
+// Get a single task by ID
+app.get('/api/tasks/:taskId', async (req, res) => {
+  try {
+    const task = await taskService.getTask(parseInt(req.params.taskId));
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    res.json({ task });
+  } catch (err) {
+    console.error('Error fetching task:', err.message);
+    res.status(500).json({ error: 'Error fetching task' });
+  }
+});
+
 // Get comments for a task
 app.get('/api/tasks/:taskId/comments', async (req, res) => {
   try {
