@@ -668,7 +668,9 @@ class OpenAIService {
     } catch (error) {
       console.error('❌ OpenAI Crew Streaming Error:', error.message);
       console.error('Error details:', error);
-      throw new Error(`Failed to stream crew response: ${error.message}`);
+      const err = new Error(`Failed to stream crew response: ${error.message}`);
+      err.status = error.status || error.statusCode || null;
+      throw err;
     }
   }
 

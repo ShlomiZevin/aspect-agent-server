@@ -1218,7 +1218,7 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkerDisabled } = req.body;
+  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkerDisabled } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -1273,6 +1273,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
 
     let fullReply = '';
     let currentCrewName = null;
+    let modelUsedData = null; // Tracks which model actually responded (primary or fallback)
 
     if (hasCrew) {
       // ========== CREW-BASED ROUTING ==========
@@ -1309,6 +1310,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         debug,
         promptOverrides: promptOverrides || {},
         modelOverrides: modelOverrides || {},
+        fallbackOverrides: fallbackOverrides || {},
         personaOverride: personaOverride || undefined,
         kbOverrides: kbOverrides || {},
         thinkingPromptOverrides: thinkingPromptOverrides || {},
@@ -1385,6 +1387,18 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
               description,
               chunk.advice
             );
+          }
+
+          // Handle model_used event — capture which model actually responded
+          if (chunk.type === 'model_used') {
+            modelUsedData = { model: chunk.model, modelUsed: chunk.modelUsed, fallbackUsed: chunk.fallbackUsed };
+            if (chunk.fallbackUsed) {
+              console.log(`🔀 Fallback model used for crew response: ${chunk.modelUsed} (primary: ${chunk.model})`);
+            }
+            // Forward to client so debug panel can show it
+            sendSSE(chunk);
+            // Don't fall through to the generic sendSSE below
+            continue; // eslint-disable-line no-continue
           }
 
           // Handle inline crew transition (pre-transfer from dispatcher)
@@ -1516,6 +1530,11 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
           ...(transition && {
             transitionTo: transition.to,
             transitionReason: transition.reason
+          }),
+          ...(modelUsedData && {
+            model: modelUsedData.model,
+            modelUsed: modelUsedData.modelUsed,
+            fallbackUsed: modelUsedData.fallbackUsed
           })
         };
 

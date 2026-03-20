@@ -33,6 +33,22 @@ const contextService = require('../../services/context.service');
 const thinkingAdvisor = require('../micro-agents/ThinkingAdvisorAgent');
 const conversationService = require('../../services/conversation.service');
 
+/**
+ * Returns true if a thinker (one-shot) error is worth retrying with a fallback model.
+ * Retryable: 429 rate limit, 5xx server errors, network timeouts.
+ * Non-retryable: 400 validation/prompt errors.
+ * @param {Error} err
+ */
+function _isThinkerRetryable(err) {
+  const status = err.status || err.statusCode;
+  if (status) {
+    return status === 429 || (status >= 500 && status <= 599);
+  }
+  const msg = (err.message || '').toLowerCase();
+  return msg.includes('timeout') || msg.includes('rate limit') ||
+    msg.includes('service unavailable') || msg.includes('overloaded');
+}
+
 class CrewMember {
   /**
    * @param {Object} options - Crew member configuration
@@ -124,6 +140,10 @@ class CrewMember {
     this.usesThinker = options.usesThinker || false;
     this.thinkingPrompt = options.thinkingPrompt || null;
     this.thinkingModel = options.thinkingModel || null;
+    this.thinkingFallbackModel = options.thinkingFallbackModel || 'gpt-4o';
+
+    // Fallback model — used when the primary model fails with a retriable error (429, 5xx, timeout)
+    this.fallbackModel = options.fallbackModel || 'gpt-4o';
 
     // Context service state (set by dispatcher before use)
     this._userId = null;
@@ -321,14 +341,30 @@ class CrewMember {
       }
 
       let thinkingAdvice = { fallback: true };
+      const primaryThinkingModel = this.thinkingModel || 'claude-sonnet-4-6';
       try {
-        console.log(`   🧠 [${this.name}] Running thinker with model: ${this.thinkingModel || 'claude-sonnet-4-6'}`);
+        console.log(`   🧠 [${this.name}] Running thinker with model: ${primaryThinkingModel}`);
         thinkingAdvice = await thinkingAdvisor.think(
           { thinkingPrompt: enhancedPrompt, context: contextStr },
-          { model: this.thinkingModel || 'claude-sonnet-4-6' }
+          { model: primaryThinkingModel }
         );
       } catch (err) {
-        console.error(`   ❌ [${this.name}] Thinker error:`, err.message);
+        const isRetryable = _isThinkerRetryable(err);
+        const fallbackModel = this.thinkingFallbackModel || 'gpt-4o';
+        if (isRetryable && fallbackModel !== primaryThinkingModel) {
+          console.warn(`   ⚠️ [${this.name}] Thinker primary model "${primaryThinkingModel}" failed (${err.status || err.message}). Retrying with fallback: "${fallbackModel}"`);
+          try {
+            thinkingAdvice = await thinkingAdvisor.think(
+              { thinkingPrompt: enhancedPrompt, context: contextStr },
+              { model: fallbackModel }
+            );
+            console.log(`   ✅ [${this.name}] Thinker fallback "${fallbackModel}" succeeded`);
+          } catch (fallbackErr) {
+            console.error(`   ❌ [${this.name}] Thinker fallback also failed:`, fallbackErr.message);
+          }
+        } else {
+          console.error(`   ❌ [${this.name}] Thinker error:`, err.message);
+        }
       }
 
       if (thinkingAdvice.fallback || thinkingAdvice.error) {
@@ -477,6 +513,8 @@ class CrewMember {
       usesThinker: this.usesThinker || false,
       thinkingPrompt: this.thinkingPrompt || null,
       thinkingModel: this.thinkingModel || null,
+      thinkingFallbackModel: this.thinkingFallbackModel || 'gpt-4o',
+      fallbackModel: this.fallbackModel || 'gpt-4o',
     };
   }
 }

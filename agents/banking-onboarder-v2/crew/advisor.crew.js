@@ -80,6 +80,7 @@ class AdvisorCrew extends CrewMember {
       description: 'Builds financial profile and creates personalized product recommendations',
       isDefault: false,
       model: 'gemini-2.5-flash',
+      fallbackModel: 'gpt-4o',
       maxTokens: 2048,
       persona: getPersona(),
       usesThinker: true,

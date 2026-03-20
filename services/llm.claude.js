@@ -305,7 +305,9 @@ class ClaudeService {
       }
     } catch (error) {
       console.error('❌ Claude Streaming Error:', error.message);
-      throw new Error(`Failed to stream Claude response: ${error.message}`);
+      const err = new Error(`Failed to stream Claude response: ${error.message}`);
+      err.status = error.status || error.statusCode || null;
+      throw err;
     }
   }
 

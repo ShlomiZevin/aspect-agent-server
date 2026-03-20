@@ -552,7 +552,9 @@ class GoogleService {
       console.log(`✅ Google streaming complete. Total reply: ${fullReply.length} chars, API calls: ${apiCallCount}`);
     } catch (error) {
       console.error('❌ Google Streaming Error:', error.message);
-      throw new Error(`Failed to stream Google response: ${error.message}`);
+      const err = new Error(`Failed to stream Google response: ${error.message}`);
+      err.status = error.status || error.statusCode || null;
+      throw err;
     }
   }
 }

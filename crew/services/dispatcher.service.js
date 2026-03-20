@@ -391,13 +391,14 @@ class DispatcherService {
       conversationId,
       agentName,
       agentConfig = {},
-      promptOverrides = {}, // Session overrides: { crewName: prompt }
-      modelOverrides = {},  // Session overrides: { crewName: modelName }
-      personaOverride,      // Session override: string (agent-level, applies to all crews)
-      kbOverrides = {},     // Session override: { crewName: string[] } - same pattern as modelOverrides
+      promptOverrides = {},        // Session overrides: { crewName: prompt }
+      modelOverrides = {},         // Session overrides: { crewName: modelName }
+      fallbackOverrides = {},      // Session overrides: { crewName: fallbackModelName }
+      personaOverride,             // Session override: string (agent-level, applies to all crews)
+      kbOverrides = {},            // Session override: { crewName: string[] } - same pattern as modelOverrides
       thinkingPromptOverrides = {}, // Session override: { crewName: thinkingPrompt }
       thinkerDisabled = {},         // Session override: { crewName: true } to disable thinker
-      agentId               // Agent DB ID for KB resolver
+      agentId                      // Agent DB ID for KB resolver
     } = params;
 
     // Get conversation for context
@@ -558,6 +559,16 @@ class DispatcherService {
 
     console.log(`🤖 Final model for ${crew.name}: ${resolvedModel} (source: ${modelSource})`)
 
+    // ========== RESOLVE FALLBACK MODEL ==========
+    // Priority: 1. Session override → 2. Crew default (fallbackModel property)
+    let resolvedFallbackModel = crew.fallbackModel || 'gpt-4o';
+    let fallbackModelSource = 'crew_default';
+    if (fallbackOverrides[crew.name]) {
+      resolvedFallbackModel = fallbackOverrides[crew.name];
+      fallbackModelSource = 'session_override';
+      console.log(`✅ Using session override fallback model for ${crew.name}: ${resolvedFallbackModel}`);
+    }
+
     // ========== RESOLVE TRANSITION SYSTEM PROMPT ==========
     // Priority: DB value > code value (same as regular prompt)
     let resolvedTransitionPrompt = crew.transitionSystemPrompt || null;
@@ -706,6 +717,8 @@ class DispatcherService {
           model: resolvedModel,
           modelSource, // 'session_override' or 'crew_default'
           defaultModel: crew.model, // Original hardcoded model for comparison
+          fallbackModel: resolvedFallbackModel,
+          fallbackModelSource, // 'session_override' or 'crew_default'
           maxTokens: crew.maxTokens,
           tools: crew.getToolSchemas(),
           knowledgeBase: resolvedKB ? {
@@ -724,16 +737,43 @@ class DispatcherService {
       };
     }
 
-    // Stream response from LLM using inline prompt
-    const stream = llmService.sendMessageStreamWithPrompt(
+    // Stream response from LLM using inline prompt — with fallback retry on retriable errors
+    let usedModel = resolvedModel;
+    let fallbackUsed = false;
+    let textYielded = false;
+
+    const primaryStream = llmService.sendMessageStreamWithPrompt(
       processedMessage,
       conversationId,
       llmConfig
     );
 
-    for await (const chunk of stream) {
-      yield chunk;
+    try {
+      for await (const chunk of primaryStream) {
+        if (typeof chunk === 'string') textYielded = true;
+        yield chunk;
+      }
+    } catch (err) {
+      if (!textYielded && this._isRetryableError(err) && resolvedFallbackModel && resolvedFallbackModel !== resolvedModel) {
+        console.warn(`⚠️ [${crew.name}] Primary model "${resolvedModel}" failed (status=${err.status || 'unknown'}, msg=${err.message}). Retrying with fallback: "${resolvedFallbackModel}"`);
+        const fallbackConfig = { ...llmConfig, model: resolvedFallbackModel };
+        const fallbackStream = llmService.sendMessageStreamWithPrompt(
+          processedMessage,
+          conversationId,
+          fallbackConfig
+        );
+        for await (const chunk of fallbackStream) {
+          yield chunk;
+        }
+        usedModel = resolvedFallbackModel;
+        fallbackUsed = true;
+      } else {
+        throw err;
+      }
     }
+
+    // Emit model_used event so server.js can persist it to message metadata
+    yield { type: 'model_used', model: resolvedModel, modelUsed: usedModel, fallbackUsed };
 
     // Update metadata after successful streaming if transition prompt was injected
     if (isNewCrewTransition) {
@@ -1156,6 +1196,24 @@ class DispatcherService {
         result: rule.result,
       };
     });
+  }
+
+  /**
+   * Returns true if an LLM streaming error is worth retrying with a fallback model.
+   * Retryable: 429 rate limit, 5xx server errors, network timeouts.
+   * Non-retryable: 400 validation/prompt errors (fallback won't help).
+   * @param {Error} err
+   * @private
+   */
+  _isRetryableError(err) {
+    const status = err.status || err.statusCode;
+    if (status) {
+      return status === 429 || (status >= 500 && status <= 599);
+    }
+    const msg = (err.message || '').toLowerCase();
+    return msg.includes('timeout') || msg.includes('rate limit') ||
+      msg.includes('service unavailable') || msg.includes('overloaded') ||
+      msg.includes('503') || msg.includes('502') || msg.includes('500');
   }
 }
 

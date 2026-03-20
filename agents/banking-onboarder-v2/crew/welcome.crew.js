@@ -17,6 +17,7 @@ class WelcomeCrew extends CrewMember {
       description: 'Warm introduction and eligibility qualification for bank account opening',
       isDefault: true,
       model: 'gemini-2.5-flash',
+      fallbackModel: 'gpt-4o',
       maxTokens: 2048,
       persona: getPersona(),
       knowledgeBase: {
