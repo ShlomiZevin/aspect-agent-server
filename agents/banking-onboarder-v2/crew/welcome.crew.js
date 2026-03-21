@@ -29,7 +29,7 @@ class WelcomeCrew extends CrewMember {
       tools: [],
       fieldsToCollect: [
         { name: 'user_name', description: "The user's name or preferred nickname for personal interaction" },
-        { name: 'gender', allowedValues: ['male', 'female'], ditchIfCollected: true, description: "User's gender. Extract only if user explicitly states it (זכר/נקבה). Do NOT infer from name." },
+        { name: 'gender', allowedValues: ['male', 'female'], ditchIfCollected: true, description: "User's gender. Only extract when user clearly intends to state or correct their gender. Do not extract from ambiguous words (e.g. איש/אישה/אישי) that may be answering a different question." },
         { name: 'age', description: "User's age or date of birth to verify eligibility (must be 16+)" },
         { name: 'account_type', allowedValues: ['personal', 'business', 'joint', 'other'], description: "Type of account. Map: אישי/רגיל/פרטי → personal, עסקי → business, משותף → joint, else → other" },
         { name: 'service_consent', type: 'boolean', description: "User's consent to LYBI service terms. true = agrees, false = refuses." }
