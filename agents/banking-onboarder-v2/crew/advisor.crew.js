@@ -12,7 +12,7 @@
  */
 const CrewMember = require('../../../crew/base/CrewMember');
 const { getPersona } = require('../banking-onboarder-v2-persona');
-const { getOffersCatalog } = require('../offers-catalog');
+
 
 const THINKING_PROMPT = `You are LYBI's strategy brain for the advisor stage. Analyze the conversation and return JSON with your assessment and recommendations.
 
@@ -206,9 +206,6 @@ Gender: ${profile.gender || 'Unknown'}
 ## Previous State
 ${JSON.stringify(prevState, null, 2)}
 
-## Available Offers
-${JSON.stringify(getOffersCatalog(), null, 2)}
-
 ## Conversation
 ${historyText}`;
   }
@@ -235,7 +232,7 @@ ${historyText}`;
 
     await this.mergeContext('onboarding_profile', {
       currentStep: 'next-crew',
-      offerAccepted: advice.recommendedOffer || 'basic',
+      offerAccepted: context.collectedFields?.recommendedOffer || advice.recommendedOffer || null,
       cardResponse: advice.cardResponse || null,
       checkbookResponse: advice.checkbookResponse || null
     }, true);
