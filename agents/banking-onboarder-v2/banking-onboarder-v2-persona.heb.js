@@ -35,4 +35,19 @@ function getPersona() {
   return PERSONA;
 }
 
-module.exports = { getPersona };
+/**
+ * Agent-level shared fields — collected passively across all crews.
+ * The extractor picks these up when users mention them naturally;
+ * crews never actively ask about them.
+ */
+function getSharedFields() {
+  return [
+    { name: 'current_bank', description: 'שם הבנק הנוכחי של הלקוח (אם יש לו כבר חשבון בבנק אחר)' },
+    { name: 'life_stage', description: 'שלב חיים — עובר עבודה, מתחתן, סטודנט, פרישה וכו׳' },
+    { name: 'referral_source', description: 'מקור הגעה — שמע מחברים, ראה פרסומת, הופנה מסניף וכו׳' },
+    { name: 'marital_status', description: 'מצב משפחתי — רווק, נשוי, גרוש וכו׳' },
+    { name: 'products_of_interest', description: 'מוצרים בנקאיים שמעניינים — השקעות, משכנתא, חיסכון, ביטוח וכו׳' },
+  ];
+}
+
+module.exports = { getPersona, getSharedFields };

@@ -185,4 +185,19 @@ function getPersona() {
   return PERSONA;
 }
 
-module.exports = { getPersona };
+/**
+ * Agent-level shared fields — collected passively across all crews.
+ * The extractor picks these up when users mention them naturally;
+ * crews never actively ask about them.
+ */
+function getSharedFields() {
+  return [
+    { name: 'current_bank', description: 'Current bank name (if the user already has an account elsewhere)' },
+    { name: 'life_stage', description: 'Life stage — changing jobs, getting married, student, retiring, etc.' },
+    { name: 'referral_source', description: 'How they heard about the bank — friends, ad, branch referral, etc.' },
+    { name: 'marital_status', description: 'Marital status — single, married, divorced, etc.' },
+    { name: 'products_of_interest', description: 'Banking products of interest — investments, mortgage, savings, insurance, etc.' },
+  ];
+}
+
+module.exports = { getPersona, getSharedFields };

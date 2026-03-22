@@ -141,9 +141,48 @@ class CrewService {
       console.warn(`⚠️ Error loading file crews for agent ${agentName}:`, error.message);
     }
 
+    // Step 3: Merge agent-level shared fields into each crew's fieldsToCollect
+    this._mergeSharedFields(agentName, crewPath, crewMap);
+
     console.log(`✅ Total ${crewMap.size} crew members loaded for agent: ${agentName}`);
     this.crews.set(agentName, crewMap);
     return crewMap;
+  }
+
+  /**
+   * Merge agent-level shared fields into every crew's fieldsToCollect.
+   * Looks for a persona file that exports getSharedFields() in the agent folder.
+   * Shared fields are appended with { shared: true } and skip name collisions.
+   */
+  _mergeSharedFields(agentName, crewPath, crewMap) {
+    if (!crewPath) return;
+
+    const agentDir = path.dirname(crewPath); // crew/ -> agent folder
+    try {
+      // Find persona file (try common patterns)
+      const files = fs.readdirSync(agentDir).filter(f => f.includes('persona') && f.endsWith('.js'));
+      for (const file of files) {
+        const personaModule = require(path.join(agentDir, file));
+        if (typeof personaModule.getSharedFields === 'function') {
+          const sharedFields = personaModule.getSharedFields();
+          if (!Array.isArray(sharedFields) || sharedFields.length === 0) continue;
+
+          for (const crew of crewMap.values()) {
+            if (!crew.fieldsToCollect) crew.fieldsToCollect = [];
+            const existingNames = new Set(crew.fieldsToCollect.map(f => f.name));
+            for (const sf of sharedFields) {
+              if (!existingNames.has(sf.name)) {
+                crew.fieldsToCollect.push({ ...sf, shared: true });
+              }
+            }
+          }
+          console.log(`   🔗 Merged ${sharedFields.length} shared fields from ${file} into all crews`);
+          return; // Use first persona file that has shared fields
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️ Error loading shared fields for ${agentName}:`, err.message);
+    }
   }
 
   /**
