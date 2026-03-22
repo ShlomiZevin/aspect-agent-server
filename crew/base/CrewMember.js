@@ -337,7 +337,7 @@ class CrewMember {
         const fieldsList = this.fieldsToCollect
           .map(f => `${f.name}${f.description ? ` (${f.description})` : ''}`)
           .join(', ');
-        enhancedPrompt += `\n\nAlso include these fields in your JSON: ${fieldsList}. Return null for any field not yet known.`;
+        enhancedPrompt += `\n\nAlso include these fields in your JSON: ${fieldsList}. Return null for any field the USER did not explicitly state. Do not extract from ASSISTANT messages — those are your own agent's words, not user data.`;
       }
 
       let thinkingAdvice = { fallback: true };
