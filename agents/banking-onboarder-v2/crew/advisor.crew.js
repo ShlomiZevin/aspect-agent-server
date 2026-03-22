@@ -96,7 +96,7 @@ class AdvisorCrew extends CrewMember {
       fieldsToCollect: [
         { name: 'userIntent', description: 'Reason for opening the account' },
         { name: 'userType', description: 'Identified handling principle (first account, young user, bad experience, etc.)' },
-        { name: 'employment', description: 'Employment status (employed / self-employed / student / other)' },
+        { name: 'employment', description: 'Employment status and specific role when mentioned (e.g. "part-time waitress + student", not just "part-time")' },
         { name: 'incomeRange', description: 'Approximate income range' },
         { name: 'expensesRange', description: 'Approximate expenses range' },
         { name: 'mainExpenseTypes', description: 'Main expense types' },
