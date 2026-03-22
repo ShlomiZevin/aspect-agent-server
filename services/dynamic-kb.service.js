@@ -24,7 +24,7 @@ class DynamicKBService {
    * Skips first two columns from list items (already in heading).
    * Skips completely empty rows.
    */
-  tableToMarkdown(name, headers, rows) {
+  tableToMarkdown(name, headers, rows, indexColumns = []) {
     const now = new Date().toISOString().split('T')[0];
 
     // Filter out completely empty rows
@@ -32,27 +32,34 @@ class DynamicKBService {
       return row.some(c => c && c.trim());
     });
 
-    // Store original first two header names in metadata for lossless round-trip
-    const h1 = headers[0] || 'Column 1';
-    const h2 = headers[1] || 'Column 2';
-
+    // Store ALL header names + index columns in metadata for lossless round-trip
     const lines = [
       `# ${name}`,
       `> Last updated: ${now}`,
       `> ${dataRows.length} items`,
-      `> Columns: ${h1} | ${h2}`,
-      '',
+      `> Columns: ${headers.join(' | ')}`,
     ];
+    if (indexColumns.length > 0) {
+      lines.push(`> Index: ${indexColumns.join(',')}`);
+    }
+    lines.push('');
 
-    for (const row of dataRows) {
+    for (let rowIdx = 0; rowIdx < dataRows.length; rowIdx++) {
+      const row = dataRows[rowIdx];
       lines.push('---');
-      // Heading: combine first two columns for uniqueness
-      const col1 = (row[0] || '').trim();
-      const col2 = (row[1] || '').trim();
-      const heading = col2 ? `${col1} — ${col2}` : col1 || 'Item';
+
+      // Heading: use index column values if set, otherwise "Row N"
+      let heading;
+      if (indexColumns.length > 0) {
+        const parts = indexColumns.map(i => (row[i] || '').trim()).filter(Boolean);
+        heading = parts.length > 0 ? parts.join(' — ') : `Row ${rowIdx + 1}`;
+      } else {
+        heading = `Row ${rowIdx + 1}`;
+      }
       lines.push(`## ${heading}`);
-      // List items: skip first two columns (already in heading)
-      for (let i = 2; i < headers.length; i++) {
+
+      // ALL columns as list items (no skipping)
+      for (let i = 0; i < headers.length; i++) {
         const val = (row[i] || '').trim();
         if (val) {
           lines.push(`- ${headers[i]}: ${val}`);
@@ -65,78 +72,67 @@ class DynamicKBService {
   }
 
   /**
-   * Parse one-row-per-block markdown back to { headers, rows }.
+   * Parse one-row-per-block markdown back to { headers, rows, indexColumns }.
    *
-   * Reverses the conversion: heading → col1 + col2, list items → remaining columns.
+   * All columns are list items. Heading is ignored (it's derived from index columns or "Row N").
    */
   markdownToTable(mdString) {
     const lines = mdString.split('\n');
-    const headers = [];
     const rows = [];
     let currentRow = null;
-    let currentHeading = null;
+
+    // Extract ALL header names from metadata
+    let allHeaders = [];
+    let indexColumns = [];
+    for (const line of lines) {
+      if (line.startsWith('> Columns: ')) {
+        allHeaders = line.substring(11).split(' | ');
+      } else if (line.startsWith('> Index: ')) {
+        indexColumns = line.substring(9).split(',').map(Number);
+      }
+    }
 
     for (const line of lines) {
       if (line.startsWith('## ')) {
-        currentHeading = line.substring(3).trim();
-        currentRow = [];
-      } else if (line.startsWith('- ') && line.includes(': ')) {
-        const colonIdx = line.indexOf(': ', 2);
-        const key = line.substring(2, colonIdx);
-        const value = line.substring(colonIdx + 2);
-
-        if (currentRow === null) currentRow = [];
-
-        // Build headers from first data row
-        if (rows.length === 0) {
-          headers.push(key);
-        }
-        currentRow.push(value);
-      } else if (line === '---') {
-        if (currentRow !== null && currentHeading) {
-          // Reconstruct first two columns from heading
-          let col1 = '', col2 = '';
-          const dashIdx = currentHeading.indexOf(' — ');
-          if (dashIdx >= 0) {
-            col1 = currentHeading.substring(0, dashIdx);
-            col2 = currentHeading.substring(dashIdx + 3);
-          } else {
-            col1 = currentHeading;
+        // Initialize row with empty cells for all columns
+        currentRow = new Array(allHeaders.length).fill('');
+      } else if (line.startsWith('- ') && currentRow !== null) {
+        const item = line.substring(2);
+        // Match against known headers (handles colons in header names)
+        let matched = false;
+        for (let i = 0; i < allHeaders.length; i++) {
+          const prefix = allHeaders[i] + ': ';
+          if (item.startsWith(prefix)) {
+            currentRow[i] = item.substring(prefix.length);
+            matched = true;
+            break;
           }
-          rows.push([col1, col2, ...currentRow]);
+        }
+        // Fallback: split on first ': '
+        if (!matched) {
+          const colonIdx = item.indexOf(': ');
+          if (colonIdx >= 0) {
+            const key = item.substring(0, colonIdx);
+            const value = item.substring(colonIdx + 2);
+            const idx = allHeaders.indexOf(key);
+            if (idx >= 0) {
+              currentRow[idx] = value;
+            }
+          }
+        }
+      } else if (line === '---') {
+        if (currentRow !== null) {
+          rows.push(currentRow);
         }
         currentRow = null;
-        currentHeading = null;
       }
     }
     // Flush last row
-    if (currentRow !== null && currentHeading) {
-      let col1 = '', col2 = '';
-      if (currentHeading) {
-        const dashIdx = currentHeading.indexOf(' — ');
-        if (dashIdx >= 0) {
-          col1 = currentHeading.substring(0, dashIdx);
-          col2 = currentHeading.substring(dashIdx + 3);
-        } else {
-          col1 = currentHeading;
-        }
-      }
-      rows.push([col1, col2, ...currentRow]);
+    if (currentRow !== null) {
+      rows.push(currentRow);
     }
 
-    // Extract original header names from metadata line "> Columns: X | Y"
-    let h1 = 'Column 1', h2 = 'Column 2';
-    for (const line of lines) {
-      if (line.startsWith('> Columns: ')) {
-        const parts = line.substring(11).split(' | ');
-        h1 = parts[0] || h1;
-        h2 = parts[1] || h2;
-        break;
-      }
-    }
-
-    const fullHeaders = [h1, h2, ...headers];
-    return { headers: fullHeaders, rows };
+    return { headers: allHeaders, rows, indexColumns };
   }
 
   // ── CRUD ─────────────────────────────────────────────────────
@@ -264,8 +260,8 @@ class DynamicKBService {
     // Convert table data to markdown if table type
     let mdContent;
     if (file.fileType === 'table') {
-      const { headers, rows } = typeof content === 'string' ? JSON.parse(content) : content;
-      mdContent = this.tableToMarkdown(file.name, headers, rows);
+      const { headers, rows, indexColumns } = typeof content === 'string' ? JSON.parse(content) : content;
+      mdContent = this.tableToMarkdown(file.name, headers, rows, indexColumns || []);
     } else {
       mdContent = content;
     }
