@@ -6,8 +6,8 @@
  *
  * Precedence: openai → vectorStoreId, google → googleCorpusId, anthropic → skip
  */
-const { eq, inArray } = require('drizzle-orm');
-const { knowledgeBases } = require('../db/schema');
+const { eq, inArray, isNotNull } = require('drizzle-orm');
+const { knowledgeBases, knowledgeBaseFiles } = require('../db/schema');
 const dbService = require('./db.pg');
 
 class KBResolverService {
@@ -123,10 +123,23 @@ class KBResolverService {
           resolvedSources
         };
       } else if (modelProvider === 'anthropic') {
+        // Fetch actual Anthropic file IDs from DB for all resolved KB IDs
+        let anthropicFileIds = [];
+        if (kbIds.length > 0) {
+          const fileRows = await dbService.db
+            .select({ anthropicFileId: knowledgeBaseFiles.anthropicFileId })
+            .from(knowledgeBaseFiles)
+            .where(inArray(knowledgeBaseFiles.knowledgeBaseId, kbIds));
+          anthropicFileIds = fileRows
+            .map(r => r.anthropicFileId)
+            .filter(Boolean);
+          console.log(`📎 [KB Resolver] Anthropic: kbIds=${JSON.stringify(kbIds)}, fileIds=${JSON.stringify(anthropicFileIds)}`);
+        }
         return {
-          enabled: kbIds.length > 0,
+          enabled: anthropicFileIds.length > 0,
           provider: 'anthropic',
           kbIds,
+          anthropicFileIds,
           resolvedSources
         };
       }

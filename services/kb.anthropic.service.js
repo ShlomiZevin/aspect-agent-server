@@ -22,11 +22,16 @@ class KBAnthropicService {
    * @returns {Promise<{ fileId: string }>}
    */
   async uploadFile(buffer, filename, mimetype) {
-    // Anthropic only supports PDF and plaintext — convert .md to .txt
+    // Anthropic only supports PDF and plaintext — normalize MIME types
     let safeFilename = filename;
     let safeMimetype = mimetype || 'text/plain';
     if (filename.endsWith('.md') || mimetype === 'text/markdown') {
       safeFilename = filename.replace(/\.md$/, '.txt');
+      safeMimetype = 'text/plain';
+    }
+    // Fix incorrect text MIME types (e.g. application/txt → text/plain)
+    if (safeMimetype === 'application/txt' || safeMimetype === 'application/text' ||
+        (filename.endsWith('.txt') && !safeMimetype.startsWith('text/'))) {
       safeMimetype = 'text/plain';
     }
     const file = new File([buffer], safeFilename, { type: safeMimetype });
@@ -51,6 +56,15 @@ class KBAnthropicService {
   async deleteFile(fileId) {
     await this.client.beta.files.delete(fileId);
     console.log(`✅ Deleted from Anthropic Files API: ${fileId}`);
+  }
+
+  /**
+   * Get raw file content from Anthropic Files API.
+   * @param {string} fileId
+   * @returns {Promise<Response>}
+   */
+  async getFileContent(fileId) {
+    return this.client.beta.files.content(fileId);
   }
 }
 
