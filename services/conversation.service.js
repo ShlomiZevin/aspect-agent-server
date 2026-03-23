@@ -505,6 +505,99 @@ class ConversationService {
    * @param {string} externalConversationId - External conversation ID
    * @returns {Promise<Object>} - Deleted conversation
    */
+  /**
+   * Duplicate a conversation including all messages and thinking steps
+   * @param {string} externalConversationId - External ID of the conversation to duplicate
+   * @param {string} newExternalId - New external ID for the duplicate
+   * @returns {Promise<Object>} - New conversation object
+   */
+  async duplicateConversation(externalConversationId, newExternalId) {
+    if (!this.drizzle) this.initialize();
+    const { inArray } = require('drizzle-orm');
+
+    // Get original conversation
+    const original = await this.drizzle
+      .select()
+      .from(conversations)
+      .where(eq(conversations.externalId, externalConversationId))
+      .limit(1);
+
+    if (original.length === 0) {
+      throw new Error(`Conversation not found: ${externalConversationId}`);
+    }
+    const orig = original[0];
+
+    // Build title for duplicate
+    const originalTitle = orig.metadata?.title || 'Conversation';
+    const newTitle = `Copy of ${originalTitle}`;
+
+    // Create new conversation
+    const [newConv] = await this.drizzle
+      .insert(conversations)
+      .values({
+        externalId: newExternalId,
+        agentId: orig.agentId,
+        userId: orig.userId,
+        currentCrewMember: orig.currentCrewMember,
+        channel: orig.channel,
+        status: 'active',
+        metadata: { ...orig.metadata, title: newTitle }
+      })
+      .returning();
+
+    // Get all messages from original
+    const originalMessages = await this.drizzle
+      .select()
+      .from(messages)
+      .where(eq(messages.conversationId, orig.id))
+      .orderBy(asc(messages.createdAt));
+
+    if (originalMessages.length === 0) {
+      return newConv;
+    }
+
+    // Get all thinking steps for original conversation
+    const originalMessageIds = originalMessages.map(m => m.id);
+    const originalSteps = await this.drizzle
+      .select()
+      .from(thinkingSteps)
+      .where(inArray(thinkingSteps.messageId, originalMessageIds))
+      .orderBy(asc(thinkingSteps.stepOrder));
+
+    // Copy messages and remap thinking steps
+    for (const msg of originalMessages) {
+      const [newMsg] = await this.drizzle
+        .insert(messages)
+        .values({
+          conversationId: newConv.id,
+          role: msg.role,
+          content: msg.content,
+          metadata: msg.metadata,
+          createdAt: msg.createdAt
+        })
+        .returning();
+
+      // Copy thinking steps for this message
+      const msgSteps = originalSteps.filter(s => s.messageId === msg.id);
+      if (msgSteps.length > 0) {
+        await this.drizzle
+          .insert(thinkingSteps)
+          .values(msgSteps.map(s => ({
+            messageId: newMsg.id,
+            conversationId: newConv.id,
+            stepType: s.stepType,
+            stepDescription: s.stepDescription,
+            stepOrder: s.stepOrder,
+            metadata: s.metadata,
+            createdAt: s.createdAt
+          })));
+      }
+    }
+
+    console.log(`✅ Duplicated conversation ${externalConversationId} -> ${newExternalId} (${originalMessages.length} messages)`);
+    return newConv;
+  }
+
   async deleteConversation(externalConversationId) {
     if (!this.drizzle) this.initialize();
 
