@@ -692,6 +692,11 @@ class DispatcherService {
         yield { type: 'debug_prompt_notes', data: { notes: promptNotes } };
       }
     }
+    // Append UI elements instruction if the crew has any fields with ui config
+    const uiInstruction = crew.getUIElementsInstruction();
+    if (uiInstruction) {
+      assembledPrompt += `\n\n${uiInstruction}`;
+    }
 
     // Build LLM config from crew member (provider-agnostic)
     const llmConfig = {

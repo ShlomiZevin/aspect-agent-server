@@ -479,6 +479,38 @@ class CrewMember {
   }
 
   /**
+   * Generate a prompt instruction block for UI elements based on field configs.
+   * Reads `ui` property from fieldsToCollect. Supports any ui.type (buttons, chips, checkbox, etc.).
+   *
+   * @returns {string|null} - Instruction block to append to the talker prompt, or null if no UI fields
+   */
+  getUIElementsInstruction() {
+    const uiFields = this.fieldsToCollect.filter(f => f.ui);
+    if (uiFields.length === 0) return null;
+
+    const lines = uiFields.map(f => {
+      const type = f.ui.type || 'buttons';
+      if (f.ui.options) {
+        const labels = f.ui.options.map(o => o.label).join(' | ');
+        return `- ${f.name}: [${type}: ${labels}]`;
+      }
+      if (f.ui.guidance) {
+        return `- ${f.name}: [${type}: ${f.ui.guidance}]`;
+      }
+      return null;
+    }).filter(Boolean);
+
+    if (lines.length === 0) return null;
+
+    return `## UI Elements
+When asking about these topics, include a markup hint at the end of your message.
+Format: [type: option1 | option2 | option3] where type matches the element type below.
+Only include when you are actively asking the user to choose. Do not include in every message.
+
+${lines.join('\n')}`;
+  }
+
+  /**
    * Get tool definitions formatted for the LLM provider
    *
    * @returns {Array} - Tool schemas
