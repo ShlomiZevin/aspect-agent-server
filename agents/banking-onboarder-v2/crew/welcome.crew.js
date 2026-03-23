@@ -32,9 +32,9 @@ class WelcomeCrew extends CrewMember {
         { name: 'gender', allowedValues: ['male', 'female'], ditchIfCollected: true, description: "User's gender. Only extract when user clearly intends to state or correct their gender. Do not extract from ambiguous words (e.g. איש/אישה/אישי) that may be answering a different question." },
         { name: 'age', description: "User's age or date of birth to verify eligibility (must be 16+)" },
         { name: 'account_type', allowedValues: ['personal', 'business', 'joint', 'other'], description: "Type of account. Map: אישי/רגיל/פרטי → personal, עסקי → business, משותף → joint, else → other" },
-        { name: 'service_consent', type: 'boolean', description: "User's consent to LYBI service terms. true = agrees, false = refuses." },
+        { name: 'service_consent', type: 'boolean', description: "Set true when user agrees to use LYBI AI service for account opening (הסכמה לשירות ליבי). Set false when user refuses." },
         { name: 'id_number', description: "User's ID number (תעודת זהות / מספר זהות)" },
-        { name: 'credit_bureau_consent', type: 'boolean', description: "User's consent or refusal to query credit data. Any agreement = true, any refusal = false." }
+        { name: 'credit_bureau_consent', type: 'boolean', description: "Set true when user agrees to credit data registry check (הסכמה לבדיקת מאגרי נתוני אשראי). Set false when user refuses." }
       ],
       extractionMode: 'form',
       transitionTo: 'advisor',

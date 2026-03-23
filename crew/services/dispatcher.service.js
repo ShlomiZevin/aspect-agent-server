@@ -870,6 +870,7 @@ class DispatcherService {
     }
 
     // Get recent messages for context (last 10 messages)
+    // Current user message is already saved to DB before extractor runs
     let recentMessages = [];
     try {
       const history = await conversationService.getConversationHistory(conversationId, 10);
@@ -877,9 +878,6 @@ class DispatcherService {
     } catch (err) {
       console.warn('⚠️ Could not load message history for extractor:', err.message);
     }
-
-    // Add the current message (not yet in DB history)
-    recentMessages.push({ role: 'user', content: message });
 
     // Use getFieldsForExtraction to let crews control which fields are active
     // In form mode, send all active fields (supports corrections like rejected→approved)

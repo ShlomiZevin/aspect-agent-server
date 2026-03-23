@@ -171,6 +171,7 @@ Extract any field values from the conversation above. Return JSON.`;
       console.log(`   🔍 [FieldsExtractor] Fields to extract:\n${fieldDescriptions}`);
       console.log(`   🔍 [FieldsExtractor] Already collected: ${collectedSummary}`);
       console.log(`   🔍 [FieldsExtractor] Messages count: ${relevantMessages.length}`);
+      console.log(`   🔍 [FieldsExtractor] Messages:\n${messagesText}`);
 
       let responseText = await llmService.sendOneShot(
         systemPrompt,
