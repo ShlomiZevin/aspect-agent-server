@@ -30,7 +30,9 @@ class WelcomeCrew extends CrewMember {
         { name: 'gender', allowedValues: ['male', 'female'], ditchIfCollected: true, description: "User's gender. Only extract when user clearly intends to state or correct their gender. Do not extract from ambiguous words (e.g. איש/אישה/אישי) that may be answering a different question." },
         { name: 'age', description: "User's age or date of birth to verify eligibility (must be 16+)" },
         { name: 'account_type', allowedValues: ['personal', 'business', 'joint', 'other'], description: "Type of account. Map: אישי/רגיל/פרטי → personal, עסקי → business, משותף → joint, else → other" },
-        { name: 'service_consent', type: 'boolean', description: "User's consent to LYBI service terms. Any affirmative response = true (כן, רוצה, מסכים, בסדר, אישור, בוא נתחיל). Any refusal = false." }
+        { name: 'service_consent', type: 'boolean', description: "User's consent to LYBI service terms. Any affirmative response = true (כן, רוצה, מסכים, בסדר, אישור, בוא נתחיל). Any refusal = false." },
+        { name: 'id_number', description: "User's ID number (תעודת זהות / מספר זהות)" },
+        { name: 'credit_bureau_consent', type: 'boolean', description: "User's consent or refusal to query credit data. Any agreement = true, any refusal = false." }
       ],
       extractionMode: 'form',
       transitionTo: 'advisor',
@@ -117,7 +119,8 @@ class WelcomeCrew extends CrewMember {
 
   async preMessageTransfer(collectedFields) {
     if (!collectedFields.user_name || !collectedFields.age ||
-        !collectedFields.account_type || !collectedFields.service_consent) {
+        !collectedFields.account_type || !collectedFields.service_consent ||
+        !collectedFields.id_number || !collectedFields.credit_bureau_consent) {
       return false;
     }
 
@@ -132,6 +135,8 @@ class WelcomeCrew extends CrewMember {
       name: collectedFields.user_name,
       age,
       accountType: 'personal',
+      idNumber: collectedFields.id_number,
+      creditBureauConsent: collectedFields.credit_bureau_consent === 'true',
       startedAt: new Date().toISOString()
     }, true);
 
