@@ -1,6 +1,7 @@
 {
   "name": "aspect-agent-server",
   "version": "1.0.0",
+  "main": "server.js",
   "engines": {
     "node": "22.x"
   },
