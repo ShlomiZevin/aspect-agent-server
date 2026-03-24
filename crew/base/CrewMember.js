@@ -492,10 +492,10 @@ class CrewMember {
       const type = f.ui.type || 'buttons';
       if (f.ui.options) {
         const labels = f.ui.options.map(o => o.label).join(' | ');
-        return `- ${f.name}: [${type}: ${labels}]`;
+        return `When asking about "${f.name}", append exactly: [${type}: ${labels}]`;
       }
       if (f.ui.guidance) {
-        return `- ${f.name}: [${type}: ${f.ui.guidance}]`;
+        return `When asking about "${f.name}", append: [${type}: ${f.ui.guidance}]`;
       }
       return null;
     }).filter(Boolean);
@@ -503,15 +503,8 @@ class CrewMember {
     if (lines.length === 0) return null;
 
     return `## UI Elements
-When you are directly asking the user to choose one of the options below, include the markup hint at the end of your message.
-Format: [type: option1 | option2 | option3] where type matches the element type below.
-Rules:
-- ONLY include the markup in the EXACT message where you ask about that specific field.
-- Do NOT include markup in any other message — not in greetings, follow-ups, or unrelated questions.
-- Do NOT repeat markup from previous messages or conversation history.
-- Maximum one markup hint per message.
-
-${lines.join('\n')}`;
+${lines.join('\n')}
+Only append the markup when you are directly asking about that field. Do not include it in any other message.`;
   }
 
   /**
