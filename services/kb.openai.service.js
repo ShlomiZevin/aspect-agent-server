@@ -177,7 +177,7 @@ class KBOpenAIService {
    */
   async deleteFile(vectorStoreId, fileId) {
     try {
-      const result = await this.client.beta.vectorStores.files.del(vectorStoreId, fileId);
+      const result = await this.client.vectorStores.files.delete(fileId, { vector_store_id: vectorStoreId });
       console.log(`✅ File ${fileId} deleted from vector store ${vectorStoreId}`);
 
       return {
