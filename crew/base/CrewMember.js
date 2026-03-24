@@ -503,9 +503,13 @@ class CrewMember {
     if (lines.length === 0) return null;
 
     return `## UI Elements
-When asking about these topics, include a markup hint at the end of your message.
+When you are directly asking the user to choose one of the options below, include the markup hint at the end of your message.
 Format: [type: option1 | option2 | option3] where type matches the element type below.
-Only include when you are actively asking the user to choose. Do not include in every message.
+Rules:
+- ONLY include the markup in the EXACT message where you ask about that specific field.
+- Do NOT include markup in any other message — not in greetings, follow-ups, or unrelated questions.
+- Do NOT repeat markup from previous messages or conversation history.
+- Maximum one markup hint per message.
 
 ${lines.join('\n')}`;
   }
