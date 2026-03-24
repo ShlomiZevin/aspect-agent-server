@@ -511,7 +511,7 @@ class ConversationService {
    * @param {string} newExternalId - New external ID for the duplicate
    * @returns {Promise<Object>} - New conversation object
    */
-  async duplicateConversation(externalConversationId, newExternalId) {
+  async duplicateConversation(externalConversationId, newExternalId, customTitle) {
     if (!this.drizzle) this.initialize();
     const { inArray } = require('drizzle-orm');
 
@@ -529,7 +529,7 @@ class ConversationService {
 
     // Build title for duplicate
     const originalTitle = orig.metadata?.title || 'Conversation';
-    const newTitle = `Copy of ${originalTitle}`;
+    const newTitle = customTitle || `Copy of ${originalTitle}`;
 
     // Create new conversation
     const [newConv] = await this.drizzle

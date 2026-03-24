@@ -800,10 +800,11 @@ app.patch('/api/conversation/:conversationId', async (req, res) => {
 // Duplicate a conversation (including messages and thinking steps)
 app.post('/api/conversation/:conversationId/duplicate', async (req, res) => {
   const { conversationId } = req.params;
+  const { title } = req.body || {};
   const newExternalId = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   try {
-    const newConv = await conversationService.duplicateConversation(conversationId, newExternalId);
+    const newConv = await conversationService.duplicateConversation(conversationId, newExternalId, title);
     res.json({ success: true, conversation: { ...newConv, externalId: newExternalId } });
   } catch (err) {
     console.error('❌ Error duplicating conversation:', err.message);
