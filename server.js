@@ -10,8 +10,6 @@ const llmService = require('./services/llm');
 const db = require('./services/db.pg');
 const conversationService = require('./services/conversation.service');
 const kbService = require('./services/kb.service');
-const googleKBService = require('./services/kb.google.service');
-const anthropicKBService = require('./services/kb.anthropic.service');
 const storageService = require('./services/storage.service');
 const thinkingService = require('./services/thinking.service');
 const feedbackService = require('./services/feedback.service');
@@ -1714,22 +1712,7 @@ app.post('/api/kb/create', async (req, res) => {
     }
 
     const agent = await kbService.getAgentByName(agentName);
-
-    let vectorStoreId = null;
-    let googleCorpusId = null;
-
-    // Create OpenAI vector store if needed
-    if (providers.includes('openai')) {
-      const vectorStore = await llmService.createVectorStore(name, description);
-      vectorStoreId = vectorStore.id;
-    }
-
-    // Create Google File Search Store if needed
-    if (providers.includes('google')) {
-      const store = await googleKBService.createStore(name);
-      googleCorpusId = store.storeId;
-    }
-
+    const { vectorStoreId, googleCorpusId } = await kbService.createProviderStores(name, description, providers);
     const kb = await kbService.createKnowledgeBase(
       agent.id, name, description, providers, vectorStoreId, googleCorpusId
     );
@@ -1795,71 +1778,25 @@ app.post('/api/kb/:kbId/upload', upload.single('file'), async (req, res) => {
   try {
     const { kbId } = req.params;
     const tags = req.body.tags ? JSON.parse(req.body.tags) : [];
-    const { buffer, originalname, size, mimetype } = req.file;
-    const fileType = originalname.split('.').pop().toLowerCase();
+    const { buffer, originalname, mimetype } = req.file;
 
-    console.log(`📤 Uploading file: ${originalname} (${size} bytes) to KB ${kbId}`);
+    console.log(`📤 Uploading file: ${originalname} (${buffer.length} bytes) to KB ${kbId}`);
 
-    const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
-
-    let openaiFileId = null;
-    let googleDocumentId = null;
-    let anthropicFileId = null;
-    let originalFileUrl = null;
-
-    const { hasProvider } = require('./services/kb.helpers');
-
-    // Upload to OpenAI if KB uses OpenAI
-    if (hasProvider(kb, 'openai')) {
-      const result = await llmService.addFileToVectorStore(buffer, originalname, kb.vectorStoreId);
-      openaiFileId = result.fileId;
-      console.log(`✅ Uploaded to OpenAI: ${openaiFileId}`);
-    }
-
-    // Upload to Google if KB uses Google
-    if (hasProvider(kb, 'google')) {
-      const result = await googleKBService.uploadFile(kb.googleCorpusId, buffer, originalname, mimetype);
-      googleDocumentId = result.documentId;
-      console.log(`✅ Uploaded to Google: ${googleDocumentId}`);
-    }
-
-    // Upload to Anthropic Files API if KB uses Anthropic
-    if (hasProvider(kb, 'anthropic')) {
-      const result = await anthropicKBService.uploadFile(buffer, originalname, mimetype);
-      anthropicFileId = result.fileId;
-      console.log(`✅ Uploaded to Anthropic: ${anthropicFileId}`);
-    }
-
-    // Save original to GCS for sync capability
-    try {
-      originalFileUrl = await storageService.uploadFile(buffer, originalname, mimetype, kbId);
-    } catch (gcsErr) {
-      console.warn(`⚠️ GCS backup failed (non-critical): ${gcsErr.message}`);
-    }
-
-    const dbFile = await kbService.addFile(
-      parseInt(kbId),
-      originalname,
-      size,
-      fileType,
-      { openaiFileId, googleDocumentId, anthropicFileId, originalFileUrl },
-      tags,
-      'completed'
-    );
+    const dbFile = await kbService.uploadFile(parseInt(kbId), buffer, originalname, mimetype, tags);
 
     console.log(`✅ File upload complete - DB ID: ${dbFile.id}`);
     res.json({
       success: true,
       file: {
         id: dbFile.id,
-        openaiFileId,
-        googleDocumentId,
-        anthropicFileId,
-        fileName: originalname,
-        fileSize: size,
-        fileType,
-        tags,
-        status: 'completed'
+        openaiFileId: dbFile.openaiFileId,
+        googleDocumentId: dbFile.googleDocumentId,
+        anthropicFileId: dbFile.anthropicFileId,
+        fileName: dbFile.fileName,
+        fileSize: dbFile.fileSize,
+        fileType: dbFile.fileType,
+        tags: dbFile.metadata?.tags || [],
+        status: dbFile.status
       }
     });
   } catch (err) {
@@ -1913,33 +1850,7 @@ app.get('/api/kb/:kbId/files/:fileId/download', async (req, res) => {
 app.delete('/api/kb/:kbId', async (req, res) => {
   try {
     const { kbId } = req.params;
-    const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
-    const files = await kbService.getFilesByKnowledgeBase(parseInt(kbId));
-
-    // Delete all files from providers
-    for (const file of files) {
-      if (file.openaiFileId && kb.vectorStoreId) {
-        try { await llmService.deleteVectorStoreFile(kb.vectorStoreId, file.openaiFileId); }
-        catch (err) { console.warn(`⚠️ Could not delete from OpenAI: ${err.message}`); }
-      }
-      if (file.googleDocumentId) {
-        try { await googleKBService.deleteDocument(file.googleDocumentId); }
-        catch (err) { console.warn(`⚠️ Could not delete from Google: ${err.message}`); }
-      }
-      if (file.anthropicFileId) {
-        try { await anthropicKBService.deleteFile(file.anthropicFileId); }
-        catch (err) { console.warn(`⚠️ Could not delete from Anthropic: ${err.message}`); }
-      }
-      if (file.originalFileUrl) {
-        try { await storageService.deleteFile(file.originalFileUrl); }
-        catch (err) { console.warn(`⚠️ Could not delete from GCS: ${err.message}`); }
-      }
-    }
-
-    // Delete KB + all files from DB
-    await kbService.deleteKnowledgeBase(parseInt(kbId));
-
-    console.log(`✅ Knowledge base deleted: ${kbId}`);
+    await kbService.deleteKnowledgeBaseWithProviders(parseInt(kbId));
     res.json({ success: true, kbId });
   } catch (err) {
     console.error('❌ Delete KB Error:', err.message);
@@ -1956,7 +1867,7 @@ app.delete('/api/kb/:kbId/files/openai/:openaiFileId', async (req, res) => {
       return res.status(400).json({ error: 'KB has no vector store' });
     }
 
-    await llmService.deleteVectorStoreFile(kb.vectorStoreId, openaiFileId);
+    await kbService.deleteProviderFile('openai', parseInt(kbId), openaiFileId);
 
     console.log(`✅ Legacy file deleted from VS: ${openaiFileId}`);
     res.json({ success: true, openaiFileId });
@@ -1970,61 +1881,9 @@ app.delete('/api/kb/:kbId/files/openai/:openaiFileId', async (req, res) => {
 app.delete('/api/kb/:kbId/files/:fileId', async (req, res) => {
   try {
     const { kbId, fileId } = req.params;
-
-    const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
     const file = await kbService.getFileById(parseInt(fileId));
-
-    if (!file) {
-      return res.status(404).json({ error: 'File not found in database' });
-    }
-
-    // Delete from OpenAI if applicable
-    if (file.openaiFileId && kb.vectorStoreId) {
-      try {
-        await llmService.deleteVectorStoreFile(kb.vectorStoreId, file.openaiFileId);
-      } catch (err) {
-        console.warn(`⚠️ Could not delete from OpenAI: ${err.message}`);
-      }
-    }
-
-    // Delete from Google if applicable
-    if (file.googleDocumentId) {
-      try {
-        await googleKBService.deleteDocument(file.googleDocumentId);
-      } catch (err) {
-        console.warn(`⚠️ Could not delete from Google: ${err.message}`);
-      }
-    }
-
-    // Delete from Anthropic Files API if applicable
-    if (file.anthropicFileId) {
-      try {
-        await anthropicKBService.deleteFile(file.anthropicFileId);
-      } catch (err) {
-        console.warn(`⚠️ Could not delete from Anthropic: ${err.message}`);
-      }
-    }
-
-    // Delete from GCS if applicable
-    if (file.originalFileUrl) {
-      try {
-        await storageService.deleteFile(file.originalFileUrl);
-      } catch (err) {
-        console.warn(`⚠️ Could not delete from GCS: ${err.message}`);
-      }
-    }
-
-    // Clean up dynamic_kb_attachments that reference this file
-    const { dynamicKBAttachments } = require('./db/schema');
-    const { eq: eqOp } = require('drizzle-orm');
-    const dbPg = require('./services/db.pg');
-    await dbPg.db
-      .delete(dynamicKBAttachments)
-      .where(eqOp(dynamicKBAttachments.kbFileId, file.id));
-
-    // Delete from database
-    await kbService.deleteFile(file.id);
-
+    if (!file) return res.status(404).json({ error: 'File not found in database' });
+    await kbService.deleteFileWithProviders(parseInt(kbId), parseInt(fileId));
     console.log(`✅ File deleted: ${fileId}`);
     res.json({ success: true, fileId });
   } catch (err) {
@@ -2038,104 +1897,40 @@ app.post('/api/kb/:kbId/sync', async (req, res) => {
   try {
     const { kbId } = req.params;
     const { targetProvider } = req.body; // 'openai' | 'google' | 'anthropic'
-    const { hasProvider: hasP3, getProviders: getP } = require('./services/kb.helpers');
 
     if (!['openai', 'google', 'anthropic'].includes(targetProvider)) {
       return res.status(400).json({ error: 'targetProvider must be openai, google, or anthropic' });
     }
 
-    const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
-
-    if (hasP3(kb, targetProvider)) {
-      return res.status(400).json({ error: `KB already has ${targetProvider}` });
-    }
-
-    const files = await kbService.getFilesByKnowledgeBase(parseInt(kbId));
-
-    let newVectorStoreId = null;
-    let newGoogleCorpusId = null;
-    let syncedCount = 0;
-    const errors = [];
-
-    // Create the target provider store
-    if (targetProvider === 'openai') {
-      const vs = await llmService.createVectorStore(kb.name, kb.description);
-      newVectorStoreId = vs.id;
-    } else if (targetProvider === 'google') {
-      const store = await googleKBService.createStore(kb.name);
-      newGoogleCorpusId = store.storeId;
-    }
-    // Anthropic doesn't need a store — files are uploaded individually
-
-    // Sync each file
-    for (const file of files) {
-      try {
-        let buffer;
-        if (file.originalFileUrl) {
-          buffer = await storageService.downloadFile(file.originalFileUrl);
-        } else {
-          // Try dynamic KB source — file might have been attached from Dynamic KB
-          const { dynamicKBAttachments: dkaTable } = require('./db/schema');
-          const { eq: eqDka } = require('drizzle-orm');
-          const dbPgDka = require('./services/db.pg');
-          const [att] = await dbPgDka.db.select().from(dkaTable).where(eqDka(dkaTable.kbFileId, file.id)).limit(1);
-          if (att) {
-            const dynFile = await dynamicKBService.getFileById(att.dynamicFileId);
-            if (dynFile?.gcsPath) {
-              buffer = await storageService.downloadFile(dynFile.gcsPath);
-            }
-          }
-        }
-
-        if (!buffer) {
-          errors.push({ file: file.fileName, error: 'No file content available for sync' });
-          continue;
-        }
-
-        const mimeType = `application/${file.fileType}`;
-
-        if (targetProvider === 'openai') {
-          const result = await llmService.addFileToVectorStore(buffer, file.fileName, newVectorStoreId);
-          await kbService.updateFileProviderIds(file.id, { openaiFileId: result.fileId });
-        } else if (targetProvider === 'google') {
-          const result = await googleKBService.uploadFile(newGoogleCorpusId, buffer, file.fileName, mimeType);
-          await kbService.updateFileProviderIds(file.id, { googleDocumentId: result.documentId });
-        } else if (targetProvider === 'anthropic') {
-          const result = await anthropicKBService.uploadFile(buffer, file.fileName, mimeType);
-          // anthropicFileId not in updateFileProviderIds — update directly
-          const dbPgSync = require('./services/db.pg');
-          const { knowledgeBaseFiles: kbfTable } = require('./db/schema');
-          const { eq: eqSync } = require('drizzle-orm');
-          await dbPgSync.db.update(kbfTable).set({ anthropicFileId: result.fileId, updatedAt: new Date() }).where(eqSync(kbfTable.id, file.id));
-        }
-        syncedCount++;
-      } catch (err) {
-        console.error(`❌ Could not sync file ${file.fileName}:`, err.message);
-        errors.push({ file: file.fileName, error: err.message });
+    const getFileBuffer = async (file) => {
+      if (file.originalFileUrl) {
+        return storageService.downloadFile(file.originalFileUrl);
       }
-    }
+      // Try dynamic KB source — file might have been attached from Dynamic KB
+      const dynamicKBSvc = require('./services/dynamic-kb.service');
+      const { dynamicKBAttachments: dkaTable } = require('./db/schema');
+      const { eq: eqDka } = require('drizzle-orm');
+      const dbPgDka = require('./services/db.pg');
+      const [att] = await dbPgDka.db.select().from(dkaTable).where(eqDka(dkaTable.kbFileId, file.id)).limit(1);
+      if (att) {
+        const dynFile = await dynamicKBSvc.getFileById(att.dynamicFileId);
+        if (dynFile?.gcsPath) return storageService.downloadFile(dynFile.gcsPath);
+      }
+      return null;
+    };
 
-    // Update KB: add the new provider to the providers array + set new IDs
-    const updatedProviders = [...getP(kb), targetProvider];
-    await kbService.updateKBProviderIds(parseInt(kbId), {
-      vectorStoreId: newVectorStoreId || kb.vectorStoreId,
-      googleCorpusId: newGoogleCorpusId || kb.googleCorpusId,
-      providers: updatedProviders,
-      lastSyncedAt: new Date(),
-    });
-
-    const updatedKB = await kbService.getKnowledgeBaseById(parseInt(kbId));
+    const result = await kbService.syncToProvider(parseInt(kbId), targetProvider, getFileBuffer);
 
     res.json({
       success: true,
-      syncedCount,
-      totalFiles: files.length,
-      errors: errors.length > 0 ? errors : undefined,
-      knowledgeBase: _formatKB(updatedKB)
+      syncedCount: result.syncedCount,
+      totalFiles: result.totalFiles,
+      errors: result.errors?.length > 0 ? result.errors : undefined,
+      knowledgeBase: _formatKB(result.knowledgeBase)
     });
   } catch (err) {
     console.error('❌ Sync Error:', err.message);
-    res.status(500).json({ error: 'Error syncing knowledge base: ' + err.message });
+    res.status(err.statusCode || 500).json({ error: 'Error syncing knowledge base: ' + err.message });
   }
 });
 
@@ -2144,58 +1939,12 @@ app.post('/api/kb/:kbId/detach', async (req, res) => {
   try {
     const { kbId } = req.params;
     const { provider: providerToDetach } = req.body; // 'openai' | 'google' | 'anthropic'
-    const { hasProvider: hasP4, getProviders: getP2 } = require('./services/kb.helpers');
 
     if (!['openai', 'google', 'anthropic'].includes(providerToDetach)) {
       return res.status(400).json({ error: 'provider must be openai, google, or anthropic' });
     }
 
-    const kb = await kbService.getKnowledgeBaseById(parseInt(kbId));
-
-    if (!hasP4(kb, providerToDetach)) {
-      return res.status(400).json({ error: `KB does not have ${providerToDetach}` });
-    }
-
-    const currentProviders = getP2(kb);
-    if (currentProviders.length <= 1) {
-      return res.status(400).json({ error: 'Cannot detach the last provider' });
-    }
-
-    // Delete the provider's store
-    if (providerToDetach === 'google' && kb.googleCorpusId) {
-      await googleKBService.deleteStore(kb.googleCorpusId);
-    } else if (providerToDetach === 'openai' && kb.vectorStoreId) {
-      const openaiService = require('./services/llm.openai');
-      await openaiService.client.vectorStores.del(kb.vectorStoreId);
-    }
-    // Anthropic has no store to delete — files are individual
-
-    // Clear provider IDs on files
-    const files = await kbService.getFilesByKnowledgeBase(parseInt(kbId));
-    const dbPgDetach = require('./services/db.pg');
-    const { knowledgeBaseFiles: kbfDetach } = require('./db/schema');
-    const { eq: eqDetach } = require('drizzle-orm');
-    for (const file of files) {
-      if (providerToDetach === 'google') {
-        await kbService.updateFileProviderIds(file.id, { googleDocumentId: null });
-      } else if (providerToDetach === 'openai') {
-        await kbService.updateFileProviderIds(file.id, { openaiFileId: null });
-      } else if (providerToDetach === 'anthropic' && file.anthropicFileId) {
-        try { await anthropicKBService.deleteFile(file.anthropicFileId); } catch {}
-        await dbPgDetach.db.update(kbfDetach).set({ anthropicFileId: null, updatedAt: new Date() }).where(eqDetach(kbfDetach.id, file.id));
-      }
-    }
-
-    // Update KB: remove provider from array, clear IDs
-    const remainingProviders = currentProviders.filter(p => p !== providerToDetach);
-    await kbService.updateKBProviderIds(parseInt(kbId), {
-      vectorStoreId: providerToDetach === 'openai' ? null : kb.vectorStoreId,
-      googleCorpusId: providerToDetach === 'google' ? null : kb.googleCorpusId,
-      providers: remainingProviders,
-    });
-
-    const updatedKB = await kbService.getKnowledgeBaseById(parseInt(kbId));
-    console.log(`✅ Detached ${providerToDetach} from KB "${kb.name}"`);
+    const updatedKB = await kbService.detachProvider(parseInt(kbId), providerToDetach);
 
     res.json({
       success: true,
@@ -2204,19 +1953,20 @@ app.post('/api/kb/:kbId/detach', async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Detach Error:', err.message);
-    res.status(500).json({ error: 'Error detaching provider: ' + err.message });
+    res.status(err.statusCode || 500).json({ error: 'Error detaching provider: ' + err.message });
   }
 });
 
-// Legacy file upload endpoint (for backward compatibility)
+// Legacy file upload endpoint (for backward compatibility — uploads to hard-coded menopause KB store)
 app.post('/api/kb/upload', upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
   }
 
   try {
-    console.log(`📤 Uploading file: ${req.file.originalname} (${req.file.size} bytes)`);
-    const result = await llmService.addFileToKnowledgeBase(req.file.buffer, req.file.originalname);
+    const LEGACY_VECTOR_STORE_ID = 'vs_695e750fc75481918e3d76851ce30cae';
+    console.log(`📤 Uploading file: ${req.file.originalname} (${req.file.buffer.length} bytes)`);
+    const result = await kbService.uploadFileToVectorStore(LEGACY_VECTOR_STORE_ID, req.file.buffer, req.file.originalname);
     console.log(`✅ File uploaded successfully: ${result.fileId}`);
     res.json(result);
   } catch (err) {
@@ -2447,43 +2197,8 @@ app.post('/api/dynamic-kb/import/spreadsheet', upload.single('file'), async (req
 // Get actual files from provider(s) for a KB — "truth check" view
 app.get('/api/kb/:kbId/provider-files', async (req, res) => {
   try {
-    const kb = await kbService.getKnowledgeBaseById(parseInt(req.params.kbId));
-    const { hasProvider: hasP } = require('./services/kb.helpers');
-    const result = { openai: null, google: null, anthropic: null };
-
-    if (kb.vectorStoreId && hasP(kb, 'openai')) {
-      try {
-        const files = await llmService.listVectorStoreFiles(kb.vectorStoreId);
-        result.openai = files.map(f => ({
-          id: f.id, fileName: f.fileName, fileSize: f.fileSize, status: f.status, createdAt: f.createdAt,
-        }));
-      } catch (err) { result.openai = { error: err.message }; }
-    }
-
-    if (kb.googleCorpusId && hasP(kb, 'google')) {
-      try {
-        const docs = await googleKBService.listDocuments(kb.googleCorpusId);
-        result.google = docs.map(d => ({
-          id: d.name, displayName: d.displayName, createTime: d.createTime, updateTime: d.updateTime, sizeBytes: d.sizeBytes, state: d.state,
-        }));
-      } catch (err) { result.google = { error: err.message }; }
-    }
-
-    if (hasP(kb, 'anthropic')) {
-      try {
-        // Get all Anthropic files, then filter to ones that belong to this KB
-        const dbFiles = await kbService.getFilesByKnowledgeBase(kb.id);
-        const kbAnthropicIds = new Set(dbFiles.filter(f => f.anthropicFileId).map(f => f.anthropicFileId));
-        const allFiles = await anthropicKBService.listFiles();
-        result.anthropic = allFiles
-          .filter(f => kbAnthropicIds.has(f.id))
-          .map(f => ({
-            id: f.id, fileName: f.filename, fileSize: f.size_bytes, createdAt: f.created_at,
-          }));
-      } catch (err) { result.anthropic = { error: err.message }; }
-    }
-
-    res.json({ providers: kb.providers, ...result });
+    const result = await kbService.listProviderFiles(parseInt(req.params.kbId));
+    res.json(result);
   } catch (err) {
     console.error('❌ Provider files error:', err.message);
     res.status(500).json({ error: err.message });
@@ -2532,26 +2247,9 @@ app.get('/api/kb/provider-preview', async (req, res) => {
   try {
     const { provider, fileId } = req.query;
     if (!provider || !fileId) return res.status(400).json({ error: 'provider and fileId required' });
-
-    if (provider === 'openai') {
-      const openaiService = require('./services/llm.openai');
-      const response = await openaiService.client.files.content(fileId);
-      const text = await response.text();
-      return res.json({ content: text, source: 'openai' });
-    }
-
-    if (provider === 'google') {
-      // Google doesn't expose document content via API
-      return res.status(404).json({ error: 'Google does not support content preview via API' });
-    }
-
-    if (provider === 'anthropic') {
-      const response = await anthropicKBService.client.beta.files.content(fileId);
-      const text = await response.text();
-      return res.json({ content: text, source: 'anthropic' });
-    }
-
-    res.status(400).json({ error: `Unknown provider: ${provider}` });
+    const response = await kbService.getProviderFileContent(provider, fileId);
+    const text = await response.text();
+    res.json({ content: text, source: provider });
   } catch (err) {
     console.error('❌ Provider preview error:', err.message);
     res.status(500).json({ error: err.message });
@@ -2563,22 +2261,10 @@ app.get('/api/kb/provider-preview', async (req, res) => {
 // The fileId is passed as a query param instead of a path param
 app.delete('/api/kb/:kbId/provider-files/:provider', async (req, res) => {
   try {
-    const kb = await kbService.getKnowledgeBaseById(parseInt(req.params.kbId));
-    const { provider } = req.params;
+    const { kbId, provider } = req.params;
     const fileId = req.query.fileId;
     if (!fileId) return res.status(400).json({ error: 'fileId query param required' });
-
-    if (provider === 'openai') {
-      await llmService.deleteVectorStoreFile(kb.vectorStoreId, fileId);
-    } else if (provider === 'google') {
-      await googleKBService.deleteDocument(fileId);
-    } else if (provider === 'anthropic') {
-      await anthropicKBService.deleteFile(fileId);
-    } else {
-      return res.status(400).json({ error: `Unknown provider: ${provider}` });
-    }
-
-    console.log(`✅ Deleted ${fileId} from ${provider}`);
+    await kbService.deleteProviderFile(provider, parseInt(kbId), fileId);
     res.json({ success: true });
   } catch (err) {
     console.error(`❌ Provider file delete error:`, err.message);
@@ -4029,45 +3715,13 @@ app.post('/api/podcast/episodes/:id/add-to-kb', async (req, res) => {
     const filename = `${baseName}-summary.md`;
     const buffer = Buffer.from(episode.summary_text, 'utf-8');
     const mimetype = 'text/markdown';
-    const size = buffer.length;
 
-    console.log(`📤 Adding podcast summary to KB ${kbId}: ${filename} (${size} bytes)`);
+    console.log(`📤 Adding podcast summary to KB ${kbId}: ${filename} (${buffer.length} bytes)`);
 
-    let openaiFileId = null;
-    let googleDocumentId = null;
-    let originalFileUrl = null;
-
-    const { hasProvider: hasP2 } = require('./services/kb.helpers');
-    if (hasP2(kb, 'openai')) {
-      const result = await llmService.addFileToVectorStore(buffer, filename, kb.vectorStoreId);
-      openaiFileId = result.fileId;
-      console.log(`✅ Uploaded to OpenAI: ${openaiFileId}`);
-    }
-
-    if (hasP2(kb, 'google')) {
-      const result = await googleKBService.uploadFile(kb.googleCorpusId, buffer, filename, mimetype);
-      googleDocumentId = result.documentId;
-      console.log(`✅ Uploaded to Google: ${googleDocumentId}`);
-    }
-
-    try {
-      originalFileUrl = await storageService.uploadFile(buffer, filename, mimetype, kbId);
-    } catch (gcsErr) {
-      console.warn(`⚠️ GCS backup failed (non-critical): ${gcsErr.message}`);
-    }
-
-    const dbFile = await kbService.addFile(
-      parseInt(kbId),
-      filename,
-      size,
-      'md',
-      { openaiFileId, googleDocumentId, originalFileUrl },
-      [],
-      'completed'
-    );
+    const dbFile = await kbService.uploadFile(parseInt(kbId), buffer, filename, mimetype, []);
 
     console.log(`✅ Podcast summary added to KB - DB ID: ${dbFile.id}`);
-    res.json({ success: true, file: { id: dbFile.id, fileName: filename, fileSize: size } });
+    res.json({ success: true, file: { id: dbFile.id, fileName: dbFile.fileName, fileSize: dbFile.fileSize } });
   } catch (err) {
     console.error('❌ Add to KB error:', err.message);
     res.status(500).json({ error: err.message });

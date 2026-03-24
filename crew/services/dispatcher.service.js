@@ -735,7 +735,7 @@ class DispatcherService {
           knowledgeBase: resolvedKB ? {
             sources: resolvedKB.resolvedSources,
             provider: resolvedKB.provider,
-            activeIds: resolvedKB.storeIds || resolvedKB.corpusIds || [],
+            activeIds: resolvedKB.storeIds || resolvedKB.corpusIds || resolvedKB.anthropicFileIds || [],
           } : null,
           processedMessage,
           persona: resolvedPersona,

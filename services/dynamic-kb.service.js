@@ -3,9 +3,6 @@ const { dynamicKBFiles, dynamicKBAttachments, knowledgeBases, knowledgeBaseFiles
 const dbService = require('./db.pg');
 const kbService = require('./kb.service');
 const storageService = require('./storage.service');
-const llmService = require('./llm');
-const googleKBService = require('./kb.google.service');
-const anthropicKBService = require('./kb.anthropic.service');
 
 /**
  * Dynamic KB Service
@@ -347,28 +344,7 @@ class DynamicKBService {
     const mimetype = 'text/markdown';
 
     // Upload to provider(s)
-    let openaiFileId = null;
-    let googleDocumentId = null;
-    let anthropicFileId = null;
-
-    const { hasProvider } = require('./kb.helpers');
-    if (hasProvider(kb, 'openai')) {
-      const result = await llmService.addFileToVectorStore(buffer, fileName, kb.vectorStoreId);
-      openaiFileId = result.fileId;
-      console.log(`✅ [DynamicKB] Uploaded to OpenAI: ${openaiFileId}`);
-    }
-
-    if (hasProvider(kb, 'google')) {
-      const result = await googleKBService.uploadFile(kb.googleCorpusId, buffer, fileName, mimetype);
-      googleDocumentId = result.documentId;
-      console.log(`✅ [DynamicKB] Uploaded to Google: ${googleDocumentId}`);
-    }
-
-    if (hasProvider(kb, 'anthropic')) {
-      const result = await anthropicKBService.uploadFile(buffer, fileName, mimetype);
-      anthropicFileId = result.fileId;
-      console.log(`✅ [DynamicKB] Uploaded to Anthropic: ${anthropicFileId}`);
-    }
+    const { openaiFileId, googleDocumentId, anthropicFileId } = await kbService.uploadFileToProviders(kb, buffer, fileName, mimetype);
 
     // Save to knowledge_base_files
     const kbFile = await kbService.addFile(
@@ -417,19 +393,7 @@ class DynamicKBService {
       if (kbFile) {
         const kb = await kbService.getKnowledgeBaseById(knowledgeBaseId);
 
-        if (kbFile.openaiFileId && kb.vectorStoreId) {
-          try { await llmService.deleteVectorStoreFile(kb.vectorStoreId, kbFile.openaiFileId); }
-          catch (err) { console.warn(`⚠️ Could not delete from OpenAI: ${err.message}`); }
-        }
-        if (kbFile.googleDocumentId) {
-          try { await googleKBService.deleteDocument(kbFile.googleDocumentId); }
-          catch (err) { console.warn(`⚠️ Could not delete from Google: ${err.message}`); }
-        }
-        if (kbFile.anthropicFileId) {
-          try { await anthropicKBService.deleteFile(kbFile.anthropicFileId); }
-          catch (err) { console.warn(`⚠️ Could not delete from Anthropic: ${err.message}`); }
-        }
-
+        await kbService.deleteFileFromProviders(kbFile, kb);
         await kbService.deleteFile(kbFile.id);
       }
     }
@@ -465,53 +429,20 @@ class DynamicKBService {
 
         // Delete old from providers
         if (oldFile) {
-          if (oldFile.openaiFileId && kb.vectorStoreId) {
-            try { await llmService.deleteVectorStoreFile(kb.vectorStoreId, oldFile.openaiFileId); }
-            catch (err) { console.warn(`⚠️ [Sync] OpenAI delete failed: ${err.message}`); }
-          }
-          if (oldFile.googleDocumentId) {
-            try { await googleKBService.deleteDocument(oldFile.googleDocumentId); }
-            catch (err) { console.warn(`⚠️ [Sync] Google delete failed: ${err.message}`); }
-          }
-          if (oldFile.anthropicFileId) {
-            try { await anthropicKBService.deleteFile(oldFile.anthropicFileId); }
-            catch (err) { console.warn(`⚠️ [Sync] Anthropic delete failed: ${err.message}`); }
-          }
+          await kbService.deleteFileFromProviders(oldFile, kb);
         }
 
         // Upload new content to providers
-        let openaiFileId = null;
-        let googleDocumentId = null;
-        let anthropicFileId = null;
-
-        const { hasProvider } = require('./kb.helpers');
-    if (hasProvider(kb, 'openai')) {
-          const result = await llmService.addFileToVectorStore(buffer, mdFileName, kb.vectorStoreId);
-          openaiFileId = result.fileId;
-        }
-        if (hasProvider(kb, 'google')) {
-          const result = await googleKBService.uploadFile(kb.googleCorpusId, buffer, mdFileName, mimetype);
-          googleDocumentId = result.documentId;
-        }
-        if (hasProvider(kb, 'anthropic')) {
-          const result = await anthropicKBService.uploadFile(buffer, mdFileName, mimetype);
-          anthropicFileId = result.fileId;
-        }
+        const { openaiFileId, googleDocumentId, anthropicFileId } = await kbService.uploadFileToProviders(kb, buffer, mdFileName, mimetype);
 
         // Update or create kb_file record
         if (oldFile) {
           await kbService.updateFileProviderIds(oldFile.id, {
             openaiFileId,
             googleDocumentId,
+            anthropicFileId,
             status: 'completed',
           });
-          // anthropicFileId not in updateFileProviderIds — update directly if needed
-          if (anthropicFileId) {
-            await dbService.db
-              .update(knowledgeBaseFiles)
-              .set({ anthropicFileId, updatedAt: new Date() })
-              .where(eq(knowledgeBaseFiles.id, oldFile.id));
-          }
         } else {
           // Edge case: attachment exists but kb_file was deleted — recreate
           const kbFile = await kbService.addFile(
