@@ -893,10 +893,15 @@ class OpenAIService {
     const { model = 'gpt-4o-mini', maxTokens = 1024, jsonOutput = false } = options;
 
     try {
+      // OpenAI requires "json" in input messages when using json_object format
+      const inputText = jsonOutput && !message.toLowerCase().includes('json')
+        ? `${message}\n\nRespond in JSON.`
+        : message;
+
       const requestParams = {
         model,
         instructions,
-        input: [{ role: 'user', content: [{ type: 'input_text', text: message }] }],
+        input: [{ role: 'user', content: [{ type: 'input_text', text: inputText }] }],
         max_output_tokens: maxTokens,
         store: false
       };

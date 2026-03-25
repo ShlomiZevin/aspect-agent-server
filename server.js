@@ -1298,40 +1298,51 @@ app.post('/api/finance-assistant', async (req, res) => {
 
 // ========== PROFILER: Async with 5-second debounce ==========
 
-// Debounce state per conversation — waits 5s after last message before firing
+// Debounce state per conversation
 const profilerDebounce = new Map(); // conversationId → { timer, resolve, params }
+const profilerLastRun = new Map();  // conversationId → timestamp of last profiler completion
+
+const PROFILER_DEBOUNCE_MS = 5000;
 
 /**
- * Schedule the profiler with a 5-second debounce.
- * Each new message resets the timer. The profiler only fires once
- * after 5 seconds of no new messages.
- *
- * Returns a promise that resolves immediately if debounced (so SSE can close),
- * or waits if this is the final run.
+ * Schedule the profiler with smart debounce:
+ * - If 5+ seconds since last profiler run → fire immediately
+ * - Otherwise → debounce (wait 5s of silence)
  */
 function scheduleProfiler(params) {
   const { conversationId } = params;
   const existing = profilerDebounce.get(conversationId);
 
-  // Cancel previous timer — that request's SSE already closed via its own resolve
+  // Cancel previous timer
   if (existing) {
     clearTimeout(existing.timer);
-    existing.resolve(); // Let the old SSE connection close
+    existing.resolve();
   }
 
-  return new Promise((resolve) => {
-    const timer = setTimeout(async () => {
-      profilerDebounce.delete(conversationId);
-      try {
-        // Use the latest params (which has the latest sendSSE bound to the latest response)
-        await runProfilerAsync(params);
-      } catch (e) {
-        console.error('❌ [Profiler] Scheduled run error:', e.message);
-      }
-      resolve();
-    }, 5000);
+  const lastRun = profilerLastRun.get(conversationId) || 0;
+  const elapsed = Date.now() - lastRun;
+  const fireImmediately = elapsed >= PROFILER_DEBOUNCE_MS;
 
-    profilerDebounce.set(conversationId, { timer, resolve, params });
+  const runProfiler = async (resolve) => {
+    profilerDebounce.delete(conversationId);
+    try {
+      await runProfilerAsync(params);
+    } catch (e) {
+      console.error('❌ [Profiler] Scheduled run error:', e.message);
+    }
+    profilerLastRun.set(conversationId, Date.now());
+    resolve();
+  };
+
+  return new Promise((resolve) => {
+    if (fireImmediately) {
+      // Enough time passed — run now
+      runProfiler(resolve);
+    } else {
+      // Recent run — wait for silence
+      const timer = setTimeout(() => runProfiler(resolve), PROFILER_DEBOUNCE_MS);
+      profilerDebounce.set(conversationId, { timer, resolve, params });
+    }
   });
 }
 
@@ -1408,13 +1419,15 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
     const profilerMaxTokens = profilerConfig.maxTokens || 4096;
 
     // 6. Run the profiler LLM — simple: prompt + conversation + existing profile → full JSON
+    const profilerStart = Date.now();
     const result = await profilerAgent.run(
       { profilerPrompt, conversationHistory, existingProfile },
       { model: profilerModel, maxTokens: profilerMaxTokens }
     );
+    const profilerDurationSec = ((Date.now() - profilerStart) / 1000).toFixed(1);
 
-    // Always send raw response for debug visibility
-    sendSSE({ type: 'profiler_raw', data: result });
+    // Always send raw response for debug visibility (includes timing)
+    sendSSE({ type: 'profiler_raw', data: result, durationSec: profilerDurationSec, model: profilerModel });
 
     if (result._error) {
       console.error(`   📊 [Profiler] LLM error for ${agentName}: ${result._message}`);
