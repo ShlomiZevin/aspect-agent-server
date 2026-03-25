@@ -497,3 +497,166 @@ Reuse `prompt_versions` table with a special crew name convention (e.g., `_profi
 - Badge icons (user / inferred / external)
 - RTL layout testing
 - Schema runtime editing (future)
+
+---
+
+## Appendix A — Banking-Onboarder-v2 Full Profile Schema
+
+This is the complete schema derived from Noa's spec. 7 clusters, ~60 fields.
+
+### Screen Purpose
+Demonstrate to clients/buyers/investors:
+1. How the conversation creates deep, multi-layered understanding
+2. How the system doesn't just collect data but analyzes, infers, builds profiles and insights
+3. How a foundation is built during the interaction for: personalization, offers, risk management, and future UX
+
+### Screen UX
+- Left side: conversation. Right side: User Profile Builder
+- Subtle animation: marker on updating fields
+- Confidence level indicator per field
+- Badges: user-provided data, external source, inferred
+- Depth indicator 0-100% per cluster
+- Overall profile depth score 0-100% + confidence score + tier label
+
+---
+
+### Cluster 1: זהות וזכאות (Identity & Eligibility)
+**Display mode:** `fields` | **Weight:** 15
+
+| Key | Label (HE) | Notes |
+|-----|-----------|-------|
+| `name` | שם | |
+| `age` | גיל | |
+| `city` | עיר מגורים | |
+| `eligibility_status` | סטטוס זכאות לפתיחת חשבון | |
+| `account_type` | סוג החשבון | |
+| `kyc_status` | סטטוס KYC | |
+
+---
+
+### Cluster 2: מצב פיננסי (Financial Status)
+**Display mode:** `fields` | **Weight:** 20
+
+| Key | Label (HE) | Notes |
+|-----|-----------|-------|
+| `employment_status` | סטטוס העסקה | |
+| `occupation` | עיסוק | |
+| `income_range` | טווח הכנסה | |
+| `income_stability` | יציבות הכנסה | |
+| `income_frequency` | תדירות הכנסה | |
+| `income_sources_count` | מספר מקורות הכנסה | |
+| `expected_credit_usage` | שימוש במסגרת אשראי צפויה | |
+| `existing_financial_commitments` | התחייבויות פיננסיות קיימות | |
+| `cash_flow_stability_indicator` | אינדיקטור ליציבות התזרים | |
+| `is_first_bank_account` | חשבון בנק ראשון | כן/לא |
+| `bank_accounts_count` | מספר חשבונות בנק | |
+| `primary_bank` | חשבון בנק מרכזי | הפועלים, דיסקונט, לאומי, מזרחי וכו |
+| `user_group` | קבוצה | סטודנט, צעיר, חייל משוחרר, עובד הייטק וכדומה |
+
+---
+
+### Cluster 3: התנהגות וניתוח כוונות (Behavior & Intent Analysis)
+**Display mode:** `fields` | **Weight:** 15
+**Note:** This entire cluster is **system-inferred insights**, not user-stated data. All fields should have `source: "inferred"`.
+
+| Key | Label (HE) | Notes |
+|-----|-----------|-------|
+| `primary_goal` | מטרה מרכזית | e.g. פתיחת חשבון עו"ש מרכזי, חשבון משני, חשבון לניהול מטרה |
+| `banking_literacy` | רמת אורינות בנקאית | |
+| `fee_sensitivity` | רגישות לעמלות ומחיר | |
+| `decision_speed` | מהירות קבלת החלטה | |
+| `digital_maturity` | בשלות ועצמאות דיגיטלית | |
+| `financial_risk_sensitivity` | רגישות לסיכון פיננסי | |
+| `negotiation_tendency` | נטייה למו"מ | |
+
+---
+
+### Cluster 4: הקשר אישי והעדפות (Personal Context & Preferences)
+**Display mode:** `tags` — fields only appear when they have values, shown as tags/chips
+**Weight:** 10
+
+| Key | Label (HE) | Allowed Values |
+|-----|-----------|---------------|
+| `financial_life_stage` | שלב חיים פיננסי | בתחילת דרך בנקאית, בשלב התבוססות, בשלב יציב, בשלב שינוי |
+| `banking_experience` | רמת ניסיון בנקאי | ללא ניסיון קודם, ניסיון בסיסי, ניסיון מתקדם, רב מוצרי |
+| `decision_pattern` | דפוס קבלת החלטות | מהיר, שקול, משווה, מהסס |
+| `cost_sensitivity` | רגישות לעלויות | נמוך, בינוני, גבוה |
+| `financial_confidence` | רמת ביטחון בניהול פיננסי | נמוך, בינוני, גבוה |
+| `core_need` | צורך מרכזי שזוהה | ניהול יומיומי פשוט, שיפור תנאים, ריכוז פעילות וכדומה |
+
+---
+
+### Cluster 5: התקדמות פתיחת חשבון (Account Opening Progress)
+**Display mode:** `fields` | **Weight:** 20
+
+| Key | Label (HE) | Notes |
+|-----|-----------|-------|
+| `account_opening_status` | מצב פתיחת חשבון | |
+| `last_journey_step` | שלב אחרון במסע | |
+| `completion_percentage` | אחוז השלמת התהליך | |
+| `identified_blockers` | חסמים מרכזים שזוהו | |
+| `abandonment_risk` | רמת סיכון לנטישה | |
+| `return_potential` | פוטנציאל חזרה לתהליך | |
+| `proactive_contact_needed` | האם נדרש מגע יזום | |
+| `commitment_readiness` | רמת נכונות להתחייבות | |
+| `terms_acceptance_likelihood` | סבירות קבלת תנאים כפי שהם | |
+| `recommended_next_action` | פעולה מומלצת להמשך | For abandonment: המשך דיגיטלי, פניה יזומה עם הצעה מותאמת, התאמת מסרים, מעבר לערוץ אנושי |
+
+---
+
+### Cluster 6: המלצות להמשך (Follow-up Recommendations)
+**Display mode:** `tags` — shown as recommendation chips when the user completed the process
+**Weight:** 10
+
+| Key | Label (HE) | Notes |
+|-----|-----------|-------|
+| `credit_card_recommendation` | הצעת כרטיסי אשראי | |
+| `credit_line_recommendation` | הצעת מסגרת אשראי | |
+| `deposit_recommendation` | פתיחת פיקדון | |
+| `standing_orders_recommendation` | הצעת הוראות קבע | |
+| `expense_management_tools` | כלי ניהול הוצאות | |
+| `additional_recommendations` | המלצות נוספות | Free-form, any other relevant recommendations |
+
+---
+
+### Cluster 7: סיכום פרופיל (Profile Summary)
+**Display mode:** `summary` — special rendering, verbal narrative section
+**Weight:** 0 (excluded from depth calculation)
+
+| Key | Label (HE) | Notes |
+|-----|-----------|-------|
+| `general_overview` | תמונת מצב כללי | Narrative paragraph |
+| `key_profile_traits` | מאפייני פרופיל מרכזיים | Array of key traits |
+| `potential_index` | אינדקציית פוטנציאל | 0-100 score |
+| `focused_action_recommendation` | המלצת פעולה ממוקדת | Single most important next action |
+
+---
+
+### Full Field Count
+
+| Cluster | Fields | Display Mode |
+|---------|--------|-------------|
+| 1. Identity & Eligibility | 6 | fields |
+| 2. Financial Status | 13 | fields |
+| 3. Behavior & Intent | 7 | fields (all inferred) |
+| 4. Personal Context | 6 | tags |
+| 5. Account Progress | 10 | fields |
+| 6. Recommendations | 6 | tags |
+| 7. Profile Summary | 4 | summary |
+| **Total** | **52** | |
+
+---
+
+### Mapping: What Exists Today vs. What's New
+
+| Cluster | Currently Collected By | Gap |
+|---------|----------------------|-----|
+| 1. Identity | Welcome crew (`name`, `age`, `account_type`) + infer `gender` | Missing: `city`, `eligibility_status`, `kyc_status` |
+| 2. Financial | Advisor crew fields (`employment`, `incomeRange`, `expensesRange`, `financialCommitments`) + thinker | Missing: 9 fields (stability, frequency, sources, credit usage, bank details, group) |
+| 3. Behavior | Advisor thinker partially (`userIntent`, `userType`) | Missing: 5 fields (literacy, fee sensitivity, decision speed, digital maturity, risk, negotiation) |
+| 4. Personal | Not collected | **All 6 fields are new** — profiler must infer from conversation |
+| 5. Progress | Partially in `advisor_state` + `closing_state` | Missing: 7 fields (blockers, risk, return potential, readiness, recommended action) |
+| 6. Recommendations | Not collected | **All 6 fields are new** — profiler infers from conversation + offers |
+| 7. Summary | Not collected | **All 4 fields are new** — profiler generates narrative |
+
+The profiler fills **all gaps**. Existing crew-collected data flows into the profile via context; the profiler enriches everything the crews don't explicitly collect.

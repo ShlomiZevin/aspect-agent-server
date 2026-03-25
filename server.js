@@ -28,6 +28,8 @@ const podcastService = require('./services/podcast.service');
 const transcriptionService = require('./services/transcription.service');
 const billingService = require('./services/billing.service');
 const providerConfigService = require('./services/provider-config.service');
+const profilerAgent = require('./crew/micro-agents/ProfilerAgent');
+const contextService = require('./services/context.service');
 
 // WhatsApp bridge
 const { handleIncomingMessage } = require('./whatsapp/bridge.service');
@@ -1075,8 +1077,73 @@ app.delete('/api/conversation/:conversationId/fields', async (req, res) => {
   }
 });
 
+// ========== PROFILER CONFIG ENDPOINTS (Debug Mode) ==========
+
+// Get current profiler config for an agent (prompt + model + schema)
+app.get('/api/agents/:agentName/profiler/config', async (req, res) => {
+  const { agentName } = req.params;
+  try {
+    const config = resolveProfilerConfig(agentName);
+    if (!config) {
+      return res.json({ agentName, hasProfiler: false, config: null });
+    }
+    const overrides = profilerOverrides.get(agentName) || {};
+    res.json({
+      agentName,
+      hasProfiler: true,
+      hasOverrides: Object.keys(overrides).length > 0,
+      config: {
+        prompt: overrides.prompt || config.prompt || null,
+        model: overrides.model || config.model || 'gpt-4o-mini',
+        provider: overrides.provider || config.provider || null,
+        maxTokens: config.maxTokens || 2048,
+      },
+      codeDefault: {
+        prompt: config.prompt || null,
+        model: config.model || 'gpt-4o-mini',
+        provider: config.provider || null,
+      },
+    });
+  } catch (err) {
+    console.error('❌ Error getting profiler config:', err.message);
+    res.status(500).json({ error: 'Error getting profiler config: ' + err.message });
+  }
+});
+
+// Update profiler config for an agent (session override — written to profiler.config.js runtime cache)
+// This uses a runtime override map so changes don't require restart but don't persist across deploys
+const profilerOverrides = new Map(); // agentName → { prompt, model, provider }
+
+app.patch('/api/agents/:agentName/profiler/config', async (req, res) => {
+  const { agentName } = req.params;
+  const { prompt, model, provider } = req.body;
+
+  try {
+    const existing = profilerOverrides.get(agentName) || {};
+    const updated = {
+      ...existing,
+      ...(prompt !== undefined && { prompt }),
+      ...(model !== undefined && { model }),
+      ...(provider !== undefined && { provider }),
+    };
+    profilerOverrides.set(agentName, updated);
+
+    res.json({ success: true, config: updated });
+  } catch (err) {
+    console.error('❌ Error updating profiler config:', err.message);
+    res.status(500).json({ error: 'Error updating profiler config: ' + err.message });
+  }
+});
+
+// Reset profiler config to code default
+app.post('/api/agents/:agentName/profiler/config/reset', async (req, res) => {
+  const { agentName } = req.params;
+  profilerOverrides.delete(agentName);
+  res.json({ success: true, message: 'Profiler config reset to code default' });
+});
+
 // ========== CONTEXT ENDPOINTS (for Context Editor Panel) ==========
-const contextService = require('./services/context.service');
+// contextService already required at top of file
 
 // Get all context for a conversation (both user-level and conversation-level)
 app.get('/api/conversation/:conversationId/context', async (req, res) => {
@@ -1229,9 +1296,216 @@ app.post('/api/finance-assistant', async (req, res) => {
   }
 });
 
+// ========== PROFILER: Async with 5-second debounce ==========
+
+// Debounce state per conversation — waits 5s after last message before firing
+const profilerDebounce = new Map(); // conversationId → { timer, resolve, params }
+
+/**
+ * Schedule the profiler with a 5-second debounce.
+ * Each new message resets the timer. The profiler only fires once
+ * after 5 seconds of no new messages.
+ *
+ * Returns a promise that resolves immediately if debounced (so SSE can close),
+ * or waits if this is the final run.
+ */
+function scheduleProfiler(params) {
+  const { conversationId } = params;
+  const existing = profilerDebounce.get(conversationId);
+
+  // Cancel previous timer — that request's SSE already closed via its own resolve
+  if (existing) {
+    clearTimeout(existing.timer);
+    existing.resolve(); // Let the old SSE connection close
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(async () => {
+      profilerDebounce.delete(conversationId);
+      try {
+        // Use the latest params (which has the latest sendSSE bound to the latest response)
+        await runProfilerAsync(params);
+      } catch (e) {
+        console.error('❌ [Profiler] Scheduled run error:', e.message);
+      }
+      resolve();
+    }, 5000);
+
+    profilerDebounce.set(conversationId, { timer, resolve, params });
+  });
+}
+
+/**
+ * Resolve the profiler config for an agent.
+ * Looks for a profiler.config.js file in the agent's folder.
+ * Returns null if agent has no profiler configured.
+ */
+function resolveProfilerConfig(agentName) {
+  const agentsDir = path.join(__dirname, 'agents');
+  const candidates = [
+    agentName,
+    agentName.toLowerCase(),
+    agentName.toLowerCase().replace(/[\s.]+/g, '-'),
+    agentName.toLowerCase().replace(/[\s.]+/g, '-').replace(/-+$/, ''),
+    agentName.toLowerCase().replace(/[\s.\d]+/g, '').trim(),
+    agentName.toLowerCase().split(/[\s.]/)[0],
+  ];
+  const unique = [...new Set(candidates)];
+
+  for (const candidate of unique) {
+    const configPath = path.join(agentsDir, candidate, 'profiler.config.js');
+    try {
+      if (require('fs').existsSync(configPath)) {
+        // Clear require cache so edits take effect without restart
+        delete require.cache[require.resolve(configPath)];
+        return require(configPath);
+      }
+    } catch { /* skip */ }
+  }
+  return null;
+}
+
+/**
+ * Run the profiler async — fire and forget.
+ * Never blocks the conversation, never throws to the caller.
+ *
+ * @param {Object} params
+ * @param {string} params.agentName
+ * @param {string} params.conversationId - External conversation ID
+ * @param {string|null} params.userId
+ * @param {string} params.message - Latest user message
+ * @param {Function} params.sendSSE - SSE push function
+ */
+async function runProfilerAsync({ agentName, conversationId, userId, message, sendSSE, freshStart = false }) {
+  try {
+    // 1. Resolve profiler config for this agent
+    const profilerConfig = resolveProfilerConfig(agentName);
+    if (!profilerConfig || !profilerConfig.prompt) {
+      return; // Agent has no profiler — skip silently
+    }
+
+    // 2. Get conversation internal data
+    const conversation = await conversationService.getConversationByExternalId(conversationId);
+    if (!conversation) return;
+
+    const dbUserId = conversation.userId;
+    if (!dbUserId) return;
+
+    // 3. Load conversation history (last N messages)
+    const history = await conversationService.getConversationHistory(conversationId, 20);
+    const conversationHistory = history.map(m => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    // 4. Load existing profile from user-level context (or start fresh)
+    const existingProfile = freshStart ? {} : (await contextService.getContext(dbUserId, 'profile_data') || {});
+
+    // 5. Resolve profiler prompt and model (runtime override > agent code)
+    const overrides = profilerOverrides.get(agentName) || {};
+    const profilerPrompt = overrides.prompt || profilerConfig.prompt;
+    const profilerModel = overrides.model || profilerConfig.model || 'claude-sonnet-4-6';
+    const profilerMaxTokens = profilerConfig.maxTokens || 4096;
+
+    // 6. Run the profiler LLM — simple: prompt + conversation + existing profile → full JSON
+    const result = await profilerAgent.run(
+      { profilerPrompt, conversationHistory, existingProfile },
+      { model: profilerModel, maxTokens: profilerMaxTokens }
+    );
+
+    // Always send raw response for debug visibility
+    sendSSE({ type: 'profiler_raw', data: result });
+
+    if (result._error) {
+      console.error(`   📊 [Profiler] LLM error for ${agentName}: ${result._message}`);
+      return;
+    }
+
+    // 7. Strip low-confidence fields (below 70) — prevents over-inference
+    for (const [clusterId, clusterData] of Object.entries(result)) {
+      if (clusterId === 'summary' || clusterId.startsWith('_')) continue;
+      if (typeof clusterData !== 'object' || clusterData === null) continue;
+      for (const [, fieldData] of Object.entries(clusterData)) {
+        if (fieldData && typeof fieldData === 'object' && 'confidence' in fieldData) {
+          if (fieldData.confidence < 70) {
+            fieldData.value = null;
+          }
+        }
+      }
+    }
+
+    // 8. Save the full profile to user-level context
+    await contextService.saveContext(dbUserId, 'profile_data', result);
+
+    // 8. Compute scores from the profile for the UI
+    const CLUSTER_WEIGHTS = {
+      identity: 15, financial_status: 20, behavior_intent: 15,
+      personal_context: 10, account_progress: 20, recommendations: 10, summary: 0,
+    };
+    const DEPTH_LABELS = [
+      { maxPercent: 25, label: 'פרופיל בסיסי' },
+      { maxPercent: 50, label: 'פרופיל פונקציונאלי' },
+      { maxPercent: 75, label: 'פרופיל תובנות מוכן' },
+      { maxPercent: 100, label: 'פרופיל פרסונליזציה מלא' },
+    ];
+
+    let totalWeightedDepth = 0;
+    let totalWeight = 0;
+    let totalConfidence = 0;
+    let filledCount = 0;
+    const clusterScores = {};
+
+    for (const [clusterId, clusterData] of Object.entries(result)) {
+      if (clusterId === 'summary' || clusterId.startsWith('_')) continue;
+      if (typeof clusterData !== 'object' || clusterData === null) continue;
+
+      const fields = Object.entries(clusterData).filter(([k]) => !k.startsWith('_'));
+      const total = fields.length;
+      const filled = fields.filter(([, f]) => f && typeof f === 'object' && f.value != null).length;
+      const depth = total > 0 ? Math.round((filled / total) * 100) : 0;
+      clusterScores[clusterId] = { depth };
+
+      const weight = CLUSTER_WEIGHTS[clusterId] || 10;
+      if (weight > 0) {
+        totalWeightedDepth += depth * weight;
+        totalWeight += weight;
+      }
+
+      for (const [, f] of fields) {
+        if (f && typeof f === 'object' && f.value != null) {
+          totalConfidence += f.confidence || 0;
+          filledCount++;
+        }
+      }
+    }
+
+    const overallDepth = totalWeight > 0 ? Math.round(totalWeightedDepth / totalWeight) : 0;
+    const overallConfidence = filledCount > 0 ? Math.round(totalConfidence / filledCount) : 0;
+    const profileTier = (DEPTH_LABELS.find(l => overallDepth <= l.maxPercent) || DEPTH_LABELS[DEPTH_LABELS.length - 1])?.label || '';
+
+    // 9. Push profile_update SSE event — the full profile + computed scores
+    sendSSE({
+      type: 'profile_update',
+      data: {
+        clusters: result,
+        clusterScores,
+        summary: result.summary || null,
+        overallDepth,
+        overallConfidence,
+        profileTier,
+      }
+    });
+
+    console.log(`   📊 [Profiler] Updated profile for ${agentName}: ${overallDepth}% depth, ${filledCount} fields filled`);
+  } catch (error) {
+    console.error(`   ❌ [Profiler] Error for ${agentName}:`, error.message);
+    // Never propagate — profiler errors must not affect the conversation
+  }
+}
+
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled } = req.body;
+  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled, profilerFreshStart } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -1277,6 +1551,9 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     );
     // Send user message ID to client so it can be deleted later
     sendSSE({ type: 'user_message_saved', messageId: userMsg.id });
+
+    // Schedule profiler with 5-second debounce — resets on each new message
+    const profilerPromise = scheduleProfiler({ agentName: agentNameToUse, conversationId, userId, message, sendSSE, freshStart: !!profilerFreshStart });
 
     // Build agent config from config JSON (includes promptId, vectorStoreId, etc.)
     const agentConfig = agent.config || {};
@@ -1623,8 +1900,17 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         .catch(err => console.error(`❌ Failed to forward to WhatsApp: ${err.message}`));
     }
 
-    // Send done signal
+    // Send done signal — unblocks the client chat immediately
     res.write('data: [DONE]\n\n');
+    res.flush && res.flush();
+
+    // Wait for profiler to finish (its SSE events arrive after [DONE] but client keeps reading)
+    if (profilerPromise) {
+      await profilerPromise;
+    }
+
+    // Final close signal
+    res.write('data: [STREAM_END]\n\n');
     res.flush && res.flush();
     res.end();
   } catch (err) {
