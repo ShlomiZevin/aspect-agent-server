@@ -66,44 +66,20 @@ async function createTask() {
   try {
     console.log(`Creating task: "${TASK.title}"...\n`);
 
-    const existing = await pool.query(
-      `SELECT id FROM tasks WHERE title = $1`,
-      [TASK.title]
+    const result = await pool.query(
+      `INSERT INTO tasks (
+        title, description, status, priority, type, domain,
+        assignee, opener, created_by, tags,
+        is_draft, is_completed, at_risk, created_at, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),NOW())
+      RETURNING id`,
+      [
+        TASK.title, TASK.description, TASK.status, TASK.priority,
+        TASK.type, TASK.domain, TASK.assignee, TASK.opener, TASK.opener,
+        JSON.stringify(TASK.tags), false, false, false,
+      ]
     );
-
-    if (existing.rows.length > 0) {
-      const id = existing.rows[0].id;
-      console.log(`Task already exists (ID: ${id}). Updating...`);
-
-      await pool.query(
-        `UPDATE tasks SET
-          description = $1, status = $2, priority = $3, type = $4,
-          domain = $5, assignee = $6, opener = $7, created_by = $8,
-          tags = $9, updated_at = NOW()
-        WHERE id = $10`,
-        [
-          TASK.description, TASK.status, TASK.priority, TASK.type,
-          TASK.domain, TASK.assignee, TASK.opener, TASK.opener,
-          JSON.stringify(TASK.tags), id,
-        ]
-      );
-      console.log(`Task #${id} updated.`);
-    } else {
-      const result = await pool.query(
-        `INSERT INTO tasks (
-          title, description, status, priority, type, domain,
-          assignee, opener, created_by, tags,
-          is_draft, is_completed, at_risk, created_at, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),NOW())
-        RETURNING id`,
-        [
-          TASK.title, TASK.description, TASK.status, TASK.priority,
-          TASK.type, TASK.domain, TASK.assignee, TASK.opener, TASK.opener,
-          JSON.stringify(TASK.tags), false, false, false,
-        ]
-      );
-      console.log(`Task created! ID: ${result.rows[0].id}`);
-    }
+    console.log(`Task created! ID: ${result.rows[0].id}`);
 
     console.log(`  Title:    ${TASK.title}`);
     console.log(`  Assignee: ${TASK.assignee || '—'}`);
