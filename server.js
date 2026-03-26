@@ -30,6 +30,7 @@ const billingService = require('./services/billing.service');
 const providerConfigService = require('./services/provider-config.service');
 const profilerAgent = require('./crew/micro-agents/ProfilerAgent');
 const contextService = require('./services/context.service');
+const DataReloadService = require('./services/data-reload.service');
 
 // WhatsApp bridge
 const { handleIncomingMessage } = require('./whatsapp/bridge.service');
@@ -2803,6 +2804,125 @@ app.post('/api/admin/optimization-jobs', async (req, res) => {
   }
 });
 
+// ========== DATA LOADER ENDPOINTS ==========
+
+// GET /api/admin/data-loader/:schema/files — list GCS source files
+app.get('/api/admin/data-loader/:schema/files', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const dataReloadService = req.app.get('dataReloadService');
+    if (!dataReloadService?.reloaders[schema]) {
+      return res.status(404).json({ error: `Unknown schema: ${schema}` });
+    }
+    const files = await dataReloadService.getSourceFiles(schema);
+    res.json({ files });
+  } catch (err) {
+    console.error('❌ data-loader files error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/data-loader/:schema/status — current or last run state
+app.get('/api/admin/data-loader/:schema/status', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const dataReloadService = req.app.get('dataReloadService');
+    if (!dataReloadService?.reloaders[schema]) {
+      return res.status(404).json({ error: `Unknown schema: ${schema}` });
+    }
+    const status = await dataReloadService.getStatus(schema);
+    res.json({ status });
+  } catch (err) {
+    console.error('❌ data-loader status error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/data-loader/:schema/history — past runs
+app.get('/api/admin/data-loader/:schema/history', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const { limit } = req.query;
+    const dataReloadService = req.app.get('dataReloadService');
+    if (!dataReloadService?.reloaders[schema]) {
+      return res.status(404).json({ error: `Unknown schema: ${schema}` });
+    }
+    const history = await dataReloadService.getHistory(schema, limit ? parseInt(limit) : 20);
+    res.json({ history });
+  } catch (err) {
+    console.error('❌ data-loader history error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/data-loader/:schema/reload — trigger reload
+app.post('/api/admin/data-loader/:schema/reload', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const { triggeredBy = 'manual' } = req.body;
+    const dataReloadService = req.app.get('dataReloadService');
+    if (!dataReloadService?.reloaders[schema]) {
+      return res.status(404).json({ error: `Unknown schema: ${schema}` });
+    }
+    const runId = await dataReloadService.startReload(schema, triggeredBy);
+    res.json({ runId, status: 'running' });
+  } catch (err) {
+    const code = err.code || 500;
+    console.error(`❌ data-loader reload error (${code}):`, err.message);
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/data-loader/:schema/logs — SSE live log stream
+app.get('/api/admin/data-loader/:schema/logs', (req, res) => {
+  const { schema } = req.params;
+  const dataReloadService = req.app.get('dataReloadService');
+  if (!dataReloadService?.reloaders[schema]) {
+    return res.status(404).json({ error: `Unknown schema: ${schema}` });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const sendEvent = (event) => {
+    res.write(`event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`);
+  };
+
+  const current = dataReloadService.currentRuns[schema];
+  const isRunning = current && current.status === 'running';
+
+  if (!isRunning) {
+    // Not running — send last status and close
+    const lastRun = dataReloadService.currentRuns[schema] || { status: 'idle' };
+    sendEvent({ type: 'status', data: lastRun });
+    res.end();
+    return;
+  }
+
+  // Running — subscribe and stream live events
+  const unsubscribe = dataReloadService.subscribeLogs(schema, sendEvent);
+
+  req.on('close', () => {
+    unsubscribe();
+  });
+});
+
+// GET /api/admin/data-loader/:schema/runs/:id/log — logs for a historical run
+app.get('/api/admin/data-loader/:schema/runs/:id/log', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const dataReloadService = req.app.get('dataReloadService');
+    const logs = await dataReloadService.getRunLogs(parseInt(id));
+    res.json({ logs });
+  } catch (err) {
+    console.error('❌ data-loader run log error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== ADMIN ENDPOINTS ==========
 
 // Get all users with filters
@@ -4098,6 +4218,14 @@ async function startServer() {
     console.log('🔄 Initializing database connection...');
     await db.initialize();
     console.log('✅ Database connected successfully');
+
+    // Initialize DataReloadService and register reloaders
+    const dataReloadService = new DataReloadService(db);
+    dataReloadService.registerReloader('zer4u', {
+      reloadFn: require('./scripts/reload-zer4u-zero-downtime').reloadZer4u,
+      gcsFolderPrefix: 'zer4u/',
+    });
+    app.set('dataReloadService', dataReloadService);
 
     // Pre-load provider config (API keys) into memory
     await providerConfigService.initialize();

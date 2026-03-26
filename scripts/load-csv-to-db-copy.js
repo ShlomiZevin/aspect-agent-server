@@ -14,20 +14,18 @@ const fs = require('fs').promises;
 const path = require('path');
 const { from: copyFrom } = require('pg-copy-streams');
 
-const SCHEMA_NAME = 'zer4u';
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.json');
 
-// Database connection
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  max: 10
-});
-
-async function loadAllCSVFiles() {
+async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null) {
+  // Pool created inside function so multiple sequential calls are safe
+  const pool = new Pool({
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    max: 10
+  });
   const startTime = Date.now();
   console.log('🚀 Loading CSV data into PostgreSQL...\n');
   console.log('⚡ ULTRA-OPTIMIZED WITH POSTGRESQL COPY:');
@@ -64,15 +62,19 @@ async function loadAllCSVFiles() {
       console.log(`  → Table: ${schema.tableName}`);
       console.log(`  → Size: ${formatBytes(schema.fileSize)}`);
 
+      if (onProgress) onProgress({ type: 'file_start', file: schema.fileName, index: i, totalFiles: schemas.length });
+
       const tableStart = Date.now();
 
       try {
-        const result = await loadCSVFile(schema);
+        const result = await loadCSVFile(schema, schemaName, pool, onProgress);
         const tableTime = Date.now() - tableStart;
         tableTimes.push({ name: schema.tableName, time: tableTime, rows: result });
 
         const speed = result > 0 ? Math.round(result / (tableTime / 1000)) : 0;
         console.log(`  ✅ Loaded ${result.toLocaleString()} rows in ${(tableTime / 1000).toFixed(2)}s (${speed.toLocaleString()} rows/s)`);
+
+        if (onProgress) onProgress({ type: 'file_complete', file: schema.fileName, rows: result, durationMs: tableTime });
 
         totalLoaded++;
         totalRows += result;
@@ -86,6 +88,7 @@ async function loadAllCSVFiles() {
         }
       } catch (error) {
         console.error(`  ❌ Error: ${error.message}`);
+        if (onProgress) onProgress({ type: 'file_error', file: schema.fileName, error: error.message });
         totalFailed++;
       }
     }
@@ -128,11 +131,11 @@ async function loadAllCSVFiles() {
 /**
  * Load a single CSV file into its table using COPY
  */
-async function loadCSVFile(schema) {
+async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
   const client = await pool.connect();
 
   try {
-    const tableName = `${SCHEMA_NAME}.${schema.tableName}`;
+    const tableName = `${schemaName}.${schema.tableName}`;
     const filePath = schema.filePath;
 
     // Get column names and sanitize them
@@ -170,6 +173,7 @@ async function loadCSVFile(schema) {
           const elapsed = (now - startTime) / 1000;
           const speed = Math.round(totalRows / elapsed);
           process.stdout.write(`  ⏳ ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${elapsed.toFixed(1)}s elapsed...\r`);
+          if (onProgress) onProgress({ type: 'file_progress', file: schema.fileName, rowsLoaded: totalRows });
           lastLogTime = now;
         }
 

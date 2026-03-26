@@ -11,19 +11,10 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD
-});
-
-// First, we need to create an IMMUTABLE wrapper for TO_DATE
-// PostgreSQL's TO_DATE is STABLE, not IMMUTABLE, so we can't use it directly in indexes
-const SETUP_SQL = `
+function getSetupSQL(schemaName) {
+  return `
 -- Create immutable date parsing function for indexing
-CREATE OR REPLACE FUNCTION zer4u.parse_date_ddmmyyyy(text)
+CREATE OR REPLACE FUNCTION ${schemaName}.parse_date_ddmmyyyy(text)
 RETURNS date AS $$
   SELECT CASE
     WHEN $1 IS NULL OR $1 = '' THEN NULL
@@ -32,7 +23,7 @@ RETURNS date AS $$
 $$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
 
 -- Create immutable numeric cast for indexing
-CREATE OR REPLACE FUNCTION zer4u.to_numeric_safe(text)
+CREATE OR REPLACE FUNCTION ${schemaName}.to_numeric_safe(text)
 RETURNS numeric AS $$
   SELECT CASE
     WHEN $1 IS NULL OR $1 = '' THEN NULL
@@ -41,7 +32,7 @@ RETURNS numeric AS $$
 $$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
 
 -- Create immutable integer cast for indexing
-CREATE OR REPLACE FUNCTION zer4u.to_int_safe(text)
+CREATE OR REPLACE FUNCTION ${schemaName}.to_int_safe(text)
 RETURNS integer AS $$
   SELECT CASE
     WHEN $1 IS NULL OR $1 = '' THEN NULL
@@ -49,9 +40,11 @@ RETURNS integer AS $$
   END
 $$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
 `;
+}
 
-// Index definitions with explanations
-const INDEXES = [
+function getIndexes(schemaName) {
+  const s = schemaName;
+  return [
   // ============================================
   // SALES TABLE (9.4M rows) - Most Critical
   // ============================================
@@ -62,174 +55,160 @@ const INDEXES = [
     name: 'idx_sales_date_parsed',
     table: 'sales',
     sql: `CREATE INDEX IF NOT EXISTS idx_sales_date_parsed
-          ON zer4u.sales (zer4u.parse_date_ddmmyyyy("תאריך מקורי SALES") DESC)`,
+          ON ${s}.sales (${s}.parse_date_ddmmyyyy("תאריך מקורי SALES") DESC)`,
     reason: 'Date range queries with parsed date'
   },
 
   // 2. PRODUCT CODE - For product-specific queries
-  // Enables: "sales of roses", "product X performance"
   {
     name: 'idx_sales_item_code',
     table: 'sales',
     sql: `CREATE INDEX IF NOT EXISTS idx_sales_item_code
-          ON zer4u.sales ("קוד פריט SALES")`,
+          ON ${s}.sales ("קוד פריט SALES")`,
     reason: 'Product lookups and joins'
   },
 
   // 3. REVENUE SORTING - For top/bottom queries
-  // Enables: "top sales", "highest revenue transactions"
   {
     name: 'idx_sales_revenue',
     table: 'sales',
     sql: `CREATE INDEX IF NOT EXISTS idx_sales_revenue
-          ON zer4u.sales (zer4u.to_numeric_safe("מכירה ללא מע""מ") DESC NULLS LAST)`,
+          ON ${s}.sales (${s}.to_numeric_safe("מכירה ללא מע""מ") DESC NULLS LAST)`,
     reason: 'Revenue sorting and filtering'
   },
 
   // 4. QUANTITY - For volume queries
-  // Enables: "most sold items", "quantity analysis"
   {
     name: 'idx_sales_quantity',
     table: 'sales',
     sql: `CREATE INDEX IF NOT EXISTS idx_sales_quantity
-          ON zer4u.sales (zer4u.to_numeric_safe("כמות ברמת שורה") DESC NULLS LAST)`,
+          ON ${s}.sales (${s}.to_numeric_safe("כמות ברמת שורה") DESC NULLS LAST)`,
     reason: 'Quantity sorting and filtering'
   },
 
-  // ============================================
-  // COMPOSITE INDEXES - Multi-filter queries
-  // ============================================
-
-  // 5. STORE + DATE - Very common pattern
-  // Enables: "store 11 last month", "store performance over time"
+  // 5. STORE + DATE
   {
     name: 'idx_sales_store_date',
     table: 'sales',
     sql: `CREATE INDEX IF NOT EXISTS idx_sales_store_date
-          ON zer4u.sales (
-            zer4u.to_int_safe("מס.חנות SALES"),
-            zer4u.parse_date_ddmmyyyy("תאריך מקורי SALES") DESC
+          ON ${s}.sales (
+            ${s}.to_int_safe("מס.חנות SALES"),
+            ${s}.parse_date_ddmmyyyy("תאריך מקורי SALES") DESC
           )`,
     reason: 'Store + date range queries'
   },
 
-  // 6. PRODUCT + DATE - Product trends
-  // Enables: "roses last month", "product trends"
+  // 6. PRODUCT + DATE
   {
     name: 'idx_sales_product_date',
     table: 'sales',
     sql: `CREATE INDEX IF NOT EXISTS idx_sales_product_date
-          ON zer4u.sales (
+          ON ${s}.sales (
             "קוד פריט SALES",
-            zer4u.parse_date_ddmmyyyy("תאריך מקורי SALES") DESC
+            ${s}.parse_date_ddmmyyyy("תאריך מקורי SALES") DESC
           )`,
     reason: 'Product + date range queries'
   },
 
-  // 7. CUSTOMER + DATE - Customer history
-  // Enables: "customer purchases last month"
+  // 7. CUSTOMER + DATE
   {
     name: 'idx_sales_customer_date',
     table: 'sales',
     sql: `CREATE INDEX IF NOT EXISTS idx_sales_customer_date
-          ON zer4u.sales (
-            zer4u.to_int_safe("מס.לקוח"),
-            zer4u.parse_date_ddmmyyyy("תאריך מקורי SALES") DESC
+          ON ${s}.sales (
+            ${s}.to_int_safe("מס.לקוח"),
+            ${s}.parse_date_ddmmyyyy("תאריך מקורי SALES") DESC
           )`,
     reason: 'Customer + date range queries'
   },
 
-  // ============================================
-  // JOIN COLUMNS - Critical for multi-table queries
-  // ============================================
-
-  // 8. InventoryKey on SALES (for joining to inventory)
+  // 8. InventoryKey on SALES
   {
     name: 'idx_sales_inventory_key',
     table: 'sales',
     sql: `CREATE INDEX IF NOT EXISTS idx_sales_inventory_key
-          ON zer4u.sales ("InventoryKey")`,
+          ON ${s}.sales ("InventoryKey")`,
     reason: 'JOIN: sales → inventory'
   },
 
-  // 9. TargetKey on SALES (for joining to targets)
+  // 9. TargetKey on SALES
   {
     name: 'idx_sales_target_key',
     table: 'sales',
     sql: `CREATE INDEX IF NOT EXISTS idx_sales_target_key
-          ON zer4u.sales ("TargetKey")`,
+          ON ${s}.sales ("TargetKey")`,
     reason: 'JOIN: sales → targets'
   },
 
-  // ============================================
-  // INVENTORY TABLE (19.8M rows)
-  // ============================================
-
-  // 10. Inventory key for joins (other side)
+  // 10. Inventory key
   {
     name: 'idx_inventory_key',
     table: 'inventory',
     sql: `CREATE INDEX IF NOT EXISTS idx_inventory_key
-          ON zer4u.inventory ("InventoryKey")`,
+          ON ${s}.inventory ("InventoryKey")`,
     reason: 'JOIN: inventory ← sales'
   },
 
-  // 11. Stock balance for low stock queries
-  // Note: יתרת מלאי is already numeric type, no cast needed
+  // 11. Stock balance
   {
     name: 'idx_inventory_balance',
     table: 'inventory',
     sql: `CREATE INDEX IF NOT EXISTS idx_inventory_balance
-          ON zer4u.inventory ("יתרת מלאי" DESC NULLS LAST)`,
+          ON ${s}.inventory ("יתרת מלאי" DESC NULLS LAST)`,
     reason: 'Stock level queries'
   },
 
-  // ============================================
-  // ITEMS TABLE (28K rows) - Small but frequently joined
-  // ============================================
-
-  // 12. Item group for category queries
+  // 12. Item group
   {
     name: 'idx_items_group',
     table: 'items',
     sql: `CREATE INDEX IF NOT EXISTS idx_items_group
-          ON zer4u.items ("קבוצת פריט")`,
+          ON ${s}.items ("קבוצת פריט")`,
     reason: 'Product category filtering'
   },
 
-  // 13. Item name for text search
+  // 13. Item name
   {
     name: 'idx_items_name',
     table: 'items',
     sql: `CREATE INDEX IF NOT EXISTS idx_items_name
-          ON zer4u.items ("שם פריט")`,
+          ON ${s}.items ("שם פריט")`,
     reason: 'Product name lookups'
   },
 
-  // ============================================
-  // CUSTOMERS TABLE (1.4M rows)
-  // ============================================
-
-  // 14. Customer name for lookups
+  // 14. Customer name
   {
     name: 'idx_customers_name',
     table: 'customers',
     sql: `CREATE INDEX IF NOT EXISTS idx_customers_name
-          ON zer4u.customers ("שם לקוח")`,
+          ON ${s}.customers ("שם לקוח")`,
     reason: 'Customer name lookups'
   },
 
-  // 15. Customer location for geographic queries
+  // 15. Customer location
   {
     name: 'idx_customers_location',
     table: 'customers',
     sql: `CREATE INDEX IF NOT EXISTS idx_customers_location
-          ON zer4u.customers ("ישוב")`,
+          ON ${s}.customers ("ישוב")`,
     reason: 'Geographic customer analysis'
   }
-];
+  ];
+}
 
-async function createIndexes() {
+async function createIndexes(schemaName = 'zer4u') {
+  const INDEXES = getIndexes(schemaName);
+  const SETUP_SQL = getSetupSQL(schemaName);
+
+  // Pool created inside function so multiple sequential calls are safe
+  const pool = new Pool({
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD
+  });
+
   console.log('═'.repeat(70));
   console.log('🔧 ZER4U INDEX CREATION v2');
   console.log('═'.repeat(70));
@@ -251,8 +230,8 @@ async function createIndexes() {
     const existing = await client.query(`
       SELECT indexname
       FROM pg_indexes
-      WHERE schemaname = 'zer4u' AND tablename = 'sales'
-    `);
+      WHERE schemaname = $1 AND tablename = 'sales'
+    `, [schemaName]);
     console.log(`Found ${existing.rows.length} existing indexes\n`);
 
     console.log('─'.repeat(70));
@@ -307,10 +286,10 @@ async function createIndexes() {
     const finalCount = await client.query(`
       SELECT tablename, COUNT(*) as count
       FROM pg_indexes
-      WHERE schemaname = 'zer4u'
+      WHERE schemaname = $1
       GROUP BY tablename
       ORDER BY count DESC
-    `);
+    `, [schemaName]);
     finalCount.rows.forEach(row => {
       console.log(`   ${row.tablename}: ${row.count} indexes`);
     });
@@ -329,7 +308,14 @@ async function createIndexes() {
 }
 
 // Also export a function to check index usage (run after queries)
-async function checkIndexUsage() {
+async function checkIndexUsage(schemaName = 'zer4u') {
+  const pool = new Pool({
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD
+  });
   const client = await pool.connect();
 
   try {
@@ -344,10 +330,10 @@ async function checkIndexUsage() {
         idx_tup_read as rows_read,
         idx_tup_fetch as rows_fetched
       FROM pg_stat_user_indexes
-      WHERE schemaname = 'zer4u'
+      WHERE schemaname = $1
       ORDER BY idx_scan DESC
       LIMIT 20
-    `);
+    `, [schemaName]);
 
     result.rows.forEach(row => {
       console.log(`${row.index_name}: ${row.times_used} scans, ${row.rows_read} rows read`);
@@ -369,4 +355,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { createIndexes, checkIndexUsage, INDEXES };
+module.exports = { createIndexes, checkIndexUsage, getIndexes };

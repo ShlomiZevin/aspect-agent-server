@@ -10,20 +10,18 @@ const { Pool } = require('pg');
 const fs = require('fs').promises;
 const path = require('path');
 
-const SCHEMA_NAME = 'zer4u';
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.json');
 
-// Database connection
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  max: 5
-});
-
-async function createSchema() {
+async function createSchema(schemaName = 'zer4u') {
+  // Pool created inside function so multiple sequential calls are safe
+  const pool = new Pool({
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    max: 5
+  });
   const startTime = Date.now();
   console.log('🚀 Creating Zer4U schema in PostgreSQL...\n');
   console.log('⚡ OPTIMIZED FOR FAST LOADING:');
@@ -46,9 +44,9 @@ async function createSchema() {
     // Step 2: Create schema
     console.log('🏗️  Step 2: Creating schema...');
     const step2Start = Date.now();
-    await client.query(`DROP SCHEMA IF EXISTS ${SCHEMA_NAME} CASCADE`);
-    await client.query(`CREATE SCHEMA ${SCHEMA_NAME}`);
-    console.log(`✅ Schema "${SCHEMA_NAME}" created (${Date.now() - step2Start}ms)\n`);
+    await client.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE`);
+    await client.query(`CREATE SCHEMA ${schemaName}`);
+    console.log(`✅ Schema "${schemaName}" created (${Date.now() - step2Start}ms)\n`);
 
     // Step 3: Create tables
     console.log('📊 Step 3: Creating tables...\n');
@@ -65,10 +63,10 @@ async function createSchema() {
 
       const tableName = schema.tableName;
       const tableStart = Date.now();
-      console.log(`[${i + 1}/${schemas.length}] Creating: ${SCHEMA_NAME}.${tableName}`);
+      console.log(`[${i + 1}/${schemas.length}] Creating: ${schemaName}.${tableName}`);
 
       try {
-        const createTableSQL = generateCreateTableSQL(SCHEMA_NAME, schema);
+        const createTableSQL = generateCreateTableSQL(schemaName, schema);
         await client.query(createTableSQL);
         tablesCreated++;
         console.log(`  ✅ ${schema.columns.length} columns (${Date.now() - tableStart}ms)\n`);
@@ -82,8 +80,8 @@ async function createSchema() {
     // Step 4: Grant permissions
     console.log('🔒 Step 4: Setting permissions...');
     const step4Start = Date.now();
-    await client.query(`GRANT USAGE ON SCHEMA ${SCHEMA_NAME} TO ${process.env.DB_USER}`);
-    await client.query(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA ${SCHEMA_NAME} TO ${process.env.DB_USER}`);
+    await client.query(`GRANT USAGE ON SCHEMA ${schemaName} TO ${process.env.DB_USER}`);
+    await client.query(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA ${schemaName} TO ${process.env.DB_USER}`);
     console.log(`✅ Permissions set (${Date.now() - step4Start}ms)\n`);
 
     // Step 5: Summary
@@ -92,13 +90,13 @@ async function createSchema() {
       FROM information_schema.tables
       WHERE table_schema = $1
       ORDER BY table_name
-    `, [SCHEMA_NAME]);
+    `, [schemaName]);
 
     const totalTime = Date.now() - startTime;
     console.log('═'.repeat(60));
     console.log('📈 SUMMARY:');
     console.log('═'.repeat(60));
-    console.log(`Schema: ${SCHEMA_NAME}`);
+    console.log(`Schema: ${schemaName}`);
     console.log(`Tables created: ${result.rows.length}`);
     console.log(`Total time: ${(totalTime / 1000).toFixed(2)}s`);
     console.log('═'.repeat(60));
