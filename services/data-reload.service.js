@@ -243,6 +243,17 @@ class DataReloadService {
     // Buffer for replay + DB persistence
     if (this.logBuffers[schemaName]) {
       this.logBuffers[schemaName].push(entry);
+      // Flush logs to DB every 20 entries so they survive a Cloud Run restart
+      if (this.logBuffers[schemaName].length % 20 === 0) {
+        const runId = this.currentRuns[schemaName]?.id;
+        if (runId) {
+          const logs = this.logBuffers[schemaName];
+          this.db.query(
+            `UPDATE public.data_reload_runs SET log_entries = $1::jsonb WHERE id = $2`,
+            [JSON.stringify(logs), runId]
+          ).catch(() => {});
+        }
+      }
     }
 
     // Push to SSE subscribers
