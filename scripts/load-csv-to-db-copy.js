@@ -24,7 +24,7 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null) {
     database: process.env.DB_NAME,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    max: 10
+    max: 8
   });
   const startTime = Date.now();
   console.log('🚀 Loading CSV data into PostgreSQL...\n');
@@ -48,49 +48,40 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null) {
     let totalFailed = 0;
     let totalRows = 0;
     const tableTimes = [];
+    const CONCURRENCY = 4;
 
-    for (let i = 0; i < schemas.length; i++) {
-      const schema = schemas[i];
-
+    // Load files in parallel batches (CONCURRENCY at a time)
+    const loadOne = async (schema, i) => {
       if (schema.error) {
-        console.log(`[${i + 1}/${schemas.length}] ⏭️  Skipping ${schema.fileName} (analysis error)\n`);
+        console.log(`[${i + 1}/${schemas.length}] ⏭️  Skipping ${schema.fileName} (analysis error)`);
         totalFailed++;
-        continue;
+        return;
       }
 
-      console.log(`\n[${i + 1}/${schemas.length}] 📥 Loading: ${schema.fileName}`);
-      console.log(`  → Table: ${schema.tableName}`);
-      console.log(`  → Size: ${formatBytes(schema.fileSize)}`);
-
+      console.log(`\n[${i + 1}/${schemas.length}] 📥 Loading: ${schema.fileName} (${formatBytes(schema.fileSize)})`);
       if (onProgress) onProgress({ type: 'file_start', file: schema.fileName, index: i, totalFiles: schemas.length });
 
       const tableStart = Date.now();
-
       try {
         const result = await loadCSVFile(schema, schemaName, pool, onProgress);
         const tableTime = Date.now() - tableStart;
         tableTimes.push({ name: schema.tableName, time: tableTime, rows: result });
-
         const speed = result > 0 ? Math.round(result / (tableTime / 1000)) : 0;
-        console.log(`  ✅ Loaded ${result.toLocaleString()} rows in ${(tableTime / 1000).toFixed(2)}s (${speed.toLocaleString()} rows/s)`);
-
+        console.log(`  ✅ ${schema.fileName}: ${result.toLocaleString()} rows in ${(tableTime / 1000).toFixed(1)}s (${speed.toLocaleString()} rows/s)`);
         if (onProgress) onProgress({ type: 'file_complete', file: schema.fileName, rows: result, durationMs: tableTime });
-
         totalLoaded++;
         totalRows += result;
-
-        // Calculate ETA
-        const avgTime = tableTimes.reduce((sum, t) => sum + t.time, 0) / tableTimes.length;
-        const remaining = schemas.length - i - 1;
-        const eta = avgTime * remaining;
-        if (remaining > 0) {
-          console.log(`  ⏱️  ETA: ${formatDuration(eta)} (${remaining} tables remaining)`);
-        }
       } catch (error) {
-        console.error(`  ❌ Error: ${error.message}`);
+        console.error(`  ❌ ${schema.fileName}: ${error.message}`);
         if (onProgress) onProgress({ type: 'file_error', file: schema.fileName, error: error.message });
         totalFailed++;
       }
+    };
+
+    // Run with limited concurrency
+    for (let i = 0; i < schemas.length; i += CONCURRENCY) {
+      const batch = schemas.slice(i, i + CONCURRENCY).map((schema, j) => loadOne(schema, i + j));
+      await Promise.all(batch);
     }
 
     const totalTime = Date.now() - startTime;
