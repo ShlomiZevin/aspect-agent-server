@@ -48,9 +48,20 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null) {
     let totalFailed = 0;
     let totalRows = 0;
     const tableTimes = [];
-    const CONCURRENCY = 4;
 
-    // Load files in parallel batches (CONCURRENCY at a time)
+    // Files <= 100 MB load in parallel (up to 4 at once).
+    // Files > 100 MB load one at a time — they saturate DB/network I/O on their own.
+    const LARGE_FILE_THRESHOLD = 100 * 1024 * 1024; // 100 MB
+    const SMALL_CONCURRENCY = 4;
+
+    const smallFiles = schemas.filter(s => (parseInt(s.fileSize) || 0) <= LARGE_FILE_THRESHOLD);
+    const largeFiles = schemas.filter(s => (parseInt(s.fileSize) || 0) > LARGE_FILE_THRESHOLD);
+
+    console.log(`📦 Small files (parallel x${SMALL_CONCURRENCY}): ${smallFiles.length}`);
+    console.log(`🐘 Large files (sequential):  ${largeFiles.length}\n`);
+
+    let fileIndex = 0;
+
     const loadOne = async (schema, i) => {
       if (schema.error) {
         console.log(`[${i + 1}/${schemas.length}] ⏭️  Skipping ${schema.fileName} (analysis error)`);
@@ -78,10 +89,15 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null) {
       }
     };
 
-    // Run with limited concurrency
-    for (let i = 0; i < schemas.length; i += CONCURRENCY) {
-      const batch = schemas.slice(i, i + CONCURRENCY).map((schema, j) => loadOne(schema, i + j));
+    // Phase A: small files in parallel batches
+    for (let i = 0; i < smallFiles.length; i += SMALL_CONCURRENCY) {
+      const batch = smallFiles.slice(i, i + SMALL_CONCURRENCY).map(schema => loadOne(schema, fileIndex++));
       await Promise.all(batch);
+    }
+
+    // Phase B: large files one at a time
+    for (const schema of largeFiles) {
+      await loadOne(schema, fileIndex++);
     }
 
     const totalTime = Date.now() - startTime;
