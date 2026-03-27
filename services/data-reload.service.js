@@ -240,8 +240,10 @@ class DataReloadService {
       ...(data ? { data } : {}),
     };
 
-    // Buffer for replay + DB persistence
-    if (this.logBuffers[schemaName]) {
+    const progressOnly = data?.progressOnly === true;
+
+    // Buffer for replay + DB persistence (skip progress-only entries)
+    if (!progressOnly && this.logBuffers[schemaName]) {
       this.logBuffers[schemaName].push(entry);
       // Flush logs to DB every 20 entries so they survive a Cloud Run restart
       if (this.logBuffers[schemaName].length % 20 === 0) {
@@ -256,13 +258,15 @@ class DataReloadService {
       }
     }
 
-    // Push to SSE subscribers
+    // Push to SSE subscribers (log event only for non-progress entries)
     const subs = this.subscribers[schemaName];
     if (subs && subs.size > 0) {
-      const logEvent = { type: 'log', data: entry };
-      subs.forEach(cb => {
-        try { cb(logEvent); } catch (e) { /* subscriber disconnected */ }
-      });
+      if (!progressOnly) {
+        const logEvent = { type: 'log', data: entry };
+        subs.forEach(cb => {
+          try { cb(logEvent); } catch (e) { /* subscriber disconnected */ }
+        });
+      }
 
       // Also push progress event if data has file progress
       if (data && (data.filesCompleted !== undefined || data.totalFiles !== undefined)) {

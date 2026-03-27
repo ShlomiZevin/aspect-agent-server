@@ -60,6 +60,7 @@ async function reloadZer4u(targetSchema, emitLog) {
         rowsLoaded: event.rowsLoaded,
         totalFiles,
         filesCompleted: filesLoaded,
+        progressOnly: true,  // do not accumulate in log buffer
       });
     } else if (event.type === 'file_complete') {
       filesLoaded++;
