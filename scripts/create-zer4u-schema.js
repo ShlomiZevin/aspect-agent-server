@@ -44,6 +44,14 @@ async function createSchema(schemaName = 'zer4u') {
     // Step 2: Create schema
     console.log('🏗️  Step 2: Creating schema...');
     const step2Start = Date.now();
+    // Terminate any lingering connections to this schema to avoid DROP waiting on rollback
+    await client.query(`
+      SELECT pg_terminate_backend(pid)
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND query ILIKE '%${schemaName}%'
+        AND pid <> pg_backend_pid()
+    `).catch(() => {});
     await client.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE`);
     await client.query(`CREATE SCHEMA ${schemaName}`);
     console.log(`✅ Schema "${schemaName}" created (${Date.now() - step2Start}ms)\n`);
@@ -132,8 +140,9 @@ function generateCreateTableSQL(schemaName, tableSchema) {
     return `  "${sanitizedName}" ${col.type} NULL`;
   });
 
+  // UNLOGGED: no WAL → 2-3x faster COPY, instant crash cleanup (no rollback wait)
   const sql = `
-CREATE TABLE ${schemaName}.${tableName} (
+CREATE UNLOGGED TABLE ${schemaName}.${tableName} (
 ${columnDefs.join(',\n')}
 );
   `.trim();
