@@ -199,6 +199,7 @@ function getIndexes(schemaName) {
 async function createIndexes(schemaName = 'zer4u') {
   const INDEXES = getIndexes(schemaName);
   const SETUP_SQL = getSetupSQL(schemaName);
+  const CONCURRENCY = 4;
 
   // Pool created inside function so multiple sequential calls are safe
   const pool = new Pool({
@@ -206,7 +207,8 @@ async function createIndexes(schemaName = 'zer4u') {
     port: process.env.DB_PORT,
     database: process.env.DB_NAME,
     user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD
+    password: process.env.DB_PASSWORD,
+    max: CONCURRENCY + 2,
   });
 
   console.log('═'.repeat(70));
@@ -236,31 +238,34 @@ async function createIndexes(schemaName = 'zer4u') {
 
     console.log('─'.repeat(70));
 
-    for (let i = 0; i < INDEXES.length; i++) {
-      const idx = INDEXES[i];
-      console.log(`[${i + 1}/${INDEXES.length}] ${idx.name}`);
-      console.log(`   Table: ${idx.table}`);
-      console.log(`   Reason: ${idx.reason}`);
-
+    // Create indexes in parallel batches — each in its own connection with max memory
+    const createOne = async (idx, i) => {
+      const c = await pool.connect();
       const startTime = Date.now();
-
       try {
-        await client.query(idx.sql);
+        await c.query(`SET maintenance_work_mem = '1GB'`);
+        await c.query(idx.sql);
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-        console.log(`   ✅ Created in ${duration}s\n`);
+        console.log(`   ✅ [${i + 1}/${INDEXES.length}] ${idx.name} — ${duration}s`);
         results.created++;
       } catch (err) {
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-
         if (err.message.includes('already exists')) {
-          console.log(`   ⏭️  Already exists (${duration}s)\n`);
+          console.log(`   ⏭️  [${i + 1}/${INDEXES.length}] ${idx.name} — already exists (${duration}s)`);
           results.skipped++;
         } else {
-          console.log(`   ❌ Failed: ${err.message}\n`);
+          console.log(`   ❌ [${i + 1}/${INDEXES.length}] ${idx.name} — ${err.message}`);
           results.failed++;
           results.errors.push({ index: idx.name, error: err.message });
         }
+      } finally {
+        c.release();
       }
+    };
+
+    for (let i = 0; i < INDEXES.length; i += CONCURRENCY) {
+      const batch = INDEXES.slice(i, i + CONCURRENCY).map((idx, j) => createOne(idx, i + j));
+      await Promise.all(batch);
     }
 
     // Summary
