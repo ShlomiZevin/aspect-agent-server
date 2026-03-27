@@ -35,6 +35,30 @@ class DataReloadService {
     console.log(`[DataReloadService] Registered reloader for schema: ${schemaName}`);
   }
 
+  /**
+   * Mark any stale 'running' records as 'failed' on server startup.
+   * If the server restarted mid-reload, those records would be stuck as 'running' forever.
+   */
+  async cleanupStaleRuns() {
+    try {
+      const result = await this.db.query(`
+        UPDATE public.data_reload_runs
+        SET status = 'failed',
+            completed_at = NOW(),
+            error_message = 'Server restarted during reload'
+        WHERE status = 'running'
+        RETURNING id, schema_name
+      `);
+      if (result.rows.length > 0) {
+        result.rows.forEach(r => {
+          console.log(`[DataReloadService] Marked stale run #${r.id} (${r.schema_name}) as failed`);
+        });
+      }
+    } catch (err) {
+      console.error('[DataReloadService] Failed to cleanup stale runs:', err.message);
+    }
+  }
+
   // ── Public API ───────────────────────────────────────────────────────────────
 
   /**

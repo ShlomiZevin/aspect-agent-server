@@ -4226,6 +4226,7 @@ async function startServer() {
       gcsFolderPrefix: 'zer4u/',
     });
     app.set('dataReloadService', dataReloadService);
+    await dataReloadService.cleanupStaleRuns();
 
     // Pre-load provider config (API keys) into memory
     await providerConfigService.initialize();
