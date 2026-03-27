@@ -50,9 +50,17 @@ class DataReloadService {
         RETURNING id, schema_name
       `);
       if (result.rows.length > 0) {
-        result.rows.forEach(r => {
+        for (const r of result.rows) {
           console.log(`[DataReloadService] Marked stale run #${r.id} (${r.schema_name}) as failed`);
-        });
+          // Drop leftover shadow schema in background (can be slow if it has data)
+          const shadowSchema = `${r.schema_name}_new`;
+          console.log(`[DataReloadService] Dropping leftover shadow schema ${shadowSchema} in background...`);
+          this.db.query(`DROP SCHEMA IF EXISTS ${shadowSchema} CASCADE`).then(() => {
+            console.log(`[DataReloadService] Dropped ${shadowSchema}`);
+          }).catch(e => {
+            console.error(`[DataReloadService] Failed to drop ${shadowSchema}:`, e.message);
+          });
+        }
       }
     } catch (err) {
       console.error('[DataReloadService] Failed to cleanup stale runs:', err.message);
