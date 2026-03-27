@@ -84,7 +84,7 @@ async function loadZer4u(targetSchema, emitLog) {
 
 async function indexZer4u(targetSchema, emitLog) {
   emitLog('creating_indexes', 'Creating helper functions and indexes...');
-  await createIndexes(targetSchema);
+  await createIndexes(targetSchema, emitLog);
   emitLog('creating_indexes', 'Indexes created');
 
   emitLog('creating_views', 'Creating materialized views...');

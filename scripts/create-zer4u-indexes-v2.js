@@ -73,7 +73,11 @@ async function loadIndexesFromLiveSchema(pool) {
     }));
 }
 
-async function createIndexes(schemaName = 'zer4u') {
+async function createIndexes(schemaName = 'zer4u', emitLog = null) {
+  const log = (msg) => {
+    console.log(msg);
+    if (emitLog) emitLog('creating_indexes', msg);
+  };
   const CONCURRENCY = 4;
 
   const pool = new Pool({
@@ -86,7 +90,7 @@ async function createIndexes(schemaName = 'zer4u') {
   });
 
   console.log('═'.repeat(70));
-  console.log('🔧 ZER4U INDEX CREATION — dynamic from live schema');
+  console.log('ZER4U INDEX CREATION — dynamic from live schema');
   console.log('═'.repeat(70));
 
   const client = await pool.connect();
@@ -95,19 +99,13 @@ async function createIndexes(schemaName = 'zer4u') {
 
   try {
     // 1. Create helper functions required by expression indexes
-    console.log('\n📦 Creating helper functions...');
     await client.query(getSetupSQL(schemaName));
-    console.log('   ✅ Helper functions created\n');
 
     // 2. Load index list from live schema
-    console.log(`📋 Reading indexes from live schema '${SOURCE_SCHEMA}'...`);
     const indexes = await loadIndexesFromLiveSchema(pool);
-    console.log(`   Found ${indexes.length} indexes to create (MV indexes skipped)\n`);
-    console.log('─'.repeat(70));
+    log(`Found ${indexes.length} indexes to create from live schema`);
 
     // 3. Build target DDL: replace source schema name with target schema name
-    // e.g. "CREATE INDEX foo ON zer4u.sales ..." → "CREATE INDEX foo ON zer4u_new.sales ..."
-    // Also replace function refs: "zer4u.parse_date_ddmmyyyy" → "zer4u_new.parse_date_ddmmyyyy"
     const targetIndexes = indexes.map(idx => {
       const targetDef = idx.sourceDef
         .replace(new RegExp(`\\b${SOURCE_SCHEMA}\\.`, 'g'), `${schemaName}.`)
@@ -124,15 +122,15 @@ async function createIndexes(schemaName = 'zer4u') {
         await c.query(`SET maintenance_work_mem = '1GB'`);
         await c.query(idx.sql);
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-        console.log(`   ✅ [${i + 1}/${targetIndexes.length}] ${idx.table}.${idx.name} — ${duration}s`);
+        log(`[${i + 1}/${targetIndexes.length}] ${idx.table}.${idx.name} — ${duration}s`);
         results.created++;
       } catch (err) {
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
         if (err.message.includes('already exists')) {
-          console.log(`   ⏭️  [${i + 1}/${targetIndexes.length}] ${idx.name} — already exists (${duration}s)`);
+          log(`[${i + 1}/${targetIndexes.length}] ${idx.name} — already exists (${duration}s)`);
           results.skipped++;
         } else {
-          console.log(`   ❌ [${i + 1}/${targetIndexes.length}] ${idx.name} — ${err.message}`);
+          log(`[${i + 1}/${targetIndexes.length}] ${idx.name} FAILED — ${err.message}`);
           results.failed++;
           results.errors.push({ index: idx.name, error: err.message });
         }
