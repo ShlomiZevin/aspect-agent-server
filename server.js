@@ -2855,7 +2855,42 @@ app.get('/api/admin/data-loader/:schema/history', async (req, res) => {
   }
 });
 
-// POST /api/admin/data-loader/:schema/reload — trigger reload
+// POST /api/admin/data-loader/:schema/load — Phase 1: import data only
+app.post('/api/admin/data-loader/:schema/load', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const { triggeredBy = 'manual' } = req.body;
+    const dataReloadService = req.app.get('dataReloadService');
+    if (!dataReloadService?.reloaders[schema]) {
+      return res.status(404).json({ error: `Unknown schema: ${schema}` });
+    }
+    const runId = await dataReloadService.startLoad(schema, triggeredBy);
+    res.json({ runId, status: 'running', phase: 'import' });
+  } catch (err) {
+    const code = err.code || 500;
+    console.error(`❌ data-loader load error (${code}):`, err.message);
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/data-loader/:schema/index — Phase 2: create indexes + swap
+app.post('/api/admin/data-loader/:schema/index', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const dataReloadService = req.app.get('dataReloadService');
+    if (!dataReloadService?.reloaders[schema]) {
+      return res.status(404).json({ error: `Unknown schema: ${schema}` });
+    }
+    const runId = await dataReloadService.startIndexing(schema);
+    res.json({ runId, status: 'running', phase: 'indexing' });
+  } catch (err) {
+    const code = err.code || 500;
+    console.error(`❌ data-loader index error (${code}):`, err.message);
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/data-loader/:schema/reload — backward compat: both phases
 app.post('/api/admin/data-loader/:schema/reload', async (req, res) => {
   try {
     const { schema } = req.params;
@@ -4221,8 +4256,10 @@ async function startServer() {
 
     // Initialize DataReloadService and register reloaders
     const dataReloadService = new DataReloadService(db);
+    const { loadZer4u, indexZer4u } = require('./scripts/reload-zer4u-zero-downtime');
     dataReloadService.registerReloader('zer4u', {
-      reloadFn: require('./scripts/reload-zer4u-zero-downtime').reloadZer4u,
+      loadFn: loadZer4u,
+      indexFn: indexZer4u,
       gcsFolderPrefix: 'zer4u/',
     });
     app.set('dataReloadService', dataReloadService);
