@@ -29,11 +29,9 @@ const MV_TABLES = new Set([
   'mv_sales_by_year',
 ]);
 
-// Max parallel index builds per table.
-// Same-table parallel builds share OS page cache — big win for large tables.
-// Capped at 4: with max_parallel_maintenance_workers=2 per build,
-// 4 builds × 3 processes × 128MB = ~1.5GB sort memory (fits small Cloud SQL).
-const MAX_PER_TABLE = 4;
+// Sequential indexing (1 at a time): gives all IOPS to a single index build.
+// Cloud SQL disk is too small for parallel sort — parallel builds starve each other.
+const MAX_PER_TABLE = 1;
 
 function getSetupSQL(schemaName) {
   return `
@@ -138,10 +136,9 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null) {
       const c = await pool.connect();
       const startTime = Date.now();
       try {
-        // 128MB per connection — Cloud SQL is a small instance (~2GB RAM).
-        // With up to 8 parallel builds + their parallel workers, keeping sort
-        // memory small prevents sort spills to disk.
-        await c.query(`SET maintenance_work_mem = '128MB'`);
+        // 1GB sort memory for the single active index build.
+        // Sequential mode means no competition — full IOPS to one process.
+        await c.query(`SET maintenance_work_mem = '1GB'`);
         await c.query(`SET max_parallel_maintenance_workers = 2`);
         await c.query(idx.sql);
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
