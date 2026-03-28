@@ -1,56 +1,36 @@
 /**
  * DataReloadService — Generic orchestration for schema reload operations.
  *
- * Provides:
- *   - Reloader registry (each schema registers its own load + index functions)
- *   - Two-phase reload: loadFn (COPY data) then indexFn (indexes + views)
- *   - Shadow schema swap (zero downtime, happens at end of indexing)
- *   - In-memory state tracking for active runs
- *   - SSE log streaming to dashboard subscribers
- *   - DB persistence of run history
+ * Two independent operations:
+ *   startLoad()     → import CSVs into shadow schema → atomic schema swap → status='completed'
+ *   startIndexing() → create indexes on live schema (independent, any time after import)
  *
- * Usage:
- *   const service = new DataReloadService(db);
- *   service.registerReloader('zer4u', {
- *     loadFn:  (targetSchema, emitLog) => Promise<{ totalFiles, filesLoaded, totalRows, fileResults }>,
- *     indexFn: (targetSchema, emitLog) => Promise<void>,
- *     gcsFolderPrefix: 'zer4u/',
- *   });
- *
- * Two-phase flow:
- *   startLoad()     → _executeLoad()     → status='loaded'  (shadow schema has data, no indexes yet)
- *   startIndexing() → _executeIndexing() → status='completed' (schema swap done)
- *
- * startReload() is kept for backward compatibility: runs both phases sequentially.
+ * Index runs are tracked separately (triggered_by='index') so the UI can show
+ * last import and last index as independent operations.
  */
 
 const gcsService = require('./gcs.service');
 
 class DataReloadService {
   constructor(db) {
-    this.db = db;                // db.pg.js singleton (has .query() and .getClient())
-    this.reloaders = {};         // { schemaName: { loadFn, indexFn, gcsFolderPrefix } }
-    this.currentRuns = {};       // { schemaName: RunState }
-    this.subscribers = {};       // { schemaName: Set<callback> }
-    this.logBuffers = {};        // { schemaName: LogEntry[] } — in-memory during run
+    this.db = db;
+    this.reloaders = {};
+    this.currentRuns = {};
+    this.subscribers = {};
+    this.logBuffers = {};
   }
 
   // ── Registry ────────────────────────────────────────────────────────────────
 
   registerReloader(schemaName, config) {
-    // config: {
-    //   loadFn(targetSchema, emitLog)  => Promise<{ totalFiles, filesLoaded, totalRows, fileResults }>
-    //   indexFn(targetSchema, emitLog) => Promise<void>
-    //   gcsFolderPrefix: string
-    // }
     this.reloaders[schemaName] = config;
     console.log(`[DataReloadService] Registered reloader for schema: ${schemaName}`);
   }
 
   /**
-   * Mark any stale 'running' or 'loaded' records as 'failed' on server startup.
-   * If the server restarted mid-reload, those records would be stuck forever.
-   * 'loaded' records also drop the shadow schema since the indexing was never completed.
+   * Mark any stale 'running' records as 'failed' on server startup.
+   * For import runs: also drop the shadow schema.
+   * For index runs: no cleanup needed (live schema is still intact).
    */
   async cleanupStaleRuns() {
     try {
@@ -59,19 +39,22 @@ class DataReloadService {
         SET status        = 'failed',
             completed_at  = NOW(),
             error_message = 'Server restarted during reload'
-        WHERE status IN ('running', 'loaded')
-        RETURNING id, schema_name, status
+        WHERE status = 'running'
+        RETURNING id, schema_name, triggered_by
       `);
       if (result.rows.length > 0) {
         for (const r of result.rows) {
-          console.log(`[DataReloadService] Marked stale run #${r.id} (${r.schema_name}, was '${r.status}') as failed`);
-          const shadowSchema = `${r.schema_name}_new`;
-          console.log(`[DataReloadService] Dropping leftover shadow schema ${shadowSchema} in background...`);
-          this.db.query(`DROP SCHEMA IF EXISTS ${shadowSchema} CASCADE`).then(() => {
-            console.log(`[DataReloadService] Dropped ${shadowSchema}`);
-          }).catch(e => {
-            console.error(`[DataReloadService] Failed to drop ${shadowSchema}:`, e.message);
-          });
+          console.log(`[DataReloadService] Marked stale run #${r.id} (${r.schema_name}) as failed`);
+          // Only drop shadow schema for import runs (index runs operate on live schema)
+          if (r.triggered_by !== 'index') {
+            const shadowSchema = `${r.schema_name}_new`;
+            console.log(`[DataReloadService] Dropping leftover shadow schema ${shadowSchema}...`);
+            this.db.query(`DROP SCHEMA IF EXISTS ${shadowSchema} CASCADE`).then(() => {
+              console.log(`[DataReloadService] Dropped ${shadowSchema}`);
+            }).catch(e => {
+              console.error(`[DataReloadService] Failed to drop ${shadowSchema}:`, e.message);
+            });
+          }
         }
       }
     } catch (err) {
@@ -82,20 +65,19 @@ class DataReloadService {
   // ── Public API ───────────────────────────────────────────────────────────────
 
   /**
-   * Phase 1: scan GCS + create tables + COPY data into shadow schema.
-   * Rejects with {code:409} if status is 'running' or 'loaded' (busy).
-   * Returns runId immediately; load runs in background.
-   * On success, leaves shadow schema in 'loaded' state, ready for startIndexing().
+   * Import: scan GCS → create tables → COPY data → schema swap → completed.
+   * Rejects with {code:409} if already running.
+   * Returns runId immediately; import runs in background.
    */
   async startLoad(schemaName, triggeredBy = 'manual') {
     const reloader = this.reloaders[schemaName];
     if (!reloader) throw { code: 400, message: `No reloader registered for schema: ${schemaName}` };
 
     const current = this.currentRuns[schemaName];
-    if (current && (current.status === 'running' || current.status === 'loaded')) {
+    if (current && current.status === 'running') {
       throw {
         code: 409,
-        message: `Schema ${schemaName} is busy (status: ${current.status}). Cannot start a new load.`,
+        message: `Schema ${schemaName} is busy (status: running). Cannot start a new load.`,
       };
     }
 
@@ -114,7 +96,6 @@ class DataReloadService {
     };
     this.logBuffers[schemaName] = [];
 
-    // Fire and forget — result tracked via currentRuns and DB
     this._executeLoad(runId, schemaName).catch(err => {
       console.error(`[DataReloadService] Unhandled load error for ${schemaName}:`, err.message);
     });
@@ -123,10 +104,10 @@ class DataReloadService {
   }
 
   /**
-   * Phase 2: build indexes + views on shadow schema, then swap atomically into live.
-   * Rejects with {code:409} if any operation is already running.
-   * Rejects with {code:400} if no shadow schema is ready (status must be 'loaded').
-   * Returns runId (same run that was created by startLoad).
+   * Indexing: create indexes + views on the live schema (independent of import).
+   * Can be called at any time as long as no other operation is running.
+   * Creates its own run record (triggered_by='index').
+   * Returns runId immediately; indexing runs in background.
    */
   async startIndexing(schemaName) {
     const reloader = this.reloaders[schemaName];
@@ -139,26 +120,19 @@ class DataReloadService {
         message: `Schema ${schemaName} is already running (phase: ${current.phase || 'unknown'}). Cannot start indexing.`,
       };
     }
-    if (!current || current.status !== 'loaded') {
-      throw {
-        code: 400,
-        message: `Schema ${schemaName} has no shadow data ready for indexing (status: ${current?.status ?? 'none'}). Run startLoad first.`,
-      };
-    }
 
-    const runId = current.id;
+    const runId = await this._createRunInDB(schemaName, 'index');
 
-    // Transition back to running, new phase
-    this.currentRuns[schemaName].status = 'running';
-    this.currentRuns[schemaName].phase = 'indexing';
-    this.currentRuns[schemaName].step = 'indexing';
+    this.currentRuns[schemaName] = {
+      id: runId,
+      status: 'running',
+      phase: 'indexing',
+      step: 'indexing',
+      triggeredBy: 'index',
+      startedAt: new Date().toISOString(),
+    };
+    this.logBuffers[schemaName] = [];
 
-    // Re-open log buffer if it was cleared
-    if (!this.logBuffers[schemaName]) {
-      this.logBuffers[schemaName] = [];
-    }
-
-    // Fire and forget
     this._executeIndexing(runId, schemaName).catch(err => {
       console.error(`[DataReloadService] Unhandled indexing error for ${schemaName}:`, err.message);
     });
@@ -166,62 +140,10 @@ class DataReloadService {
     return runId;
   }
 
-  /**
-   * Backward-compatible full reload: runs startLoad then chains _executeIndexing.
-   * Rejects with {code:409} if already running or loaded (busy).
-   * Returns runId immediately (load starts in background; indexing follows automatically).
-   */
-  async startReload(schemaName, triggeredBy = 'manual') {
-    const reloader = this.reloaders[schemaName];
-    if (!reloader) throw { code: 400, message: `No reloader registered for schema: ${schemaName}` };
-
-    const current = this.currentRuns[schemaName];
-    if (current && (current.status === 'running' || current.status === 'loaded')) {
-      throw {
-        code: 409,
-        message: `Reload already in progress for schema: ${schemaName} (status: ${current.status})`,
-      };
-    }
-
-    const runId = await this._createRunInDB(schemaName, triggeredBy);
-
-    this.currentRuns[schemaName] = {
-      id: runId,
-      status: 'running',
-      phase: 'import',
-      step: 'starting',
-      triggeredBy,
-      startedAt: new Date().toISOString(),
-      totalFiles: null,
-      filesLoaded: 0,
-      totalRows: 0,
-    };
-    this.logBuffers[schemaName] = [];
-
-    // Fire and forget — load then index in sequence
-    this._executeLoad(runId, schemaName)
-      .then(() => {
-        // Only chain indexing if load succeeded (currentRun will be 'loaded')
-        const state = this.currentRuns[schemaName];
-        if (state && state.status === 'loaded' && state.id === runId) {
-          // Transition to indexing phase
-          state.status = 'running';
-          state.phase = 'indexing';
-          state.step = 'indexing';
-          return this._executeIndexing(runId, schemaName);
-        }
-      })
-      .catch(err => {
-        console.error(`[DataReloadService] Unhandled reload error for ${schemaName}:`, err.message);
-      });
-
-    return runId;
-  }
-
-  /** Returns current run state (if running or loaded) or last run from DB. */
+  /** Returns current run state (if running) or last run from DB. */
   async getStatus(schemaName) {
     const current = this.currentRuns[schemaName];
-    if (current && (current.status === 'running' || current.status === 'loaded')) {
+    if (current && current.status === 'running') {
       return { ...current, isLive: true };
     }
 
@@ -235,7 +157,7 @@ class DataReloadService {
     return result.rows[0] || null;
   }
 
-  /** Returns last N runs from DB for a schema (without log_entries for list view). */
+  /** Returns last N runs from DB for a schema. */
   async getHistory(schemaName, limit = 20) {
     const result = await this.db.query(
       `SELECT id, schema_name, status, triggered_by, step,
@@ -251,7 +173,7 @@ class DataReloadService {
     return result.rows;
   }
 
-  /** Returns log_entries for a specific run (for "View Log" in history). */
+  /** Returns log_entries for a specific run. */
   async getRunLogs(runId) {
     const result = await this.db.query(
       `SELECT log_entries FROM public.data_reload_runs WHERE id = $1`,
@@ -269,20 +191,18 @@ class DataReloadService {
 
   /**
    * Subscribe to live log events for a schema.
-   * If a reload is running, replays the current log buffer then streams live.
+   * Replays current log buffer then streams live.
    * Returns an unsubscribe function.
    */
   subscribeLogs(schemaName, callback) {
     if (!this.subscribers[schemaName]) this.subscribers[schemaName] = new Set();
     this.subscribers[schemaName].add(callback);
 
-    // Replay buffered logs so new subscriber catches up
     const buffer = this.logBuffers[schemaName];
     if (buffer && buffer.length > 0) {
       buffer.forEach(entry => callback({ type: 'log', data: entry }));
     }
 
-    // Send current run state
     const current = this.currentRuns[schemaName];
     if (current) {
       callback({ type: 'status', data: { status: current.status, step: current.step, phase: current.phase } });
@@ -296,8 +216,8 @@ class DataReloadService {
   // ── Internal ─────────────────────────────────────────────────────────────────
 
   /**
-   * Phase 1 executor: calls loadFn, persists stats, sets status='loaded'.
-   * Does NOT do schema swap — shadow schema remains as <schemaName>_new.
+   * Import executor: load data into shadow schema, then swap atomically into live.
+   * On success: status='completed' directly (no 'loaded' intermediate state).
    */
   async _executeLoad(runId, schemaName) {
     const reloader = this.reloaders[schemaName];
@@ -311,7 +231,6 @@ class DataReloadService {
     };
 
     try {
-      // Note: loadFn is responsible for DROP+CREATE of the shadow schema internally
       const result = await reloader.loadFn(shadowSchema, emitLog);
 
       // Update in-memory stats
@@ -320,65 +239,48 @@ class DataReloadService {
           totalFiles: result.totalFiles,
           filesLoaded: result.filesLoaded,
           totalRows: result.totalRows,
-          status: 'loaded',
-          phase: 'import',
-          step: 'loaded',
+          step: 'swapping',
         });
       }
 
-      // Persist 'loaded' status and stats to DB (run is not finished yet)
-      await this.db.query(
-        `UPDATE public.data_reload_runs
-         SET status       = 'loaded',
-             step         = 'loaded',
-             total_files  = $1,
-             files_loaded = $2,
-             total_rows   = $3,
-             log_entries  = $4::jsonb
-         WHERE id = $5`,
-        [
-          result.totalFiles ?? null,
-          result.filesLoaded ?? 0,
-          result.totalRows ?? 0,
-          JSON.stringify(this.logBuffers[schemaName] || []),
-          runId,
-        ]
-      );
-
-      emitLog('loaded', `Load complete: ${result.filesLoaded}/${result.totalFiles} files, ${result.totalRows.toLocaleString()} rows. Ready for indexing.`);
-
-      // Notify subscribers that load phase is done
-      const subs = this.subscribers[schemaName];
-      if (subs && subs.size > 0) {
-        const loadedEvent = {
-          type: 'loaded',
-          data: {
-            status: 'loaded',
-            totalFiles: result.totalFiles,
-            filesLoaded: result.filesLoaded,
-            totalRows: result.totalRows,
-          },
-        };
-        subs.forEach(cb => {
-          try { cb(loadedEvent); } catch (e) { /* subscriber disconnected */ }
-        });
+      // ── Atomic schema swap ────────────────────────────────────────
+      emitLog('swapping', `Swapping schemas: ${shadowSchema} → ${schemaName}`);
+      const swapClient = await this.db.getClient();
+      try {
+        await swapClient.query('BEGIN');
+        await swapClient.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
+        await swapClient.query(`ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old`);
+        await swapClient.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
+        await swapClient.query('COMMIT');
+      } catch (swapErr) {
+        await swapClient.query('ROLLBACK').catch(() => {});
+        throw swapErr;
+      } finally {
+        swapClient.release();
       }
+
+      // ── Cleanup old schema ────────────────────────────────────────
+      emitLog('cleanup', `Dropping ${schemaName}_old...`);
+      await this.db.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
+
+      // ── Done ──────────────────────────────────────────────────────
+      emitLog('completed', `Import complete: ${result.filesLoaded}/${result.totalFiles} files, ${(result.totalRows ?? 0).toLocaleString()} rows`);
+      await this._finishRun(runId, schemaName, 'completed', result);
 
     } catch (err) {
-      // Drop shadow schema so a fresh startLoad can begin
       await this.db.query(`DROP SCHEMA IF EXISTS ${shadowSchema} CASCADE`).catch(() => {});
-      emitLog('failed', `Load failed: ${err.message}`);
+      emitLog('failed', `Import failed: ${err.message}`);
       await this._finishRun(runId, schemaName, 'failed', null, err.message);
     }
   }
 
   /**
-   * Phase 2 executor: calls indexFn, then performs atomic schema swap.
-   * On any error, drops shadow schema (data must be reloaded from scratch).
+   * Indexing executor: create indexes + views on the live schema.
+   * No swap — schema is already live.
+   * On error: do NOT drop live schema (data is still accessible).
    */
   async _executeIndexing(runId, schemaName) {
     const reloader = this.reloaders[schemaName];
-    const shadowSchema = `${schemaName}_new`;
 
     const emitLog = (step, message, data) => {
       this._emitLog(schemaName, step, message, data);
@@ -387,46 +289,13 @@ class DataReloadService {
       }
     };
 
-    // Capture stats that were set during the load phase
-    const loadStats = this.currentRuns[schemaName]
-      ? {
-          totalFiles: this.currentRuns[schemaName].totalFiles,
-          filesLoaded: this.currentRuns[schemaName].filesLoaded,
-          totalRows: this.currentRuns[schemaName].totalRows,
-        }
-      : null;
-
     try {
-      // ── Build indexes and views on shadow schema ──────────────────
-      await reloader.indexFn(shadowSchema, emitLog);
+      await reloader.indexFn(schemaName, emitLog);
 
-      // ── Atomic schema swap ────────────────────────────────────────
-      emitLog('swapping', `Swapping schemas: ${shadowSchema} → ${schemaName}`);
-      const client = await this.db.getClient();
-      try {
-        await client.query('BEGIN');
-        await client.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
-        await client.query(`ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old`);
-        await client.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
-        await client.query('COMMIT');
-      } catch (swapErr) {
-        await client.query('ROLLBACK').catch(() => {});
-        throw swapErr;
-      } finally {
-        client.release();
-      }
-
-      // ── Cleanup old schema ────────────────────────────────────────
-      emitLog('cleanup', `Dropping ${schemaName}_old...`);
-      await this.db.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
-
-      // ── Done ──────────────────────────────────────────────────────
-      emitLog('completed', `Reload complete: ${loadStats?.filesLoaded}/${loadStats?.totalFiles} files, ${(loadStats?.totalRows ?? 0).toLocaleString()} rows`);
-      await this._finishRun(runId, schemaName, 'completed', loadStats);
+      emitLog('completed', 'Indexing complete');
+      await this._finishRun(runId, schemaName, 'completed', null);
 
     } catch (err) {
-      // Indexing failed — shadow schema may be corrupt; drop it so data can be reloaded
-      await this.db.query(`DROP SCHEMA IF EXISTS ${shadowSchema} CASCADE`).catch(() => {});
       emitLog('failed', `Indexing failed: ${err.message}`);
       await this._finishRun(runId, schemaName, 'failed', null, err.message);
     }
@@ -443,10 +312,8 @@ class DataReloadService {
 
     const progressOnly = data?.progressOnly === true;
 
-    // Buffer for replay + DB persistence (skip progress-only entries)
     if (!progressOnly && this.logBuffers[schemaName]) {
       this.logBuffers[schemaName].push(entry);
-      // Flush logs to DB every 20 entries so they survive a Cloud Run restart
       if (this.logBuffers[schemaName].length % 20 === 0) {
         const runId = this.currentRuns[schemaName]?.id;
         if (runId) {
@@ -459,7 +326,6 @@ class DataReloadService {
       }
     }
 
-    // Push to SSE subscribers (log event only for non-progress entries)
     const subs = this.subscribers[schemaName];
     if (subs && subs.size > 0) {
       if (!progressOnly) {
@@ -469,7 +335,6 @@ class DataReloadService {
         });
       }
 
-      // Also push progress event if data has file progress
       if (data && (data.filesCompleted !== undefined || data.totalFiles !== undefined)) {
         const current = this.currentRuns[schemaName] || {};
         const progressEvent = {
@@ -528,13 +393,11 @@ class DataReloadService {
       ]
     );
 
-    // Update in-memory state
     if (this.currentRuns[schemaName]) {
       this.currentRuns[schemaName].status = status;
       this.currentRuns[schemaName].completedAt = new Date().toISOString();
     }
 
-    // Notify subscribers of completion event, then clear them
     const subs = this.subscribers[schemaName];
     if (subs && subs.size > 0) {
       const completionEvent = {
@@ -553,7 +416,6 @@ class DataReloadService {
       subs.clear();
     }
 
-    // Clear log buffer (saved to DB)
     delete this.logBuffers[schemaName];
   }
 }
