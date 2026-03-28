@@ -6,7 +6,7 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 
-async function createViews(schemaName = 'zer4u') {
+async function createViews(schemaName = 'zer4u', emitLog = null) {
   // Pool created inside function so multiple sequential calls are safe
   const pool = new Pool({
     host: process.env.DB_HOST,
@@ -18,12 +18,13 @@ async function createViews(schemaName = 'zer4u') {
 
   const client = await pool.connect();
   const s = schemaName;
+  const log = (msg) => { console.log(msg); if (emitLog) emitLog('creating_views', msg); };
 
   try {
-    console.log(`🔧 Creating materialized views for ${s}...\n`);
+    log(`Creating materialized views for ${s}...`);
 
     // 1. Sales by store
-    console.log('1. Creating mv_sales_by_store...');
+    log('[1/6] Creating mv_sales_by_store...');
     await client.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_store CASCADE`);
     await client.query(`
       CREATE MATERIALIZED VIEW ${s}.mv_sales_by_store AS
@@ -40,10 +41,10 @@ async function createViews(schemaName = 'zer4u') {
     `);
     await client.query(`CREATE INDEX ON ${s}.mv_sales_by_store (store_number)`);
     await client.query(`CREATE INDEX ON ${s}.mv_sales_by_store (total_revenue DESC)`);
-    console.log('  ✅ Done\n');
+    log('[1/6] mv_sales_by_store done');
 
     // 2. Sales by customer
-    console.log('2. Creating mv_sales_by_customer...');
+    log('[2/6] Creating mv_sales_by_customer...');
     await client.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_customer CASCADE`);
     await client.query(`
       CREATE MATERIALIZED VIEW ${s}.mv_sales_by_customer AS
@@ -59,10 +60,10 @@ async function createViews(schemaName = 'zer4u') {
     `);
     await client.query(`CREATE INDEX ON ${s}.mv_sales_by_customer (customer_number)`);
     await client.query(`CREATE INDEX ON ${s}.mv_sales_by_customer (total_purchases DESC)`);
-    console.log('  ✅ Done\n');
+    log('[2/6] mv_sales_by_customer done');
 
     // 3. Sales by product
-    console.log('3. Creating mv_sales_by_product...');
+    log('[3/6] Creating mv_sales_by_product...');
     await client.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_product CASCADE`);
     await client.query(`
       CREATE MATERIALIZED VIEW ${s}.mv_sales_by_product AS
@@ -78,10 +79,10 @@ async function createViews(schemaName = 'zer4u') {
     `);
     await client.query(`CREATE INDEX ON ${s}.mv_sales_by_product (item_code)`);
     await client.query(`CREATE INDEX ON ${s}.mv_sales_by_product (total_quantity DESC)`);
-    console.log('  ✅ Done\n');
+    log('[3/6] mv_sales_by_product done');
 
     // 4. Sales by year (requires parse_date_ddmmyyyy from createIndexes)
-    console.log('4. Creating mv_sales_by_year...');
+    log('[4/6] Creating mv_sales_by_year...');
     await client.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_year CASCADE`);
     await client.query(`
       CREATE MATERIALIZED VIEW ${s}.mv_sales_by_year AS
@@ -102,10 +103,10 @@ async function createViews(schemaName = 'zer4u') {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_sales_by_year_pk
       ON ${s}.mv_sales_by_year (sale_year)
     `);
-    console.log('  ✅ Done\n');
+    log('[4/6] mv_sales_by_year done');
 
     // 5. Sales by month
-    console.log('5. Creating mv_sales_by_month...');
+    log('[5/6] Creating mv_sales_by_month...');
     await client.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_month CASCADE`);
     await client.query(`
       CREATE MATERIALIZED VIEW ${s}.mv_sales_by_month AS
@@ -131,10 +132,10 @@ async function createViews(schemaName = 'zer4u') {
       CREATE INDEX IF NOT EXISTS idx_mv_sales_by_month_year
       ON ${s}.mv_sales_by_month (sale_year)
     `);
-    console.log('  ✅ Done\n');
+    log('[5/6] mv_sales_by_month done');
 
     // 6. Sales by store + month
-    console.log('6. Creating mv_sales_by_store_month...');
+    log('[6/6] Creating mv_sales_by_store_month...');
     await client.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_store_month CASCADE`);
     await client.query(`
       CREATE MATERIALIZED VIEW ${s}.mv_sales_by_store_month AS
@@ -163,9 +164,8 @@ async function createViews(schemaName = 'zer4u') {
       CREATE INDEX IF NOT EXISTS idx_mv_sales_by_store_month_year
       ON ${s}.mv_sales_by_store_month (sale_year)
     `);
-    console.log('  ✅ Done\n');
-
-    console.log('✅ All 6 materialized views created!\n');
+    log('[6/6] mv_sales_by_store_month done');
+    log('All 6 materialized views created');
 
   } catch (error) {
     console.error('❌ Error:', error.message);

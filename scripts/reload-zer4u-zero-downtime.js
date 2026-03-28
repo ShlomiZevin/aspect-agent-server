@@ -88,7 +88,7 @@ async function indexZer4u(targetSchema, emitLog) {
   emitLog('creating_indexes', 'Indexes created');
 
   emitLog('creating_views', 'Creating materialized views...');
-  await createViews(targetSchema);
+  await createViews(targetSchema, emitLog);
   emitLog('creating_views', 'All materialized views created');
 }
 
