@@ -58,17 +58,25 @@ RETURNS integer AS $$
     ELSE $1::integer
   END
 $$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OR REPLACE FUNCTION ${schemaName}.to_int_safe(numeric)
+RETURNS integer AS $$
+  SELECT CASE
+    WHEN $1 IS NULL THEN NULL
+    ELSE $1::integer
+  END
+$$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
 `;
 }
 
-async function loadIndexesFromLiveSchema(pool) {
+async function loadIndexesFromSchema(pool, schemaName) {
   const result = await pool.query(`
     SELECT tablename, indexname, indexdef
     FROM pg_indexes
     WHERE schemaname = $1
       AND indexname NOT LIKE '%_pkey'
     ORDER BY tablename, indexname
-  `, [SOURCE_SCHEMA]);
+  `, [schemaName]);
 
   return result.rows
     .filter(row => !MV_TABLES.has(row.tablename))
@@ -78,6 +86,11 @@ async function loadIndexesFromLiveSchema(pool) {
       sql: null, // filled in createIndexes with target schema
       sourceDef: row.indexdef,
     }));
+}
+
+async function schemaExists(pool, schemaName) {
+  const r = await pool.query(`SELECT 1 FROM pg_namespace WHERE nspname = $1`, [schemaName]);
+  return r.rows.length > 0;
 }
 
 async function createIndexes(schemaName = 'zer4u', emitLog = null) {
@@ -107,14 +120,23 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null) {
     // 1. Create helper functions required by expression indexes
     await client.query(getSetupSQL(schemaName));
 
-    // 2. Load index list from live schema
-    const indexes = await loadIndexesFromLiveSchema(pool);
-    log(`Found ${indexes.length} indexes to create from live schema`);
+    // 2. Load index list — try target schema first, fallback to _old if empty
+    let sourceSchema = schemaName;
+    let indexes = await loadIndexesFromSchema(pool, schemaName);
+    if (indexes.length === 0) {
+      const oldSchema = `${schemaName}_old`;
+      if (await schemaExists(pool, oldSchema)) {
+        log(`No indexes in ${schemaName}, reading DDL from ${oldSchema}...`);
+        sourceSchema = oldSchema;
+        indexes = await loadIndexesFromSchema(pool, oldSchema);
+      }
+    }
+    log(`Found ${indexes.length} indexes to create (source: ${sourceSchema})`);
 
     // 3. Build target DDL: replace source schema name with target schema name
     const targetIndexes = indexes.map(idx => {
       const targetDef = idx.sourceDef
-        .replace(new RegExp(`\\b${SOURCE_SCHEMA}\\.`, 'g'), `${schemaName}.`)
+        .replace(new RegExp(`\\b${sourceSchema}\\.`, 'g'), `${schemaName}.`)
         .replace(/^CREATE INDEX /, 'CREATE INDEX IF NOT EXISTS ')
         .replace(/^CREATE UNIQUE INDEX /, 'CREATE UNIQUE INDEX IF NOT EXISTS ');
       return { ...idx, sql: targetDef };
