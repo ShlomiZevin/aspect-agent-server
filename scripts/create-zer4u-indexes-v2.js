@@ -199,9 +199,10 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null) {
         // Sequential mode means no competition — full IOPS to one process.
         await c.query(`SET maintenance_work_mem = '1GB'`);
         await c.query(`SET max_parallel_maintenance_workers = 2`);
+        log(`[${displayIdx}/${targetIndexes.length}] Building ${idx.name}...`);
         await c.query(idx.sql);
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-        log(`[${displayIdx}/${targetIndexes.length}] ${idx.table}.${idx.name} — ${duration}s`);
+        log(`[${displayIdx}/${targetIndexes.length}] ${idx.name} done — ${duration}s`);
         results.created++;
       } catch (err) {
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
