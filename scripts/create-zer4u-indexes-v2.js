@@ -8,6 +8,10 @@
  *
  * Helper functions (parse_date_ddmmyyyy, to_numeric_safe, to_int_safe)
  * are always created first since expression indexes depend on them.
+ *
+ * Strategy: group indexes by table, process all same-table indexes in
+ * parallel (up to MAX_PER_TABLE=8). This maximizes OS page cache sharing —
+ * first connection reads the table from disk, the rest read from RAM cache.
  */
 
 require('dotenv').config();
@@ -24,6 +28,10 @@ const MV_TABLES = new Set([
   'mv_sales_by_store_month',
   'mv_sales_by_year',
 ]);
+
+// Max parallel index builds per table
+// Same-table parallel builds share OS page cache — big win for large tables
+const MAX_PER_TABLE = 8;
 
 function getSetupSQL(schemaName) {
   return `
@@ -67,7 +75,6 @@ async function loadIndexesFromLiveSchema(pool) {
     .map(row => ({
       name: row.indexname,
       table: row.tablename,
-      // Replace source schema with target schema in DDL
       sql: null, // filled in createIndexes with target schema
       sourceDef: row.indexdef,
     }));
@@ -78,7 +85,6 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null) {
     console.log(msg);
     if (emitLog) emitLog('creating_indexes', msg);
   };
-  const CONCURRENCY = 4;
 
   const pool = new Pool({
     host: process.env.DB_HOST,
@@ -86,12 +92,12 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null) {
     database: process.env.DB_NAME,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    max: CONCURRENCY + 2,
+    max: MAX_PER_TABLE + 2,
   });
 
-  console.log('═'.repeat(70));
-  console.log('ZER4U INDEX CREATION — dynamic from live schema');
-  console.log('═'.repeat(70));
+  console.log('='.repeat(70));
+  console.log('ZER4U INDEX CREATION — dynamic from live schema, table-local parallel');
+  console.log('='.repeat(70));
 
   const client = await pool.connect();
   const results = { created: 0, skipped: 0, failed: 0, errors: [] };
@@ -114,23 +120,37 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null) {
       return { ...idx, sql: targetDef };
     });
 
-    // 4. Create indexes in parallel batches
-    const createOne = async (idx, i) => {
+    // 4. Group indexes by table
+    const tableGroups = new Map();
+    for (const idx of targetIndexes) {
+      if (!tableGroups.has(idx.table)) tableGroups.set(idx.table, []);
+      tableGroups.get(idx.table).push(idx);
+    }
+
+    const tableList = [...tableGroups.keys()];
+    log(`Processing ${tableList.length} tables: ${tableList.join(', ')}`);
+
+    let globalIdx = 0;
+
+    const createOne = async (idx, displayIdx) => {
       const c = await pool.connect();
       const startTime = Date.now();
       try {
-        await c.query(`SET maintenance_work_mem = '1GB'`);
+        // 512MB per connection (allows up to 8 parallel = 4GB total sort memory)
+        // max_parallel_maintenance_workers=4 uses more CPU cores per index build
+        await c.query(`SET maintenance_work_mem = '512MB'`);
+        await c.query(`SET max_parallel_maintenance_workers = 4`);
         await c.query(idx.sql);
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-        log(`[${i + 1}/${targetIndexes.length}] ${idx.table}.${idx.name} — ${duration}s`);
+        log(`[${displayIdx}/${targetIndexes.length}] ${idx.table}.${idx.name} — ${duration}s`);
         results.created++;
       } catch (err) {
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
         if (err.message.includes('already exists')) {
-          log(`[${i + 1}/${targetIndexes.length}] ${idx.name} — already exists (${duration}s)`);
+          log(`[${displayIdx}/${targetIndexes.length}] ${idx.name} — already exists (${duration}s)`);
           results.skipped++;
         } else {
-          log(`[${i + 1}/${targetIndexes.length}] ${idx.name} FAILED — ${err.message}`);
+          log(`[${displayIdx}/${targetIndexes.length}] ${idx.name} FAILED — ${err.message}`);
           results.failed++;
           results.errors.push({ index: idx.name, error: err.message });
         }
@@ -139,32 +159,47 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null) {
       }
     };
 
-    for (let i = 0; i < targetIndexes.length; i += CONCURRENCY) {
-      const batch = targetIndexes.slice(i, i + CONCURRENCY).map((idx, j) => createOne(idx, i + j));
-      await Promise.all(batch);
+    // 5. Process table by table: run all same-table indexes in parallel (capped at MAX_PER_TABLE)
+    //    Same-table parallel builds share OS page cache — first build reads from disk,
+    //    subsequent builds read from RAM. Big win for large tables (sales=5.6GB, etc.)
+    for (const [table, tableIdxs] of tableGroups) {
+      const tableStart = Date.now();
+      log(`--- Table: ${table} (${tableIdxs.length} indexes) ---`);
+
+      // ANALYZE so Postgres has fresh stats for parallel worker decisions
+      await client.query(`ANALYZE ${schemaName}.${table}`);
+
+      for (let i = 0; i < tableIdxs.length; i += MAX_PER_TABLE) {
+        const batch = tableIdxs.slice(i, i + MAX_PER_TABLE);
+        const batchIdxs = batch.map(() => ++globalIdx);
+        await Promise.all(batch.map((idx, j) => createOne(idx, batchIdxs[j])));
+      }
+
+      const tableTime = ((Date.now() - tableStart) / 1000).toFixed(1);
+      log(`--- Table ${table} done in ${tableTime}s ---`);
     }
 
-    // 5. Summary
+    // 6. Summary
     const totalTime = ((Date.now() - startTotal) / 1000).toFixed(1);
-    console.log('\n' + '═'.repeat(70));
-    console.log('📊 SUMMARY');
-    console.log('═'.repeat(70));
-    console.log(`✅ Created:  ${results.created}`);
-    console.log(`⏭️  Skipped:  ${results.skipped}`);
-    console.log(`❌ Failed:   ${results.failed}`);
-    console.log(`⏱️  Total:    ${totalTime}s`);
+    console.log('\n' + '='.repeat(70));
+    console.log('SUMMARY');
+    console.log('='.repeat(70));
+    console.log(`Created:  ${results.created}`);
+    console.log(`Skipped:  ${results.skipped}`);
+    console.log(`Failed:   ${results.failed}`);
+    console.log(`Total:    ${totalTime}s`);
 
     if (results.errors.length > 0) {
-      console.log('\n⚠️  Errors:');
-      results.errors.forEach(e => console.log(`   - ${e.index}: ${e.error}`));
+      console.log('\nErrors:');
+      results.errors.forEach(e => console.log(`  - ${e.index}: ${e.error}`));
     }
 
-    console.log('\n═'.repeat(70));
-    console.log('✅ Index creation complete!');
-    console.log('═'.repeat(70));
+    console.log('\n' + '='.repeat(70));
+    console.log('Index creation complete!');
+    console.log('='.repeat(70));
 
   } catch (error) {
-    console.error('\n❌ Fatal error:', error.message);
+    console.error('\nFatal error:', error.message);
     process.exit(1);
   } finally {
     client.release();
