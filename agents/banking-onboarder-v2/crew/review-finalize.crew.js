@@ -98,10 +98,12 @@ class ReviewFinalizeCrew extends CrewMember {
         }
       ]*/,
       fieldsToCollect: [
-        { name: 'details_confirmed', type: 'boolean', description: 'User confirmed all personal details are correct' },
-        { name: 'consent_granted', type: 'boolean', description: 'User explicitly consented to account terms' },
-        { name: 'signature_completed', type: 'boolean', description: 'Digital signature was successfully completed' },
+        { name: 'details_confirmed', type: 'boolean', description: 'Set true when user confirms all personal details are correct. Set false when user asks to change something.' },
+        { name: 'id_photo_received', type: 'boolean', description: 'Set true when user sends or confirms ID photo (צילום תעודת זהות). Set false when user says they cannot provide it.' },
+        { name: 'consent_granted', type: 'boolean', description: 'Set true when user agrees to account terms and conditions. Set false when user refuses.' },
+        { name: 'signature_completed', type: 'boolean', description: 'Set true when user completes the digital signature. Set false when user refuses to sign.' },
       ],
+      extractionMode: 'form',
       transitionTo: null, // Terminal crew
     });
   }
