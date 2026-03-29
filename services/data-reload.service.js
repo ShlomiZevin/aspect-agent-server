@@ -109,7 +109,7 @@ class DataReloadService {
    * Creates its own run record (triggered_by='index').
    * Returns runId immediately; indexing runs in background.
    */
-  async startIndexing(schemaName) {
+  async startIndexing(schemaName, triggeredBy = 'index') {
     const reloader = this.reloaders[schemaName];
     if (!reloader) throw { code: 400, message: `No reloader registered for schema: ${schemaName}` };
 
@@ -121,14 +121,14 @@ class DataReloadService {
       };
     }
 
-    const runId = await this._createRunInDB(schemaName, 'index');
+    const runId = await this._createRunInDB(schemaName, triggeredBy);
 
     this.currentRuns[schemaName] = {
       id: runId,
       status: 'running',
       phase: 'indexing',
       step: 'indexing',
-      triggeredBy: 'index',
+      triggeredBy,
       startedAt: new Date().toISOString(),
     };
     this.logBuffers[schemaName] = [];
@@ -178,7 +178,7 @@ class DataReloadService {
         const state = this.currentRuns[schemaName];
         if (state && state.status === 'completed' && state.id === runId) {
           // Import done — start independent index run
-          await this.startIndexing(schemaName);
+          await this.startIndexing(schemaName, triggeredBy);
         }
       })
       .catch(err => {
