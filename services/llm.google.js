@@ -346,6 +346,7 @@ class GoogleService {
       let chunkCount = 0;
       let thoughtBuffer = '';        // buffer to detect THOUGHT prefix
       let thoughtStripped = false;   // once determined, stop buffering
+      const dupeTrace = [];          // TODO: REMOVE - temporary tracing for duplicate response bug (see [DUPE-DETECT] below)
       for await (const chunk of stream) {
         chunkCount++;
 
@@ -389,6 +390,7 @@ class GoogleService {
                 if (splitIdx !== -1) {
                   const cleanText = trimmed.substring(splitIdx + 1);
                   console.log(`🧹 Stripped THOUGHT prefix (${splitIdx} chars)`);
+                  dupeTrace.push(`YIELD-A: thought-split | yieldLen=${cleanText.length} | fullReplyLen=${fullReply.length + cleanText.length} | bufferLen=${thoughtBuffer.length} | chunk#=${chunkCount}`);
                   fullReply += cleanText;
                   yield cleanText;
                   thoughtStripped = true;
@@ -396,6 +398,7 @@ class GoogleService {
                 // else: still buffering, haven't found end of thought section yet
               } else {
                 // No THOUGHT prefix — flush buffer normally
+                dupeTrace.push(`YIELD-B: no-thought-flush | yieldLen=${thoughtBuffer.length} | fullReplyLen=${fullReply.length + thoughtBuffer.length} | chunk#=${chunkCount}`);
                 fullReply += thoughtBuffer;
                 yield thoughtBuffer;
                 thoughtStripped = true;
@@ -438,17 +441,28 @@ class GoogleService {
           if (lastPara !== -1) {
             const cleanText = trimmed.substring(lastPara + 2);
             console.log(`🧹 Stripped THOUGHT prefix from final buffer`);
+            dupeTrace.push(`YIELD-C: post-loop-thought-split | yieldLen=${cleanText.length} | fullReplyLen=${fullReply.length + cleanText.length} | bufferLen=${thoughtBuffer.length}`);
             fullReply += cleanText;
             yield cleanText;
           } else {
             // Can't find response — yield everything as fallback
+            dupeTrace.push(`YIELD-D: post-loop-thought-nosplit | yieldLen=${thoughtBuffer.length} | fullReplyLen=${fullReply.length + thoughtBuffer.length} | bufferLen=${thoughtBuffer.length}`);
             fullReply += thoughtBuffer;
             yield thoughtBuffer;
           }
         } else {
+          dupeTrace.push(`YIELD-E: post-loop-no-thought | yieldLen=${thoughtBuffer.length} | fullReplyLen=${fullReply.length + thoughtBuffer.length} | bufferLen=${thoughtBuffer.length}`);
           fullReply += thoughtBuffer;
           yield thoughtBuffer;
         }
+      }
+
+      // TODO: REMOVE - temporary tracing for duplicate response bug. Remove once root cause is found.
+      // Search logs with: grep "DUPE-DETECT" — trace lines appear only when duplication is detected.
+      const halfLen = Math.floor(fullReply.length / 2);
+      if (halfLen > 100 && fullReply.slice(0, halfLen).trim() === fullReply.slice(halfLen).trim()) {
+        console.error(`🔴 [DUPE-DETECT] Duplicate response! | model=${model} | chunks=${chunkCount} | replyLen=${fullReply.length} | thoughtStripped=${thoughtStripped} | bufferLen=${thoughtBuffer.length} | hadFunctionCalls=${functionCalls.length > 0}`);
+        dupeTrace.forEach(t => console.error(`  [DUPE-TRACE] ${t}`));
       }
 
       console.log(`📊 Google stream ended after ${chunkCount} chunks, reply: ${fullReply.length} chars`);
