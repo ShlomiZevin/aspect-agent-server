@@ -24,6 +24,7 @@ const commentsService = require('./services/comments.service');
 const notificationsService = require('./services/notifications.service');
 const boardEventsService = require('./services/boardEvents.service');
 const demoService = require('./services/demo.service');
+const testRunnerService = require('./services/test-runner.service');
 const podcastService = require('./services/podcast.service');
 const transcriptionService = require('./services/transcription.service');
 const billingService = require('./services/billing.service');
@@ -4242,6 +4243,93 @@ app.delete('/api/admin/provider-config/:key', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== TEST RUNNER ENDPOINTS (Automated Agent Testing) ==========
+
+// List test runs (with optional filters)
+app.get('/api/admin/test-runs', async (req, res) => {
+  try {
+    const { type, agentName, status } = req.query;
+    const runs = await testRunnerService.listRuns({ type, agentName, status });
+    res.json({ runs });
+  } catch (err) {
+    console.error('Error listing test runs:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get a single test run
+app.get('/api/admin/test-runs/:id', async (req, res) => {
+  try {
+    const run = await testRunnerService.getRun(parseInt(req.params.id));
+    if (!run) return res.status(404).json({ error: 'Not found' });
+    res.json(run);
+  } catch (err) {
+    console.error('Error getting test run:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a new test run
+app.post('/api/admin/test-runs', async (req, res) => {
+  try {
+    const { type, agentName, input } = req.body;
+    if (!type || !agentName) {
+      return res.status(400).json({ error: 'type and agentName are required' });
+    }
+    const run = await testRunnerService.createRun({ type, agentName, input });
+    res.json(run);
+  } catch (err) {
+    console.error('Error creating test run:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Execute a test run (triggers LLM call)
+app.post('/api/admin/test-runs/:id/execute', async (req, res) => {
+  try {
+    const run = await testRunnerService.getRun(parseInt(req.params.id));
+    if (!run) return res.status(404).json({ error: 'Not found' });
+
+    let result;
+    switch (run.type) {
+      case 'individuals':
+        result = await testRunnerService.generateIndividuals(run.id);
+        break;
+      // case 'conversation': (future)
+      // case 'review': (future)
+      default:
+        return res.status(400).json({ error: `Unsupported run type: ${run.type}` });
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('Error executing test run:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a test run
+app.delete('/api/admin/test-runs/:id', async (req, res) => {
+  try {
+    const deleted = await testRunnerService.deleteRun(parseInt(req.params.id));
+    if (!deleted) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting test run:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get available motivations for an agent's individual generator
+app.get('/api/admin/test-runs/config/:agentName', async (req, res) => {
+  try {
+    const slug = req.params.agentName.toLowerCase().replace(/\s+/g, '-');
+    const promptModule = require(`./test-prompts/${slug}/individual-generator.prompt`);
+    res.json({ motivations: promptModule.MOTIVATIONS || [] });
+  } catch (err) {
+    res.json({ motivations: [] });
   }
 });
 

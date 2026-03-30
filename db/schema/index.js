@@ -346,6 +346,25 @@ const dynamicKBAttachments = pgTable('dynamic_kb_attachments', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+// =============================================================================
+// TEST RUNNER MODULE (Automated agent testing)
+// =============================================================================
+
+// Test runs - stores individual generation, conversation, and review runs
+const testRuns = pgTable('test_runs', {
+  id: serial('id').primaryKey(),
+  type: varchar('type', { length: 50 }).notNull(), // 'individuals' | 'conversation' | 'review'
+  agentName: varchar('agent_name', { length: 100 }).notNull(),
+  status: varchar('status', { length: 50 }).notNull().default('pending'), // pending, running, completed, failed
+  input: jsonb('input').notNull().default({}), // Run parameters (motivation, count, profile, etc.)
+  output: jsonb('output'), // Generated result (personas array, transcript, report)
+  parentRunId: integer('parent_run_id'), // Links steps: conversation → individuals, review → conversation
+  error: text('error'), // Error message if failed
+  metadata: jsonb('metadata').default({}), // Timing, model used, token count
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -370,4 +389,5 @@ module.exports = {
   providerConfig,
   dynamicKBFiles,
   dynamicKBAttachments,
+  testRuns,
 };
