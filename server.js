@@ -2893,6 +2893,17 @@ app.post('/api/admin/db-kill-idle', async (req, res) => {
   }
 });
 
+// POST /api/admin/db-kill/:pid — force terminate specific backend
+app.post('/api/admin/db-kill/:pid', async (req, res) => {
+  try {
+    const { pid } = req.params;
+    const result = await db.query(`SELECT pg_terminate_backend($1)`, [parseInt(pid)]);
+    res.json({ terminated: result.rows[0].pg_terminate_backend, pid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/admin/data-loader/:schema/data-info — last successful run + last data date
 app.get('/api/admin/data-loader/:schema/data-info', async (req, res) => {
   try {
