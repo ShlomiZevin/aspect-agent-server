@@ -45,8 +45,15 @@ class DataReloadService {
       if (result.rows.length > 0) {
         for (const r of result.rows) {
           console.log(`[DataReloadService] Marked stale run #${r.id} (${r.schema_name}) as failed`);
-          // Only drop shadow schema for import runs (index runs operate on live schema)
+          // Only drop shadow schema for import runs (index runs operate on live schema).
+          // Skip drop if the run started within the last 30 minutes — it may have been
+          // kicked off just before a deployment and could still be running on the old revision.
           if (r.triggered_by !== 'index') {
+            const ageMinutes = (Date.now() - new Date(r.started_at).getTime()) / 60000;
+            if (ageMinutes < 30) {
+              console.log(`[DataReloadService] Skipping shadow schema drop for run #${r.id} — started ${ageMinutes.toFixed(1)}m ago (too recent)`);
+              continue;
+            }
             const shadowSchema = `${r.schema_name}_new`;
             console.log(`[DataReloadService] Dropping leftover shadow schema ${shadowSchema}...`);
             this.db.query(`DROP SCHEMA IF EXISTS ${shadowSchema} CASCADE`).then(() => {

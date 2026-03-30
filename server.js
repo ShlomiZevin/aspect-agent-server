@@ -2856,6 +2856,42 @@ app.get('/api/admin/data-loader/:schema/history', async (req, res) => {
   }
 });
 
+// GET /api/admin/data-loader/:schema/data-info — last successful run + last data date
+app.get('/api/admin/data-loader/:schema/data-info', async (req, res) => {
+  try {
+    const { schema } = req.params;
+
+    // Last successful run
+    const runResult = await db.query(
+      `SELECT id, status, triggered_by, started_at, completed_at, total_rows
+       FROM public.data_reload_runs
+       WHERE schema_name = $1 AND status = 'completed'
+       ORDER BY completed_at DESC
+       LIMIT 1`,
+      [schema]
+    );
+    const lastRun = runResult.rows[0] || null;
+
+    // Last data date — use pre-aggregated materialized view for fast lookup
+    let lastDataDate = null;
+    if (schema === 'zer4u') {
+      try {
+        const dateResult = await db.query(
+          `SELECT MAX(year_month) AS last_month FROM zer4u.mv_sales_by_month`
+        );
+        lastDataDate = dateResult.rows[0]?.last_month || null;
+      } catch {
+        // View may not exist if indexing hasn't completed yet
+      }
+    }
+
+    res.json({ lastRun, lastDataDate });
+  } catch (err) {
+    console.error('❌ data-loader data-info error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/admin/data-loader/:schema/load — Phase 1: import data only
 app.post('/api/admin/data-loader/:schema/load', async (req, res) => {
   try {
