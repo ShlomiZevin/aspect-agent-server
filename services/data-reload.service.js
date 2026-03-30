@@ -109,7 +109,7 @@ class DataReloadService {
    * Creates its own run record (triggered_by='index').
    * Returns runId immediately; indexing runs in background.
    */
-  async startIndexing(schemaName) {
+  async startIndexing(schemaName, triggeredBy = 'index') {
     const reloader = this.reloaders[schemaName];
     if (!reloader) throw { code: 400, message: `No reloader registered for schema: ${schemaName}` };
 
@@ -121,14 +121,14 @@ class DataReloadService {
       };
     }
 
-    const runId = await this._createRunInDB(schemaName, 'index');
+    const runId = await this._createRunInDB(schemaName, triggeredBy);
 
     this.currentRuns[schemaName] = {
       id: runId,
       status: 'running',
       phase: 'indexing',
       step: 'indexing',
-      triggeredBy: 'index',
+      triggeredBy,
       startedAt: new Date().toISOString(),
     };
     this.logBuffers[schemaName] = [];
@@ -136,6 +136,54 @@ class DataReloadService {
     this._executeIndexing(runId, schemaName).catch(err => {
       console.error(`[DataReloadService] Unhandled indexing error for ${schemaName}:`, err.message);
     });
+
+    return runId;
+  }
+
+  /**
+   * Full reload: import + swap + indexing, chained automatically.
+   * Used by nightly cron / Cloud Scheduler via POST /reload.
+   * Returns importRunId immediately; both phases run in background.
+   */
+  async startReload(schemaName, triggeredBy = 'manual') {
+    const reloader = this.reloaders[schemaName];
+    if (!reloader) throw { code: 400, message: `No reloader registered for schema: ${schemaName}` };
+
+    const current = this.currentRuns[schemaName];
+    if (current && current.status === 'running') {
+      throw {
+        code: 409,
+        message: `Schema ${schemaName} is already running. Cannot start reload.`,
+      };
+    }
+
+    const runId = await this._createRunInDB(schemaName, triggeredBy);
+
+    this.currentRuns[schemaName] = {
+      id: runId,
+      status: 'running',
+      phase: 'import',
+      step: 'starting',
+      triggeredBy,
+      startedAt: new Date().toISOString(),
+      totalFiles: null,
+      filesLoaded: 0,
+      totalRows: 0,
+    };
+    this.logBuffers[schemaName] = [];
+
+    // Chain: import (with swap) → then indexing automatically
+    this._executeLoad(runId, schemaName)
+      .then(async () => {
+        const state = this.currentRuns[schemaName];
+        if (state && state.status === 'completed' && state.id === runId) {
+          // Import done — start independent index run
+          await this.startIndexing(schemaName, triggeredBy);
+        }
+      })
+      .catch(err => {
+        console.error(`[DataReloadService] Unhandled reload error for ${schemaName}:`, err.message);
+      });
 
     return runId;
   }
@@ -259,10 +307,6 @@ class DataReloadService {
         swapClient.release();
       }
 
-      // ── Cleanup old schema ────────────────────────────────────────
-      emitLog('cleanup', `Dropping ${schemaName}_old...`);
-      await this.db.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
-
       // ── Done ──────────────────────────────────────────────────────
       emitLog('completed', `Import complete: ${result.filesLoaded}/${result.totalFiles} files, ${(result.totalRows ?? 0).toLocaleString()} rows`);
       await this._finishRun(runId, schemaName, 'completed', result);
@@ -291,6 +335,9 @@ class DataReloadService {
 
     try {
       await reloader.indexFn(schemaName, emitLog);
+
+      // Drop old schema now that indexing is done (was kept for index DDL reference)
+      await this.db.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`).catch(() => {});
 
       emitLog('completed', 'Indexing complete');
       await this._finishRun(runId, schemaName, 'completed', null);
