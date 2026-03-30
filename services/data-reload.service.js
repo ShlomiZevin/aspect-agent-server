@@ -316,7 +316,14 @@ class DataReloadService {
       try {
         await swapClient.query('BEGIN');
         await swapClient.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
-        await swapClient.query(`ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old`);
+        // Only rename live schema if it exists (absent on first import or after accidental drop)
+        await swapClient.query(`
+          DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '${schemaName}') THEN
+              EXECUTE 'ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old';
+            END IF;
+          END $$
+        `);
         await swapClient.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
         await swapClient.query('COMMIT');
       } catch (swapErr) {
