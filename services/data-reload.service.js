@@ -237,6 +237,34 @@ class DataReloadService {
     return result.rows[0]?.log_entries || [];
   }
 
+  /**
+   * Returns data freshness info: last successful run + last data date.
+   * lastDataDate comes from the reloader's dataInfoFn (schema-specific).
+   */
+  async getDataInfo(schemaName) {
+    const runResult = await this.db.query(
+      `SELECT id, status, triggered_by, started_at, completed_at, total_rows
+       FROM public.data_reload_runs
+       WHERE schema_name = $1 AND status = 'completed'
+       ORDER BY completed_at DESC
+       LIMIT 1`,
+      [schemaName]
+    );
+    const lastRun = runResult.rows[0] || null;
+
+    const reloader = this.reloaders[schemaName];
+    let lastDataDate = null;
+    if (reloader?.dataInfoFn) {
+      try {
+        lastDataDate = await reloader.dataInfoFn(this.db);
+      } catch {
+        // dataInfoFn is optional and best-effort
+      }
+    }
+
+    return { lastRun, lastDataDate };
+  }
+
   /** Returns GCS source files for this schema. */
   async getSourceFiles(schemaName) {
     const reloader = this.reloaders[schemaName];
