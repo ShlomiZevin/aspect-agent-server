@@ -4474,16 +4474,9 @@ async function startServer() {
     await db.initialize();
     console.log('✅ Database connected successfully');
 
-    // Initialize DataReloadService and register reloaders
+    // Initialize DataReloadService (reloaders registered per-agent as needed)
     const dataReloadService = new DataReloadService(db);
-    const { loadZer4u, indexZer4u } = require('./scripts/reload-zer4u-zero-downtime');
-    dataReloadService.registerReloader('zer4u', {
-      loadFn: loadZer4u,
-      indexFn: indexZer4u,
-      gcsFolderPrefix: 'zer4u/',
-    });
     app.set('dataReloadService', dataReloadService);
-    await dataReloadService.cleanupStaleRuns();
 
     // Pre-load provider config (API keys) into memory
     await providerConfigService.initialize();
