@@ -4310,6 +4310,31 @@ app.post('/api/admin/test-runs/:id/execute', async (req, res) => {
   }
 });
 
+// Update a test run's input (e.g. rename)
+app.patch('/api/admin/test-runs/:id', async (req, res) => {
+  try {
+    const result = await testRunnerService.updateRunInput(parseInt(req.params.id), req.body);
+    if (!result) return res.status(404).json({ error: 'Not found' });
+    res.json(result);
+  } catch (err) {
+    console.error('Error updating test run:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Save output for a test run (used for populations — no LLM needed)
+app.post('/api/admin/test-runs/:id/save-output', async (req, res) => {
+  try {
+    const run = await testRunnerService.getRun(parseInt(req.params.id));
+    if (!run) return res.status(404).json({ error: 'Not found' });
+    const result = await testRunnerService.saveOutput(run.id, req.body.output);
+    res.json(result);
+  } catch (err) {
+    console.error('Error saving test run output:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Delete a test run
 app.delete('/api/admin/test-runs/:id', async (req, res) => {
   try {
@@ -4322,14 +4347,37 @@ app.delete('/api/admin/test-runs/:id', async (req, res) => {
   }
 });
 
-// Get available motivations for an agent's individual generator
+// Get test config for an agent (DB with file fallback)
 app.get('/api/admin/test-runs/config/:agentName', async (req, res) => {
   try {
-    const slug = req.params.agentName.toLowerCase().replace(/\s+/g, '-');
-    const promptModule = require(`./test-prompts/${slug}/individual-generator.prompt`);
-    res.json({ motivations: promptModule.MOTIVATIONS || [] });
+    const config = await testRunnerService.getConfig(req.params.agentName);
+    if (!config) {
+      return res.json({ motivations: [], generatorPrompt: '', userMessageTemplate: '', defaultModel: 'gpt-4o', defaultCount: 10 });
+    }
+    res.json(config);
   } catch (err) {
-    res.json({ motivations: [] });
+    console.error('Error getting test config:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update test config for an agent
+app.put('/api/admin/test-runs/config/:agentName', async (req, res) => {
+  try {
+    const config = await testRunnerService.getConfig(req.params.agentName);
+    if (!config) {
+      // Create new config
+      const created = await testRunnerService.createConfig({
+        agentName: req.params.agentName,
+        ...req.body,
+      });
+      return res.json(created);
+    }
+    const updated = await testRunnerService.updateConfig(req.params.agentName, req.body);
+    res.json(updated);
+  } catch (err) {
+    console.error('Error updating test config:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 

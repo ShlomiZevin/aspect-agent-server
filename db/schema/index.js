@@ -350,6 +350,21 @@ const dynamicKBAttachments = pgTable('dynamic_kb_attachments', {
 // TEST RUNNER MODULE (Automated agent testing)
 // =============================================================================
 
+// Test configs - editable per-agent configuration for test runner
+const testConfigs = pgTable('test_configs', {
+  id: serial('id').primaryKey(),
+  agentName: varchar('agent_name', { length: 100 }).notNull().unique(),
+  motivations: jsonb('motivations').notNull().default('[]'), // string[] — available motivation types
+  generatorPrompt: text('generator_prompt').notNull(), // System prompt for individual generation
+  userMessageTemplate: text('user_message_template'), // Template for user message (uses {{motivation}}, {{count}})
+  personaSchema: jsonb('persona_schema'), // JSON schema describing expected persona fields (for UI display)
+  defaultModel: varchar('default_model', { length: 100 }).default('gpt-4o'),
+  defaultCount: integer('default_count').default(10),
+  metadata: jsonb('metadata').default({}), // Extra config (future: conversation prompt, reviewer criteria)
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Test runs - stores individual generation, conversation, and review runs
 const testRuns = pgTable('test_runs', {
   id: serial('id').primaryKey(),
@@ -389,5 +404,6 @@ module.exports = {
   providerConfig,
   dynamicKBFiles,
   dynamicKBAttachments,
+  testConfigs,
   testRuns,
 };
