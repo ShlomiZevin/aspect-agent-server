@@ -2856,6 +2856,54 @@ app.get('/api/admin/data-loader/:schema/history', async (req, res) => {
   }
 });
 
+// GET /api/admin/db-locks — show blocking processes and locks
+app.get('/api/admin/db-locks', async (req, res) => {
+  try {
+    const blocking = await db.query(`
+      SELECT pid, state, wait_event_type, wait_event, query_start,
+             left(query, 200) AS query
+      FROM pg_stat_activity
+      WHERE state != 'idle' AND pid <> pg_backend_pid()
+      ORDER BY query_start
+    `);
+    const locks = await db.query(`
+      SELECT pid, locktype, relation::regclass, mode, granted
+      FROM pg_locks
+      WHERE NOT granted
+    `);
+    res.json({ active: blocking.rows, waiting_locks: locks.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/db-kill-idle — terminate all idle/blocked connections except current
+app.post('/api/admin/db-kill-idle', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT pg_terminate_backend(pid), pid, state, left(query, 100) AS query
+      FROM pg_stat_activity
+      WHERE pid <> pg_backend_pid()
+        AND datname = current_database()
+        AND state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
+    `);
+    res.json({ terminated: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/db-kill/:pid — force terminate specific backend
+app.post('/api/admin/db-kill/:pid', async (req, res) => {
+  try {
+    const { pid } = req.params;
+    const result = await db.query(`SELECT pg_terminate_backend($1)`, [parseInt(pid)]);
+    res.json({ terminated: result.rows[0].pg_terminate_backend, pid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/admin/data-loader/:schema/data-info — last successful run + last data date
 app.get('/api/admin/data-loader/:schema/data-info', async (req, res) => {
   try {
