@@ -125,6 +125,10 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null) {
         });
     }
 
+    if (totalFailed > 0) {
+      throw new Error(`${totalFailed} file(s) failed to load — aborting swap to prevent incomplete data`);
+    }
+
     console.log('\n✅ Data loading complete!\n');
 
   } catch (error) {
