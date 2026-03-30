@@ -300,6 +300,18 @@ class DataReloadService {
 
       // ── Atomic schema swap ────────────────────────────────────────
       emitLog('swapping', `Swapping schemas: ${shadowSchema} → ${schemaName}`);
+
+      // Terminate idle/idle-in-transaction connections that reference the live schema
+      // so ALTER SCHEMA can acquire its lock without waiting indefinitely.
+      await this.db.query(`
+        SELECT pg_terminate_backend(pid)
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND pid <> pg_backend_pid()
+          AND state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
+          AND query ILIKE '%${schemaName}%'
+      `).catch(() => {});
+
       const swapClient = await this.db.getClient();
       try {
         await swapClient.query('BEGIN');
