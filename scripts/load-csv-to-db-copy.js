@@ -189,20 +189,42 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
     });
 
     // Pipe GCS stream through progress tracker to COPY stream
+    // Watchdog: if no bytes flow for 5 minutes, destroy the stream to prevent infinite hang
+    const STALL_TIMEOUT_MS = 5 * 60 * 1000;
+    let lastByteTime = Date.now();
+    let watchdog;
+
+    const resetWatchdog = () => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        gcsStream.destroy(new Error(`COPY stalled: no data for ${STALL_TIMEOUT_MS / 60000} minutes`));
+      }, STALL_TIMEOUT_MS);
+    };
+
+    const originalTransform = progressTransform._transform.bind(progressTransform);
+    progressTransform._transform = function(chunk, encoding, callback) {
+      lastByteTime = Date.now();
+      resetWatchdog();
+      originalTransform(chunk, encoding, callback);
+    };
+
+    resetWatchdog();
+
     await new Promise((resolve, reject) => {
       gcsStream
         .pipe(progressTransform)
         .pipe(copyStream)
         .on('finish', () => {
+          clearTimeout(watchdog);
           const elapsed = (Date.now() - startTime) / 1000;
           const speed = Math.round(totalRows / elapsed);
           process.stdout.write(`  ✅ ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${elapsed.toFixed(1)}s\n`);
           resolve();
         })
-        .on('error', reject);
+        .on('error', (err) => { clearTimeout(watchdog); reject(err); });
 
-      gcsStream.on('error', reject);
-      progressTransform.on('error', reject);
+      gcsStream.on('error', (err) => { clearTimeout(watchdog); reject(err); });
+      progressTransform.on('error', (err) => { clearTimeout(watchdog); reject(err); });
     });
 
     // Return row count (approximate from line count)
