@@ -1,7 +1,7 @@
 package-lock.json
 
 .env
-.env.production
+.env.production*
 .env.cloudsql
 node_modules/
 *.log
