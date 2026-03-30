@@ -2875,10 +2875,14 @@ app.get('/api/admin/data-loader/:schema/data-info', async (req, res) => {
     // Last data date — use pre-aggregated materialized view for fast lookup
     let lastDataDate = null;
     if (schema === 'zer4u') {
-      const dateResult = await db.query(
-        `SELECT MAX(year_month) AS last_month FROM zer4u.mv_sales_by_month`
-      );
-      lastDataDate = dateResult.rows[0]?.last_month || null;
+      try {
+        const dateResult = await db.query(
+          `SELECT MAX(year_month) AS last_month FROM zer4u.mv_sales_by_month`
+        );
+        lastDataDate = dateResult.rows[0]?.last_month || null;
+      } catch {
+        // View may not exist if indexing hasn't completed yet
+      }
     }
 
     res.json({ lastRun, lastDataDate });
