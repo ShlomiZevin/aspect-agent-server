@@ -34,13 +34,19 @@ class DataReloadService {
    */
   async cleanupStaleRuns() {
     try {
+      // Only mark as failed if the run is old enough that it couldn't still be
+      // running on another Cloud Run instance. Cloud Run can spin up a second
+      // instance while an import is in progress; without this guard the new
+      // instance would immediately kill the live run in the DB.
+      // Max import time is ~2 hours, so 3 hours is a safe threshold.
       const result = await this.db.query(`
         UPDATE public.data_reload_runs
         SET status        = 'failed',
             completed_at  = NOW(),
             error_message = 'Server restarted during reload'
         WHERE status = 'running'
-        RETURNING id, schema_name, triggered_by
+          AND started_at < NOW() - INTERVAL '3 hours'
+        RETURNING id, schema_name, triggered_by, started_at
       `);
       if (result.rows.length > 0) {
         for (const r of result.rows) {
@@ -50,10 +56,6 @@ class DataReloadService {
           // kicked off just before a deployment and could still be running on the old revision.
           if (r.triggered_by !== 'index') {
             const ageMinutes = (Date.now() - new Date(r.started_at).getTime()) / 60000;
-            if (ageMinutes < 30) {
-              console.log(`[DataReloadService] Skipping shadow schema drop for run #${r.id} — started ${ageMinutes.toFixed(1)}m ago (too recent)`);
-              continue;
-            }
             const shadowSchema = `${r.schema_name}_new`;
             console.log(`[DataReloadService] Dropping leftover shadow schema ${shadowSchema}...`);
             this.db.query(`DROP SCHEMA IF EXISTS ${shadowSchema} CASCADE`).then(() => {
