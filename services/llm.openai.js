@@ -424,6 +424,8 @@ class OpenAIService {
         tools: crewTools = [],
         toolHandlers = {},
         knowledgeBase = null,
+        temperature,
+        topK,
       } = config;
 
       // Build tools array
@@ -503,6 +505,8 @@ class OpenAIService {
           reasoning: {},
           tools: tools.length > 0 ? tools : undefined,
           max_output_tokens: maxTokens,
+          temperature: temperature != null ? temperature : undefined,
+          top_p: topK != null ? topK : undefined,
           store: false,
           include: ['file_search_call.results'],
           stream: true

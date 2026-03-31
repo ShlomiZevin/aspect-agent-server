@@ -547,7 +547,7 @@ app.get('/api/agents/:agentName/crew/:crewName/prompts/active', async (req, res)
 // Create new prompt version (Save as New Version)
 app.post('/api/agents/:agentName/crew/:crewName/prompts', async (req, res) => {
   const { agentName, crewName } = req.params;
-  const { prompt, name, description, transitionSystemPrompt, model, provider, kbSources, persona, thinkingPrompt } = req.body;
+  const { prompt, name, description, transitionSystemPrompt, model, provider, kbSources, persona, thinkingPrompt, temperature, topK } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: 'Prompt text is required' });
@@ -561,7 +561,7 @@ app.post('/api/agents/:agentName/crew/:crewName/prompts', async (req, res) => {
       name || null,
       null, // createdBy
       transitionSystemPrompt || null,
-      { model: model || null, provider: provider || null, kbSources: kbSources || null, persona: persona || null, thinkingPrompt: thinkingPrompt || null, description: description || null }
+      { model: model || null, provider: provider || null, kbSources: kbSources || null, persona: persona || null, thinkingPrompt: thinkingPrompt || null, description: description || null, temperature: temperature ?? null, topK: topK ?? null }
     );
 
     console.log(`✅ Created new prompt version: ${crewName} v${newVersion.version}`);
@@ -578,7 +578,7 @@ app.post('/api/agents/:agentName/crew/:crewName/prompts', async (req, res) => {
 // Update existing prompt version (Save/Overwrite)
 app.patch('/api/agents/:agentName/crew/:crewName/prompts/:versionId', async (req, res) => {
   const { agentName, crewName, versionId } = req.params;
-  const { prompt, description, transitionSystemPrompt, model, provider, kbSources, persona, thinkingPrompt } = req.body;
+  const { prompt, description, transitionSystemPrompt, model, provider, kbSources, persona, thinkingPrompt, temperature, topK } = req.body;
 
   if (!prompt) {
     return res.status(400).json({ error: 'Prompt text is required' });
@@ -591,7 +591,7 @@ app.patch('/api/agents/:agentName/crew/:crewName/prompts/:versionId', async (req
       parseInt(versionId),
       prompt,
       transitionSystemPrompt,
-      { model, provider, kbSources, persona, thinkingPrompt, description }
+      { model, provider, kbSources, persona, thinkingPrompt, description, temperature, topK }
     );
 
     console.log(`✅ Updated prompt version: ${crewName} v${updated.version}`);
@@ -1520,7 +1520,7 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled, profilerFreshStart } = req.body;
+  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled, temperatureOverrides, topKOverrides, profilerFreshStart } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -1621,6 +1621,8 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         thinkingPromptOverrides: thinkingPromptOverrides || {},
         thinkingModelOverrides: thinkingModelOverrides || {},
         thinkerDisabled: thinkerDisabled || {},
+        temperatureOverrides: temperatureOverrides || {},
+        topKOverrides: topKOverrides || {},
         agentId: agent?.id || null
       })) {
         // Check if chunk is a function call event (object) or text (string)

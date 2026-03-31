@@ -96,6 +96,8 @@ class ClaudeService {
       tools: crewTools = [],
       toolHandlers = {},
       anthropicDocuments = [], // Anthropic file IDs to inject as document blocks
+      temperature,
+      topK,
     } = config;
 
     try {
@@ -177,6 +179,9 @@ class ClaudeService {
           system: systemText,
           messages: currentMessages
         };
+
+        if (temperature != null) requestParams.temperature = Math.min(temperature, 1.0); // Claude max is 1.0
+        if (topK != null) requestParams.top_k = topK;
 
         // Add tools if provided
         if (tools.length > 0) {

@@ -60,6 +60,8 @@ class PromptService {
         kbSources: crewPrompts.kbSources,
         persona: crewPrompts.persona,
         thinkingPrompt: crewPrompts.thinkingPrompt,
+        temperature: crewPrompts.temperature,
+        topK: crewPrompts.topK,
         isActive: crewPrompts.isActive,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
@@ -96,6 +98,8 @@ class PromptService {
         kbSources: crewPrompts.kbSources,
         persona: crewPrompts.persona,
         thinkingPrompt: crewPrompts.thinkingPrompt,
+        temperature: crewPrompts.temperature,
+        topK: crewPrompts.topK,
         isActive: crewPrompts.isActive,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
@@ -134,6 +138,8 @@ class PromptService {
         kbSources: crewPrompts.kbSources,
         persona: crewPrompts.persona,
         thinkingPrompt: crewPrompts.thinkingPrompt,
+        temperature: crewPrompts.temperature,
+        topK: crewPrompts.topK,
         isActive: crewPrompts.isActive,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
@@ -166,6 +172,8 @@ class PromptService {
         kbSources: prompt.kbSources,
         persona: prompt.persona,
         thinkingPrompt: prompt.thinkingPrompt,
+        temperature: prompt.temperature,
+        topK: prompt.topK,
         isActive: prompt.isActive,
         createdAt: prompt.createdAt?.toISOString(),
         updatedAt: prompt.updatedAt?.toISOString(),
@@ -187,7 +195,7 @@ class PromptService {
    * @param {number} createdBy - User ID who created this version
    * @param {string} transitionSystemPrompt - System prompt injected on crew transition
    */
-  async createPromptVersion(agentName, crewMemberName, prompt, name = null, createdBy = null, transitionSystemPrompt = null, { model = null, provider = null, kbSources = null, persona = null, thinkingPrompt = null, description = null } = {}) {
+  async createPromptVersion(agentName, crewMemberName, prompt, name = null, createdBy = null, transitionSystemPrompt = null, { model = null, provider = null, kbSources = null, persona = null, thinkingPrompt = null, description = null, temperature = null, topK = null } = {}) {
     if (!this.drizzle) this.initialize();
 
     const agent = await this.getAgentByName(agentName);
@@ -221,6 +229,8 @@ class PromptService {
         kbSources,
         persona,
         thinkingPrompt,
+        temperature,
+        topK,
         isActive: true,
         createdBy,
       })
@@ -238,6 +248,8 @@ class PromptService {
       kbSources: newVersion.kbSources,
       persona: newVersion.persona,
       thinkingPrompt: newVersion.thinkingPrompt,
+      temperature: newVersion.temperature,
+      topK: newVersion.topK,
       isActive: newVersion.isActive,
       createdAt: newVersion.createdAt?.toISOString(),
       updatedAt: newVersion.updatedAt?.toISOString(),
@@ -252,7 +264,7 @@ class PromptService {
    * @param {string} prompt - Main prompt text
    * @param {string} transitionSystemPrompt - System prompt injected on crew transition (optional)
    */
-  async updatePromptVersion(agentName, crewMemberName, versionId, prompt, transitionSystemPrompt = undefined, { model = undefined, provider = undefined, kbSources = undefined, persona = undefined, thinkingPrompt = undefined, description = undefined } = {}) {
+  async updatePromptVersion(agentName, crewMemberName, versionId, prompt, transitionSystemPrompt = undefined, { model = undefined, provider = undefined, kbSources = undefined, persona = undefined, thinkingPrompt = undefined, description = undefined, temperature = undefined, topK = undefined } = {}) {
     if (!this.drizzle) this.initialize();
 
     const agent = await this.getAgentByName(agentName);
@@ -270,6 +282,8 @@ class PromptService {
     if (persona !== undefined) updateData.persona = persona;
     if (thinkingPrompt !== undefined) updateData.thinkingPrompt = thinkingPrompt;
     if (description !== undefined) updateData.description = description;
+    if (temperature !== undefined) updateData.temperature = temperature;
+    if (topK !== undefined) updateData.topK = topK;
 
     const [updated] = await this.drizzle
       .update(crewPrompts)
@@ -297,6 +311,8 @@ class PromptService {
       kbSources: updated.kbSources,
       persona: updated.persona,
       thinkingPrompt: updated.thinkingPrompt,
+      temperature: updated.temperature,
+      topK: updated.topK,
       isActive: updated.isActive,
       createdAt: updated.createdAt?.toISOString(),
       updatedAt: updated.updatedAt?.toISOString(),

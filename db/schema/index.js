@@ -1,4 +1,4 @@
-const { pgTable, serial, text, timestamp, varchar, jsonb, boolean, integer, date } = require('drizzle-orm/pg-core');
+const { pgTable, serial, text, timestamp, varchar, jsonb, boolean, integer, date, real } = require('drizzle-orm/pg-core');
 
 /**
  * Multi-Agent Platform Database Schema
@@ -157,6 +157,8 @@ const crewPrompts = pgTable('crew_prompts', {
   kbSources: jsonb('kb_sources'),                  // Active KB sources list (array of strings)
   persona: text('persona'),                        // Agent-level persona override for this crew version
   thinkingPrompt: text('thinking_prompt'),         // Thinker prompt for thinking-crew architecture
+  temperature: real('temperature'),                // LLM temperature override (0.0 - 2.0)
+  topK: real('top_k'),                             // LLM top_k override (provider-dependent)
   isActive: boolean('is_active').default(false).notNull(), // Only one version should be active per crew member
   createdBy: integer('created_by').references(() => users.id), // Who created this version
   createdAt: timestamp('created_at').defaultNow().notNull(),

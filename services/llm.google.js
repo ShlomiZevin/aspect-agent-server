@@ -253,6 +253,8 @@ class GoogleService {
       tools: crewTools = [],
       toolHandlers = {},
       knowledgeBase = null,
+      temperature,
+      topK,
     } = config;
 
     // Gemini 2.5 "thinking" models use part of maxOutputTokens for internal
@@ -323,7 +325,8 @@ class GoogleService {
         config: {
           systemInstruction: systemPrompt,
           maxOutputTokens: effectiveMaxTokens,
-          temperature: 0.7,
+          temperature: temperature != null ? temperature : 0.7,
+          topK: topK != null ? topK : undefined,
           tools: geminiTools.length > 0 ? geminiTools : undefined,
           // Thinking models: let the model reason properly for better instruction following
           thinkingConfig: isThinkingModel ? { thinkingBudget: 8192 } : undefined,

@@ -399,6 +399,8 @@ class DispatcherService {
       thinkingPromptOverrides = {}, // Session override: { crewName: thinkingPrompt }
       thinkingModelOverrides = {},  // Session override: { crewName: thinkingModel }
       thinkerDisabled = {},         // Session override: { crewName: true } to disable thinker
+      temperatureOverrides = {},    // Session override: { crewName: number }
+      topKOverrides = {},           // Session override: { crewName: number }
       agentId                      // Agent DB ID for KB resolver
     } = params;
 
@@ -575,6 +577,27 @@ class DispatcherService {
       console.log(`✅ Using session override fallback model for ${crew.name}: ${resolvedFallbackModel}`);
     }
 
+    // ========== RESOLVE TEMPERATURE & TOP_K ==========
+    // Priority: 1. Session override → 2. DB version → 3. undefined (use provider default)
+    let resolvedTemperature = undefined;
+    let resolvedTopK = undefined;
+
+    if (temperatureOverrides[crew.name] != null) {
+      resolvedTemperature = temperatureOverrides[crew.name];
+    } else if (dbPrompt?.temperature != null) {
+      resolvedTemperature = dbPrompt.temperature;
+    }
+
+    if (topKOverrides[crew.name] != null) {
+      resolvedTopK = topKOverrides[crew.name];
+    } else if (dbPrompt?.topK != null) {
+      resolvedTopK = dbPrompt.topK;
+    }
+
+    if (resolvedTemperature != null || resolvedTopK != null) {
+      console.log(`🌡️ LLM params for ${crew.name}: temperature=${resolvedTemperature ?? 'default'}, topK=${resolvedTopK ?? 'default'}`);
+    }
+
     // ========== RESOLVE TRANSITION SYSTEM PROMPT ==========
     // Priority: DB value > code value (same as regular prompt)
     let resolvedTransitionPrompt = crew.transitionSystemPrompt || null;
@@ -709,7 +732,9 @@ class DispatcherService {
       anthropicDocuments: resolvedKB?.provider === 'anthropic' ? (resolvedKB.anthropicFileIds || []) : [],
       agentConfig,
       transitionSystemPrompt: resolvedTransitionPrompt,
-      isNewCrewTransition
+      isNewCrewTransition,
+      temperature: resolvedTemperature,
+      topK: resolvedTopK,
     };
 
     // Emit debug data if requested (before LLM call)
@@ -744,6 +769,8 @@ class DispatcherService {
           transitionPromptInjected: isNewCrewTransition,
           transitionLogic,
           thinkingAdvice: context.thinkingAdvice || null,
+          temperature: resolvedTemperature,
+          topK: resolvedTopK,
         }
       };
     }
