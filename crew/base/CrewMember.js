@@ -149,6 +149,7 @@ class CrewMember {
     this._userId = null;
     this._conversationId = null; // Internal database conversation ID
     this._externalConversationId = null; // External conversation ID (UUID)
+    this._agentName = null; // Agent name (for usage logging)
   }
 
   /**
@@ -346,7 +347,7 @@ class CrewMember {
       let thinkerFallbackUsed = false;
       try {
         console.log(`   🧠 [${this.name}] Running thinker with model: ${primaryThinkingModel}`);
-        const _usageMeta = { crewMember: this.name, conversationId: this._externalConversationId, userId: this._userId };
+        const _usageMeta = { agentName: this._agentName, crewMember: this.name, conversationId: this._externalConversationId, userId: this._userId };
         thinkingAdvice = await thinkingAdvisor.think(
           { thinkingPrompt: enhancedPrompt, context: contextStr },
           { model: primaryThinkingModel, ..._usageMeta }

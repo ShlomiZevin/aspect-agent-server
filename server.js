@@ -2838,12 +2838,15 @@ app.get('/api/admin/usage', async (req, res) => {
     const drizzle = db.getDrizzle();
     const { from, to, agent, process: proc, model, limit: lim = '100', offset: off = '0' } = req.query;
     const { llmUsage } = require('./db/schema');
-    const { desc, and, gte, lte, eq, sql } = require('drizzle-orm');
+    const { desc, and, gte, lte, eq, inArray, sql } = require('drizzle-orm');
 
     const conditions = [];
     if (from) conditions.push(gte(llmUsage.createdAt, new Date(from)));
     if (to) conditions.push(lte(llmUsage.createdAt, new Date(to)));
-    if (agent) conditions.push(eq(llmUsage.agentName, agent));
+    if (agent) {
+      const agents = Array.isArray(agent) ? agent : [agent];
+      conditions.push(agents.length === 1 ? eq(llmUsage.agentName, agents[0]) : inArray(llmUsage.agentName, agents));
+    }
     if (proc) conditions.push(eq(llmUsage.process, proc));
     if (model) conditions.push(eq(llmUsage.model, model));
 
@@ -2868,13 +2871,17 @@ app.get('/api/admin/usage', async (req, res) => {
 app.get('/api/admin/usage/summary', async (req, res) => {
   try {
     const drizzle = db.getDrizzle();
-    const { from, to } = req.query;
+    const { from, to, agent } = req.query;
     const { llmUsage } = require('./db/schema');
-    const { and, gte, lte, sql } = require('drizzle-orm');
+    const { and, gte, lte, eq, inArray, sql } = require('drizzle-orm');
 
     const conditions = [];
     if (from) conditions.push(gte(llmUsage.createdAt, new Date(from)));
     if (to) conditions.push(lte(llmUsage.createdAt, new Date(to)));
+    if (agent) {
+      const agents = Array.isArray(agent) ? agent : [agent];
+      conditions.push(agents.length === 1 ? eq(llmUsage.agentName, agents[0]) : inArray(llmUsage.agentName, agents));
+    }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     // By process

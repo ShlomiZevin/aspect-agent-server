@@ -179,6 +179,7 @@ class DispatcherService {
       const conversation = await conversationService.getConversationByExternalId(conversationId);
       if (conversation?.userId) {
         crew.setContextUser(conversation.userId, conversation.id, conversationId);
+        crew._agentName = agentName;
       }
 
       const existingFields = await agentContextService.getCollectedFields(conversationId);
@@ -414,6 +415,7 @@ class DispatcherService {
     // Set context user for crew's getContext/writeContext methods
     if (conversation?.userId) {
       crew.setContextUser(conversation.userId, conversation.id, conversationId);
+      crew._agentName = agentName;
     }
 
     // ========== LOAD DB PROMPT (needed for persona + prompt resolution) ==========
@@ -934,6 +936,7 @@ class DispatcherService {
       fieldsToCollect: fieldsStillNeeded,
       collectedFields: collectedForExtractor,
       extractionMode: crew.extractionMode,
+      agentName: params.agentName,
       crewMember: crew.name,
       conversationId: params.conversationId,
       userId: crew._userId,
@@ -1005,7 +1008,7 @@ class DispatcherService {
    * @private
    */
   async *_streamCrewWithThinkerFields(crew, params) {
-    const { conversationId } = params;
+    const { conversationId, agentName } = params;
 
     console.log(`🧠 Crew ${crew.name} uses thinker for field extraction (${crew.fieldsToCollect.length} fields)`);
 
@@ -1016,6 +1019,7 @@ class DispatcherService {
     const conversation = await conversationService.getConversationByExternalId(conversationId);
     if (conversation?.userId) {
       crew.setContextUser(conversation.userId, conversation.id, conversationId);
+      crew._agentName = agentName;
     }
 
     // Read the thinker's persisted state (written by onThinkingComplete)
