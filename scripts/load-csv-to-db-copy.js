@@ -193,8 +193,13 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
     });
 
     // Pipe GCS stream through progress tracker to COPY stream
-    // Watchdog: if no bytes flow for 5 minutes, destroy the stream to prevent infinite hang
-    const STALL_TIMEOUT_MS = 5 * 60 * 1000;
+    // Watchdog: if no bytes flow for N minutes, destroy the stream to prevent infinite hang.
+    // Large files (>100 MB) get a longer timeout because Cloud SQL can backpressure for several
+    // minutes while processing a heavy COPY batch — that is normal, not a stall.
+    const LARGE_FILE_THRESHOLD = 100 * 1024 * 1024;
+    const STALL_TIMEOUT_MS = (parseInt(schema.fileSize) || 0) > LARGE_FILE_THRESHOLD
+      ? 15 * 60 * 1000   // 15 min for large files
+      : 5 * 60 * 1000;   // 5 min for small files
     let lastByteTime = Date.now();
     let watchdog;
 
@@ -232,10 +237,15 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
     });
 
     // Return row count (approximate from line count)
-    return Math.max(0, totalRows - 1); // Subtract header line
+    const rowCount = Math.max(0, totalRows - 1); // Subtract header line
+    client.release(); // normal release only on success
+    return rowCount;
 
-  } finally {
-    client.release();
+  } catch (err) {
+    // Destroy the connection — a failed mid-stream COPY leaves the pg protocol
+    // in an undefined state; returning it to the pool would corrupt subsequent files.
+    client.release(err);
+    throw err;
   }
 }
 
