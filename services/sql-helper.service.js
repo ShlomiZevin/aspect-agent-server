@@ -36,7 +36,7 @@ async function translateQuestionToSQL(question, schemaName) {
 
     // Ask Claude to generate SQL
     const response = await anthropic.messages.create({
-      model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514',
+      model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
       max_tokens: 2000,
       messages: [{
         role: 'user',
