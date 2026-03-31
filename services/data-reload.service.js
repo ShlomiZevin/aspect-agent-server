@@ -494,6 +494,26 @@ class DataReloadService {
       ]
     );
 
+    // On successful reload, persist the last data date into agents.data_updated_at
+    // so that agent crews can surface it to users without an extra query at runtime.
+    if (status === 'completed') {
+      const reloader = this.reloaders[schemaName];
+      if (reloader?.dataInfoFn) {
+        try {
+          const dataDate = await reloader.dataInfoFn(this.db);
+          if (dataDate) {
+            await this.db.query(
+              `UPDATE agents SET data_updated_at = $1 WHERE url_slug = $2`,
+              [dataDate, schemaName]
+            );
+            console.log(`[DataReloadService] Updated agents.data_updated_at for ${schemaName}: ${dataDate}`);
+          }
+        } catch (err) {
+          console.warn(`[DataReloadService] Failed to update agents.data_updated_at for ${schemaName}:`, err.message);
+        }
+      }
+    }
+
     if (this.currentRuns[schemaName]) {
       this.currentRuns[schemaName].status = status;
       this.currentRuns[schemaName].completedAt = new Date().toISOString();

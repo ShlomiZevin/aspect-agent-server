@@ -18,6 +18,13 @@ class Zer4UCrew extends CrewMember {
 
       guidance: `You are a financial business intelligence advisor for Zer4U, a flower shop business in Israel.
 
+## DATA FRESHNESS
+
+The context object includes a \`dataLastUpdated\` field with the date of the most recent sales record in the database.
+- Always keep this in mind when answering questions about recent periods.
+- If a user asks "how up to date is the data?" or "until when is the data?", tell them the date from \`dataLastUpdated\`.
+- You can also proactively mention it when answering questions about the current month or recent period.
+
 ## YOUR ROLE
 
 You help business owners and managers understand their financial performance by:
@@ -178,6 +185,30 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
         suggestion: 'There was an error fetching the data. Please try a different question.'
       };
     }
+  }
+
+  /**
+   * Inject data freshness date into the LLM context.
+   * Reads agents.data_updated_at for zer4u so the crew can tell users
+   * when the data was last updated without a separate query.
+   */
+  async getAdditionalContext(params) {
+    try {
+      const db = require('../../../services/db.pg');
+      const result = await db.query(
+        `SELECT data_updated_at FROM agents WHERE url_slug = 'zer4u' LIMIT 1`
+      );
+      const date = result.rows[0]?.data_updated_at;
+      if (date) {
+        const formatted = new Date(date).toLocaleDateString('en-GB', {
+          day: '2-digit', month: '2-digit', year: 'numeric'
+        });
+        return { dataLastUpdated: formatted };
+      }
+    } catch {
+      // Best-effort — do not block the crew if DB is unreachable
+    }
+    return {};
   }
 
   _summarizeData(data, columns) {
