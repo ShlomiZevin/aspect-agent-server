@@ -237,6 +237,34 @@ class DataReloadService {
     return result.rows[0]?.log_entries || [];
   }
 
+  /**
+   * Returns data freshness info: last successful run + last data date.
+   * lastDataDate comes from the reloader's dataInfoFn (schema-specific).
+   */
+  async getDataInfo(schemaName) {
+    const runResult = await this.db.query(
+      `SELECT id, status, triggered_by, started_at, completed_at, total_rows
+       FROM public.data_reload_runs
+       WHERE schema_name = $1 AND status = 'completed'
+       ORDER BY completed_at DESC
+       LIMIT 1`,
+      [schemaName]
+    );
+    const lastRun = runResult.rows[0] || null;
+
+    const reloader = this.reloaders[schemaName];
+    let lastDataDate = null;
+    if (reloader?.dataInfoFn) {
+      try {
+        lastDataDate = await reloader.dataInfoFn(this.db);
+      } catch {
+        // dataInfoFn is optional and best-effort
+      }
+    }
+
+    return { lastRun, lastDataDate };
+  }
+
   /** Returns GCS source files for this schema. */
   async getSourceFiles(schemaName) {
     const reloader = this.reloaders[schemaName];
@@ -316,7 +344,14 @@ class DataReloadService {
       try {
         await swapClient.query('BEGIN');
         await swapClient.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
-        await swapClient.query(`ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old`);
+        // Only rename live schema if it exists (absent on first import or after accidental drop)
+        await swapClient.query(`
+          DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '${schemaName}') THEN
+              EXECUTE 'ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old';
+            END IF;
+          END $$
+        `);
         await swapClient.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
         await swapClient.query('COMMIT');
       } catch (swapErr) {
@@ -458,6 +493,26 @@ class DataReloadService {
         runId,
       ]
     );
+
+    // On successful reload, persist the last data date into agents.data_updated_at
+    // so that agent crews can surface it to users without an extra query at runtime.
+    if (status === 'completed') {
+      const reloader = this.reloaders[schemaName];
+      if (reloader?.dataInfoFn) {
+        try {
+          const dataDate = await reloader.dataInfoFn(this.db);
+          if (dataDate) {
+            await this.db.query(
+              `UPDATE agents SET data_updated_at = $1 WHERE url_slug = $2`,
+              [dataDate, schemaName]
+            );
+            console.log(`[DataReloadService] Updated agents.data_updated_at for ${schemaName}: ${dataDate}`);
+          }
+        } catch (err) {
+          console.warn(`[DataReloadService] Failed to update agents.data_updated_at for ${schemaName}:`, err.message);
+        }
+      }
+    }
 
     if (this.currentRuns[schemaName]) {
       this.currentRuns[schemaName].status = status;

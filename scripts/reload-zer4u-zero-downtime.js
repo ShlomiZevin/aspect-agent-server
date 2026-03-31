@@ -103,4 +103,28 @@ function formatBytes(bytes) {
   return (size / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
 }
 
-module.exports = { loadZer4u, indexZer4u };
+/**
+ * Returns the last date of data in the zer4u sales table.
+ * Uses the functional index on parse_date_ddmmyyyy for fast MAX lookup.
+ * Falls back to mv_sales_by_month if the index isn't available yet.
+ */
+async function getZer4uDataInfo(db) {
+  try {
+    const result = await db.query(
+      `SELECT MAX(parse_date_ddmmyyyy("תאריך מקורי SALES")) AS last_date FROM zer4u.sales`
+    );
+    return result.rows[0]?.last_date || null;
+  } catch {
+    // Fall back to materialized view if sales table or function not available
+    try {
+      const result = await db.query(
+        `SELECT MAX(year_month) AS last_month FROM zer4u.mv_sales_by_month`
+      );
+      return result.rows[0]?.last_month || null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+module.exports = { loadZer4u, indexZer4u, getZer4uDataInfo };
