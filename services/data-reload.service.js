@@ -150,6 +150,57 @@ class DataReloadService {
   }
 
   /**
+   * Idempotent check called by Cloud Scheduler every 15 min.
+   * Starts indexing only if:
+   *   1. Nothing is currently running (in-memory or DB within last 3h)
+   *   2. There is a completed cron import with no run started after it
+   * Returns { action: 'started'|'skipped', reason?, runId? }
+   */
+  async ensureIndexed(schemaName) {
+    const current = this.currentRuns[schemaName];
+    if (current && current.status === 'running') {
+      return { action: 'skipped', reason: `${current.phase} already running in memory` };
+    }
+
+    const activeRes = await this.db.query(
+      `SELECT id FROM public.data_reload_runs
+       WHERE schema_name = $1 AND status = 'running' AND started_at > NOW() - INTERVAL '3 hours'
+       LIMIT 1`,
+      [schemaName]
+    );
+    if (activeRes.rows.length > 0) {
+      return { action: 'skipped', reason: `run #${activeRes.rows[0].id} still running in DB` };
+    }
+
+    const importRes = await this.db.query(
+      `SELECT id, completed_at FROM public.data_reload_runs
+       WHERE schema_name = $1 AND status = 'completed'
+         AND triggered_by = 'cron' AND total_files IS NOT NULL
+       ORDER BY completed_at DESC LIMIT 1`,
+      [schemaName]
+    );
+    if (importRes.rows.length === 0) {
+      return { action: 'skipped', reason: 'no completed cron import found' };
+    }
+    const lastImport = importRes.rows[0];
+
+    const afterRes = await this.db.query(
+      `SELECT id, status FROM public.data_reload_runs
+       WHERE schema_name = $1 AND started_at > $2
+       LIMIT 1`,
+      [schemaName, lastImport.completed_at]
+    );
+    if (afterRes.rows.length > 0) {
+      const r = afterRes.rows[0];
+      return { action: 'skipped', reason: `run #${r.id} (${r.status}) already exists after last import` };
+    }
+
+    const runId = await this.startIndexing(schemaName, 'cron');
+    console.log(`[DataReloadService] ensure-indexed: started run #${runId} for ${schemaName} after import #${lastImport.id}`);
+    return { action: 'started', runId, afterImport: lastImport.id };
+  }
+
+  /**
    * Full reload: import + swap + indexing, chained automatically.
    * Used by nightly cron / Cloud Scheduler via POST /reload.
    * Returns importRunId immediately; both phases run in background.

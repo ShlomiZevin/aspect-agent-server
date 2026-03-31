@@ -3066,6 +3066,22 @@ app.post('/api/admin/data-loader/:schema/index', async (req, res) => {
   }
 });
 
+// POST /api/admin/data-loader/:schema/ensure-indexed — called by Cloud Scheduler every 15 min
+app.post('/api/admin/data-loader/:schema/ensure-indexed', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const dataReloadService = req.app.get('dataReloadService');
+    if (!dataReloadService?.reloaders[schema]) {
+      return res.status(404).json({ error: `Unknown schema: ${schema}` });
+    }
+    const result = await dataReloadService.ensureIndexed(schema);
+    res.json(result);
+  } catch (err) {
+    console.error(`[ensure-indexed] error:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/admin/data-loader/:schema/reload — backward compat: both phases
 app.post('/api/admin/data-loader/:schema/reload', async (req, res) => {
   try {
