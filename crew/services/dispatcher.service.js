@@ -933,7 +933,10 @@ class DispatcherService {
       recentMessages,
       fieldsToCollect: fieldsStillNeeded,
       collectedFields: collectedForExtractor,
-      extractionMode: crew.extractionMode
+      extractionMode: crew.extractionMode,
+      crewMember: crew.name,
+      conversationId: params.conversationId,
+      userId: crew._userId,
     });
 
     // Identify newly extracted fields

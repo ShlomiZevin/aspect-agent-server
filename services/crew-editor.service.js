@@ -229,13 +229,14 @@ class CrewEditorService {
     console.log(`🤖 [CrewEditor] Calling Claude... (user content: ${userContent.length} chars)`);
 
     // Call Claude
-    const response = await claudeService.sendOneShot(
+    const rawResponse = await claudeService.sendOneShot(
       systemPrompt,
       userContent,
       {
         maxTokens: 8192
       }
     );
+    const response = (rawResponse && typeof rawResponse === 'object' && 'text' in rawResponse) ? rawResponse.text : rawResponse;
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`✅ [CrewEditor] Claude responded in ${elapsed}s (${response.length} chars)`);
@@ -955,11 +956,12 @@ If the fix requires changes to infrastructure, the dispatcher, the base class, t
       ? this._buildConversationContext(claudeMessages)
       : claudeMessages[0]?.content || '';
 
-    const response = await claudeService.sendOneShot(
+    const rawResponse = await claudeService.sendOneShot(
       systemPrompt,
       userContent,
       { model: mode === 'generate' ? 'claude-opus-4-6' : 'claude-sonnet-4-6', maxTokens: mode === 'generate' ? 16384 : 2048 }
     );
+    const response = (rawResponse && typeof rawResponse === 'object' && 'text' in rawResponse) ? rawResponse.text : rawResponse;
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`✅ [Playground] Claude responded in ${elapsed}s (${response.length} chars)`);

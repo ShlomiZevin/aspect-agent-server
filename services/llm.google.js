@@ -229,7 +229,13 @@ class GoogleService {
         },
       });
 
-      return response.text || '';
+      const text = response.text || '';
+      const um = response.usageMetadata;
+      const usage = um ? {
+        inputTokens: um.promptTokenCount || 0,
+        outputTokens: um.candidatesTokenCount || 0,
+      } : null;
+      return { text, usage };
     } catch (error) {
       console.error('❌ Google OneShot Error:', error.message);
       throw new Error(`Failed to get Google response: ${error.message}`);
@@ -347,6 +353,7 @@ class GoogleService {
       // Gemini 2.5 sometimes outputs "THOUGHT:..." as plain text — buffer and strip it
       let fileSearchResultsEmitted = false;
       let chunkCount = 0;
+      let lastUsage = null;          // track last usage metadata for logging
       let thoughtBuffer = '';        // buffer to detect THOUGHT prefix
       let thoughtStripped = false;   // once determined, stop buffering
       const dupeTrace = [];          // TODO: REMOVE - temporary tracing for duplicate response bug (see [DUPE-DETECT] below)
@@ -365,6 +372,7 @@ class GoogleService {
           }
         }
         if (usage) {
+          lastUsage = usage;
           console.log(`📊 Google usage: prompt=${usage.promptTokenCount}, output=${usage.candidatesTokenCount}, thoughts=${usage.thoughtsTokenCount || 0}, total=${usage.totalTokenCount}`);
         }
 
@@ -567,6 +575,11 @@ class GoogleService {
       }
 
       console.log(`✅ Google streaming complete. Total reply: ${fullReply.length} chars, API calls: ${apiCallCount}`);
+
+      // Yield usage event for tracking (last chunk's usage has cumulative totals)
+      if (lastUsage) {
+        yield { type: 'usage', inputTokens: lastUsage.promptTokenCount || 0, outputTokens: lastUsage.candidatesTokenCount || 0 };
+      }
     } catch (error) {
       console.error('❌ Google Streaming Error:', error.message);
       const err = new Error(`Failed to stream Google response: ${error.message}`);

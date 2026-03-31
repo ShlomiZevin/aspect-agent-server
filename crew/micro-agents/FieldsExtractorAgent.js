@@ -102,7 +102,7 @@ class FieldsExtractorAgent {
    * @param {string} params.extractionMode - 'conversational' (default) or 'form'
    * @returns {Promise<Object>} - { extractedFields: {}, corrections: {}, remainingFields: [] }
    */
-  async extract({ recentMessages, fieldsToCollect, collectedFields, extractionMode = 'conversational' }) {
+  async extract({ recentMessages, fieldsToCollect, collectedFields, extractionMode = 'conversational', agentName, crewMember, conversationId, userId }) {
     const isFormMode = extractionMode === 'form';
     const systemPrompt = isFormMode ? FORM_SYSTEM_PROMPT : CONVERSATIONAL_SYSTEM_PROMPT;
 
@@ -173,10 +173,11 @@ Extract any field values from the conversation above. Return JSON.`;
       console.log(`   🔍 [FieldsExtractor] Messages count: ${relevantMessages.length}`);
       console.log(`   🔍 [FieldsExtractor] Messages:\n${messagesText}`);
 
+      const _usageMeta = { agentName, crewMember, conversationId, userId };
       let responseText = await llmService.sendOneShot(
         systemPrompt,
         userMessage,
-        { model, maxTokens: 1024, jsonOutput: true, context: 'field-extractor' }
+        { model, maxTokens: 1024, jsonOutput: true, context: 'field_extractor', ..._usageMeta }
       );
 
       // Retry once if response is empty (transient API failure)
@@ -185,7 +186,7 @@ Extract any field values from the conversation above. Return JSON.`;
         responseText = await llmService.sendOneShot(
           systemPrompt,
           userMessage,
-          { model, maxTokens: 1024, jsonOutput: true, context: 'field-extractor' }
+          { model, maxTokens: 1024, jsonOutput: true, context: 'field_extractor', ..._usageMeta }
         );
       }
 

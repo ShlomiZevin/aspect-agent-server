@@ -382,6 +382,21 @@ const testRuns = pgTable('test_runs', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// LLM usage tracking — token consumption per call
+const llmUsage = pgTable('llm_usage', {
+  id: serial('id').primaryKey(),
+  agentName: varchar('agent_name', { length: 100 }),
+  crewMember: varchar('crew_member', { length: 100 }),
+  process: varchar('process', { length: 50 }).notNull(), // conversation, thinker, field_extractor, profiler
+  model: varchar('model', { length: 100 }).notNull(),
+  provider: varchar('provider', { length: 50 }).notNull(), // openai, anthropic, google
+  inputTokens: integer('input_tokens').default(0),
+  outputTokens: integer('output_tokens').default(0),
+  conversationId: varchar('conversation_id', { length: 255 }),
+  userId: varchar('user_id', { length: 255 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -408,4 +423,5 @@ module.exports = {
   dynamicKBAttachments,
   testConfigs,
   testRuns,
+  llmUsage,
 };

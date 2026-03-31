@@ -515,9 +515,18 @@ class OpenAIService {
         let fullReply = '';
         const pendingFunctionCalls = [];
         let currentFunctionCall = null;
+        let oaiInputTokens = 0;
+        let oaiOutputTokens = 0;
 
         // Yield each chunk as it arrives
         for await (const chunk of stream) {
+          // Track usage from completed response
+          if (chunk.type === 'response.completed' && chunk.response?.usage) {
+            const u = chunk.response.usage;
+            oaiInputTokens = u.input_tokens || 0;
+            oaiOutputTokens = u.output_tokens || 0;
+          }
+
           // Handle error events from OpenAI stream
           if (chunk.type === 'error') {
             console.error(`❌ OpenAI stream error event:`, JSON.stringify(chunk));
@@ -659,6 +668,9 @@ class OpenAIService {
           // Continue to next iteration
         } else {
           console.log(`✅ Crew streaming complete. Total reply length: ${fullReply.length}`);
+          if (oaiInputTokens || oaiOutputTokens) {
+            yield { type: 'usage', inputTokens: oaiInputTokens, outputTokens: oaiOutputTokens };
+          }
           break;
         }
       }
@@ -921,7 +933,11 @@ class OpenAIService {
       if (!text) {
         console.warn(`⚠️ OpenAI OneShot: empty response. Status: ${response.status}, output types: ${response.output.map(o => o.type).join(', ')}`);
       }
-      return text;
+      const usage = response.usage ? {
+        inputTokens: response.usage.input_tokens || 0,
+        outputTokens: response.usage.output_tokens || 0,
+      } : null;
+      return { text, usage };
     } catch (error) {
       console.error('❌ OpenAI OneShot Error:', error.message);
       throw new Error(`Failed to get one-shot response: ${error.message}`);

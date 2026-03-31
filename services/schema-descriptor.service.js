@@ -79,7 +79,7 @@ Format the description in a clear, structured way.`;
 
       console.log(`  Generating description with Claude...`);
 
-      const description = await claudeService.sendOneShot(
+      const rawResult = await claudeService.sendOneShot(
         systemPrompt,
         userMessage,
         {
@@ -87,6 +87,7 @@ Format the description in a clear, structured way.`;
           maxTokens: 8192
         }
       );
+      const description = (rawResult && typeof rawResult === 'object' && 'text' in rawResult) ? rawResult.text : rawResult;
 
       console.log(`  ✅ Generated ${description.length} characters`);
 

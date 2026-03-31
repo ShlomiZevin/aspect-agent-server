@@ -50,10 +50,11 @@ class ProfilerAgent {
     try {
       console.log(`   📊 [Profiler] Running with model: ${model}`);
 
+      const { agentName, crewMember, conversationId, userId, ...restOpts } = options;
       const responseText = await llmService.sendOneShot(
         profilerPrompt,
         contextMessage,
-        { model, maxTokens, jsonOutput: true, context: 'profiler' }
+        { model, maxTokens, jsonOutput: true, context: 'profiler', agentName, crewMember, conversationId, userId }
       );
 
       console.log(`   📊 [Profiler] Response received (${responseText.length} chars)`);

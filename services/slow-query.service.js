@@ -170,10 +170,11 @@ Return a JSON object with exactly these fields:
           : `EXPLAIN (FORMAT JSON):\n${JSON.stringify(plan, null, 2)}`,
       ].join('\n');
 
-      const responseText = await claudeService.sendOneShot(systemPrompt, userMessage, {
+      const rawResult = await claudeService.sendOneShot(systemPrompt, userMessage, {
         jsonOutput: true,
         maxTokens: 1024,
       });
+      const responseText = (rawResult && typeof rawResult === 'object' && 'text' in rawResult) ? rawResult.text : rawResult;
 
       let clean = responseText.trim();
       if (clean.startsWith('```')) {

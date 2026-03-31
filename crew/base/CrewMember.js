@@ -346,9 +346,10 @@ class CrewMember {
       let thinkerFallbackUsed = false;
       try {
         console.log(`   🧠 [${this.name}] Running thinker with model: ${primaryThinkingModel}`);
+        const _usageMeta = { crewMember: this.name, conversationId: this._externalConversationId, userId: this._userId };
         thinkingAdvice = await thinkingAdvisor.think(
           { thinkingPrompt: enhancedPrompt, context: contextStr },
-          { model: primaryThinkingModel }
+          { model: primaryThinkingModel, ..._usageMeta }
         );
       } catch (err) {
         const isRetryable = _isThinkerRetryable(err);
@@ -358,7 +359,7 @@ class CrewMember {
           try {
             thinkingAdvice = await thinkingAdvisor.think(
               { thinkingPrompt: enhancedPrompt, context: contextStr },
-              { model: fallbackModel }
+              { model: fallbackModel, ..._usageMeta }
             );
             thinkerModelUsed = fallbackModel;
             thinkerFallbackUsed = true;

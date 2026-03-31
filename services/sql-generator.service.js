@@ -33,7 +33,7 @@ class SQLGeneratorService {
       console.log(`   Calling Claude to generate SQL...`);
 
       // Step 3: Call Claude
-      const response = await claudeService.sendOneShot(
+      const rawResponse = await claudeService.sendOneShot(
         systemPrompt,
         userMessage,
         {
@@ -42,6 +42,7 @@ class SQLGeneratorService {
           jsonOutput: true
         }
       );
+      const response = (rawResponse && typeof rawResponse === 'object' && 'text' in rawResponse) ? rawResponse.text : rawResponse;
 
       // Step 4: Parse response
       const result = this._parseResponse(response);

@@ -2,6 +2,7 @@ const openaiService = require('./llm.openai');
 const claudeService = require('./llm.claude');
 const googleService = require('./llm.google');
 const functionRegistry = require('./function-registry');
+const { logUsage } = require('./usageLogger');
 
 /**
  * Main LLM service that routes requests to specific providers
@@ -137,7 +138,25 @@ class LLMService {
   async sendOneShot(instructions, message, options = {}) {
     // Detect provider from model name (use context from options for logging)
     const provider = this._getProviderForModel(options.model, options.context || 'one-shot');
-    return provider.sendOneShot(instructions, message, options);
+    const result = await provider.sendOneShot(instructions, message, options);
+
+    // Providers return { text, usage } — log usage and return just text for backward compat
+    if (result && typeof result === 'object' && 'text' in result) {
+      if (result.usage) {
+        logUsage({
+          process: options.context || 'one-shot',
+          model: options.model || 'unknown',
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          agentName: options.agentName,
+          crewMember: options.crewMember,
+          conversationId: options.conversationId,
+          userId: options.userId,
+        });
+      }
+      return result.text;
+    }
+    return result; // fallback if provider returns raw string
   }
 
   /**
@@ -186,7 +205,22 @@ class LLMService {
    * @returns {Promise<string>} - The response text
    */
   async claudeOneShot(systemPrompt, message, options = {}) {
-    return this.claude.sendOneShot(systemPrompt, message, options);
+    const result = await this.claude.sendOneShot(systemPrompt, message, options);
+    if (result && typeof result === 'object' && 'text' in result) {
+      if (result.usage) {
+        logUsage({
+          process: options.context || 'claude-one-shot',
+          model: options.model || 'claude-sonnet-4-6',
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          agentName: options.agentName,
+          conversationId: options.conversationId,
+          userId: options.userId,
+        });
+      }
+      return result.text;
+    }
+    return result;
   }
 
 }

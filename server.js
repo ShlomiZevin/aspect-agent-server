@@ -1424,7 +1424,7 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
     const profilerStart = Date.now();
     const result = await profilerAgent.run(
       { profilerPrompt, conversationHistory, existingProfile },
-      { model: profilerModel, maxTokens: profilerMaxTokens }
+      { model: profilerModel, maxTokens: profilerMaxTokens, agentName, conversationId, userId: dbUserId }
     );
     const profilerDurationSec = ((Date.now() - profilerStart) / 1000).toFixed(1);
 
@@ -1579,6 +1579,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     let fullReply = '';
     let currentCrewName = null;
     let modelUsedData = null; // Tracks which model actually responded (primary or fallback)
+    let streamUsageData = null; // Tracks token usage from streaming response
 
     if (hasCrew) {
       // ========== CREW-BASED ROUTING ==========
@@ -1707,6 +1708,12 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             sendSSE(chunk);
             // Don't fall through to the generic sendSSE below
             continue; // eslint-disable-line no-continue
+          }
+
+          // Handle usage event from streaming providers — store for logging after model_used
+          if (chunk.type === 'usage') {
+            streamUsageData = { inputTokens: chunk.inputTokens || 0, outputTokens: chunk.outputTokens || 0 };
+            continue;
           }
 
           // Handle inline crew transition (pre-transfer from dispatcher)
@@ -1908,6 +1915,22 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
 
     // End thinking context and save to database
     await thinkingService.endContext(conversationId);
+
+    // Log streaming usage if captured
+    if (streamUsageData) {
+      const streamModel = modelUsedData?.modelUsed || modelUsedData?.model || 'unknown';
+      const { logUsage } = require('./services/usageLogger');
+      logUsage({
+        process: 'conversation',
+        model: streamModel,
+        inputTokens: streamUsageData.inputTokens,
+        outputTokens: streamUsageData.outputTokens,
+        agentName: agentNameToUse,
+        crewMember: currentCrewName,
+        conversationId,
+        userId: userId || null,
+      });
+    }
 
     // Forward response to WhatsApp if user is a linked WhatsApp user
     if (fullReply && userId && userId.startsWith('wa_')) {
@@ -2804,6 +2827,85 @@ app.post('/api/admin/optimization-jobs', async (req, res) => {
   } catch (err) {
     console.error('❌ Error creating optimization job:', err.message);
     res.status(400).json({ error: err.message });
+  }
+});
+
+// ========== LLM USAGE ENDPOINTS ==========
+
+// GET /api/admin/usage — paginated usage rows with filters
+app.get('/api/admin/usage', async (req, res) => {
+  try {
+    const drizzle = db.getDrizzle();
+    const { from, to, agent, process: proc, model, limit: lim = '100', offset: off = '0' } = req.query;
+    const { llmUsage } = require('./db/schema');
+    const { desc, and, gte, lte, eq, sql } = require('drizzle-orm');
+
+    const conditions = [];
+    if (from) conditions.push(gte(llmUsage.createdAt, new Date(from)));
+    if (to) conditions.push(lte(llmUsage.createdAt, new Date(to)));
+    if (agent) conditions.push(eq(llmUsage.agentName, agent));
+    if (proc) conditions.push(eq(llmUsage.process, proc));
+    if (model) conditions.push(eq(llmUsage.model, model));
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const rows = await drizzle.select().from(llmUsage)
+      .where(where)
+      .orderBy(desc(llmUsage.createdAt))
+      .limit(parseInt(lim))
+      .offset(parseInt(off));
+
+    const [{ count }] = await drizzle.select({ count: sql`count(*)::int` }).from(llmUsage).where(where);
+
+    res.json({ rows, total: count });
+  } catch (err) {
+    console.error('❌ Usage fetch error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/usage/summary — aggregated totals
+app.get('/api/admin/usage/summary', async (req, res) => {
+  try {
+    const drizzle = db.getDrizzle();
+    const { from, to } = req.query;
+    const { llmUsage } = require('./db/schema');
+    const { and, gte, lte, sql } = require('drizzle-orm');
+
+    const conditions = [];
+    if (from) conditions.push(gte(llmUsage.createdAt, new Date(from)));
+    if (to) conditions.push(lte(llmUsage.createdAt, new Date(to)));
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // By process
+    const byProcess = await drizzle.select({
+      process: llmUsage.process,
+      count: sql`count(*)::int`,
+      totalInput: sql`coalesce(sum(${llmUsage.inputTokens}), 0)::int`,
+      totalOutput: sql`coalesce(sum(${llmUsage.outputTokens}), 0)::int`,
+    }).from(llmUsage).where(where).groupBy(llmUsage.process);
+
+    // By model
+    const byModel = await drizzle.select({
+      model: llmUsage.model,
+      provider: llmUsage.provider,
+      count: sql`count(*)::int`,
+      totalInput: sql`coalesce(sum(${llmUsage.inputTokens}), 0)::int`,
+      totalOutput: sql`coalesce(sum(${llmUsage.outputTokens}), 0)::int`,
+    }).from(llmUsage).where(where).groupBy(llmUsage.model, llmUsage.provider);
+
+    // By day
+    const byDay = await drizzle.select({
+      day: sql`date_trunc('day', ${llmUsage.createdAt})::date`,
+      count: sql`count(*)::int`,
+      totalInput: sql`coalesce(sum(${llmUsage.inputTokens}), 0)::int`,
+      totalOutput: sql`coalesce(sum(${llmUsage.outputTokens}), 0)::int`,
+    }).from(llmUsage).where(where).groupBy(sql`date_trunc('day', ${llmUsage.createdAt})::date`).orderBy(sql`date_trunc('day', ${llmUsage.createdAt})::date`);
+
+    res.json({ byProcess, byModel, byDay });
+  } catch (err) {
+    console.error('❌ Usage summary error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -3817,10 +3919,11 @@ EXAMPLE OUTPUT:
   {"id":"msg_4","senderName":"Agent","text":"Of course! Let me check that for you.","side":"left","timestamp":"Tue, 2:02 PM"}
 ]`;
 
-    const response = await llmService.claude.sendOneShot(systemPrompt, text, {
+    const rawResponse = await llmService.claude.sendOneShot(systemPrompt, text, {
       jsonOutput: true,
       maxTokens: 4096
     });
+    const response = (rawResponse && typeof rawResponse === 'object' && 'text' in rawResponse) ? rawResponse.text : rawResponse;
 
     // Parse the response
     let messages;

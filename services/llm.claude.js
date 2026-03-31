@@ -66,7 +66,12 @@ class ClaudeService {
 
       // Extract text from response
       const textContent = response.content.find(c => c.type === 'text');
-      return textContent?.text || '';
+      const text = textContent?.text || '';
+      const usage = response.usage ? {
+        inputTokens: response.usage.input_tokens || 0,
+        outputTokens: response.usage.output_tokens || 0,
+      } : null;
+      return { text, usage };
     } catch (error) {
       console.error('❌ Claude OneShot Error:', error.message);
       throw new Error(`Failed to get Claude response: ${error.message}`);
@@ -200,8 +205,19 @@ class ClaudeService {
 
         let fullReply = '';
         const pendingToolCalls = [];
+        let claudeInputTokens = 0;
+        let claudeOutputTokens = 0;
 
         for await (const event of stream) {
+          // Track usage from message events
+          if (event.type === 'message_start' && event.message?.usage) {
+            claudeInputTokens += event.message.usage.input_tokens || 0;
+            claudeOutputTokens += event.message.usage.output_tokens || 0;
+          }
+          if (event.type === 'message_delta' && event.usage) {
+            claudeOutputTokens += event.usage.output_tokens || 0;
+          }
+
           // Handle text delta
           if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
             const text = event.delta.text;
@@ -305,6 +321,10 @@ class ClaudeService {
         } else {
           // No tool calls - done
           console.log(`✅ Claude streaming complete. Total reply length: ${fullReply.length}`);
+          // Yield usage event for tracking
+          if (claudeInputTokens || claudeOutputTokens) {
+            yield { type: 'usage', inputTokens: claudeInputTokens, outputTokens: claudeOutputTokens };
+          }
           break;
         }
       }
@@ -359,10 +379,11 @@ class ClaudeService {
       console.log(`🤖 Generating crew config for agent "${agentName}" (description: ${description.length} chars)`);
 
       // Call Claude for generation
-      const response = await this.sendOneShot(systemPrompt, userMessage, {
+      const result = await this.sendOneShot(systemPrompt, userMessage, {
         maxTokens: 8192,
         jsonOutput: true
       });
+      const response = (result && typeof result === 'object' && 'text' in result) ? result.text : result;
 
       // Parse and validate the response
       const crewConfig = this._parseAndValidateCrewConfig(response);
