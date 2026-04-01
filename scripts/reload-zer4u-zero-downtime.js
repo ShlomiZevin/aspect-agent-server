@@ -111,7 +111,7 @@ function formatBytes(bytes) {
 async function getZer4uDataInfo(db) {
   try {
     const result = await db.query(
-      `SELECT MAX(parse_date_ddmmyyyy("תאריך מקורי SALES")) AS last_date FROM zer4u.sales`
+      `SELECT TO_CHAR(MAX(zer4u.parse_date_ddmmyyyy("תאריך מקורי SALES")), 'YYYY-MM') AS last_date FROM zer4u.sales`
     );
     return result.rows[0]?.last_date || null;
   } catch {
