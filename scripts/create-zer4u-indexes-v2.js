@@ -119,7 +119,7 @@ async function schemaExists(pool, schemaName) {
   return r.rows.length > 0;
 }
 
-async function createIndexes(schemaName = 'zer4u', emitLog = null) {
+async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSchema = null) {
   const log = (msg) => {
     console.log(msg);
     if (emitLog) emitLog('creating_indexes', msg);
@@ -146,15 +146,24 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null) {
     // 1. Create helper functions required by expression indexes
     await client.query(getSetupSQL(schemaName));
 
-    // 2. Load index list — try target schema first, fallback to _old, then bootstrap
+    // 2. Load index list — use referenceSchema if provided (post-import case where
+    //    schemaName is the shadow and referenceSchema is the live schema with all DDL),
+    //    otherwise try target schema first, fallback to _old, then bootstrap
     let sourceSchema = schemaName;
-    let indexes = await loadIndexesFromSchema(pool, schemaName);
-    if (indexes.length === 0) {
-      const oldSchema = `${schemaName}_old`;
-      if (await schemaExists(pool, oldSchema)) {
-        log(`No indexes in ${schemaName}, reading DDL from ${oldSchema}...`);
-        sourceSchema = oldSchema;
-        indexes = await loadIndexesFromSchema(pool, oldSchema);
+    let indexes = [];
+    if (referenceSchema && await schemaExists(pool, referenceSchema)) {
+      log(`Reading index DDL from reference schema ${referenceSchema}...`);
+      sourceSchema = referenceSchema;
+      indexes = await loadIndexesFromSchema(pool, referenceSchema);
+    } else {
+      indexes = await loadIndexesFromSchema(pool, schemaName);
+      if (indexes.length === 0) {
+        const oldSchema = `${schemaName}_old`;
+        if (await schemaExists(pool, oldSchema)) {
+          log(`No indexes in ${schemaName}, reading DDL from ${oldSchema}...`);
+          sourceSchema = oldSchema;
+          indexes = await loadIndexesFromSchema(pool, oldSchema);
+        }
       }
     }
 
