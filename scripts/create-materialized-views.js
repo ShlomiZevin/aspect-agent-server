@@ -23,6 +23,24 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
   try {
     log(`Creating materialized views for ${s}...`);
 
+    // Drop orphaned composite types left by previously aborted runs.
+    // PostgreSQL creates a composite type for each matview; if the server
+    // crashed mid-CREATE the type survives even though the view doesn't,
+    // causing "duplicate key on pg_type" on the next attempt.
+    await client.query(`
+      DO $$ DECLARE r RECORD;
+      BEGIN
+        FOR r IN
+          SELECT t.typname
+          FROM pg_type t
+          JOIN pg_namespace n ON n.oid = t.typnamespace
+          WHERE n.nspname = '${s}' AND t.typtype = 'c' AND t.typname LIKE 'mv_%'
+        LOOP
+          EXECUTE 'DROP TYPE IF EXISTS ${s}.' || quote_ident(r.typname) || ' CASCADE';
+        END LOOP;
+      END $$
+    `);
+
     // 1. Sales by store
     log('[1/6] Creating mv_sales_by_store...');
     await client.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_store CASCADE`);
