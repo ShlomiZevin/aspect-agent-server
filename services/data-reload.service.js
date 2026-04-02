@@ -380,7 +380,7 @@ class DataReloadService {
       }
 
       // ── Done — swap happens after indexing ────────────────────────
-      emitLog('completed', `Import complete: ${result.filesLoaded}/${result.totalFiles} files, ${(result.totalRows ?? 0).toLocaleString()} rows. Awaiting indexing before swap.`);
+      emitLog('completed', `Import complete: ${result.filesLoaded}/${result.totalFiles} files, ${(result.totalRows ?? 0).toLocaleString()} rows.`);
       await this._finishRun(runId, schemaName, 'completed', result);
 
     } catch (err) {
