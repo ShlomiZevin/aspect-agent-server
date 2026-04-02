@@ -11,13 +11,11 @@
  */
 
 require('dotenv').config();
-const gcsService = require('../services/gcs.service');
 const { createSchema } = require('./create-zer4u-schema');
 const { loadAllCSVFiles } = require('./load-csv-to-db-copy');
 const { createIndexes } = require('./create-zer4u-indexes-v2');
 const { createViews } = require('./create-materialized-views');
-
-const GCS_FOLDER = 'zer4u/';
+const { scanAllCSVFiles } = require('./scan-csv-files');
 
 // ── Phase 1: Import ───────────────────────────────────────────────────────────
 
@@ -27,14 +25,14 @@ async function loadZer4u(targetSchema, emitLog) {
   let totalRows = 0;
   const fileResults = [];
 
-  emitLog('scanning', 'Listing CSV files from GCS...');
-  const gcsFiles = await gcsService.listCSVFiles(GCS_FOLDER);
-  totalFiles = gcsFiles.length;
-  const totalSize = gcsFiles.reduce((sum, f) => sum + parseInt(f.size || 0), 0);
+  emitLog('scanning', 'Scanning CSV files from GCS...');
+  const schemas = await scanAllCSVFiles();
+  totalFiles = schemas.length;
+  const totalSize = schemas.reduce((sum, s) => sum + parseInt(s.fileSize || 0), 0);
   emitLog('scanning', `Found ${totalFiles} CSV files (${formatBytes(totalSize)})`);
 
   emitLog('creating_schema', `Creating tables in ${targetSchema}...`);
-  await createSchema(targetSchema);
+  await createSchema(targetSchema, schemas);
   emitLog('creating_schema', `Tables created in ${targetSchema}`);
 
   emitLog('loading_data', `Starting data load into ${targetSchema}...`);
@@ -74,7 +72,7 @@ async function loadZer4u(targetSchema, emitLog) {
     }
   };
 
-  await loadAllCSVFiles(targetSchema, onProgress);
+  await loadAllCSVFiles(targetSchema, onProgress, schemas);
   emitLog('loading_data', `Data load complete: ${filesLoaded}/${totalFiles} files, ${totalRows.toLocaleString()} rows`);
 
   return { totalFiles, filesLoaded, totalRows, fileResults };
