@@ -53,7 +53,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
         SUM(s."מכירה ללא מע""מ"::numeric) as total_revenue,
         AVG(s."מכירה ללא מע""מ"::numeric) as avg_revenue
       FROM ${s}.sales s
-      LEFT JOIN ${s}.stores st ON s."מס.חנות SALES"::integer = st."מס.חנות"
+      LEFT JOIN ${s}.stores st ON ${s}.to_int_safe(s."מס.חנות SALES") = ${s}.to_int_safe(st."מס.חנות")
       WHERE s."מכירה ללא מע""מ" IS NOT NULL
       GROUP BY s."מס.חנות SALES", st."שם חנות"
     `);
@@ -72,7 +72,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
         COUNT(*) as purchase_count,
         SUM(s."מכירה ללא מע""מ"::numeric) as total_purchases
       FROM ${s}.sales s
-      LEFT JOIN ${s}.customers c ON s."מס.לקוח"::integer = c."מס.לקוח"
+      LEFT JOIN ${s}.customers c ON ${s}.to_int_safe(s."מס.לקוח") = ${s}.to_int_safe(c."מס.לקוח")
       WHERE s."מכירה ללא מע""מ" IS NOT NULL
       GROUP BY s."מס.לקוח", c."שם לקוח"
     `);
@@ -167,7 +167,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
         SUM(s."מכירה ללא מע""מ"::numeric) AS total_revenue
       FROM ${s}.sales s
       LEFT JOIN ${s}.stores st
-        ON ${s}.to_int_safe(s."מס.חנות SALES") = st."מס.חנות"
+        ON ${s}.to_int_safe(s."מס.חנות SALES") = ${s}.to_int_safe(st."מס.חנות")
       WHERE s."תאריך מקורי SALES" IS NOT NULL
         AND s."מכירה ללא מע""מ" IS NOT NULL
         AND s."מכירה ללא מע""מ" != ''
