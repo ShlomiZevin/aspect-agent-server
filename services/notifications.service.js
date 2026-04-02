@@ -1,6 +1,7 @@
 const db = require('./db.pg');
 const { taskNotifications } = require('../db/schema');
 const { eq, and, desc } = require('drizzle-orm');
+const emailScheduler = require('./emailScheduler.service');
 
 const DELIVERED_HISTORY = 10; // how many delivered notifications to return
 
@@ -72,6 +73,9 @@ class NotificationsService {
       .insert(taskNotifications)
       .values({ recipient, taskId, commentId: commentId || null, type })
       .returning();
+
+    // Schedule a batched email (debounce 5min, max-wait 15min)
+    emailScheduler.schedule(recipient, notification.id);
 
     return notification;
   }

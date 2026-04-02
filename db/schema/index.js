@@ -299,6 +299,7 @@ const taskNotifications = pgTable('task_notifications', {
   type: varchar('type', { length: 50 }).notNull(), // 'mention' | 'comment_on_assigned'
   isRead: boolean('is_read').default(false).notNull(),
   isDelivered: boolean('is_delivered').default(false).notNull(),
+  emailedAt: timestamp('emailed_at'), // null = not yet emailed; set when batch email is sent
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 

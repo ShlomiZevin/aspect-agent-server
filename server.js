@@ -23,6 +23,7 @@ const taskService = require('./services/task.service');
 const commentsService = require('./services/comments.service');
 const notificationsService = require('./services/notifications.service');
 const boardEventsService = require('./services/boardEvents.service');
+const emailScheduler = require('./services/emailScheduler.service');
 const demoService = require('./services/demo.service');
 const testRunnerService = require('./services/test-runner.service');
 const podcastService = require('./services/podcast.service');
@@ -4603,6 +4604,9 @@ async function startServer() {
     console.log('🔄 Initializing database connection...');
     await db.initialize();
     console.log('✅ Database connected successfully');
+
+    // Initialize email scheduler with db pool (for batch email queries)
+    emailScheduler.initialize(db);
 
     // Initialize DataReloadService — register all agent-specific reloaders
     const dataReloadService = new DataReloadService(db);
