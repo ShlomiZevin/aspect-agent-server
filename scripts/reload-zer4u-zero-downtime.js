@@ -61,7 +61,10 @@ async function buildSchemasFromHeaders(gcsFiles, emitLog) {
         tableName: sanitizeTableName(file.basename),
         columns: headers.map(h => ({ name: h, type: 'TEXT' })),
       });
-      emitLog('scanning', `[${i + 1}/${gcsFiles.length}] ${file.basename}: ${headers.length} columns`);
+      emitLog('scanning', `[${i + 1}/${gcsFiles.length}] ${file.basename}: ${headers.length} columns`, {
+        filesCompleted: i + 1,
+        totalFiles: gcsFiles.length,
+      });
     } catch (err) {
       emitLog('scanning', `[${i + 1}/${gcsFiles.length}] ${file.basename}: header read failed — ${err.message}`);
       schemas.push({ fileName: file.basename, filePath: file.name, fileSize: file.size, error: err.message });
