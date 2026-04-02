@@ -3101,6 +3101,26 @@ app.post('/api/admin/data-loader/:schema/reload', async (req, res) => {
   }
 });
 
+// POST /api/admin/data-loader/:schema/cancel — force-fail a stuck running run
+app.post('/api/admin/data-loader/:schema/cancel', async (req, res) => {
+  const { schema } = req.params;
+  try {
+    const result = await db.query(
+      `UPDATE public.data_reload_runs
+       SET status = 'failed', completed_at = NOW(), error_message = 'Cancelled manually'
+       WHERE schema_name = $1 AND status = 'running'
+       RETURNING id`,
+      [schema]
+    );
+    if (dataReloadService.currentRuns[schema]) {
+      dataReloadService.currentRuns[schema].status = 'failed';
+    }
+    res.json({ cancelled: result.rows.map(r => r.id) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/admin/data-loader/:schema/logs — SSE live log stream
 app.get('/api/admin/data-loader/:schema/logs', (req, res) => {
   const { schema } = req.params;
