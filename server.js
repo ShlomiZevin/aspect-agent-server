@@ -3105,6 +3105,7 @@ app.post('/api/admin/data-loader/:schema/reload', async (req, res) => {
 app.post('/api/admin/data-loader/:schema/cancel', async (req, res) => {
   const { schema } = req.params;
   try {
+    const svc = req.app.get('dataReloadService');
     const result = await db.query(
       `UPDATE public.data_reload_runs
        SET status = 'failed', completed_at = NOW(), error_message = 'Cancelled manually'
@@ -3112,8 +3113,8 @@ app.post('/api/admin/data-loader/:schema/cancel', async (req, res) => {
        RETURNING id`,
       [schema]
     );
-    if (dataReloadService.currentRuns[schema]) {
-      dataReloadService.currentRuns[schema].status = 'failed';
+    if (svc && svc.currentRuns[schema]) {
+      svc.currentRuns[schema].status = 'failed';
     }
     res.json({ cancelled: result.rows.map(r => r.id) });
   } catch (err) {
