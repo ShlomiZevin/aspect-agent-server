@@ -19,18 +19,10 @@ const DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes
 // Maximum wait from the FIRST notification regardless of ongoing activity
 const MAX_WAIT_MS = 15 * 60 * 1000; // 15 minutes
 
-// Map of recipient name → email address, loaded from env var.
-// Format: TASK_NOTIFICATION_EMAILS=Shlomi:shlomi@boostart.io,Kosta:kosta@example.com
-function loadRecipients() {
-  const raw = process.env.TASK_NOTIFICATION_EMAILS || '';
-  const map = {};
-  for (const entry of raw.split(',')) {
-    const [name, email] = entry.trim().split(':');
-    if (name && email) map[name.trim()] = email.trim();
-  }
-  return map;
-}
-const EMAIL_RECIPIENTS = loadRecipients();
+// Recipients who get email alerts. GMAIL_USER is Shlomi's address (already in env).
+const EMAIL_RECIPIENTS = {
+  Shlomi: process.env.GMAIL_USER,
+};
 
 class EmailSchedulerService {
   constructor() {
