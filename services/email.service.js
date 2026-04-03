@@ -55,11 +55,21 @@ function stripHtml(html) {
  * @param {string} params.recipientName
  * @param {Array}  params.notifications - rows from DB join (task_id, task_title, type, comment_author, comment_content, created_at)
  */
+function deriveBoardName(notifications) {
+  const domains = new Set(notifications.map(n => n.task_domain).filter(Boolean));
+  if (domains.size === 1) {
+    const d = [...domains][0];
+    return `${d.charAt(0).toUpperCase() + d.slice(1)} Board`;
+  }
+  return 'Task Board';
+}
+
 async function sendTaskAttentionEmail({ recipientEmail, recipientName, notifications }) {
   const count = notifications.length;
+  const boardName = deriveBoardName(notifications);
   const subject = count === 1
-    ? `Task board: 1 item needs your attention`
-    : `Task board: ${count} items need your attention`;
+    ? `${boardName} - 1 item needs your attention`
+    : `${boardName} - ${count} items need your attention`;
 
   // Group by task to avoid repeating task title
   const byTask = {};
@@ -108,7 +118,7 @@ async function sendTaskAttentionEmail({ recipientEmail, recipientName, notificat
         <!-- Header -->
         <tr>
           <td style="background:#2563EB;padding:24px 32px;">
-            <span style="color:#fff;font-size:20px;font-weight:700;">Task Board</span>
+            <span style="color:#fff;font-size:20px;font-weight:700;">${boardName}</span>
             <span style="color:#BFDBFE;font-size:14px;margin-left:12px;">Attention needed</span>
           </td>
         </tr>
@@ -147,7 +157,7 @@ async function sendTaskAttentionEmail({ recipientEmail, recipientName, notificat
 </html>`;
 
   await transporter.sendMail({
-    from: `"Task Board" <${process.env.GMAIL_USER}>`,
+    from: `"${boardName}" <${process.env.GMAIL_USER}>`,
     to: recipientEmail,
     subject,
     html,

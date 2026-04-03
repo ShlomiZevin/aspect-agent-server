@@ -19,10 +19,15 @@ const DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes
 // Maximum wait from the FIRST notification regardless of ongoing activity
 const MAX_WAIT_MS = 15 * 60 * 1000; // 15 minutes
 
-// Recipients who get email alerts. GMAIL_USER is Shlomi's address (already in env).
+// Recipients who get email alerts.
 const EMAIL_RECIPIENTS = {
   Shlomi: process.env.GMAIL_USER,
+  Noa: 'noa@lybi.ai',
+  Kosta: 'ziben.konstantin@gmail.com',
 };
+
+// Only notify for tasks in these domains (never expose internal "aspect" domain)
+const ALLOWED_DOMAINS = ['lybi', 'freeda', 'freeda-1.0', 'onboarding', 'engine'];
 
 class EmailSchedulerService {
   constructor() {
@@ -89,7 +94,8 @@ class EmailSchedulerService {
     const email = EMAIL_RECIPIENTS[recipient];
     if (!email) return;
 
-    // Fetch all un-emailed notifications for this recipient, joined with task info
+    // Fetch un-emailed notifications for this recipient from the last 24 hours only,
+    // excluding tasks outside the allowed domains (never expose "aspect" domain).
     const result = await this.db.query(`
       SELECT
         n.id,
@@ -98,6 +104,7 @@ class EmailSchedulerService {
         t.id   AS task_id,
         t.title AS task_title,
         t.status AS task_status,
+        t.domain AS task_domain,
         t.assignee,
         c.author AS comment_author,
         c.content AS comment_content
@@ -106,8 +113,10 @@ class EmailSchedulerService {
       LEFT JOIN task_comments c ON c.id = n.comment_id
       WHERE n.recipient = $1
         AND n.emailed_at IS NULL
+        AND n.created_at >= NOW() - INTERVAL '24 hours'
+        AND t.domain = ANY($2::text[])
       ORDER BY n.created_at ASC
-    `, [recipient]);
+    `, [recipient, ALLOWED_DOMAINS]);
 
     const rows = result.rows;
     if (rows.length === 0) return;
