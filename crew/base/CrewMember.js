@@ -380,10 +380,18 @@ class CrewMember {
       }
 
       if (thinkingAdvice.fallback || thinkingAdvice.error) {
-        thinkingAdvice = {
-          _thinkingDescription: 'Analysis complete (fallback)',
-          approach: 'Respond naturally to the user message'
-        };
+        if (thinkingAdvice.rawTextAdvice) {
+          // Thinker returned text instead of JSON — pass it as guidance to the talker
+          thinkingAdvice = {
+            _thinkingDescription: thinkingAdvice._thinkingDescription || 'Analysis complete (raw text)',
+            approach: thinkingAdvice.rawTextAdvice
+          };
+        } else {
+          thinkingAdvice = {
+            _thinkingDescription: 'Analysis complete (fallback)',
+            approach: 'Respond naturally to the user message'
+          };
+        }
       }
 
       // Annotate which model the thinker actually used (for debug panel)

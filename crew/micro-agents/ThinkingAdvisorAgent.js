@@ -36,11 +36,12 @@ class ThinkingAdvisorAgent {
       jsonOutput = true
     } = options;
 
+    let responseText = '';
     try {
       console.log(`   🧠 [ThinkingAdvisor] Running with model: ${model}`);
 
       const { agentName, crewMember, conversationId, userId, knowledgeBase, ...restOpts } = options;
-      const responseText = await llmService.sendOneShot(
+      responseText = await llmService.sendOneShot(
         thinkingPrompt,
         context,
         { model, maxTokens, jsonOutput, knowledgeBase, context: 'thinker', agentName, crewMember, conversationId, userId }
@@ -61,6 +62,19 @@ class ThinkingAdvisorAgent {
       return responseText;
     } catch (error) {
       console.error('   ❌ [ThinkingAdvisor] Error:', error.message);
+
+      // If we got a response but it wasn't valid JSON, pass the raw text as advice
+      // so the talker still gets real guidance instead of a generic fallback
+      if (responseText && jsonOutput) {
+        const preview = responseText.substring(0, 100);
+        console.warn(`   ⚠️ [ThinkingAdvisor] Returning raw text as fallback advice: "${preview}..."`);
+        return {
+          _thinkingDescription: 'Analysis complete (raw text — JSON parse failed)',
+          rawTextAdvice: responseText,
+          fallback: true
+        };
+      }
+
       return jsonOutput ? { error: true, fallback: true } : '';
     }
   }
