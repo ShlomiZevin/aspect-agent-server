@@ -380,7 +380,7 @@ class DataReloadService {
       }
 
       // ── Done — swap happens after indexing ────────────────────────
-      emitLog('completed', `Import complete: ${result.filesLoaded}/${result.totalFiles} files, ${(result.totalRows ?? 0).toLocaleString()} rows. Awaiting indexing before swap.`);
+      emitLog('completed', `Import complete: ${result.filesLoaded}/${result.totalFiles} files, ${(result.totalRows ?? 0).toLocaleString()} rows.`);
       await this._finishRun(runId, schemaName, 'completed', result);
 
     } catch (err) {
@@ -483,7 +483,7 @@ class DataReloadService {
 
     if (!progressOnly && this.logBuffers[schemaName]) {
       this.logBuffers[schemaName].push(entry);
-      if (this.logBuffers[schemaName].length % 20 === 0) {
+      if (this.logBuffers[schemaName].length % 5 === 0) {
         const runId = this.currentRuns[schemaName]?.id;
         if (runId) {
           const logs = this.logBuffers[schemaName];

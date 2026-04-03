@@ -23,6 +23,7 @@ const taskService = require('./services/task.service');
 const commentsService = require('./services/comments.service');
 const notificationsService = require('./services/notifications.service');
 const boardEventsService = require('./services/boardEvents.service');
+const emailScheduler = require('./services/emailScheduler.service');
 const demoService = require('./services/demo.service');
 const testRunnerService = require('./services/test-runner.service');
 const podcastService = require('./services/podcast.service');
@@ -3101,6 +3102,27 @@ app.post('/api/admin/data-loader/:schema/reload', async (req, res) => {
   }
 });
 
+// POST /api/admin/data-loader/:schema/cancel — force-fail a stuck running run
+app.post('/api/admin/data-loader/:schema/cancel', async (req, res) => {
+  const { schema } = req.params;
+  try {
+    const svc = req.app.get('dataReloadService');
+    const result = await db.query(
+      `UPDATE public.data_reload_runs
+       SET status = 'failed', completed_at = NOW(), error_message = 'Cancelled manually'
+       WHERE schema_name = $1 AND status = 'running'
+       RETURNING id`,
+      [schema]
+    );
+    if (svc && svc.currentRuns[schema]) {
+      svc.currentRuns[schema].status = 'failed';
+    }
+    res.json({ cancelled: result.rows.map(r => r.id) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/admin/data-loader/:schema/logs — SSE live log stream
 app.get('/api/admin/data-loader/:schema/logs', (req, res) => {
   const { schema } = req.params;
@@ -4582,6 +4604,9 @@ async function startServer() {
     console.log('🔄 Initializing database connection...');
     await db.initialize();
     console.log('✅ Database connected successfully');
+
+    // Initialize email scheduler with db pool (for batch email queries)
+    emailScheduler.initialize(db);
 
     // Initialize DataReloadService — register all agent-specific reloaders
     const dataReloadService = new DataReloadService(db);

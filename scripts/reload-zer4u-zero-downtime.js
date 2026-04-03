@@ -19,6 +19,60 @@ const { createViews } = require('./create-materialized-views');
 
 const GCS_FOLDER = 'zer4u/';
 
+// Hebrew → English table name mapping (same as scan-csv-files.js)
+const HEBREW_TABLE_NAMES = {
+  'חנויות.csv': 'stores',
+  'יעדים.csv': 'targets',
+  'לקוחות.csv': 'customers',
+  'מולטיפס.csv': 'multips',
+  'מכירות.csv': 'sales',
+  'מלאי מחסנים.csv': 'warehouse_inventory',
+  'מלאי מינימום.csv': 'min_inventory',
+  'מלאי.csv': 'inventory',
+  'פריטים.csv': 'items',
+  'תאריכי ספירת מלאי.csv': 'inventory_count_dates'
+};
+
+function sanitizeTableName(fileName) {
+  if (HEBREW_TABLE_NAMES[fileName]) return HEBREW_TABLE_NAMES[fileName];
+  return fileName
+    .replace('.csv', '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^_|_$/g, '');
+}
+
+/**
+ * Build schema definitions from GCS file list + CSV headers only.
+ * Reads just the first line of each file — no data rows downloaded.
+ * All columns are TEXT; COPY handles any value without type errors.
+ */
+async function buildSchemasFromHeaders(gcsFiles, emitLog) {
+  const schemas = [];
+  for (let i = 0; i < gcsFiles.length; i++) {
+    const file = gcsFiles[i];
+    try {
+      const headers = await gcsService.getCSVHeaders(file.name);
+      schemas.push({
+        fileName: file.basename,
+        filePath: file.name,
+        fileSize: file.size,
+        tableName: sanitizeTableName(file.basename),
+        columns: headers.map(h => ({ name: h, type: 'TEXT' })),
+      });
+      emitLog('scanning', `[${i + 1}/${gcsFiles.length}] ${file.basename}: ${headers.length} columns`, {
+        filesCompleted: i + 1,
+        totalFiles: gcsFiles.length,
+      });
+    } catch (err) {
+      emitLog('scanning', `[${i + 1}/${gcsFiles.length}] ${file.basename}: header read failed — ${err.message}`);
+      schemas.push({ fileName: file.basename, filePath: file.name, fileSize: file.size, error: err.message });
+    }
+  }
+  return schemas;
+}
+
 // ── Phase 1: Import ───────────────────────────────────────────────────────────
 
 async function loadZer4u(targetSchema, emitLog) {
@@ -29,12 +83,14 @@ async function loadZer4u(targetSchema, emitLog) {
 
   emitLog('scanning', 'Listing CSV files from GCS...');
   const gcsFiles = await gcsService.listCSVFiles(GCS_FOLDER);
-  totalFiles = gcsFiles.length;
-  const totalSize = gcsFiles.reduce((sum, f) => sum + parseInt(f.size || 0), 0);
-  emitLog('scanning', `Found ${totalFiles} CSV files (${formatBytes(totalSize)})`);
+  emitLog('scanning', `Found ${gcsFiles.length} CSV files — reading headers...`);
+  const schemas = await buildSchemasFromHeaders(gcsFiles, emitLog);
+  totalFiles = schemas.length;
+  const totalSize = schemas.reduce((sum, s) => sum + parseInt(s.fileSize || 0), 0);
+  emitLog('scanning', `Schema ready: ${totalFiles} tables (${formatBytes(totalSize)})`);
 
   emitLog('creating_schema', `Creating tables in ${targetSchema}...`);
-  await createSchema(targetSchema);
+  await createSchema(targetSchema, schemas);
   emitLog('creating_schema', `Tables created in ${targetSchema}`);
 
   emitLog('loading_data', `Starting data load into ${targetSchema}...`);
@@ -74,7 +130,7 @@ async function loadZer4u(targetSchema, emitLog) {
     }
   };
 
-  await loadAllCSVFiles(targetSchema, onProgress);
+  await loadAllCSVFiles(targetSchema, onProgress, schemas);
   emitLog('loading_data', `Data load complete: ${filesLoaded}/${totalFiles} files, ${totalRows.toLocaleString()} rows`);
 
   return { totalFiles, filesLoaded, totalRows, fileResults };

@@ -12,7 +12,11 @@ const path = require('path');
 
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.json');
 
-async function createSchema(schemaName = 'zer4u') {
+/**
+ * @param {string} schemaName - target PostgreSQL schema name
+ * @param {Array|null} schemas - pre-scanned schema definitions; if null, read from local JSON file (CLI use only)
+ */
+async function createSchema(schemaName = 'zer4u', schemas = null) {
   // Pool created inside function so multiple sequential calls are safe
   const pool = new Pool({
     host: process.env.DB_HOST,
@@ -23,23 +27,18 @@ async function createSchema(schemaName = 'zer4u') {
     max: 5
   });
   const startTime = Date.now();
-  console.log('🚀 Creating Zer4U schema in PostgreSQL...\n');
-  console.log('⚡ OPTIMIZED FOR FAST LOADING:');
-  console.log('  - NO primary keys');
-  console.log('  - NO foreign keys');
-  console.log('  - NO unique constraints');
-  console.log('  - NO indexes\n');
-  console.log('═'.repeat(60));
+  console.log('Creating Zer4U schema in PostgreSQL...');
 
   const client = await pool.connect();
 
   try {
     // Step 1: Load analysis results
-    console.log('\n📋 Step 1: Loading CSV analysis...');
-    const step1Start = Date.now();
-    const analysisData = await fs.readFile(ANALYSIS_FILE, 'utf8');
-    const schemas = JSON.parse(analysisData);
-    console.log(`✅ Loaded ${schemas.length} table definitions (${Date.now() - step1Start}ms)\n`);
+    if (!schemas) {
+      // CLI fallback: read from local file
+      const analysisData = await fs.readFile(ANALYSIS_FILE, 'utf8');
+      schemas = JSON.parse(analysisData);
+    }
+    console.log(`Loaded ${schemas.length} table definitions`);
 
     // Step 2: Create schema
     console.log('🏗️  Step 2: Creating schema...');

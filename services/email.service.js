@@ -28,4 +28,130 @@ async function sendLybiContactEmail({ name, email, company, message }) {
   });
 }
 
-module.exports = { sendLybiContactEmail };
+// Friendly labels for notification types
+const NOTIFICATION_TYPE_LABELS = {
+  mention: 'You were mentioned',
+  comment_on_assigned: 'New comment on your task',
+  assigned: 'Task assigned to you',
+  deployed: 'Task deployed',
+};
+
+function notificationTypeLabel(type) {
+  if (NOTIFICATION_TYPE_LABELS[type]) return NOTIFICATION_TYPE_LABELS[type];
+  if (type && type.startsWith('assigned_by:')) return `Assigned by ${type.slice(12)}`;
+  if (type && type.startsWith('moved_to_')) return `Task moved to ${type.slice(9).replace(/_/g, ' ')}`;
+  return type;
+}
+
+function stripHtml(html) {
+  if (!html) return '';
+  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Send a batched task-board attention email to a recipient.
+ * @param {object} params
+ * @param {string} params.recipientEmail
+ * @param {string} params.recipientName
+ * @param {Array}  params.notifications - rows from DB join (task_id, task_title, type, comment_author, comment_content, created_at)
+ */
+async function sendTaskAttentionEmail({ recipientEmail, recipientName, notifications }) {
+  const count = notifications.length;
+  const subject = count === 1
+    ? `Task board: 1 item needs your attention`
+    : `Task board: ${count} items need your attention`;
+
+  // Group by task to avoid repeating task title
+  const byTask = {};
+  for (const n of notifications) {
+    if (!byTask[n.task_id]) {
+      byTask[n.task_id] = { title: n.task_title, status: n.task_status, events: [] };
+    }
+    byTask[n.task_id].events.push(n);
+  }
+
+  const taskRows = Object.values(byTask).map(task => {
+    const eventLines = task.events.map(e => {
+      const label = notificationTypeLabel(e.type);
+      const snippet = e.comment_content ? ` — "${stripHtml(e.comment_content).slice(0, 120)}"` : '';
+      const by = e.comment_author ? ` by ${e.comment_author}` : '';
+      return `<li style="margin:4px 0;color:#374151;">${label}${by}${snippet}</li>`;
+    }).join('');
+
+    const statusBadge = {
+      todo: '#6B7280',
+      in_progress: '#2563EB',
+      done: '#16A34A',
+    }[task.status] || '#6B7280';
+
+    return `
+      <tr>
+        <td style="padding:16px;border-bottom:1px solid #E5E7EB;vertical-align:top;">
+          <div style="font-weight:600;font-size:15px;color:#111827;margin-bottom:6px;">
+            ${task.title}
+            <span style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;background:${statusBadge};color:#fff;font-size:11px;font-weight:500;vertical-align:middle;">${task.status.replace('_', ' ')}</span>
+          </div>
+          <ul style="margin:0;padding-left:18px;">${eventLines}</ul>
+        </td>
+      </tr>`;
+  }).join('');
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#F9FAFB;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F9FAFB;padding:32px 0;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.08);overflow:hidden;">
+
+        <!-- Header -->
+        <tr>
+          <td style="background:#2563EB;padding:24px 32px;">
+            <span style="color:#fff;font-size:20px;font-weight:700;">Task Board</span>
+            <span style="color:#BFDBFE;font-size:14px;margin-left:12px;">Attention needed</span>
+          </td>
+        </tr>
+
+        <!-- Intro -->
+        <tr>
+          <td style="padding:24px 32px 8px;">
+            <p style="margin:0;color:#374151;font-size:15px;">
+              Hi ${recipientName}, you have <strong>${count} item${count > 1 ? 's' : ''}</strong> that need${count === 1 ? 's' : ''} your attention:
+            </p>
+          </td>
+        </tr>
+
+        <!-- Task list -->
+        <tr>
+          <td style="padding:8px 32px 24px;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E5E7EB;border-radius:6px;overflow:hidden;">
+              ${taskRows}
+            </table>
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td style="padding:16px 32px;border-top:1px solid #E5E7EB;background:#F9FAFB;">
+            <p style="margin:0;color:#9CA3AF;font-size:12px;">
+              This is an automated notification from your task board.
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  await transporter.sendMail({
+    from: `"Task Board" <${process.env.GMAIL_USER}>`,
+    to: recipientEmail,
+    subject,
+    html,
+  });
+}
+
+module.exports = { sendLybiContactEmail, sendTaskAttentionEmail };

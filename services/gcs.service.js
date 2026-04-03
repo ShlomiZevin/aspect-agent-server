@@ -184,6 +184,55 @@ class GCSService {
   }
 
   /**
+   * Read only the header line of a CSV file from GCS.
+   * Downloads just enough bytes to get the first line — no data rows fetched.
+   * @param {string} filePath - Full path to file in GCS
+   * @returns {Promise<string[]>} - Array of column name strings
+   */
+  async getCSVHeaders(filePath) {
+    return new Promise((resolve, reject) => {
+      const file = this.storage.bucket(this.bucketName).file(filePath);
+      const stream = file.createReadStream();
+      let buffer = '';
+      stream.on('data', chunk => {
+        buffer += chunk.toString();
+        const newlineIdx = buffer.indexOf('\n');
+        if (newlineIdx !== -1) {
+          stream.destroy(); // stop downloading after first line
+          const headerLine = buffer.slice(0, newlineIdx).replace(/\r$/, '');
+          // Simple CSV header parse: handle quoted fields
+          const headers = [];
+          let field = '';
+          let inQuotes = false;
+          for (let i = 0; i < headerLine.length; i++) {
+            const ch = headerLine[i];
+            if (ch === '"') {
+              inQuotes = !inQuotes;
+            } else if (ch === ',' && !inQuotes) {
+              headers.push(field.replace(/^\uFEFF/, '').trim());
+              field = '';
+            } else {
+              field += ch;
+            }
+          }
+          headers.push(field.replace(/^\uFEFF/, '').trim());
+          resolve(headers.filter(h => h.length > 0));
+        }
+      });
+      stream.on('error', err => {
+        // stream.destroy() triggers 'error' with an abort — ignore it if we already resolved
+        if (buffer.includes('\n')) return;
+        reject(err);
+      });
+      stream.on('end', () => {
+        // File had no newline (single-line file)
+        const headers = buffer.replace(/\r?\n$/, '').split(',').map(h => h.replace(/^\uFEFF/, '').trim());
+        resolve(headers.filter(h => h.length > 0));
+      });
+    });
+  }
+
+  /**
    * Get a readable stream for a CSV file (for large files)
    * @param {string} filePath - Full path to file in GCS
    * @returns {ReadStream} - Readable stream

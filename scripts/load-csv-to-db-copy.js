@@ -16,7 +16,12 @@ const { from: copyFrom } = require('pg-copy-streams');
 
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.json');
 
-async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null) {
+/**
+ * @param {string} schemaName - target PostgreSQL schema name
+ * @param {Function|null} onProgress - progress callback
+ * @param {Array|null} schemas - pre-scanned schema definitions; if null, read from local JSON file (CLI use only)
+ */
+async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas = null) {
   // Pool created inside function so multiple sequential calls are safe
   const pool = new Pool({
     host: process.env.DB_HOST,
@@ -27,17 +32,14 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null) {
     max: 8
   });
   const startTime = Date.now();
-  console.log('🚀 Loading CSV data into PostgreSQL...\n');
-  console.log('⚡ ULTRA-OPTIMIZED WITH POSTGRESQL COPY:');
-  console.log(`  - Using COPY FROM STDIN (10-50x faster)`);
-  console.log(`  - NO constraints validation`);
-  console.log(`  - Direct streaming from GCS\n`);
-  console.log('═'.repeat(60));
 
   try {
     // Load analysis
-    const analysisData = await fs.readFile(ANALYSIS_FILE, 'utf8');
-    const schemas = JSON.parse(analysisData);
+    if (!schemas) {
+      // CLI fallback: read from local file
+      const analysisData = await fs.readFile(ANALYSIS_FILE, 'utf8');
+      schemas = JSON.parse(analysisData);
+    }
 
     // Calculate total size
     const totalSize = schemas.reduce((sum, s) => sum + (parseInt(s.fileSize) || 0), 0);
