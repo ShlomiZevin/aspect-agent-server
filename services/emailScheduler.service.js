@@ -19,9 +19,12 @@ const DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes
 // Maximum wait from the FIRST notification regardless of ongoing activity
 const MAX_WAIT_MS = 15 * 60 * 1000; // 15 minutes
 
-// Recipients who get email alerts. GMAIL_USER is Shlomi's address (already in env).
+// Per-recipient config: email address + allowed domains.
+// Never include "aspect" domain for anyone.
 const EMAIL_RECIPIENTS = {
-  Shlomi: process.env.GMAIL_USER,
+  Shlomi: { email: process.env.GMAIL_USER,        domains: ['lybi', 'freeda', 'freeda-1.0', 'onboarding', 'engine'] },
+  Noa:    { email: 'noa@lybi.ai',                 domains: ['lybi', 'onboarding', 'engine'] },
+  Kosta:  { email: 'ziben.konstantin@gmail.com',  domains: ['lybi', 'freeda', 'freeda-1.0', 'onboarding', 'engine'] },
 };
 
 class EmailSchedulerService {
@@ -86,10 +89,12 @@ class EmailSchedulerService {
       return;
     }
 
-    const email = EMAIL_RECIPIENTS[recipient];
-    if (!email) return;
+    const config = EMAIL_RECIPIENTS[recipient];
+    if (!config) return;
+    const { email, domains } = config;
 
-    // Fetch all un-emailed notifications for this recipient, joined with task info
+    // Fetch un-emailed notifications for this recipient from the last 24 hours only,
+    // excluding tasks outside the allowed domains (never expose "aspect" domain).
     const result = await this.db.query(`
       SELECT
         n.id,
@@ -98,6 +103,7 @@ class EmailSchedulerService {
         t.id   AS task_id,
         t.title AS task_title,
         t.status AS task_status,
+        t.domain AS task_domain,
         t.assignee,
         c.author AS comment_author,
         c.content AS comment_content
@@ -106,8 +112,10 @@ class EmailSchedulerService {
       LEFT JOIN task_comments c ON c.id = n.comment_id
       WHERE n.recipient = $1
         AND n.emailed_at IS NULL
+        AND n.created_at >= NOW() - INTERVAL '24 hours'
+        AND t.domain = ANY($2::text[])
       ORDER BY n.created_at ASC
-    `, [recipient]);
+    `, [recipient, domains]);
 
     const rows = result.rows;
     if (rows.length === 0) return;
