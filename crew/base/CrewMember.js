@@ -32,6 +32,7 @@
 const contextService = require('../../services/context.service');
 const thinkingAdvisor = require('../micro-agents/ThinkingAdvisorAgent');
 const conversationService = require('../../services/conversation.service');
+const kbResolver = require('../../services/kb.resolver');
 
 /**
  * Returns true if a thinker (one-shot) error is worth retrying with a fallback model.
@@ -345,22 +346,27 @@ class CrewMember {
       const primaryThinkingModel = this.thinkingModel || 'claude-sonnet-4-6';
       let thinkerModelUsed = primaryThinkingModel;
       let thinkerFallbackUsed = false;
+      const thinkerKB = params.resolvedThinkerKB || null;
       try {
-        console.log(`   🧠 [${this.name}] Running thinker with model: ${primaryThinkingModel}`);
+        console.log(`   🧠 [${this.name}] Running thinker with model: ${primaryThinkingModel}${thinkerKB?.enabled ? ' (KB enabled)' : ''}`);
         const _usageMeta = { agentName: this._agentName, crewMember: this.name, conversationId: this._externalConversationId, userId: this._userId };
         thinkingAdvice = await thinkingAdvisor.think(
           { thinkingPrompt: enhancedPrompt, context: contextStr },
-          { model: primaryThinkingModel, ..._usageMeta }
+          { model: primaryThinkingModel, knowledgeBase: thinkerKB, ..._usageMeta }
         );
       } catch (err) {
         const isRetryable = _isThinkerRetryable(err);
         const fallbackModel = this.thinkingFallbackModel || 'gpt-4o';
         if (isRetryable && fallbackModel !== primaryThinkingModel) {
           console.warn(`   ⚠️ [${this.name}] Thinker primary model "${primaryThinkingModel}" failed (${err.status || err.message}). Retrying with fallback: "${fallbackModel}"`);
+          // Re-resolve KB for fallback model if provider differs
+          const fallbackKB = thinkerKB && kbResolver.getModelProvider(fallbackModel) !== thinkerKB.provider
+            ? null  // Different provider — KB IDs won't match, skip KB for fallback
+            : thinkerKB;
           try {
             thinkingAdvice = await thinkingAdvisor.think(
               { thinkingPrompt: enhancedPrompt, context: contextStr },
-              { model: fallbackModel, ..._usageMeta }
+              { model: fallbackModel, knowledgeBase: fallbackKB, ..._usageMeta }
             );
             thinkerModelUsed = fallbackModel;
             thinkerFallbackUsed = true;

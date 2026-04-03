@@ -906,7 +906,7 @@ class OpenAIService {
    * @returns {Promise<string>} - The response text
    */
   async sendOneShot(instructions, message, options = {}) {
-    const { model = 'gpt-4o-mini', maxTokens = 1024, jsonOutput = false } = options;
+    const { model = 'gpt-4o-mini', maxTokens = 1024, jsonOutput = false, knowledgeBase } = options;
 
     try {
       // OpenAI requires "json" in input messages when using json_object format
@@ -924,6 +924,16 @@ class OpenAIService {
 
       if (jsonOutput) {
         requestParams.text = { format: { type: 'json_object' } };
+      }
+
+      // Add file_search tool if KB is configured (same as streaming path)
+      const storeIds = knowledgeBase?.storeIds?.length > 0
+        ? knowledgeBase.storeIds
+        : (knowledgeBase?.storeId ? [knowledgeBase.storeId] : []);
+      if (knowledgeBase?.enabled && storeIds.length > 0) {
+        requestParams.tools = [{ type: 'file_search', vector_store_ids: storeIds }];
+        requestParams.include = ['file_search_call.results'];
+        console.log(`📚 OpenAI OneShot: file_search enabled with stores: ${storeIds.join(', ')}`);
       }
 
       const response = await this.client.responses.create(requestParams);

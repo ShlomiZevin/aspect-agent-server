@@ -45,7 +45,8 @@ class ClaudeService {
     const {
       model = this.model,
       maxTokens = 4096,
-      jsonOutput = false
+      jsonOutput = false,
+      knowledgeBase,
     } = options;
 
     try {
@@ -55,14 +56,39 @@ class ClaudeService {
         finalSystemPrompt += '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code blocks, no explanation - just the raw JSON object.';
       }
 
-      const response = await this.client.messages.create({
+      // Build user message content — prepend document blocks for Anthropic KB (same as streaming path)
+      const anthropicFileIds = knowledgeBase?.anthropicFileIds || [];
+      let userContent;
+      if (anthropicFileIds.length > 0) {
+        userContent = [
+          ...anthropicFileIds.map(fileId => ({
+            type: 'document',
+            source: { type: 'file', file_id: fileId }
+          })),
+          { type: 'text', text: message }
+        ];
+        console.log(`📚 Claude OneShot: injecting ${anthropicFileIds.length} document block(s)`);
+      } else {
+        userContent = message;
+      }
+
+      const requestParams = {
         model,
         max_tokens: maxTokens,
         system: finalSystemPrompt,
         messages: [
-          { role: 'user', content: message }
+          { role: 'user', content: userContent }
         ]
-      });
+      };
+
+      // Use beta.messages when document blocks are present (requires Files API beta)
+      const useFilesApi = anthropicFileIds.length > 0;
+      if (useFilesApi) {
+        requestParams.betas = ['files-api-2025-04-14'];
+      }
+      const messagesApi = useFilesApi ? this.client.beta.messages : this.client.messages;
+
+      const response = await messagesApi.create(requestParams);
 
       // Extract text from response
       const textContent = response.content.find(c => c.type === 'text');
@@ -134,7 +160,7 @@ class ClaudeService {
       const conversationService = require('./conversation.service');
       let historyMessages = [];
       try {
-        const history = await conversationService.getConversationHistory(conversationId, 50);
+        const history = await conversationService.getConversationHistory(conversationId, 100);
         if (history.length > 0 && history[history.length - 1].role === 'user') {
           history.pop();
         }
@@ -185,6 +211,7 @@ class ClaudeService {
           messages: currentMessages
         };
 
+        console.log('shazbak', temperature, topK)
         if (temperature != null) requestParams.temperature = Math.min(temperature, 1.0); // Claude max is 1.0
         if (topK != null) requestParams.top_k = topK;
 

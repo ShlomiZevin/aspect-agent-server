@@ -39,11 +39,11 @@ class ThinkingAdvisorAgent {
     try {
       console.log(`   🧠 [ThinkingAdvisor] Running with model: ${model}`);
 
-      const { agentName, crewMember, conversationId, userId, ...restOpts } = options;
+      const { agentName, crewMember, conversationId, userId, knowledgeBase, ...restOpts } = options;
       const responseText = await llmService.sendOneShot(
         thinkingPrompt,
         context,
-        { model, maxTokens, jsonOutput, context: 'thinker', agentName, crewMember, conversationId, userId }
+        { model, maxTokens, jsonOutput, knowledgeBase, context: 'thinker', agentName, crewMember, conversationId, userId }
       );
 
       console.log(`   🧠 [ThinkingAdvisor] Response received (${responseText.length} chars)`);

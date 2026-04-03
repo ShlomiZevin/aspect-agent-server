@@ -209,6 +209,7 @@ class GoogleService {
       model = this.model,
       maxTokens = 4096,
       jsonOutput = false,
+      knowledgeBase,
     } = options;
 
     try {
@@ -219,14 +220,25 @@ class GoogleService {
         finalSystemPrompt += '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code blocks, no explanation - just the raw JSON object.';
       }
 
+      const config = {
+        systemInstruction: finalSystemPrompt,
+        maxOutputTokens: maxTokens,
+        temperature: 0.7,
+      };
+
+      // Add file_search tool if KB is configured with Google corpus IDs (same as streaming path)
+      const corpusIds = knowledgeBase?.corpusIds?.length > 0
+        ? knowledgeBase.corpusIds
+        : (knowledgeBase?.googleCorpusId ? [knowledgeBase.googleCorpusId] : []);
+      if (knowledgeBase?.enabled && corpusIds.length > 0) {
+        config.tools = [{ fileSearch: { fileSearchStoreNames: corpusIds } }];
+        console.log(`📚 Google OneShot: file_search enabled for stores: ${corpusIds.join(', ')}`);
+      }
+
       const response = await ai.models.generateContent({
         model,
         contents: message,
-        config: {
-          systemInstruction: finalSystemPrompt,
-          maxOutputTokens: maxTokens,
-          temperature: 0.7,
-        },
+        config,
       });
 
       const text = response.text || '';

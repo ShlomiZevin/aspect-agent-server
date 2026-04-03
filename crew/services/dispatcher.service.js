@@ -21,7 +21,6 @@ const fieldsExtractor = require('../micro-agents/FieldsExtractorAgent');
 const promptService = require('../../services/prompt.service');
 const CrewMember = require('../base/CrewMember');
 const kbResolver = require('../../services/kb.resolver');
-const kbService = require('../../services/kb.service');
 
 class DispatcherService {
   constructor() {
@@ -473,13 +472,33 @@ class DispatcherService {
       yield { type: 'thinking_advisor_start' };
     }
 
+    // ========== RESOLVE THINKER KB ==========
+    // Resolve KB for the thinker model BEFORE buildContext so the thinker can use it.
+    // Uses the crew's configured KB sources (respects kbOverrides).
+    let resolvedThinkerKB = null;
+    if (crew.usesThinker && crew.knowledgeBase?.enabled !== false) {
+      const thinkerModel = crew.thinkingModel || 'claude-sonnet-4-6';
+      const hasKBOverride = kbOverrides != null && crew.name in kbOverrides;
+      const rawThinkerSources = hasKBOverride
+        ? (kbOverrides[crew.name] || [])
+        : (crew.knowledgeBase?.sources || []);
+      const thinkerKBSources = rawThinkerSources.map(s => typeof s === 'string' ? s : s.name);
+      if (thinkerKBSources.length > 0) {
+        resolvedThinkerKB = await this._resolveKBForModel(crew, thinkerKBSources, thinkerModel, agentId);
+        if (resolvedThinkerKB) {
+          console.log(`📚 [${crew.name}] Thinker KB resolved for ${kbResolver.getModelProvider(thinkerModel)}: ${JSON.stringify(resolvedThinkerKB.storeIds || resolvedThinkerKB.corpusIds || resolvedThinkerKB.kbIds || resolvedThinkerKB.anthropicFileIds)}`);
+        }
+      }
+    }
+
     // Build context from crew member
     const context = await crew.buildContext({
       conversation,
       user: {},
       collectedData,
       collectedFields,
-      metadata: {}
+      metadata: {},
+      resolvedThinkerKB,
     });
 
     // Restore original persona, thinking prompt, and thinker flag
@@ -644,31 +663,12 @@ class DispatcherService {
     let resolvedKB = null;
 
     if (crewKBEnabled && kbSources.length > 0 && agentId) {
-      const modelProvider = kbResolver.getModelProvider(resolvedModel);
-      resolvedKB = await kbResolver.resolve(kbSources, modelProvider, agentId);
+      resolvedKB = await this._resolveKBForModel(crew, kbSources, resolvedModel, agentId);
 
-      if (!resolvedKB.enabled) {
-        console.warn(`⚠️ [${crew.name}] No KB IDs resolved for ${modelProvider} model`);
-        resolvedKB = null;
+      if (!resolvedKB) {
+        console.warn(`⚠️ [${crew.name}] No KB IDs resolved for ${kbResolver.getModelProvider(resolvedModel)} model`);
       } else {
-        const unresolved = resolvedKB.resolvedSources.filter(s => !s.resolved);
-        if (unresolved.length > 0) {
-          console.warn(`⚠️ [${crew.name}] Some KB sources could not be resolved:`, unresolved);
-        }
-        console.log(`📚 [${crew.name}] KB resolved for ${modelProvider}: ${JSON.stringify(resolvedKB.storeIds || resolvedKB.corpusIds || resolvedKB.kbIds)}`);
-
-        // For Anthropic: fetch Anthropic file IDs from DB and attach to resolvedKB
-        if (modelProvider === 'anthropic' && resolvedKB.kbIds?.length > 0) {
-          const anthropicFileIds = [];
-          for (const kbId of resolvedKB.kbIds) {
-            const files = await kbService.getFilesByKnowledgeBase(kbId);
-            for (const f of files) {
-              if (f.anthropicFileId) anthropicFileIds.push(f.anthropicFileId);
-            }
-          }
-          resolvedKB.anthropicFileIds = anthropicFileIds;
-          console.log(`📎 [${crew.name}] Anthropic KB files: ${anthropicFileIds.length} file(s)`);
-        }
+        console.log(`📚 [${crew.name}] KB resolved for ${kbResolver.getModelProvider(resolvedModel)}: ${JSON.stringify(resolvedKB.storeIds || resolvedKB.corpusIds || resolvedKB.kbIds)}`);
       }
     } else if (!hasKBOverride && crewKBEnabled && kbSources.length === 0 && crew.knowledgeBase?.storeId) {
       // Legacy fallback: crew still has old-style storeId hardcoded (not yet migrated)
@@ -1248,6 +1248,31 @@ class DispatcherService {
    * @param {Error} err
    * @private
    */
+  /**
+   * Resolve KB for a specific model. Reusable helper for both thinker and talker KB resolution.
+   * @param {Object} crew - CrewMember instance
+   * @param {string[]} kbSources - Normalized KB source names
+   * @param {string} model - Model name to resolve KB for
+   * @param {number} agentId - Agent DB ID
+   * @returns {Promise<Object|null>} - Resolved KB config or null
+   * @private
+   */
+  async _resolveKBForModel(crew, kbSources, model, agentId) {
+    if (!kbSources || kbSources.length === 0 || !agentId) return null;
+
+    const modelProvider = kbResolver.getModelProvider(model);
+    const resolvedKB = await kbResolver.resolve(kbSources, modelProvider, agentId);
+
+    if (!resolvedKB.enabled) return null;
+
+    const unresolved = resolvedKB.resolvedSources.filter(s => !s.resolved);
+    if (unresolved.length > 0) {
+      console.warn(`⚠️ [${crew.name}] Some KB sources could not be resolved:`, unresolved);
+    }
+
+    return resolvedKB;
+  }
+
   _isRetryableError(err) {
     const status = err.status || err.statusCode;
     const msg = (err.message || '').toLowerCase();
