@@ -32,7 +32,7 @@ class ThinkingAdvisorAgent {
   async think({ thinkingPrompt, context }, options = {}) {
     const {
       model = 'claude-sonnet-4-20250514',
-      maxTokens = 1024,
+      maxTokens = 2048,
       jsonOutput = true
     } = options;
 

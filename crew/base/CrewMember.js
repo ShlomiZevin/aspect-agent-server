@@ -241,22 +241,9 @@ class CrewMember {
    * @returns {Promise<string>} - Context string for the thinker
    */
   async buildThinkerContext(params) {
-    let historyText = '(no history yet)';
-    try {
-      const externalId = params.conversation?.externalId || this._externalConversationId;
-      if (externalId) {
-        const history = await conversationService.getConversationHistory(externalId, 20);
-        if (history && history.length > 0) {
-          historyText = history
-            .map(m => `${m.role}: ${m.content}`)
-            .join('\n');
-        }
-      }
-    } catch (err) {
-      console.warn(`   ⚠️ [${this.name}] Could not fetch history for thinker:`, err.message);
-    }
-
-    return `## Conversation History\n${historyText}`;
+    // Conversation history is now loaded as proper messages by the LLM provider (Claude sendOneShot).
+    // Override in subclasses to add domain-specific context (profile, state, catalog, etc.).
+    return '';
   }
 
   /**

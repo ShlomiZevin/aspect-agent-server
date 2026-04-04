@@ -183,31 +183,15 @@ Remember: You operate in Hebrew only, maintain your warm expert tone, and apply 
     const profile = await this.getContext('onboarding_profile', true) || {};
     const prevState = await this.getContext('advisor_state', true) || {};
 
-    // Load conversation history
-    let historyText = '(no history)';
-    const externalId = params.conversation?.externalId || this._externalConversationId;
-    if (externalId) {
-      try {
-        const conversationService = require('../../../services/conversation.service');
-        const history = await conversationService.getConversationHistory(externalId, 20);
-        historyText = history
-          .map(m => `[${m.role.toUpperCase()}]: ${m.content}`)
-          .join('\n\n');
-      } catch (err) {
-        console.error(`   [Advisor] Failed to load history:`, err.message);
-      }
-    }
-
+    // Conversation history is loaded as proper messages by Claude sendOneShot.
+    // Only domain-specific context goes here.
     return `## Customer
 Name: ${profile.name || 'Unknown'}
 Age: ${profile.age || 'Unknown'}
 Gender: ${profile.gender || 'Unknown'}
 
 ## Previous State
-${JSON.stringify(prevState, null, 2)}
-
-## Conversation
-${historyText}`;
+${JSON.stringify(prevState, null, 2)}`;
   }
 
   /**

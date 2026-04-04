@@ -47,17 +47,45 @@ class ClaudeService {
       maxTokens = 4096,
       jsonOutput = false,
       knowledgeBase,
+      conversationId,
     } = options;
 
     try {
-      // If JSON output requested, add instruction to system prompt
-      let finalSystemPrompt = systemPrompt;
-      if (jsonOutput) {
-        finalSystemPrompt += '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code blocks, no explanation - just the raw JSON object.';
+      const anthropicFileIds = knowledgeBase?.anthropicFileIds || [];
+
+      // Build system prompt: instructions + context + conversation history as text + JSON instruction
+      // Everything goes in system so Claude observes the conversation, not participates in it
+      let promptText = systemPrompt;
+      if (message) {
+        promptText += '\n\n## Context\n' + message;
       }
 
-      // Build user message content — prepend document blocks for Anthropic KB (same as streaming path)
-      const anthropicFileIds = knowledgeBase?.anthropicFileIds || [];
+      // Load conversation history and embed as text in the system prompt
+      if (conversationId) {
+        try {
+          const conversationService = require('./conversation.service');
+          const history = await conversationService.getConversationHistory(conversationId, 20);
+          const filtered = history.filter(m => m.role === 'user' || m.role === 'assistant');
+          if (filtered.length > 0) {
+            const historyText = filtered
+              .map(m => `[${m.role.toUpperCase()}]: ${m.content}`)
+              .join('\n\n');
+            promptText += '\n\n## Conversation\n' + historyText;
+            console.log(`📜 Claude OneShot: embedded ${filtered.length} messages in system prompt`);
+            // Log last 3 for debugging
+            const lastMsgs = filtered.slice(-3).map(m => `[${m.role}]: ${String(m.content).substring(0, 80)}`);
+            console.log(`📜 Claude OneShot last messages:\n${lastMsgs.join('\n')}`);
+          }
+        } catch (err) {
+          console.warn(`⚠️ Claude OneShot: could not load history:`, err.message);
+        }
+      }
+
+      if (jsonOutput) {
+        promptText += '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code blocks, no explanation - just the raw JSON object.';
+      }
+
+      // Single user message — KB docs (if any) + instruction to analyze
       let userContent;
       if (anthropicFileIds.length > 0) {
         userContent = [
@@ -65,23 +93,23 @@ class ClaudeService {
             type: 'document',
             source: { type: 'file', file_id: fileId }
           })),
-          { type: 'text', text: message }
+          { type: 'text', text: 'Use the reference documents above and the conversation in the system prompt. Analyze and respond.' }
         ];
-        console.log(`📚 Claude OneShot: injecting ${anthropicFileIds.length} document block(s)`);
+        console.log(`📚 Claude OneShot: ${anthropicFileIds.length} document block(s) in user message`);
       } else {
-        userContent = message;
+        userContent = message || 'Analyze and respond.';
       }
+
+      console.log(`📜 Claude OneShot: system prompt ${promptText.length} chars`);
 
       const requestParams = {
         model,
         max_tokens: maxTokens,
-        system: finalSystemPrompt,
-        messages: [
-          { role: 'user', content: userContent }
-        ]
+        system: promptText,
+        messages: [{ role: 'user', content: userContent }]
       };
 
-      // Use beta.messages when document blocks are present (requires Files API beta)
+      // Use beta API when document blocks are present (requires Files API beta)
       const useFilesApi = anthropicFileIds.length > 0;
       if (useFilesApi) {
         requestParams.betas = ['files-api-2025-04-14'];
