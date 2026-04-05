@@ -28,6 +28,8 @@ aspect-agent-server/
 ### `docs/guides/`
 How-to guides for building and understanding the platform. Covers agent building, crew architecture, playground usage, and data loading.
 
+- **CREW_CHAIN_ARCHITECTURE.md** — Crew chain processing model, personas, triggered context injection, thinker/talker pattern. Visual presentations at `/lybi/how-we-build` and `/lybi/crew-builder`.
+
 ### `docs/features/`
 Documentation of existing features in the system. Each file describes what a feature does, how it works, and how to use it.
 
