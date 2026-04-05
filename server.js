@@ -1522,7 +1522,7 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled, temperatureOverrides, topKOverrides, profilerFreshStart } = req.body;
+  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled, temperatureOverrides, topKOverrides, profilerFreshStart, profilerEnabled } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -1569,8 +1569,10 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     // Send user message ID to client so it can be deleted later
     sendSSE({ type: 'user_message_saved', messageId: userMsg.id });
 
-    // Schedule profiler with 5-second debounce — resets on each new message
-    const profilerPromise = scheduleProfiler({ agentName: agentNameToUse, conversationId, userId, message, sendSSE, freshStart: !!profilerFreshStart });
+    // Schedule profiler — only runs when explicitly enabled (profiler is expensive)
+    const profilerPromise = profilerEnabled
+      ? scheduleProfiler({ agentName: agentNameToUse, conversationId, userId, message, sendSSE, freshStart: !!profilerFreshStart })
+      : Promise.resolve();
 
     // Build agent config from config JSON (includes promptId, vectorStoreId, etc.)
     const agentConfig = agent.config || {};
