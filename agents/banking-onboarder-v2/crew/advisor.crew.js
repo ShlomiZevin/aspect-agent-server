@@ -183,8 +183,6 @@ Remember: You operate in Hebrew only, maintain your warm expert tone, and apply 
     const profile = await this.getContext('onboarding_profile', true) || {};
     const prevState = await this.getContext('advisor_state', true) || {};
 
-    // Conversation history is loaded as proper messages by Claude sendOneShot.
-    // Only domain-specific context goes here.
     return `## Customer
 Name: ${profile.name || 'Unknown'}
 Age: ${profile.age || 'Unknown'}

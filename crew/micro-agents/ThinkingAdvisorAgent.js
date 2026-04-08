@@ -29,7 +29,7 @@ class ThinkingAdvisorAgent {
    * @param {boolean} [options.jsonOutput] - Request JSON output (default: true)
    * @returns {Promise<Object|string>} Parsed JSON advice or raw string
    */
-  async think({ thinkingPrompt, context }, options = {}) {
+  async think({ thinkingPrompt, context, historyMessages }, options = {}) {
     const {
       model = 'claude-sonnet-4-20250514',
       maxTokens = 2048,
@@ -39,15 +39,17 @@ class ThinkingAdvisorAgent {
     let responseText = '';
     try {
       console.log(`   🧠 [ThinkingAdvisor] Running with model: ${model}`);
+      const startTime = Date.now();
 
       const { agentName, crewMember, conversationId, userId, knowledgeBase, ...restOpts } = options;
       responseText = await llmService.sendOneShot(
         thinkingPrompt,
         context,
-        { model, maxTokens, jsonOutput, knowledgeBase, context: 'thinker', agentName, crewMember, conversationId, userId }
+        { model, maxTokens, jsonOutput, knowledgeBase, historyMessages, context: 'thinker', agentName, crewMember, conversationId, userId }
       );
 
-      console.log(`   🧠 [ThinkingAdvisor] Response received (${responseText.length} chars)`);
+      const elapsed = Date.now() - startTime;
+      console.log(`   🧠 [ThinkingAdvisor] Response received (${responseText.length} chars, ${elapsed}ms)`);
 
       if (jsonOutput) {
         // Strip markdown code fences if the model wraps JSON in ```json ... ```

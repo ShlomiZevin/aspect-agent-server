@@ -906,18 +906,38 @@ class OpenAIService {
    * @returns {Promise<string>} - The response text
    */
   async sendOneShot(instructions, message, options = {}) {
-    const { model = 'gpt-4o-mini', maxTokens = 1024, jsonOutput = false, knowledgeBase } = options;
+    const { model = 'gpt-4o-mini', maxTokens = 8192, jsonOutput = false, knowledgeBase, historyMessages } = options;
 
     try {
-      // OpenAI requires "json" in input messages when using json_object format
-      const inputText = jsonOutput && !message.toLowerCase().includes('json')
-        ? `${message}\n\nRespond in JSON.`
-        : message;
+      // Build instructions: prompt + context
+      let fullInstructions = instructions;
+      if (message) {
+        fullInstructions += '\n\n## Context\n' + message;
+      }
+      if (jsonOutput && !fullInstructions.toLowerCase().includes('json')) {
+        fullInstructions += '\n\nRespond in JSON.';
+      }
+
+      // Build input: conversation history as proper messages
+      const input = [];
+      if (historyMessages && historyMessages.length > 0) {
+        for (const m of historyMessages) {
+          const contentType = m.role === 'assistant' ? 'output_text' : 'input_text';
+          input.push({ role: m.role, content: [{ type: contentType, text: m.content }] });
+        }
+        console.log(`📜 OpenAI OneShot: ${historyMessages.length} history messages`);
+      }
+      // Always add a final user message — OpenAI requires "json" in input for json_object format
+      if (jsonOutput) {
+        input.push({ role: 'user', content: [{ type: 'input_text', text: 'Analyze the conversation and respond in JSON.' }] });
+      } else if (input.length === 0 || historyMessages?.[historyMessages.length - 1]?.role === 'assistant') {
+        input.push({ role: 'user', content: [{ type: 'input_text', text: 'Analyze the conversation and respond.' }] });
+      }
 
       const requestParams = {
         model,
-        instructions,
-        input: [{ role: 'user', content: [{ type: 'input_text', text: inputText }] }],
+        instructions: fullInstructions,
+        input,
         max_output_tokens: maxTokens,
         store: false
       };

@@ -241,8 +241,8 @@ class CrewMember {
    * @returns {Promise<string>} - Context string for the thinker
    */
   async buildThinkerContext(params) {
-    // Conversation history is now loaded as proper messages by the LLM provider (Claude sendOneShot).
-    // Override in subclasses to add domain-specific context (profile, state, catalog, etc.).
+    // Override in subclasses to add domain-specific context (profile, state, etc.).
+    // Conversation history is loaded separately as structured objects in buildContext.
     return '';
   }
 
@@ -315,6 +315,21 @@ class CrewMember {
     if (this.usesThinker && this.thinkingPrompt) {
       const contextStr = await this.buildThinkerContext(params);
 
+      // Load conversation history as structured objects — each provider handles natively
+      let historyMessages = [];
+      try {
+        const externalId = params.conversation?.externalId || this._externalConversationId;
+        if (externalId) {
+          const convService = require('../../services/conversation.service');
+          const history = await convService.getConversationHistory(externalId, 15);
+          historyMessages = history
+            .filter(m => m.role === 'user' || m.role === 'assistant')
+            .map(m => ({ role: m.role, content: m.content }));
+        }
+      } catch (err) {
+        console.warn(`   ⚠️ [${this.name}] Could not fetch history for thinker:`, err.message);
+      }
+
       // Auto-inject _thinkingDescription instruction if missing from prompt
       let enhancedPrompt = this.thinkingPrompt;
       if (!enhancedPrompt.includes('_thinkingDescription')) {
@@ -326,7 +341,7 @@ class CrewMember {
         const fieldsList = this.fieldsToCollect
           .map(f => `${f.name}${f.description ? ` (${f.description})` : ''}`)
           .join(', ');
-        enhancedPrompt += `\n\nAlso include these fields in your JSON: ${fieldsList}. Return null for any field the USER did not explicitly state. Do not extract from ASSISTANT messages — those are your own agent's words, not user data.`;
+        enhancedPrompt += `\n\nAlso include these fields in your JSON: ${fieldsList}. Return null for any field the USER did not explicitly state. Do not extract from ASSISTANT messages — those are your own agent's words, not user data.\n\nIMPORTANT: Keep each field value to 1-2 short sentences maximum. Be concise — no lengthy explanations.`;
       }
 
       let thinkingAdvice = { fallback: true };
@@ -338,7 +353,7 @@ class CrewMember {
         console.log(`   🧠 [${this.name}] Running thinker with model: ${primaryThinkingModel}${thinkerKB?.enabled ? ' (KB enabled)' : ''}`);
         const _usageMeta = { agentName: this._agentName, crewMember: this.name, conversationId: this._externalConversationId, userId: this._userId };
         thinkingAdvice = await thinkingAdvisor.think(
-          { thinkingPrompt: enhancedPrompt, context: contextStr },
+          { thinkingPrompt: enhancedPrompt, context: contextStr, historyMessages },
           { model: primaryThinkingModel, knowledgeBase: thinkerKB, ..._usageMeta }
         );
       } catch (err) {
@@ -352,7 +367,7 @@ class CrewMember {
             : thinkerKB;
           try {
             thinkingAdvice = await thinkingAdvisor.think(
-              { thinkingPrompt: enhancedPrompt, context: contextStr },
+              { thinkingPrompt: enhancedPrompt, context: contextStr, historyMessages },
               { model: fallbackModel, knowledgeBase: fallbackKB, ..._usageMeta }
             );
             thinkerModelUsed = fallbackModel;

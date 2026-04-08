@@ -47,66 +47,59 @@ class ClaudeService {
       maxTokens = 4096,
       jsonOutput = false,
       knowledgeBase,
-      conversationId,
+      historyMessages,
     } = options;
 
     try {
       const anthropicFileIds = knowledgeBase?.anthropicFileIds || [];
 
-      // Build system prompt: instructions + context + conversation history as text + JSON instruction
-      // Everything goes in system so Claude observes the conversation, not participates in it
+      // Build system prompt: instructions + context + JSON instruction
       let promptText = systemPrompt;
       if (message) {
         promptText += '\n\n## Context\n' + message;
       }
-
-      // Load conversation history and embed as text in the system prompt
-      if (conversationId) {
-        try {
-          const conversationService = require('./conversation.service');
-          const history = await conversationService.getConversationHistory(conversationId, 20);
-          const filtered = history.filter(m => m.role === 'user' || m.role === 'assistant');
-          if (filtered.length > 0) {
-            const historyText = filtered
-              .map(m => `[${m.role.toUpperCase()}]: ${m.content}`)
-              .join('\n\n');
-            promptText += '\n\n## Conversation\n' + historyText;
-            console.log(`📜 Claude OneShot: embedded ${filtered.length} messages in system prompt`);
-            // Log last 3 for debugging
-            const lastMsgs = filtered.slice(-3).map(m => `[${m.role}]: ${String(m.content).substring(0, 80)}`);
-            console.log(`📜 Claude OneShot last messages:\n${lastMsgs.join('\n')}`);
-          }
-        } catch (err) {
-          console.warn(`⚠️ Claude OneShot: could not load history:`, err.message);
-        }
-      }
-
       if (jsonOutput) {
         promptText += '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code blocks, no explanation - just the raw JSON object.';
       }
 
-      // Single user message — KB docs (if any) + instruction to analyze
-      let userContent;
-      if (anthropicFileIds.length > 0) {
-        userContent = [
-          ...anthropicFileIds.map(fileId => ({
-            type: 'document',
-            source: { type: 'file', file_id: fileId }
-          })),
-          { type: 'text', text: 'Use the reference documents above and the conversation in the system prompt. Analyze and respond.' }
-        ];
-        console.log(`📚 Claude OneShot: ${anthropicFileIds.length} document block(s) in user message`);
+      // Build messages: conversation history as proper role-based messages
+      // Same pattern as streaming: system prompt + history messages
+      let messages = [];
+      if (historyMessages && historyMessages.length > 0) {
+        messages = historyMessages.map(m => ({ role: m.role, content: m.content }));
+        // If last message is assistant, add a user prompt to trigger response
+        if (messages[messages.length - 1].role === 'assistant') {
+          messages.push({ role: 'user', content: 'Analyze the conversation and respond.' });
+        }
+        console.log(`📜 Claude OneShot: ${messages.length} history messages`);
       } else {
-        userContent = message || 'Analyze and respond.';
+        messages.push({ role: 'user', content: 'Analyze and respond.' });
       }
 
-      console.log(`📜 Claude OneShot: system prompt ${promptText.length} chars`);
+      // Inject KB document blocks into the first user message
+      if (anthropicFileIds.length > 0) {
+        const firstUserIdx = messages.findIndex(m => m.role === 'user');
+        if (firstUserIdx >= 0) {
+          const msg = messages[firstUserIdx];
+          const textContent = typeof msg.content === 'string' ? msg.content : msg.content;
+          messages[firstUserIdx] = {
+            role: 'user',
+            content: [
+              ...anthropicFileIds.map(fileId => ({ type: 'document', source: { type: 'file', file_id: fileId } })),
+              { type: 'text', text: textContent }
+            ]
+          };
+        }
+        console.log(`📚 Claude OneShot: ${anthropicFileIds.length} document block(s) injected`);
+      }
+
+      console.log(`📜 Claude OneShot: system prompt ${promptText.length} chars, ${messages.length} messages`);
 
       const requestParams = {
         model,
         max_tokens: maxTokens,
         system: promptText,
-        messages: [{ role: 'user', content: userContent }]
+        messages
       };
 
       // Use beta API when document blocks are present (requires Files API beta)
