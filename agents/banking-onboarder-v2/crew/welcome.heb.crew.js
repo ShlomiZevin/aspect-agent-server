@@ -118,9 +118,9 @@ class WelcomeCrew extends CrewMember {
   }
 
   async preMessageTransfer(collectedFields) {
+    // Always-required fields
     if (!collectedFields.user_name || !collectedFields.age ||
-        !collectedFields.account_type || !collectedFields.service_consent ||
-        !collectedFields.id_number || !collectedFields.credit_bureau_consent) {
+        !collectedFields.account_type || !collectedFields.service_consent) {
       return false;
     }
 
@@ -131,16 +131,26 @@ class WelcomeCrew extends CrewMember {
 
     if (collectedFields.service_consent !== 'true') return false;
 
+    // Conditional fields: id_number and credit_bureau_consent are only
+    // required for users 21 and older. Under 21, the prompt instructs the
+    // agent to skip these steps entirely, so the gate must skip them too.
+    const requiresIdAndCredit = age >= 21;
+    if (requiresIdAndCredit) {
+      if (!collectedFields.id_number || !collectedFields.credit_bureau_consent) {
+        return false;
+      }
+    }
+
     await this.writeContext('onboarding_profile', {
       name: collectedFields.user_name,
       age,
       accountType: 'personal',
-      idNumber: collectedFields.id_number,
+      idNumber: collectedFields.id_number || null,
       creditBureauConsent: collectedFields.credit_bureau_consent === 'true',
       startedAt: new Date().toISOString()
     }, true);
 
-    console.log(`   ✅ Welcome complete: ${collectedFields.user_name}, age ${age}`);
+    console.log(`   ✅ Welcome complete: ${collectedFields.user_name}, age ${age}${requiresIdAndCredit ? ' (id+credit collected)' : ' (id+credit skipped, under 21)'}`);
     return true;
   }
 }
