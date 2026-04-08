@@ -3,6 +3,17 @@ const { agents, users, conversations, messages, thinkingSteps, messageFeedback }
 const { eq, and, desc, asc } = require('drizzle-orm');
 
 /**
+ * Strip UI element markup (e.g. [buttons: a | b]) from message content
+ * before sending to the LLM. Prevents the model from mimicking the pattern
+ * in crews that don't define UI fields.
+ */
+const UI_MARKUP_REGEX = /\[(buttons|chips|checkbox|radio|toggle|select):\s*[^\]]+\]/gi;
+function stripUIMarkup(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(UI_MARKUP_REGEX, '').replace(/[ \t]+\n/g, '\n').trim();
+}
+
+/**
  * Conversation Service
  *
  * Manages conversations and message history for the multi-agent platform
@@ -922,4 +933,6 @@ class ConversationService {
 }
 
 // Export singleton instance
-module.exports = new ConversationService();
+const instance = new ConversationService();
+instance.stripUIMarkup = stripUIMarkup;
+module.exports = instance;

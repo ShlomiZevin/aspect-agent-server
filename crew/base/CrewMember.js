@@ -146,11 +146,22 @@ class CrewMember {
     // Fallback model — used when the primary model fails with a retriable error (429, 5xx, timeout)
     this.fallbackModel = options.fallbackModel || 'gpt-4o';
 
+    // Hardcoded prompt suffix — appended to whatever prompt is resolved
+    // (code default, DB version, or session override). Use for crew-level
+    // instructions that must always be present regardless of playground edits.
+    // Keep it short — long suffixes drown the rest of the prompt.
+    this.promptSuffix = options.promptSuffix || null;
+
     // Context service state (set by dispatcher before use)
     this._userId = null;
     this._conversationId = null; // Internal database conversation ID
     this._externalConversationId = null; // External conversation ID (UUID)
     this._agentName = null; // Agent name (for usage logging)
+
+    // Last thinker advice (stashed by buildContext after the thinker runs).
+    // The dispatcher reads it directly to extract fields — no DB round-trip,
+    // no namespace lookup, no name-mapping bugs.
+    this._lastThinkerAdvice = null;
   }
 
   /**
@@ -324,7 +335,7 @@ class CrewMember {
           const history = await convService.getConversationHistory(externalId, 15);
           historyMessages = history
             .filter(m => m.role === 'user' || m.role === 'assistant')
-            .map(m => ({ role: m.role, content: m.content }));
+            .map(m => ({ role: m.role, content: m.role === 'assistant' ? convService.stripUIMarkup(m.content) : m.content }));
         }
       } catch (err) {
         console.warn(`   ⚠️ [${this.name}] Could not fetch history for thinker:`, err.message);
@@ -399,6 +410,11 @@ class CrewMember {
       // Annotate which model the thinker actually used (for debug panel)
       thinkingAdvice._thinkerModelUsed = thinkerModelUsed;
       if (thinkerFallbackUsed) thinkingAdvice._thinkerFallbackUsed = true;
+
+      // Stash on the instance so the dispatcher can read it directly after
+      // _streamCrew completes — avoids round-tripping through DB context
+      // namespaces and avoids name-mapping bugs.
+      this._lastThinkerAdvice = thinkingAdvice;
 
       context.thinkingAdvice = thinkingAdvice;
 

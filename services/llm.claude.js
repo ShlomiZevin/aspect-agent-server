@@ -187,7 +187,7 @@ class ClaudeService {
         }
         historyMessages = history.map(m => ({
           role: m.role,
-          content: m.content
+          content: m.role === 'assistant' ? conversationService.stripUIMarkup(m.content) : m.content
         }));
       } catch (err) {
         console.warn('⚠️ Could not load conversation history from DB:', err.message);

@@ -345,6 +345,9 @@ class GoogleService {
         if (history.length > 0 && history[history.length - 1].role === 'user') {
           history.pop();
         }
+        for (const m of history) {
+          if (m.role === 'assistant') m.content = conversationService.stripUIMarkup(m.content);
+        }
         historyMessages = this._convertHistoryToGemini(history);
       } catch (err) {
         console.warn('⚠️ Could not load conversation history from DB:', err.message);

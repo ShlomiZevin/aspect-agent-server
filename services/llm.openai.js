@@ -461,7 +461,7 @@ class OpenAIService {
         historyMessages = history.map(m => ({
           role: m.role,
           // user and developer roles use input_text, assistant uses output_text
-          content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.content }]
+          content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.role === 'assistant' ? conversationService.stripUIMarkup(m.content) : m.content }]
         }));
       } catch (err) {
         console.warn('⚠️ Could not load conversation history from DB:', err.message);

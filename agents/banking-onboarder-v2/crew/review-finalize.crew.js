@@ -66,37 +66,13 @@ class ReviewFinalizeCrew extends CrewMember {
           { name: 'Onboarding KB' },
         ]
       },
-      tools: []/*[
-        {
-          name: 'request_signature',
-          description: 'Triggers the digital signature process for the account opening agreement. Returns the signature status.',
-          parameters: {
-            type: 'object',
-            properties: {
-              userId: {
-                type: 'string',
-                description: "The user's ID number (תעודת זהות)"
-              },
-              documentType: {
-                type: 'string',
-                description: 'Type of document to sign',
-                enum: ['account_opening_agreement', 'terms_and_conditions']
-              }
-            },
-            required: ['userId', 'documentType']
-          },
-          handler: async (params) => {
-            // TODO: Implement real signature handler
-            return {
-              status: 'signature_completed',
-              signatureId: `SIG-${Date.now()}`,
-              timestamp: new Date().toISOString(),
-              documentsSigned: ['account_opening_agreement', 'terms_and_conditions'],
-              message: 'החתימה הדיגיטלית התקבלה בהצלחה'
-            };
-          }
-        }
-      ]*/,
+      // No tool calls — Google Gemini cannot combine fileSearch (KB) and
+      // functionDeclarations in the same request. The signature is treated
+      // as a verbal/textual confirmation in the talker prompt instead.
+      tools: [],
+      // Always-on guardrail appended to whatever prompt is resolved (file,
+      // DB, or session override). Survives playground edits.
+      promptSuffix: 'You have no tools available. Never say you are calling, triggering, or sending anything to a system. When the user confirms the signature in text, that IS the signature — just acknowledge it and move on.',
       fieldsToCollect: [
         { name: 'details_confirmed', type: 'boolean', description: 'Set true when user confirms all personal details are correct. Set false when user asks to change something.' },
         { name: 'id_photo_received', type: 'boolean', description: 'Set true when user sends or confirms ID photo (צילום תעודת זהות). Set false when user says they cannot provide it.' },

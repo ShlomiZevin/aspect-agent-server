@@ -568,6 +568,13 @@ class DispatcherService {
       console.log(`📝 Using code-defined prompt for ${crew.name}`);
     }
 
+    // Append crew-level promptSuffix (always present, overrides nothing).
+    // Used for crew-specific guardrails that must survive playground edits.
+    if (crew.promptSuffix) {
+      resolvedPrompt = `${resolvedPrompt}\n\n${crew.promptSuffix}`;
+      console.log(`📌 Appended promptSuffix for ${crew.name} (${crew.promptSuffix.length} chars)`);
+    }
+
     // ========== RESOLVE MODEL ==========
     // Priority: 1. Session override → 2. Crew default
     let resolvedModel = crew.model;
@@ -1008,40 +1015,36 @@ class DispatcherService {
    * @private
    */
   async *_streamCrewWithThinkerFields(crew, params) {
-    const { conversationId, agentName } = params;
+    const { conversationId } = params;
 
     console.log(`🧠 Crew ${crew.name} uses thinker for field extraction (${crew.fieldsToCollect.length} fields)`);
 
-    // Stream the crew response (thinker runs inside buildContext)
+    // Reset stale thinker advice from a previous turn before streaming
+    crew._lastThinkerAdvice = null;
+
+    // Stream the crew response — the thinker runs inside buildContext and
+    // stashes its full JSON output on `crew._lastThinkerAdvice`.
     yield* this._streamCrew(crew, params);
 
-    // After stream completes, read the persisted thinker state and map to collected fields
-    const conversation = await conversationService.getConversationByExternalId(conversationId);
-    if (conversation?.userId) {
-      crew.setContextUser(conversation.userId, conversation.id, conversationId);
-      crew._agentName = agentName;
+    // Read the thinker advice directly from the instance — no DB round-trip,
+    // no namespace lookup, no name-mapping shenanigans. The thinker's JSON
+    // is the source of truth for fieldsToCollect.
+    const thinkerAdvice = crew._lastThinkerAdvice;
+    if (!thinkerAdvice) {
+      console.warn(`🧠 [${crew.name}] No thinker advice captured — skipping field extraction`);
+      return;
     }
 
-    // Read the thinker's persisted state (written by onThinkingComplete)
-    // Each crew decides which context namespace to use — we check common patterns
     const fieldNames = crew.fieldsToCollect.map(f => f.name);
     const existingFields = await agentContextService.getCollectedFields(conversationId);
 
-    // Try to get thinker state from the crew's context namespaces
-    let thinkerState = null;
-    for (const ns of ['advisor_state', 'thinker_state', 'state']) {
-      thinkerState = await crew.getContext(ns, true);
-      if (thinkerState && Object.keys(thinkerState).length > 0) break;
-    }
-
-    if (!thinkerState) return;
-
-    // Map thinker fields to collected fields
+    // Map thinker output → collected fields. Only top-level keys matching
+    // a field name are taken. The auto-injection in CrewMember tells the
+    // thinker to include these as top-level keys in its JSON.
     const newFields = {};
     for (const fieldName of fieldNames) {
-      const value = thinkerState[fieldName];
+      const value = thinkerAdvice[fieldName];
       if (value !== null && value !== undefined && value !== '' && value !== false) {
-        // Only update if new or changed
         if (existingFields[fieldName] !== String(value)) {
           newFields[fieldName] = String(value);
         }
