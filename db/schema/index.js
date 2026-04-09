@@ -157,6 +157,7 @@ const crewPrompts = pgTable('crew_prompts', {
   kbSources: jsonb('kb_sources'),                  // Active KB sources list (array of strings)
   persona: text('persona'),                        // Agent-level persona override for this crew version
   thinkingPrompt: text('thinking_prompt'),         // Thinker prompt for thinking-crew architecture
+  thinkingModel: varchar('thinking_model', { length: 100 }), // Thinker model override (e.g., 'claude-opus-4-6')
   temperature: real('temperature'),                // LLM temperature override (0.0 - 2.0)
   topK: real('top_k'),                             // LLM top_k override (provider-dependent)
   isActive: boolean('is_active').default(false).notNull(), // Only one version should be active per crew member
