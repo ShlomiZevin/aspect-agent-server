@@ -807,22 +807,9 @@ class DispatcherService {
         yield chunk;
       }
     } catch (err) {
-      if (!textYielded && this._isRetryableError(err) && resolvedFallbackModel && resolvedFallbackModel !== resolvedModel) {
-        console.warn(`⚠️ [${crew.name}] Primary model "${resolvedModel}" failed (status=${err.status || 'unknown'}, msg=${err.message}). Retrying with fallback: "${resolvedFallbackModel}"`);
-        const fallbackConfig = { ...llmConfig, model: resolvedFallbackModel };
-        const fallbackStream = llmService.sendMessageStreamWithPrompt(
-          processedMessage,
-          conversationId,
-          fallbackConfig
-        );
-        for await (const chunk of fallbackStream) {
-          yield chunk;
-        }
-        usedModel = resolvedFallbackModel;
-        fallbackUsed = true;
-      } else {
-        throw err;
-      }
+      // Attach flag so server.js can distinguish mid-stream vs. immediate failures
+      err.textYielded = textYielded;
+      throw err;
     }
 
     // Emit model_used event so server.js can persist it to message metadata

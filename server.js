@@ -1963,8 +1963,35 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     if (thinkingService.hasActiveContext(conversationId)) {
       await thinkingService.endContext(conversationId);
     }
-    // Send error as typed event so client can display it properly
-    res.write(`data: ${JSON.stringify({ type: 'stream_error', error: err.message })}\n\n`);
+
+    // Build user-friendly error message in conversation language
+    const isHebrew = /[\u0590-\u05FF]/.test(message || '');
+    const errorText = isHebrew
+      ? 'מצטערים, משהו השתבש. אנא נסה/י שוב.'
+      : 'Something went wrong. Please try again.';
+
+    const midStream = err.textYielded === true; // error after partial text was already sent
+
+    try {
+      if (midStream) {
+        // Case 2: partial text already at client — tell client to replace the bubble
+        sendSSE({ type: 'replace_message', text: errorText });
+      } else {
+        // Case 1: nothing sent yet — stream error text as a normal assistant message
+        sendSSE({ chunk: errorText });
+      }
+      // Save error text as assistant message in DB
+      const errMsg = await conversationService.saveAssistantMessage(conversationId, errorText, {
+        crewMember: currentCrewName,
+        isError: true,
+      });
+      sendSSE({ type: 'message_saved', messageId: errMsg.id });
+    } catch (saveErr) {
+      console.error('❌ Failed to save error message:', saveErr.message);
+    }
+
+    res.write('data: [DONE]\n\n');
+    res.write('data: [STREAM_END]\n\n');
     res.flush && res.flush();
     res.end();
   }
