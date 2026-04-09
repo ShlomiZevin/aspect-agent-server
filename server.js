@@ -1966,11 +1966,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
       await thinkingService.endContext(conversationId);
     }
 
-    // Build user-friendly error message in conversation language
-    const isHebrew = /[\u0590-\u05FF]/.test(message || '');
-    const errorText = isHebrew
-      ? 'מצטערים, משהו השתבש. אנא נסה/י שוב.'
-      : 'Something went wrong. Please try again.';
+    const errorText = 'סליחה, יש אצלי עומס זמני... כדאי לנסות לשלוח שוב בעוד רגע.';
 
     const midStream = err.textYielded === true; // error after partial text was already sent
 
