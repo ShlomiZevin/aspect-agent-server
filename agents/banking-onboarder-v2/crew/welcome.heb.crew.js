@@ -31,7 +31,7 @@ class WelcomeCrew extends CrewMember {
         { name: 'age', description: "User's age or date of birth to verify eligibility (must be 16+)" },
         { name: 'account_type', allowedValues: ['personal', 'business', 'joint', 'other'], description: "Type of account. Map: אישי/רגיל/פרטי → personal, עסקי → business, משותף → joint, else → other", ui: { type: 'buttons', options: [{ value: 'personal', label: 'פרטי 🏠' }, { value: 'other', label: 'אחר 🏢' }] } },
         { name: 'service_consent', type: 'boolean', description: "Set true when user agrees to use LYBI AI service for account opening (הסכמה לשירות ליבי). Set false when user refuses." },
-        { name: 'id_number', description: "User's ID number (תעודת זהות / מספר זהות)" },
+        { name: 'id_number', description: "User's ID number (תעודת זהות / מספר זהות)", ui: { type: 'id', label: 'העלאת תעודת זהות 📷' } },
         { name: 'credit_bureau_consent', type: 'boolean', description: "Set true when user agrees to credit data registry check (הסכמה לבדיקת מאגרי נתוני אשראי). Set false when user refuses." }
       ],
       extractionMode: 'form',

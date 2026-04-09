@@ -528,6 +528,9 @@ class CrewMember {
         const labels = f.ui.options.map(o => o.label).join(' | ');
         return `When asking about "${f.name}", append exactly: [${type}: ${labels}]`;
       }
+      if (f.ui.label) {
+        return `When asking about "${f.name}", append exactly: [${type}: ${f.ui.label}]`;
+      }
       if (f.ui.guidance) {
         return `When asking about "${f.name}", append: [${type}: ${f.ui.guidance}]`;
       }
