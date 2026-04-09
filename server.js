@@ -1528,6 +1528,8 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     return res.status(400).json({ error: 'Missing message or conversationId' });
   }
 
+  let sendSSE = null; // defined here so catch block can access it
+
   try {
     // Default to Aspect if no agent name specified (for backward compatibility)
     const agentNameToUse = agentName || 'Aspect';
@@ -1548,7 +1550,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     if (res.flush) res.flush();
 
     // Helper to send SSE data
-    const sendSSE = (data) => {
+    sendSSE = (data) => {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
       res.flush && res.flush();
     };
@@ -1972,27 +1974,35 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
 
     const midStream = err.textYielded === true; // error after partial text was already sent
 
-    try {
-      if (midStream) {
-        // Case 2: partial text already at client — tell client to replace the bubble
-        sendSSE({ type: 'replace_message', text: errorText });
-      } else {
-        // Case 1: nothing sent yet — stream error text as a normal assistant message
-        sendSSE({ chunk: errorText });
+    if (sendSSE) {
+      // SSE connection is open — send friendly error to client
+      try {
+        if (midStream) {
+          // Case 2: partial text already at client — tell client to replace the bubble
+          sendSSE({ type: 'replace_message', text: errorText });
+        } else {
+          // Case 1: nothing sent yet — stream error text as a normal assistant message
+          sendSSE({ chunk: errorText });
+        }
+        // Save error text as assistant message in DB
+        const errMsg = await conversationService.saveAssistantMessage(conversationId, errorText, {
+          crewMember: currentCrewName,
+          isError: true,
+        });
+        sendSSE({ type: 'message_saved', messageId: errMsg.id });
+      } catch (saveErr) {
+        console.error('❌ Failed to save error message:', saveErr.message);
       }
-      // Save error text as assistant message in DB
-      const errMsg = await conversationService.saveAssistantMessage(conversationId, errorText, {
-        crewMember: currentCrewName,
-        isError: true,
-      });
-      sendSSE({ type: 'message_saved', messageId: errMsg.id });
-    } catch (saveErr) {
-      console.error('❌ Failed to save error message:', saveErr.message);
+      res.write('data: [DONE]\n\n');
+      res.write('data: [STREAM_END]\n\n');
+      res.flush && res.flush();
+    } else {
+      // SSE not yet open — respond with plain HTTP error
+      if (!res.headersSent) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
     }
-
-    res.write('data: [DONE]\n\n');
-    res.write('data: [STREAM_END]\n\n');
-    res.flush && res.flush();
     res.end();
   }
 });
