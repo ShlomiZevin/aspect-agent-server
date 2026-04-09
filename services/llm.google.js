@@ -303,7 +303,7 @@ class GoogleService {
     // Note: flash-lite is NOT a thinking model despite the 2.5 prefix.
     const isThinkingModel = (model.includes('2.5-pro') || model.includes('2.5-flash')) && !model.includes('lite');
     const effectiveMaxTokens = isThinkingModel
-      ? Math.max(maxTokens * 8, 8192)
+      ? Math.max(maxTokens * 2, 4096)
       : maxTokens;
     if (isThinkingModel) {
       console.log(`🧠 Thinking model detected (${model}): boosting maxOutputTokens from ${maxTokens} to ${effectiveMaxTokens}`);
@@ -373,7 +373,7 @@ class GoogleService {
           topK: topK != null ? topK : undefined,
           tools: geminiTools.length > 0 ? geminiTools : undefined,
           // Thinking models: let the model reason properly for better instruction following
-          thinkingConfig: isThinkingModel ? { thinkingBudget: 8192 } : undefined,
+          thinkingConfig: isThinkingModel ? { thinkingBudget: Math.floor(effectiveMaxTokens / 2) } : undefined,
         },
       });
 
