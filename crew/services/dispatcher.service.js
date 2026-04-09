@@ -462,6 +462,12 @@ class DispatcherService {
       console.log(`   🧠 Thinking prompt override applied for "${crew.name}"`);
     }
 
+    // Apply DB thinking model if no session override
+    if (crew.usesThinker && dbPrompt?.thinkingModel && !thinkingModelOverrides[crew.name]) {
+      crew.thinkingModel = dbPrompt.thinkingModel;
+      console.log(`   🧠 Using DB thinking model for "${crew.name}": ${crew.thinkingModel}`);
+    }
+
     if (crew.usesThinker && thinkingModelOverrides[crew.name]) {
       crew.thinkingModel = thinkingModelOverrides[crew.name];
       console.log(`   🧠 Thinking model override applied for "${crew.name}": ${crew.thinkingModel}`);
