@@ -207,7 +207,7 @@ class GoogleService {
   async sendOneShot(systemPrompt, message, options = {}) {
     const {
       model = this.model,
-      maxTokens = 8192,
+      maxTokens = 2048,
       jsonOutput = false,
       knowledgeBase,
       historyMessages,
