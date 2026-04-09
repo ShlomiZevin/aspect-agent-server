@@ -22,9 +22,9 @@ const MAX_WAIT_MS = 15 * 60 * 1000; // 15 minutes
 // Per-recipient config: email address + allowed domains.
 // Never include "aspect" domain for anyone.
 const EMAIL_RECIPIENTS = {
-  Shlomi: { email: 'shlomi@boostart.io',          domains: ['lybi', 'freeda', 'freeda-1.0', 'onboarding', 'engine', 'general'] },
-  Noa:    { email: 'noa@lybi.ai',                 domains: ['lybi', 'onboarding', 'engine'] },
-  Kosta:  { email: 'ziben.konstantin@gmail.com',  domains: ['lybi', 'freeda', 'freeda-1.0', 'onboarding', 'engine', 'general'] },
+  Shlomi: { email: 'shlomi@boostart.io',          domains: ['lybi', 'freeda', 'freeda-1.0', 'banking', 'engine', 'general'] },
+  Noa:    { email: 'noa@lybi.ai',                 domains: ['lybi', 'banking', 'engine'] },
+  Kosta:  { email: 'ziben.konstantin@gmail.com',  domains: ['lybi', 'freeda', 'freeda-1.0', 'banking', 'engine', 'general'] },
 };
 
 class EmailSchedulerService {
