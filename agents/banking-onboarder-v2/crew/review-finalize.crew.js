@@ -78,6 +78,12 @@ class ReviewFinalizeCrew extends CrewMember {
         { name: 'id_photo_received', type: 'boolean', description: 'Set true when user sends or confirms ID photo (צילום תעודת זהות). Set false when user says they cannot provide it.' },
         { name: 'consent_granted', type: 'boolean', description: 'Set true when user agrees to account terms and conditions. Set false when user refuses.' },
         { name: 'signature_completed', type: 'boolean', description: 'Set true when user completes the digital signature. Set false when user refuses to sign.' },
+        { name: 'last_name_he', description: "User's last name in Hebrew (שם משפחה בעברית)", ui: { type: 'input', label: 'שם משפחה בעברית' } },
+        { name: 'first_name_en', description: "User's first name in English (שם פרטי באנגלית)", ui: { type: 'input', label: 'שם פרטי באנגלית' } },
+        { name: 'last_name_en', description: "User's last name in English (שם משפחה באנגלית)", ui: { type: 'input', label: 'שם משפחה באנגלית' } },
+        { name: 'home_address', description: "Full home address (רחוב, מספר בית, עיר, מיקוד)", ui: { type: 'input', label: 'כתובת מגורים מלאה' } },
+        { name: 'email', description: "User's email address (כתובת אימייל)", ui: { type: 'input', label: 'כתובת אימייל' } },
+        { name: 'phone', description: "User's phone number (מספר טלפון)", ui: { type: 'input', label: 'מספר טלפון' } },
       ],
       extractionMode: 'form',
       transitionTo: null, // Terminal crew
