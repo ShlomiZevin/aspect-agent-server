@@ -30,9 +30,9 @@ class WelcomeCrew extends CrewMember {
         { name: 'gender', allowedValues: ['male', 'female'], ditchIfCollected: true, description: "User's gender. Only extract when user clearly intends to state or correct their gender. Do not extract from ambiguous words (e.g. איש/אישה/אישי) that may be answering a different question." },
         { name: 'age', description: "User's age or date of birth to verify eligibility (must be 16+)" },
         { name: 'account_type', allowedValues: ['personal', 'business', 'joint', 'other'], description: "Type of account. Map: אישי/רגיל/פרטי → personal, עסקי → business, משותף → joint, else → other", ui: { type: 'buttons', options: [{ value: 'personal', label: 'פרטי 🏠' }, { value: 'other', label: 'אחר 🏢' }] } },
-        { name: 'service_consent', type: 'boolean', description: "Set true when user agrees to use LYBI AI service for account opening (הסכמה לשירות ליבי). Set false when user refuses." },
+        { name: 'service_consent', type: 'boolean', description: "Set true when user agrees or has no objections to use LYBI AI service for account opening (הסכמה לשירות ליבי). This includes explicit agreement (כן, מסכים, מאשר) AND implicit acceptance like answering 'לא' to 'do you have questions about the consent'. Set false only when user explicitly refuses the consent itself (לא רוצה, לא מסכים, מסרב)." },
         { name: 'id_number', description: "User's ID number (תעודת זהות / מספר זהות)", ui: { type: 'id', label: 'העלאת תעודת זהות 📷' } },
-        { name: 'credit_bureau_consent', type: 'boolean', description: "Set true when user agrees to credit data registry check (הסכמה לבדיקת מאגרי נתוני אשראי). Set false when user refuses." }
+        { name: 'credit_bureau_consent', type: 'boolean', description: "Set true when user agrees or has no objections to credit data registry check (הסכמה לבדיקת מאגרי נתוני אשראי). This includes explicit agreement (כן, מסכים, מאשר) AND implicit acceptance like answering 'לא' to 'do you have questions about the consent'. Set false only when user explicitly refuses the consent itself (לא רוצה, לא מסכים, מסרב)." }
       ],
       extractionMode: 'form',
       transitionTo: 'advisor',
