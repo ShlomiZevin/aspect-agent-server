@@ -1,27 +1,43 @@
-# Task: UI Elements for Fields (Buttons, Chips)
+# Task: UI Elements for Fields — Implemented
 
 ## Background
-When the agent asks about a field with known options (account type, income range), the user currently types free text. We want the agent to emit inline markup that the client renders as interactive UI elements (buttons, chips). The user can click a button (which fills the input and sends) or still type freely.
+When the agent asks about a field with known options or requires structured input, the user previously typed free text. Now the agent emits inline markup that the client renders as interactive UI elements. The user can interact with the element or still type freely.
 
-The LLM decides **when** and **what** options to show. The client decides **how** to render them.
+The LLM decides **when** to show elements (prompt-injected rules). The client decides **how** to render them.
 
 This is a **generic engine feature** — any agent can use it by adding `ui` to its field config.
 
 ---
 
-## The Generic Tool
+## Supported UI Types
 
-### Markup Format
+| Type | Purpose | Interaction | Example |
+|------|---------|-------------|---------|
+| `buttons` | Choose from static options | Click sends option as message | Account type selection |
+| `id` | ID document upload (mock) | Opens file picker → fake processing → sends mock ID | ID photo upload |
+| `input` | Free text entry form | Fill fields → click שליחה → sends labeled values | Personal details collection |
+
+Additional types are whitelisted in the client parser but not yet used: `chips`, `checkbox`, `radio`, `toggle`, `select`.
+
+---
+
+## Markup Format
 The LLM includes a markup hint in its response text:
 ```
 [buttons: option1 | option2 | option3]
+[id: העלאת תעודת זהות 📷]
+[input: שם משפחה בעברית]
+[input: כתובת אימייל]
 ```
 
 This is a plain text convention — no special SSE events, no schema changes. The markup lives in the message content.
 
-### Field Config — `ui` property
+---
+
+## Field Config — `ui` property
+
+### Static options (buttons)
 ```js
-// Static options (hardcoded)
 {
   name: 'account_type',
   ui: {
@@ -32,46 +48,113 @@ This is a plain text convention — no special SSE events, no schema changes. Th
     ]
   }
 }
+```
 
-// Dynamic options (LLM decides)
+### Label-based (id, input)
+```js
+{ name: 'id_number', ui: { type: 'id', label: 'העלאת תעודת זהות 📷' } }
+{ name: 'last_name_he', ui: { type: 'input', label: 'שם משפחה בעברית' } }
+```
+
+### Dynamic options (guidance — not currently in use)
+```js
 {
   name: 'incomeRange',
   ui: {
     type: 'buttons',
-    guidance: 'offer 3 ranges appropriate for the user profile (e.g. עד 5,000 | 5,000-10,000 | מעל 10,000)'
+    guidance: 'offer 3 ranges appropriate for the user profile'
   }
 }
 ```
 
-### Auto Prompt Injection
-The dispatcher reads all fields with `ui` config and appends one instruction block to the talker prompt:
+---
+
+## Server Implementation
+
+### `CrewMember.js` — `getUIElementsInstruction()`
+Reads `ui` property from `fieldsToCollect`. Supports `options`, `label`, and `guidance` variants. Generates a prompt instruction block like:
 
 ```
 ## UI Elements
-When asking about these topics, include a markup hint at the end of your message.
-Format: [buttons: option1 | option2 | option3]
-Only include when you are actively asking the user to choose. Do not include in every message.
-
-- account_type: [buttons: פרטי 🏠 | אחר 🏢]
-- incomeRange: [buttons: offer 3 ranges appropriate for the user profile]
+When asking about "account_type", append exactly: [buttons: פרטי 🏠 | אחר 🏢]
+When asking about "id_number", append exactly: [id: העלאת תעודת זהות 📷]
+Only append the markup when you are directly asking about that field. Do not include it in any other message.
 ```
 
-For fields with hardcoded `options` — dispatcher builds the exact markup instruction.
-For fields with `guidance` — dispatcher passes the guidance text, LLM picks the options.
+### `dispatcher.service.js` — Prompt injection
+Calls `crew.getUIElementsInstruction()` and appends result to the assembled talker prompt.
 
-### Client Rendering
-1. After stream ends, scan message text for `[buttons: ...]` patterns
-2. Strip the markup from displayed text
-3. Render a button row below the message bubble (styled in agent theme colors)
-4. On history reload — re-parse stored markup and render again
+### `conversation.service.js` — `stripUIMarkup()`
+Strips UI element markup (`[buttons: ...]`, `[id: ...]`, etc.) from assistant message content before sending to the LLM as conversation history. Prevents the model from mimicking the pattern in crews that don't define UI fields. Applied at all 4 history-load sites:
+- `llm.google.js`
+- `llm.openai.js`
+- `llm.claude.js`
+- `CrewMember.js` (thinker history)
 
-### User Interaction
-- **Click**: fills the chat input with the button label and auto-submits (identical to typing + pressing send)
-- **Type**: user can ignore buttons and type freely — extractor handles both identically
-- **After response**: buttons become disabled/dimmed
+---
 
-### What Does NOT Change
-- Field extractor — sees normal text messages, no awareness of buttons
+## Client Implementation
+
+### Parsing — `Message.tsx`
+- `UI_ELEMENT_TYPES` whitelist: `['buttons', 'chips', 'checkbox', 'radio', 'toggle', 'select', 'id', 'input']`
+- `parseUIElements()` matches `[type: content]` only for whitelisted types — markdown links `[text](url)` are never caught
+- Returns `{ cleanText, elements: { type, options }[] }`
+
+### Rendering — `Message.tsx`
+Elements are split into `inputEls` (type `input`) and `otherEls` (everything else).
+
+**Buttons (`type: buttons`):**
+- Rendered as a row of styled buttons below the message
+- Click sends the option label as a user message
+- Disabled when a subsequent message exists
+
+**ID Upload (`type: id`):**
+- Renders a large dashed upload button with camera icon
+- Click opens native file picker (`accept="image/*"`)
+- On file selected: button shows spinner + "מעבד את תעודת הזהות שלך..." for 2s (mock processing)
+- Then auto-sends `"העליתי את תעודת הזהות שלי. מספר זהות: 305123456"` (mock)
+- After submission: button shows "✅ תעודת זהות הועלתה" with solid green styling
+
+**Input Form (`type: input`):**
+- Multiple input elements grouped into a single form card
+- Each input renders as a labeled text field
+- Single "שליחה" submit button at the bottom
+- Submit composes one user message with `label: value` per line (only filled fields)
+- Enter key also submits; partial submit allowed
+- **Collected state**: when disabled, parses the next user message's `label: value` lines to recover submitted values. Only fields with recovered values are shown. Form switches to green border with "✅ נשלח" badge. Fields without values are hidden entirely.
+
+### Styling — `Message.module.css`
+- `.uiElementRow` — flex row for buttons
+- `.uiElement` — base button style (pill, theme border, hover fill)
+- `.uiDisabled` — dimmed, non-interactive
+- `.uiType_id` — larger, dashed border, distinct upload feel
+- `.uiType_id_uploaded` — solid green, shows completed state
+- `.idProcessing` / `.idSpinner` — inline spinner animation
+- `.uiInputForm` — card container for input fields
+- `.uiInputField` / `.uiInputLabel` / `.uiInputBox` — form field styling
+- `.uiInputSubmit` — submit button (theme color, right-aligned)
+- `.uiInputFormCollected` / `.uiInputBoxCollected` / `.uiInputCollectedBadge` — green collected state
+
+---
+
+## Current Usage — Banking Onboarder V2
+
+### Welcome crew (`welcome.heb.crew.js`)
+- `account_type` — `ui: { type: 'buttons', options: [פרטי 🏠, אחר 🏢] }`
+- `id_number` — `ui: { type: 'id', label: 'העלאת תעודת זהות 📷' }`
+
+### Review-Finalize crew (`review-finalize.crew.js`)
+- `last_name_he` — `ui: { type: 'input', label: 'שם משפחה בעברית' }`
+- `first_name_en` — `ui: { type: 'input', label: 'שם פרטי באנגלית' }`
+- `last_name_en` — `ui: { type: 'input', label: 'שם משפחה באנגלית' }`
+- `home_address` — `ui: { type: 'input', label: 'כתובת מגורים מלאה' }`
+- `email` — `ui: { type: 'input', label: 'כתובת אימייל' }`
+- `phone` — `ui: { type: 'input', label: 'מספר טלפון' }`
+
+---
+
+## What Does NOT Change
+- Field extractor — sees normal text messages, no awareness of UI elements
 - SSE events — no new event types
 - DB schema — raw markup stored in message content as-is
 - Transition logic — unchanged
@@ -79,143 +162,17 @@ For fields with `guidance` — dispatcher passes the guidance text, LLM picks th
 
 ---
 
-## Implementation Order
-
-### Phase 1: Generic Engine (implement first)
-Build the infrastructure so any field on any agent can use UI elements.
-
-#### Server — `CrewMember.js`
-Add `getUIElementsInstruction()` method:
-```js
-getUIElementsInstruction() {
-  const uiFields = this.fieldsToCollect.filter(f => f.ui);
-  if (uiFields.length === 0) return null;
-
-  const lines = uiFields.map(f => {
-    if (f.ui.options) {
-      const labels = f.ui.options.map(o => o.label).join(' | ');
-      return `- ${f.name}: [buttons: ${labels}]`;
-    }
-    if (f.ui.guidance) {
-      return `- ${f.name}: [buttons: ${f.ui.guidance}]`;
-    }
-    return null;
-  }).filter(Boolean);
-
-  return `## UI Elements
-When asking about these topics, include a markup hint at the end of your message.
-Format: [buttons: option1 | option2 | option3]
-Only include when you are actively asking the user to choose. Do not include in every message.
-
-${lines.join('\n')}`;
-}
-```
-
-#### Server — `dispatcher.service.js`
-In the prompt assembly step (where the talker prompt is built), call `crew.getUIElementsInstruction()` and append to the prompt if not null.
-
-#### Client — `Message.tsx`
-Add a parsing utility:
-```ts
-function parseUIElements(text: string): { cleanText: string; buttons: string[][] } {
-  const regex = /\[buttons:\s*(.+?)\]/g;
-  const buttons: string[][] = [];
-  const cleanText = text.replace(regex, (_, opts) => {
-    buttons.push(opts.split('|').map((o: string) => o.trim()));
-    return '';
-  }).trim();
-  return { cleanText, buttons };
-}
-```
-
-Render button rows below message content. Each button:
-- Styled with agent theme CSS variables (already available)
-- On click: calls `onSendMessage(buttonLabel)` or equivalent (fills input + submits)
-- Disabled state: when the next message in history exists (user already responded)
-
-#### Client — `Message.module.css`
-```css
-.buttonRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.uiButton {
-  padding: 8px 16px;
-  border-radius: 20px;
-  border: 1px solid var(--primary-color);
-  background: transparent;
-  color: var(--primary-color);
-  cursor: pointer;
-  font-size: 14px;
-  transition: all 0.2s;
-}
-
-.uiButton:hover {
-  background: var(--primary-color);
-  color: white;
-}
-
-.uiButton.disabled {
-  opacity: 0.5;
-  cursor: default;
-  pointer-events: none;
-}
-```
-
-### Phase 2: First Implementation — Banking Onboarder V2
-Apply the generic tool to the two requested fields.
-
-#### Welcome crew — account_type
-```js
-{
-  name: 'account_type',
-  allowedValues: ['personal', 'business', 'joint', 'other'],
-  ui: {
-    type: 'buttons',
-    options: [
-      { value: 'personal', label: 'פרטי 🏠' },
-      { value: 'other', label: 'אחר 🏢' }
-    ]
-  }
-}
-```
-
-#### Advisor crew — incomeRange
-```js
-{
-  name: 'incomeRange',
-  ui: {
-    type: 'buttons',
-    guidance: 'offer 3 NIS income ranges appropriate for the user profile'
-  }
-}
-```
-
----
-
 ## Files Touched
 
-| File | Phase | Change |
-|------|-------|--------|
-| `crew/base/CrewMember.js` | 1 | Add `getUIElementsInstruction()` method |
-| `crew/services/dispatcher.service.js` | 1 | Append UI instruction to talker prompt |
-| `client/components/chat/Message/Message.tsx` | 1 | Parse `[buttons:]` markup, render button row, handle click |
-| `client/components/chat/Message/Message.module.css` | 1 | Button row styling |
-| `client/components/chat/ChatInput/ChatInput.tsx` | 1 | Expose method for programmatic fill + submit |
-| `welcome.heb.crew.js` / `welcome.crew.js` | 2 | Add `ui` to `account_type` field |
-| `advisor.crew.js` | 2 | Add `ui` to `incomeRange` field |
-
-## Acceptance Criteria
-- [ ] `getUIElementsInstruction()` generates correct prompt text from field configs
-- [ ] Dispatcher appends UI instruction to talker prompt
-- [ ] LLM emits `[buttons: ...]` when asking about a UI-enabled field
-- [ ] Client parses markup and renders styled buttons below message
-- [ ] Clicking a button fills input and sends the message
-- [ ] User can type freely instead — extractor handles both
-- [ ] Buttons disabled after user responds
-- [ ] Works on history reload (re-parses stored markup)
-- [ ] Banking V2: account_type buttons appear in welcome crew
-- [ ] Banking V2: income range buttons appear in advisor crew
+| File | Change |
+|------|--------|
+| `crew/base/CrewMember.js` | `getUIElementsInstruction()` — supports `options`, `label`, `guidance` |
+| `crew/services/dispatcher.service.js` | Appends UI instruction to talker prompt |
+| `services/conversation.service.js` | `stripUIMarkup()` — strips UI markup from history sent to LLM |
+| `services/llm.google.js` | Applies `stripUIMarkup` to assistant history messages |
+| `services/llm.openai.js` | Applies `stripUIMarkup` to assistant history messages |
+| `services/llm.claude.js` | Applies `stripUIMarkup` to assistant history messages |
+| `client/Message/Message.tsx` | Parser (whitelist-based), render (buttons/id/input), collected state |
+| `client/Message/Message.module.css` | All UI element styles (buttons, id upload, input form, collected states) |
+| `welcome.heb.crew.js` | `ui` on `account_type` (buttons) and `id_number` (id) |
+| `review-finalize.crew.js` | `ui` on 6 input fields (names, address, email, phone) |

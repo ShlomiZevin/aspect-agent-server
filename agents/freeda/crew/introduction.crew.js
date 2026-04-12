@@ -23,7 +23,7 @@ class FreedaIntroductionCrew extends CrewMember {
       name: 'introduction',
       displayName: 'Introduction',
       description: 'Introduction, service overview, and eligibility check',
-      isDefault: true,
+      isDefault: false,
 
       fieldsToCollect: [
         { name: 'name', description: "The user's first name or preferred nickname" },

@@ -16,11 +16,13 @@ const FreedaProfilerCrew = require('./profiler.crew');
 const FreedaGeneralCrew = require('./general.crew');
 const FreedaSymptomAssessmentCrew = require('./symptom-assessment.crew');
 const FreedaAssessmentClosureCrew = require('./assessment-closure.crew');
+const FreedaQACrew = require('./qa.crew');
 
 module.exports = {
   FreedaIntroductionCrew,
   FreedaProfilerCrew,
   FreedaGeneralCrew,
   FreedaSymptomAssessmentCrew,
-  FreedaAssessmentClosureCrew
+  FreedaAssessmentClosureCrew,
+  FreedaQACrew
 };
