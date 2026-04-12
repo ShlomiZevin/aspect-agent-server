@@ -72,6 +72,52 @@ class ProfilerAgent {
       return { _error: true, _message: error.message };
     }
   }
+
+  /**
+   * Ask a question about the profile.
+   *
+   * @param {Object} params
+   * @param {string} params.question - The question to ask
+   * @param {Object} params.profileData - Current profile data
+   * @param {Array} params.conversationHistory - Recent messages [{role, content}]
+   * @param {Object} [options]
+   * @param {string} [options.model] - Model to use
+   * @returns {Promise<string>} The answer
+   */
+  async ask({ question, profileData, conversationHistory }, options = {}) {
+    const { model = 'claude-sonnet-4-6' } = options;
+
+    const systemPrompt = `You are a profile analyst. You have access to a user's profile data and their conversation history.
+Answer the question based on the data provided. Be concise and specific.
+Answer in the same language as the question.
+If the data doesn't contain enough information to answer, say so.`;
+
+    const historyText = conversationHistory
+      .map(m => `${m.role === 'user' ? 'USER' : 'ASSISTANT'}: ${m.content}`)
+      .join('\n\n');
+
+    const contextMessage = [
+      '## Profile Data',
+      profileData ? JSON.stringify(profileData, null, 2) : 'No profile data yet.',
+      '',
+      '## Conversation History',
+      historyText || 'No messages yet.',
+      '',
+      '## Question',
+      question,
+    ].join('\n');
+
+    console.log(`💬 [Profiler Ask] Question: "${question}"`);
+    console.log(`💬 [Profiler Ask] Context:\n${contextMessage}`);
+
+    const answer = await llmService.sendOneShot(
+      systemPrompt,
+      contextMessage,
+      { model, maxTokens: 1024, jsonOutput: false, context: 'profiler-ask' }
+    );
+
+    return answer;
+  }
 }
 
 module.exports = new ProfilerAgent();

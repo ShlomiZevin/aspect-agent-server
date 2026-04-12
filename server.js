@@ -1146,6 +1146,43 @@ app.post('/api/agents/:agentName/profiler/config/reset', async (req, res) => {
   res.json({ success: true, message: 'Profiler config reset to code default' });
 });
 
+// ========== PROFILER ASK — Ask a question about the profile ==========
+
+app.post('/api/agents/:agentName/profiler/ask', async (req, res) => {
+  const { agentName } = req.params;
+  const { conversationId, question } = req.body;
+
+  if (!conversationId || !question) {
+    return res.status(400).json({ error: 'conversationId and question are required' });
+  }
+
+  try {
+    const conversation = await conversationService.getConversationByExternalId(conversationId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const profileData = conversation.userId
+      ? await contextService.getContext(conversation.userId, 'profile_data')
+      : null;
+
+    const messages = await conversationService.getConversationHistory(conversationId, 20);
+
+    const profilerConfig = resolveProfilerConfig(agentName);
+    const model = profilerConfig?.model || 'claude-sonnet-4-6';
+
+    const answer = await profilerAgent.ask(
+      { question, profileData, conversationHistory: messages },
+      { model }
+    );
+
+    res.json({ answer });
+  } catch (error) {
+    console.error('❌ [Profiler Ask] Error:', error.message);
+    res.status(500).json({ error: 'Failed to get answer' });
+  }
+});
+
 // ========== CONTEXT ENDPOINTS (for Context Editor Panel) ==========
 // contextService already required at top of file
 
