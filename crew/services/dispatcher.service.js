@@ -582,7 +582,7 @@ class DispatcherService {
     }
 
     // ========== RESOLVE MODEL ==========
-    // Priority: 1. Session override → 2. Crew default
+    // Priority: 1. Session override → 2. DB active version → 3. Crew default
     let resolvedModel = crew.model;
     let modelSource = 'crew_default';
 
@@ -590,11 +590,16 @@ class DispatcherService {
     console.log(`🔍 Model resolution for crew: "${crew.name}"`);
     console.log(`🔍 Received modelOverrides:`, modelOverrides);
     console.log(`🔍 Crew default model: ${crew.model}`);
+    console.log(`🔍 DB prompt model: ${dbPrompt?.model || 'none'}`);
 
     if (modelOverrides[crew.name]) {
       resolvedModel = modelOverrides[crew.name];
       modelSource = 'session_override';
       console.log(`✅ Using session override model for ${crew.name}: ${resolvedModel}`);
+    } else if (dbPrompt?.model) {
+      resolvedModel = dbPrompt.model;
+      modelSource = 'database';
+      console.log(`📝 Using DB model for ${crew.name}: ${resolvedModel}`);
     } else {
       // Propagate override from a transitioning crew: if any session override exists but
       // not for this specific crew, inherit it so the model persists across transitions.
@@ -609,13 +614,17 @@ class DispatcherService {
     console.log(`🤖 Final model for ${crew.name}: ${resolvedModel} (source: ${modelSource})`)
 
     // ========== RESOLVE FALLBACK MODEL ==========
-    // Priority: 1. Session override → 2. Crew default (fallbackModel property)
+    // Priority: 1. Session override → 2. DB active version → 3. Crew default (fallbackModel property)
     let resolvedFallbackModel = crew.fallbackModel || 'gpt-4o';
     let fallbackModelSource = 'crew_default';
     if (fallbackOverrides[crew.name]) {
       resolvedFallbackModel = fallbackOverrides[crew.name];
       fallbackModelSource = 'session_override';
       console.log(`✅ Using session override fallback model for ${crew.name}: ${resolvedFallbackModel}`);
+    } else if (dbPrompt?.fallbackModel) {
+      resolvedFallbackModel = dbPrompt.fallbackModel;
+      fallbackModelSource = 'database';
+      console.log(`📝 Using DB fallback model for ${crew.name}: ${resolvedFallbackModel}`);
     }
 
     // ========== RESOLVE TEMPERATURE & TOP_K ==========

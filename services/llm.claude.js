@@ -232,7 +232,6 @@ class ClaudeService {
           messages: currentMessages
         };
 
-        console.log('shazbak', temperature, topK)
         if (temperature != null) requestParams.temperature = Math.min(temperature, 1.0); // Claude max is 1.0
         if (topK != null) requestParams.top_k = topK;
 
