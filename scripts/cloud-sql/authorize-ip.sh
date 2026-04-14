@@ -47,16 +47,32 @@ fi
 
 print_success "Your public IP: $PUBLIC_IP"
 
-# Generate a unique network name
-NETWORK_NAME="auto-$(echo $PUBLIC_IP | tr '.' '-')-$(date +%s)"
+# Fetch existing authorized networks so we APPEND instead of replacing
+print_info "Fetching existing authorized networks..."
+EXISTING_IPS=$(gcloud sql instances describe "$INSTANCE_NAME" \
+    --format="value(settings.ipConfiguration.authorizedNetworks[].value)" \
+    | tr ';' ',' | tr -d '[:space:]')
+
+# Skip if already authorized
+if echo ",$EXISTING_IPS," | grep -q ",$PUBLIC_IP,"; then
+    print_success "IP $PUBLIC_IP is already authorized — nothing to do"
+    exit 0
+fi
+
+# Build merged list
+if [ -z "$EXISTING_IPS" ]; then
+    NEW_IPS="$PUBLIC_IP"
+else
+    NEW_IPS="$EXISTING_IPS,$PUBLIC_IP"
+fi
 
 print_info "Adding IP to authorized networks..."
 print_info "Instance: $INSTANCE_NAME"
-print_info "Network name: $NETWORK_NAME"
+print_info "Existing: ${EXISTING_IPS:-<none>}"
+print_info "New list: $NEW_IPS"
 
-# Add IP to authorized networks
 gcloud sql instances patch "$INSTANCE_NAME" \
-    --authorized-networks="$PUBLIC_IP" \
+    --authorized-networks="$NEW_IPS" \
     --quiet
 
 print_success "IP address authorized successfully!"
