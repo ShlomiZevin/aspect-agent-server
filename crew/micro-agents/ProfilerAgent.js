@@ -107,9 +107,6 @@ If the data doesn't contain enough information to answer, say so.`;
       question,
     ].join('\n');
 
-    console.log(`💬 [Profiler Ask] Question: "${question}"`);
-    console.log(`💬 [Profiler Ask] Context:\n${contextMessage}`);
-
     const answer = await llmService.sendOneShot(
       systemPrompt,
       contextMessage,

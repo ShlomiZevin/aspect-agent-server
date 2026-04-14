@@ -399,6 +399,22 @@ const llmUsage = pgTable('llm_usage', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// Pinecone indexed files - tracks files uploaded to Pinecone (Brain)
+const libraryFiles = pgTable('library_files', {
+  id: serial('id').primaryKey(),
+  indexName: varchar('index_name', { length: 255 }).notNull(),
+  namespace: varchar('namespace', { length: 255 }).notNull(),
+  fileId: varchar('file_id', { length: 255 }).notNull(), // unique ID used in Pinecone vector IDs
+  fileName: varchar('file_name', { length: 500 }).notNull(),
+  fileSize: integer('file_size'), // bytes
+  fileType: varchar('file_type', { length: 50 }),
+  chunkCount: integer('chunk_count').default(0),
+  embeddingTokens: integer('embedding_tokens').default(0),
+  embeddingCost: real('embedding_cost').default(0),
+  status: varchar('status', { length: 50 }).default('completed').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -426,4 +442,5 @@ module.exports = {
   testConfigs,
   testRuns,
   llmUsage,
+  libraryFiles,
 };

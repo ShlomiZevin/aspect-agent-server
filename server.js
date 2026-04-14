@@ -4668,6 +4668,381 @@ app.put('/api/admin/test-runs/config/:agentName', async (req, res) => {
   }
 });
 
+// ========== LIBRARY ENDPOINTS (Pinecone vector search — isolated from existing KB system) ==========
+
+const chunkerService = require('./services/kb.chunker.service');
+const embeddingService = require('./services/kb.embedding.service');
+const pineconeService = require('./services/kb.pinecone.service');
+const { libraryFiles } = require('./db/schema');
+const { eq, and: drizzleAnd, desc: drizzleDesc } = require('drizzle-orm');
+
+// Connection status (no API call — just checks env vars)
+app.get('/api/pinecone/status', (req, res) => {
+  res.json(pineconeService.getConnectionStatus());
+});
+
+// List all indexes in the Pinecone account
+app.get('/api/pinecone/indexes', async (req, res) => {
+  try {
+    const indexes = await pineconeService.listIndexes();
+    res.json({ indexes, activeIndex: process.env.PINECONE_INDEX_NAME || null });
+  } catch (err) {
+    console.error('❌ List indexes error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a new Pinecone index
+app.post('/api/pinecone/indexes', async (req, res) => {
+  try {
+    const { name, dimension = 1536, metric = 'cosine', cloud = 'aws', region = 'us-east-1' } = req.body;
+    if (!name) return res.status(400).json({ error: 'Index name is required' });
+    await pineconeService.createIndex(name, dimension, metric, cloud, region);
+    res.json({ success: true, message: `Index "${name}" created`, name, dimension, metric });
+  } catch (err) {
+    console.error('❌ Create index error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a Pinecone index
+app.delete('/api/pinecone/indexes/:name', async (req, res) => {
+  try {
+    await pineconeService.deleteIndex(req.params.name);
+    res.json({ success: true, message: `Index "${req.params.name}" deleted` });
+  } catch (err) {
+    console.error('❌ Delete index error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Set the active index
+app.post('/api/pinecone/indexes/:name/activate', async (req, res) => {
+  try {
+    pineconeService.setActiveIndex(req.params.name);
+    res.json({ success: true, activeIndex: req.params.name });
+  } catch (err) {
+    console.error('❌ Activate index error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Preview chunks for a file (no persistence — just extract + chunk)
+app.post('/api/pinecone/preview-chunks', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const chunkSize = parseInt(req.body.chunkSize) || 1000;
+    const chunkOverlap = parseInt(req.body.chunkOverlap) || 200;
+
+    const result = await chunkerService.processFile(
+      req.file.buffer, req.file.originalname, req.file.mimetype,
+      { chunkSize, chunkOverlap }
+    );
+
+    res.json({
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+      extractedText: result.extractedText,
+      pages: result.pages,
+      chunks: result.chunks,
+      stats: result.stats,
+      settings: { chunkSize, chunkOverlap },
+    });
+  } catch (err) {
+    console.error('❌ Chunk preview error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Preview embeddings for a file (chunks + embedding stats, no persistence)
+app.post('/api/pinecone/preview-embeddings', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const chunkSize = parseInt(req.body.chunkSize) || 1000;
+    const chunkOverlap = parseInt(req.body.chunkOverlap) || 200;
+
+    const { chunks, stats: chunkStats } = await chunkerService.processFile(
+      req.file.buffer, req.file.originalname, req.file.mimetype,
+      { chunkSize, chunkOverlap }
+    );
+
+    const estimate = embeddingService.estimateCost(chunks.map(c => c.text));
+
+    res.json({
+      fileName: req.file.originalname,
+      chunks: chunks.map(c => ({ ...c, estimatedTokens: Math.ceil(c.text.length / 4) })),
+      stats: {
+        ...chunkStats,
+        ...estimate,
+        embeddingModel: embeddingService.EMBEDDING_MODEL,
+        embeddingDimensions: embeddingService.EMBEDDING_DIMENSIONS,
+      },
+    });
+  } catch (err) {
+    console.error('❌ Embedding preview error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Index a single file to Pinecone (full pipeline: chunk → embed → upsert)
+app.post('/api/pinecone/index-file', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const { kbId, agentId } = req.body;
+    if (!kbId) return res.status(400).json({ error: 'kbId is required' });
+
+    const chunkSize = parseInt(req.body.chunkSize) || 1000;
+    const chunkOverlap = parseInt(req.body.chunkOverlap) || 200;
+
+    // Step 1: chunk
+    const { chunks } = await chunkerService.processFile(
+      req.file.buffer, req.file.originalname, req.file.mimetype,
+      { chunkSize, chunkOverlap }
+    );
+
+    // Step 2: embed
+    const { embeddings, totalTokens, cost } = await embeddingService.embedTexts(chunks.map(c => c.text));
+
+    // Step 3: generate a file ID (use timestamp + random for now since this is isolated)
+    const fileId = Date.now();
+
+    // Step 4: index to Pinecone
+    const { vectorCount, namespace } = await pineconeService.indexFile({
+      kbId: parseInt(kbId),
+      fileId,
+      fileName: req.file.originalname,
+      fileType: req.file.originalname.split('.').pop().toLowerCase(),
+      agentId: parseInt(agentId) || 0,
+      chunks,
+      embeddings,
+    });
+
+    res.json({
+      success: true,
+      fileId,
+      fileName: req.file.originalname,
+      namespace,
+      vectorCount,
+      embeddingTokens: totalTokens,
+      embeddingCost: cost,
+    });
+  } catch (err) {
+    console.error('❌ Index file error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk index multiple files to Pinecone
+app.post('/api/pinecone/index-bulk', upload.array('files', 200), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No files uploaded' });
+    const { namespace, kbId, agentId } = req.body;
+    if (!namespace && !kbId) return res.status(400).json({ error: 'namespace is required' });
+
+    const chunkSize = parseInt(req.body.chunkSize) || 1000;
+    const chunkOverlap = parseInt(req.body.chunkOverlap) || 200;
+
+    const results = [];
+    let totalVectors = 0;
+    let totalCost = 0;
+    let failedFiles = [];
+
+    for (const file of req.files) {
+      try {
+        const { chunks } = await chunkerService.processFile(
+          file.buffer, file.originalname, file.mimetype,
+          { chunkSize, chunkOverlap }
+        );
+
+        const { embeddings, totalTokens, cost } = await embeddingService.embedTexts(chunks.map(c => c.text));
+        const fileId = Date.now() + Math.floor(Math.random() * 10000);
+
+        const { vectorCount } = await pineconeService.indexFile({
+          kbId: kbId ? parseInt(kbId) : 0,
+          namespace: namespace || undefined,
+          fileId,
+          fileName: file.originalname,
+          fileType: file.originalname.split('.').pop().toLowerCase(),
+          agentId: parseInt(agentId) || 0,
+          chunks,
+          embeddings,
+        });
+
+        // Save to DB
+        const drizzle = db.getDrizzle();
+        if (drizzle) {
+          await drizzle.insert(libraryFiles).values({
+            indexName: process.env.PINECONE_INDEX_NAME || 'default',
+            namespace: namespace || `kb-${kbId}`,
+            fileId: String(fileId),
+            fileName: file.originalname,
+            fileSize: file.size,
+            fileType: file.originalname.split('.').pop().toLowerCase(),
+            chunkCount: vectorCount,
+            embeddingTokens: totalTokens,
+            embeddingCost: cost,
+            status: 'completed',
+          });
+        }
+
+        totalVectors += vectorCount;
+        totalCost += cost;
+        results.push({
+          fileName: file.originalname,
+          fileId,
+          vectorCount,
+          embeddingTokens: totalTokens,
+          status: 'success',
+        });
+      } catch (fileErr) {
+        failedFiles.push({ fileName: file.originalname, error: fileErr.message });
+        results.push({
+          fileName: file.originalname,
+          status: 'failed',
+          error: fileErr.message,
+        });
+      }
+    }
+
+    res.json({
+      totalFiles: req.files.length,
+      successCount: results.filter(r => r.status === 'success').length,
+      failedCount: failedFiles.length,
+      totalVectors,
+      totalEmbeddingCost: totalCost,
+      results,
+      failedFiles,
+    });
+  } catch (err) {
+    console.error('❌ Bulk index error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get Pinecone index stats
+app.get('/api/pinecone/stats', async (req, res) => {
+  try {
+    const stats = await pineconeService.getIndexStats();
+    res.json(stats);
+  } catch (err) {
+    console.error('❌ Pinecone stats error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List vectors in a namespace (supports both kb ID and raw namespace name)
+app.get('/api/pinecone/namespace/:namespace/vectors', async (req, res) => {
+  try {
+    const namespace = req.params.namespace;
+    const fileId = req.query.fileId ? parseInt(req.query.fileId) : undefined;
+    const limit = parseInt(req.query.limit) || 100;
+    const vectors = await pineconeService.listVectors(namespace, { fileId, limit });
+    res.json({ namespace, vectors, count: vectors.length });
+  } catch (err) {
+    console.error('❌ List vectors error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete file vectors from Pinecone
+app.delete('/api/pinecone/file/:kbId/:fileId', async (req, res) => {
+  try {
+    const kbId = parseInt(req.params.kbId);
+    const fileId = parseInt(req.params.fileId);
+    await pineconeService.deleteFile(kbId, fileId);
+    res.json({ success: true, message: `Deleted vectors for file ${fileId} from kb-${kbId}` });
+  } catch (err) {
+    console.error('❌ Delete file error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete entire namespace
+app.delete('/api/pinecone/namespace/:kbId', async (req, res) => {
+  try {
+    const kbId = parseInt(req.params.kbId);
+    await pineconeService.deleteNamespace(kbId);
+    res.json({ success: true, message: `Deleted namespace kb-${kbId}` });
+  } catch (err) {
+    console.error('❌ Delete namespace error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Query Pinecone (retrieval tester) — accepts namespace names or KB IDs
+app.post('/api/pinecone/query', async (req, res) => {
+  try {
+    const { namespaces, kbIds, query: queryText, topK, scoreThreshold, maxTokens } = req.body;
+    const nsInput = namespaces || kbIds;
+    if (!nsInput || !queryText) return res.status(400).json({ error: 'namespaces and query are required' });
+
+    const results = await pineconeService.query(
+      Array.isArray(nsInput) ? nsInput : [nsInput],
+      queryText,
+      { topK, scoreThreshold, maxTokens }
+    );
+
+    const formattedPrompt = pineconeService.formatForPrompt(results.results);
+
+    res.json({
+      ...results,
+      formattedPrompt,
+    });
+  } catch (err) {
+    console.error('❌ Pinecone query error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List indexed files for a namespace (from DB)
+app.get('/api/library/files', async (req, res) => {
+  try {
+    const { namespace, indexName } = req.query;
+    if (!namespace) return res.status(400).json({ error: 'namespace is required' });
+
+    const drizzle = db.getDrizzle();
+    if (!drizzle) return res.json({ files: [], source: 'unavailable' });
+
+    const idx = indexName || process.env.PINECONE_INDEX_NAME || 'default';
+    const files = await drizzle
+      .select()
+      .from(libraryFiles)
+      .where(drizzleAnd(eq(libraryFiles.indexName, idx), eq(libraryFiles.namespace, namespace)))
+      .orderBy(drizzleDesc(libraryFiles.createdAt));
+
+    res.json({ files, source: 'db' });
+  } catch (err) {
+    console.error('❌ List library files error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a file from library (DB + Pinecone vectors)
+app.delete('/api/library/files/:id', async (req, res) => {
+  try {
+    const drizzle = db.getDrizzle();
+    if (!drizzle) return res.status(500).json({ error: 'Database not available' });
+
+    // Get file record
+    const [file] = await drizzle.select().from(libraryFiles).where(eq(libraryFiles.id, parseInt(req.params.id)));
+    if (!file) return res.status(404).json({ error: 'File not found' });
+
+    // Delete vectors from Pinecone
+    try {
+      await pineconeService.deleteFile(file.namespace, parseInt(file.fileId));
+    } catch (pineconeErr) {
+      console.warn('⚠️ Could not delete vectors from Pinecone:', pineconeErr.message);
+    }
+
+    // Delete from DB
+    await drizzle.delete(libraryFiles).where(eq(libraryFiles.id, parseInt(req.params.id)));
+    res.json({ success: true, fileName: file.fileName });
+  } catch (err) {
+    console.error('❌ Delete library file error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Initialize database and start server
 async function startServer() {
