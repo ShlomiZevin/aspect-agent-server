@@ -595,8 +595,15 @@ class DispatcherService {
       resolvedModel = modelOverrides[crew.name];
       modelSource = 'session_override';
       console.log(`✅ Using session override model for ${crew.name}: ${resolvedModel}`);
-    } else if (Object.keys(modelOverrides).length > 0) {
-      console.log(`⚠️ Model overrides exist but none match crew "${crew.name}". Keys: [${Object.keys(modelOverrides).join(', ')}]`);
+    } else {
+      // Propagate override from a transitioning crew: if any session override exists but
+      // not for this specific crew, inherit it so the model persists across transitions.
+      const overrideValues = Object.values(modelOverrides);
+      if (overrideValues.length > 0) {
+        resolvedModel = overrideValues[0];
+        modelSource = 'session_override';
+        console.log(`🔀 Inherited session override model for ${crew.name} (transition): ${resolvedModel}`);
+      }
     }
 
     console.log(`🤖 Final model for ${crew.name}: ${resolvedModel} (source: ${modelSource})`)
