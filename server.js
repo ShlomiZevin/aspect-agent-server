@@ -1083,6 +1083,31 @@ app.delete('/api/conversation/:conversationId/fields', async (req, res) => {
 
 // ========== PROFILER CONFIG ENDPOINTS (Debug Mode) ==========
 
+// Profiler overrides — runtime cache (agentName → { prompt, model, provider })
+// Populated from DB on first GET, kept in sync on PATCH/reset
+const profilerOverrides = new Map();
+
+// Helper: load profiler override from DB into memory map (if not already loaded)
+async function loadProfilerOverrideFromDB(agentName) {
+  if (profilerOverrides.has(agentName)) return;
+  try {
+    const { crewPrompts: crewPromptsTable, agents: agentsTable } = require('./db/schema');
+    const { eq, and } = require('drizzle-orm');
+    const drizzle = db.getDrizzle();
+    const agentRows = await drizzle.select({ id: agentsTable.id }).from(agentsTable).where(eq(agentsTable.name, agentName)).limit(1);
+    if (!agentRows.length) return;
+    const rows = await drizzle.select().from(crewPromptsTable)
+      .where(and(eq(crewPromptsTable.agentId, agentRows[0].id), eq(crewPromptsTable.crewMemberName, '__profiler__')))
+      .limit(1);
+    if (rows.length) {
+      const { prompt, model, provider } = rows[0];
+      profilerOverrides.set(agentName, { ...(prompt && { prompt }), ...(model && { model }), ...(provider && { provider }) });
+    }
+  } catch (err) {
+    console.error('❌ [Profiler] Failed to load override from DB:', err.message);
+  }
+}
+
 // Get current profiler config for an agent (prompt + model + schema)
 app.get('/api/agents/:agentName/profiler/config', async (req, res) => {
   const { agentName } = req.params;
@@ -1091,6 +1116,7 @@ app.get('/api/agents/:agentName/profiler/config', async (req, res) => {
     if (!config) {
       return res.json({ agentName, hasProfiler: false, config: null });
     }
+    await loadProfilerOverrideFromDB(agentName);
     const overrides = profilerOverrides.get(agentName) || {};
     res.json({
       agentName,
@@ -1114,10 +1140,7 @@ app.get('/api/agents/:agentName/profiler/config', async (req, res) => {
   }
 });
 
-// Update profiler config for an agent (session override — written to profiler.config.js runtime cache)
-// This uses a runtime override map so changes don't require restart but don't persist across deploys
-const profilerOverrides = new Map(); // agentName → { prompt, model, provider }
-
+// Update profiler config for an agent — persists to DB and updates runtime cache
 app.patch('/api/agents/:agentName/profiler/config', async (req, res) => {
   const { agentName } = req.params;
   const { prompt, model, provider } = req.body;
@@ -1132,6 +1155,31 @@ app.patch('/api/agents/:agentName/profiler/config', async (req, res) => {
     };
     profilerOverrides.set(agentName, updated);
 
+    // Persist to DB
+    try {
+      const { crewPrompts: crewPromptsTable, agents: agentsTable } = require('./db/schema');
+      const { eq, and } = require('drizzle-orm');
+      const drizzle = db.getDrizzle();
+      const agentRows = await drizzle.select({ id: agentsTable.id }).from(agentsTable).where(eq(agentsTable.name, agentName)).limit(1);
+      if (agentRows.length) {
+        const existing_db = await drizzle.select({ id: crewPromptsTable.id }).from(crewPromptsTable)
+          .where(and(eq(crewPromptsTable.agentId, agentRows[0].id), eq(crewPromptsTable.crewMemberName, '__profiler__')))
+          .limit(1);
+        if (existing_db.length) {
+          await drizzle.update(crewPromptsTable)
+            .set({ ...(prompt !== undefined && { prompt }), ...(model !== undefined && { model }), ...(provider !== undefined && { provider }), updatedAt: new Date() })
+            .where(eq(crewPromptsTable.id, existing_db[0].id));
+        } else {
+          await drizzle.insert(crewPromptsTable).values({
+            agentId: agentRows[0].id, crewMemberName: '__profiler__', version: 1,
+            prompt: updated.prompt || '', model: updated.model || null, provider: updated.provider || null, isActive: true,
+          });
+        }
+      }
+    } catch (dbErr) {
+      console.error('❌ [Profiler] DB persist failed (override still active in memory):', dbErr.message);
+    }
+
     res.json({ success: true, config: updated });
   } catch (err) {
     console.error('❌ Error updating profiler config:', err.message);
@@ -1139,10 +1187,22 @@ app.patch('/api/agents/:agentName/profiler/config', async (req, res) => {
   }
 });
 
-// Reset profiler config to code default
+// Reset profiler config to code default — clears DB record and memory cache
 app.post('/api/agents/:agentName/profiler/config/reset', async (req, res) => {
   const { agentName } = req.params;
   profilerOverrides.delete(agentName);
+  try {
+    const { crewPrompts: crewPromptsTable, agents: agentsTable } = require('./db/schema');
+    const { eq, and } = require('drizzle-orm');
+    const drizzle = db.getDrizzle();
+    const agentRows = await drizzle.select({ id: agentsTable.id }).from(agentsTable).where(eq(agentsTable.name, agentName)).limit(1);
+    if (agentRows.length) {
+      await drizzle.delete(crewPromptsTable)
+        .where(and(eq(crewPromptsTable.agentId, agentRows[0].id), eq(crewPromptsTable.crewMemberName, '__profiler__')));
+    }
+  } catch (dbErr) {
+    console.error('❌ [Profiler] DB reset failed:', dbErr.message);
+  }
   res.json({ success: true, message: 'Profiler config reset to code default' });
 });
 
@@ -1453,7 +1513,8 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
     // 4. Load existing profile from user-level context (or start fresh)
     const existingProfile = freshStart ? {} : (await contextService.getContext(dbUserId, 'profile_data') || {});
 
-    // 5. Resolve profiler prompt and model (runtime override > agent code)
+    // 5. Resolve profiler prompt and model (runtime override > DB override > agent code)
+    await loadProfilerOverrideFromDB(agentName);
     const overrides = profilerOverrides.get(agentName) || {};
     const profilerPrompt = overrides.prompt || profilerConfig.prompt;
     const profilerModel = overrides.model || profilerConfig.model || 'claude-sonnet-4-6';
