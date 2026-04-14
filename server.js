@@ -1492,10 +1492,6 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
     await contextService.saveContext(dbUserId, 'profile_data', result);
 
     // 8. Compute scores from the profile for the UI
-    const CLUSTER_WEIGHTS = {
-      identity: 15, financial_status: 20, behavior_intent: 15,
-      personal_context: 10, account_progress: 20, recommendations: 10, summary: 0,
-    };
     const DEPTH_LABELS = [
       { maxPercent: 25, label: 'פרופיל בסיסי' },
       { maxPercent: 50, label: 'פרופיל פונקציונאלי' },
@@ -1503,8 +1499,8 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
       { maxPercent: 100, label: 'פרופיל פרסונליזציה מלא' },
     ];
 
-    let totalWeightedDepth = 0;
-    let totalWeight = 0;
+    let totalFields = 0;
+    let totalFilled = 0;
     let totalConfidence = 0;
     let filledCount = 0;
     const clusterScores = {};
@@ -1519,11 +1515,8 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
       const depth = total > 0 ? Math.round((filled / total) * 100) : 0;
       clusterScores[clusterId] = { depth };
 
-      const weight = CLUSTER_WEIGHTS[clusterId] || 10;
-      if (weight > 0) {
-        totalWeightedDepth += depth * weight;
-        totalWeight += weight;
-      }
+      totalFields += total;
+      totalFilled += filled;
 
       for (const [, f] of fields) {
         if (f && typeof f === 'object' && f.value != null) {
@@ -1533,7 +1526,7 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
       }
     }
 
-    const overallDepth = totalWeight > 0 ? Math.round(totalWeightedDepth / totalWeight) : 0;
+    const overallDepth = totalFields > 0 ? Math.round((totalFilled / totalFields) * 100) : 0;
     const overallConfidence = filledCount > 0 ? Math.round(totalConfidence / filledCount) : 0;
     const profileTier = (DEPTH_LABELS.find(l => overallDepth <= l.maxPercent) || DEPTH_LABELS[DEPTH_LABELS.length - 1])?.label || '';
 
