@@ -1528,7 +1528,7 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
 
     const overallDepth = totalFields > 0 ? Math.round((totalFilled / totalFields) * 100) : 0;
     const overallConfidence = filledCount > 0 ? Math.round(totalConfidence / filledCount) : 0;
-    const profileTier = (DEPTH_LABELS.find(l => overallDepth <= l.maxPercent) || DEPTH_LABELS[DEPTH_LABELS.length - 1])?.label || '';
+    const profileTier = overallDepth < 15 ? '' : (DEPTH_LABELS.find(l => overallDepth <= l.maxPercent) || DEPTH_LABELS[DEPTH_LABELS.length - 1])?.label || '';
 
     // 9. Push profile_update SSE event — the full profile + computed scores
     sendSSE({
