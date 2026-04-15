@@ -1127,11 +1127,13 @@ app.get('/api/agents/:agentName/profiler/config', async (req, res) => {
         model: overrides.model || config.model || 'gpt-4o-mini',
         provider: overrides.provider || config.provider || null,
         maxTokens: config.maxTokens || 2048,
+        confidenceThreshold: overrides.confidenceThreshold ?? 70,
       },
       codeDefault: {
         prompt: config.prompt || null,
         model: config.model || 'gpt-4o-mini',
         provider: config.provider || null,
+        confidenceThreshold: 70,
       },
     });
   } catch (err) {
@@ -1143,7 +1145,7 @@ app.get('/api/agents/:agentName/profiler/config', async (req, res) => {
 // Update profiler config for an agent — persists to DB and updates runtime cache
 app.patch('/api/agents/:agentName/profiler/config', async (req, res) => {
   const { agentName } = req.params;
-  const { prompt, model, provider } = req.body;
+  const { prompt, model, provider, confidenceThreshold } = req.body;
 
   try {
     const existing = profilerOverrides.get(agentName) || {};
@@ -1152,10 +1154,11 @@ app.patch('/api/agents/:agentName/profiler/config', async (req, res) => {
       ...(prompt !== undefined && { prompt }),
       ...(model !== undefined && { model }),
       ...(provider !== undefined && { provider }),
+      ...(confidenceThreshold !== undefined && { confidenceThreshold: Number(confidenceThreshold) }),
     };
     profilerOverrides.set(agentName, updated);
 
-    // Persist to DB
+    // Persist to DB (prompt/model/provider only — confidenceThreshold is memory-only for now)
     try {
       const { crewPrompts: crewPromptsTable, agents: agentsTable } = require('./db/schema');
       const { eq, and } = require('drizzle-orm');
@@ -1536,13 +1539,16 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
       return;
     }
 
-    // 7. Strip low-confidence fields (below 70) — prevents over-inference
+    // 7. Strip low-confidence fields — prevents over-inference
+    // Threshold is configurable (default 70). Filtered fields get _filtered:true so UI can show them in debug mode.
+    const confidenceThreshold = overrides.confidenceThreshold ?? 70;
     for (const [clusterId, clusterData] of Object.entries(result)) {
       if (clusterId === 'summary' || clusterId.startsWith('_')) continue;
       if (typeof clusterData !== 'object' || clusterData === null) continue;
       for (const [, fieldData] of Object.entries(clusterData)) {
         if (fieldData && typeof fieldData === 'object' && 'confidence' in fieldData) {
-          if (fieldData.confidence < 70) {
+          if (fieldData.confidence < confidenceThreshold) {
+            fieldData._filtered = true;
             fieldData.value = null;
           }
         }
@@ -1601,6 +1607,7 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
         overallDepth,
         overallConfidence,
         profileTier,
+        confidenceThreshold,
       }
     });
 
