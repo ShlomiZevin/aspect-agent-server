@@ -1513,8 +1513,12 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
       content: m.content,
     }));
 
-    // 4. Load existing profile from user-level context (or start fresh)
-    const existingProfile = freshStart ? {} : (await contextService.getContext(dbUserId, 'profile_data') || {});
+    // 4. Load existing profile — conversation-level first, fallback to user-level (or start fresh)
+    const existingProfile = freshStart ? {} : (
+      await contextService.getContext(dbUserId, 'profile_data', conversation.id) ||
+      await contextService.getContext(dbUserId, 'profile_data') ||
+      {}
+    );
 
     // 5. Resolve profiler prompt and model (runtime override > DB override > agent code)
     await loadProfilerOverrideFromDB(agentName);
@@ -1555,7 +1559,8 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
       }
     }
 
-    // 8. Save the full profile to user-level context
+    // 8. Save the full profile — conversation-level (per-conversation snapshot) + user-level (latest)
+    await contextService.saveContext(dbUserId, 'profile_data', result, conversation.id);
     await contextService.saveContext(dbUserId, 'profile_data', result);
 
     // 8. Compute scores from the profile for the UI
