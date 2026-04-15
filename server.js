@@ -1246,6 +1246,107 @@ app.post('/api/agents/:agentName/profiler/ask', async (req, res) => {
   }
 });
 
+// ========== PROFILER MANUAL RUN ==========
+
+app.post('/api/agents/:agentName/profiler/run', async (req, res) => {
+  const { agentName } = req.params;
+  const { conversationId } = req.body;
+
+  if (!conversationId) {
+    return res.status(400).json({ error: 'conversationId is required' });
+  }
+
+  try {
+    const profilerConfig = resolveProfilerConfig(agentName);
+    if (!profilerConfig) {
+      return res.status(404).json({ error: 'No profiler configured for this agent' });
+    }
+
+    const conversation = await conversationService.getConversationByExternalId(conversationId);
+    if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+
+    const dbUserId = conversation.userId;
+    if (!dbUserId) return res.status(400).json({ error: 'Conversation has no user' });
+
+    const history = await conversationService.getConversationHistory(conversationId, 20);
+    const conversationHistory = history.map(m => ({ role: m.role, content: m.content }));
+
+    await loadProfilerOverrideFromDB(agentName);
+    const overrides = profilerOverrides.get(agentName) || {};
+    const profilerPrompt = overrides.prompt || profilerConfig.prompt;
+    const profilerModel = overrides.model || profilerConfig.model || 'claude-sonnet-4-6';
+    const profilerMaxTokens = profilerConfig.maxTokens || 4096;
+
+    const existingProfile = await contextService.getContext(dbUserId, 'profile_data', conversation.id)
+      || await contextService.getContext(dbUserId, 'profile_data')
+      || {};
+
+    const result = await profilerAgent.run(
+      { profilerPrompt, conversationHistory, existingProfile },
+      { model: profilerModel, maxTokens: profilerMaxTokens, agentName, conversationId, userId: dbUserId }
+    );
+
+    if (result._error) {
+      return res.status(500).json({ error: result._message });
+    }
+
+    const confidenceThreshold = overrides.confidenceThreshold ?? 70;
+    for (const [clusterId, clusterData] of Object.entries(result)) {
+      if (clusterId === 'summary' || clusterId.startsWith('_')) continue;
+      if (typeof clusterData !== 'object' || clusterData === null) continue;
+      for (const [, fieldData] of Object.entries(clusterData)) {
+        if (fieldData && typeof fieldData === 'object' && 'confidence' in fieldData) {
+          if (fieldData.confidence < confidenceThreshold) {
+            fieldData._filtered = true;
+            fieldData.value = null;
+          }
+        }
+      }
+    }
+
+    await contextService.saveContext(dbUserId, 'profile_data', result, conversation.id);
+    await contextService.saveContext(dbUserId, 'profile_data', result);
+
+    const DEPTH_LABELS = [
+      { maxPercent: 25, label: 'פרופיל בסיסי' },
+      { maxPercent: 50, label: 'פרופיל פונקציונאלי' },
+      { maxPercent: 75, label: 'פרופיל תובנות מוכן' },
+      { maxPercent: 100, label: 'פרופיל פרסונליזציה מלא' },
+    ];
+
+    let totalFields = 0, totalFilled = 0, totalConfidence = 0, filledCount = 0;
+    const clusterScores = {};
+    for (const [clusterId, clusterData] of Object.entries(result)) {
+      if (clusterId === 'summary' || clusterId.startsWith('_')) continue;
+      if (typeof clusterData !== 'object' || clusterData === null) continue;
+      const fields = Object.entries(clusterData).filter(([k]) => !k.startsWith('_'));
+      const total = fields.length;
+      const filled = fields.filter(([, f]) => f && typeof f === 'object' && f.value != null).length;
+      clusterScores[clusterId] = { depth: total > 0 ? Math.round((filled / total) * 100) : 0 };
+      totalFields += total;
+      totalFilled += filled;
+      for (const [, f] of fields) {
+        if (f && typeof f === 'object' && f.value != null) {
+          totalConfidence += f.confidence || 0;
+          filledCount++;
+        }
+      }
+    }
+
+    const overallDepth = totalFields > 0 ? Math.round((totalFilled / totalFields) * 100) : 0;
+    const overallConfidence = filledCount > 0 ? Math.round(totalConfidence / filledCount) : 0;
+    const profileTier = overallDepth < 15 ? '' : (DEPTH_LABELS.find(l => overallDepth <= l.maxPercent) || DEPTH_LABELS[DEPTH_LABELS.length - 1])?.label || '';
+
+    res.json({
+      success: true,
+      data: { clusters: result, clusterScores, summary: result.summary || null, overallDepth, overallConfidence, profileTier, confidenceThreshold },
+    });
+  } catch (error) {
+    console.error('❌ [Profiler Run] Error:', error.message);
+    res.status(500).json({ error: 'Failed to run profiler: ' + error.message });
+  }
+});
+
 // ========== CONTEXT ENDPOINTS (for Context Editor Panel) ==========
 // contextService already required at top of file
 
