@@ -130,11 +130,13 @@ WHERE zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES") >= CURRENT_DATE
 
 **CORRECT** (group by month - using indexed function):
 SELECT TO_CHAR(zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES"), 'YYYY-MM') AS month,
-       SUM(s."מכירה ללא מע""מ"::numeric) AS total_revenue
+       SUM(s."מכירה ללא מעמ"::numeric) AS total_revenue
 FROM zer4u.sales s
 WHERE zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES") >= CURRENT_DATE - INTERVAL '6 months'
 GROUP BY month
 ORDER BY month
+
+**IMPORTANT - Revenue column name**: The revenue column is named `מכירה ללא מעמ` (NO quote character inside). Do NOT use `מכירה ללא מע""מ` — that column does not exist.
 
 ## Output Format
 

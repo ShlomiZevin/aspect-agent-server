@@ -65,7 +65,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
       }
     }
 
-    const TOTAL = 6;
+    const TOTAL = 7;
 
     // 1. Sales by store
     const miss1 = missing(['sales.store_id', 'stores.store_id', 'stores.store_name', 'sales.revenue']);
@@ -247,6 +247,36 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
         await client.query(`
           CREATE INDEX IF NOT EXISTS idx_mv_sales_by_store_month_year
           ON ${s}.mv_sales_by_store_month (sale_year)
+        `);
+      });
+    }
+
+    // 7. Sales by day (last 90 days — for daily trend queries)
+    const miss7 = missing(['sales.date', 'sales.revenue']);
+    if (miss7) {
+      log(`[7/${TOTAL}] SKIP mv_sales_by_day — missing columns: ${miss7.join(', ')}`);
+      skipped++;
+    } else {
+      await makeView('mv_sales_by_day', 7, TOTAL, async () => {
+        await client.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_day CASCADE`);
+        await client.query(`
+          CREATE MATERIALIZED VIEW ${s}.mv_sales_by_day AS
+          SELECT
+            ${s}.parse_date_ddmmyyyy(${col(r, 'sales.date')}) AS sale_date,
+            COUNT(*) AS transaction_count,
+            SUM(${col(r, 'sales.revenue')}::numeric) AS total_revenue,
+            AVG(${col(r, 'sales.revenue')}::numeric) AS avg_revenue
+          FROM ${s}.sales
+          WHERE ${col(r, 'sales.date')} IS NOT NULL
+            AND ${col(r, 'sales.revenue')} IS NOT NULL
+            AND ${col(r, 'sales.revenue')} != ''
+            AND ${s}.parse_date_ddmmyyyy(${col(r, 'sales.date')}) >= CURRENT_DATE - INTERVAL '90 days'
+          GROUP BY sale_date
+          ORDER BY sale_date
+        `);
+        await client.query(`
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_sales_by_day_pk
+          ON ${s}.mv_sales_by_day (sale_date)
         `);
       });
     }
