@@ -35,7 +35,7 @@ class WelcomeCrew extends CrewMember {
         { name: 'credit_bureau_consent', type: 'boolean', description: "Set true when user agrees or has no objections to credit data registry check (הסכמה לבדיקת מאגרי נתוני אשראי). This includes explicit agreement (כן, מסכים, מאשר) AND implicit acceptance like answering 'לא' to 'do you have questions about the consent'. Set false only when user explicitly refuses the consent itself (לא רוצה, לא מסכים, מסרב)." }
       ],
       extractionMode: 'form',
-      transitionTo: 'advisor',
+      transitionTo: 'advisor-one',
     });
   }
 

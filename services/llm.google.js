@@ -287,6 +287,7 @@ class GoogleService {
    * @returns {AsyncGenerator} - Stream of text chunks or tool events
    */
   async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
+    const _streamStart = Date.now();
     const {
       prompt: systemPrompt = '',
       model = this.model,
@@ -616,7 +617,7 @@ class GoogleService {
 
       // Yield usage event for tracking (last chunk's usage has cumulative totals)
       if (lastUsage) {
-        yield { type: 'usage', inputTokens: lastUsage.promptTokenCount || 0, outputTokens: lastUsage.candidatesTokenCount || 0 };
+        yield { type: 'usage', inputTokens: lastUsage.promptTokenCount || 0, outputTokens: lastUsage.candidatesTokenCount || 0, durationMs: Date.now() - _streamStart };
       }
     } catch (error) {
       console.error('❌ Google Streaming Error:', error.message);

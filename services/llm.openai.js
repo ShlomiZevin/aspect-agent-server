@@ -415,6 +415,7 @@ class OpenAIService {
    * @returns {AsyncGenerator} - Stream of text chunks or function call events
    */
   async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
+    const _streamStart = Date.now();
     try {
       // Extract config
       const {
@@ -669,7 +670,7 @@ class OpenAIService {
         } else {
           console.log(`✅ Crew streaming complete. Total reply length: ${fullReply.length}`);
           if (oaiInputTokens || oaiOutputTokens) {
-            yield { type: 'usage', inputTokens: oaiInputTokens, outputTokens: oaiOutputTokens };
+            yield { type: 'usage', inputTokens: oaiInputTokens, outputTokens: oaiOutputTokens, durationMs: Date.now() - _streamStart };
           }
           break;
         }

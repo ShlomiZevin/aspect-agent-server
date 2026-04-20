@@ -1922,7 +1922,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
 
           // Handle usage event from streaming providers — store for logging after model_used
           if (chunk.type === 'usage') {
-            streamUsageData = { inputTokens: chunk.inputTokens || 0, outputTokens: chunk.outputTokens || 0 };
+            streamUsageData = { inputTokens: chunk.inputTokens || 0, outputTokens: chunk.outputTokens || 0, durationMs: chunk.durationMs || null };
             continue;
           }
 
@@ -2135,6 +2135,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         model: streamModel,
         inputTokens: streamUsageData.inputTokens,
         outputTokens: streamUsageData.outputTokens,
+        durationMs: streamUsageData.durationMs || null,
         agentName: agentNameToUse,
         crewMember: currentCrewName,
         conversationId,
@@ -3131,6 +3132,7 @@ app.get('/api/admin/usage/summary', async (req, res) => {
       count: sql`count(*)::int`,
       totalInput: sql`coalesce(sum(${llmUsage.inputTokens}), 0)::int`,
       totalOutput: sql`coalesce(sum(${llmUsage.outputTokens}), 0)::int`,
+      avgDurationMs: sql`coalesce(avg(${llmUsage.durationMs}), 0)::int`,
     }).from(llmUsage).where(where).groupBy(llmUsage.process);
 
     // By model
@@ -3140,6 +3142,7 @@ app.get('/api/admin/usage/summary', async (req, res) => {
       count: sql`count(*)::int`,
       totalInput: sql`coalesce(sum(${llmUsage.inputTokens}), 0)::int`,
       totalOutput: sql`coalesce(sum(${llmUsage.outputTokens}), 0)::int`,
+      avgDurationMs: sql`coalesce(avg(${llmUsage.durationMs}), 0)::int`,
     }).from(llmUsage).where(where).groupBy(llmUsage.model, llmUsage.provider);
 
     // By day

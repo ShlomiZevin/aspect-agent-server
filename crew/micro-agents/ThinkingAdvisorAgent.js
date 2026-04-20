@@ -50,6 +50,8 @@ class ThinkingAdvisorAgent {
 
       const elapsed = Date.now() - startTime;
       console.log(`   🧠 [ThinkingAdvisor] Response received (${responseText.length} chars, ${elapsed}ms)`);
+      // Uncomment for debugging:
+      // console.log(`   🧠 [ThinkingAdvisor] Raw response:\n${responseText}`);
 
       if (jsonOutput) {
         // Strip markdown code fences if the model wraps JSON in ```json ... ```

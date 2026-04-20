@@ -394,6 +394,7 @@ const llmUsage = pgTable('llm_usage', {
   provider: varchar('provider', { length: 50 }).notNull(), // openai, anthropic, google
   inputTokens: integer('input_tokens').default(0),
   outputTokens: integer('output_tokens').default(0),
+  durationMs: integer('duration_ms'),
   conversationId: varchar('conversation_id', { length: 255 }),
   userId: varchar('user_id', { length: 255 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),

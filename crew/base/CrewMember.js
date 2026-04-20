@@ -143,6 +143,11 @@ class CrewMember {
     this.thinkingModel = options.thinkingModel || null;
     this.thinkingFallbackModel = options.thinkingFallbackModel || 'gpt-4o';
 
+    // Extra strategy fields the thinker should return (merged with fieldsToCollect
+    // into one unified list at injection time). These are fields the thinker owns
+    // that aren't tracked as collected fields (e.g. conversationState, strategy).
+    this.thinkerFields = options.thinkerFields || [];
+
     // Fallback model — used when the primary model fails with a retriable error (429, 5xx, timeout)
     this.fallbackModel = options.fallbackModel || 'gpt-4o';
 
@@ -341,45 +346,100 @@ class CrewMember {
         console.warn(`   ⚠️ [${this.name}] Could not fetch history for thinker:`, err.message);
       }
 
-      // Auto-inject _thinkingDescription instruction if missing from prompt
-      let enhancedPrompt = this.thinkingPrompt;
-      if (!enhancedPrompt.includes('_thinkingDescription')) {
-        enhancedPrompt += `\n\nIMPORTANT: Your JSON response MUST include a "_thinkingDescription" field as the first key. This is a short English summary (5-15 words) of your decision for this turn, shown in the UI. Use present tense and be specific. Example: "Recommending savings plan based on income" or "Asking about employment status".`;
-      }
+      // Assemble FULL prompt in one place: base + context + fields + output rules.
+      // No more relying on sendOneShot to append context — what we build here is
+      // exactly what the LLM sees. Context goes BEFORE field list so the field
+      // list + output rules are the last thing the LLM reads (strongest position).
+      const outputRules = `\nReturn valid JSON only — no prose, no markdown, no explanation.\nDo not extract from ASSISTANT messages — those are your own agent's words, not user data.\nDo not return null or false — just omit the field.\nAll string values: short phrase, never full sentences.`;
 
-      // Auto-inject fieldsToCollect into thinker prompt
-      if (this.fieldsToCollect && this.fieldsToCollect.length > 0) {
-        const fieldsList = this.fieldsToCollect
-          .map(f => `${f.name}${f.description ? ` (${f.description})` : ''}`)
-          .join(', ');
-        enhancedPrompt += `\n\nAlso include these fields in your JSON: ${fieldsList}. Return null for any field the USER did not explicitly state. Do not extract from ASSISTANT messages — those are your own agent's words, not user data.\n\nIMPORTANT: Keep each field value to 1-2 short sentences maximum. Be concise — no lengthy explanations.`;
-      }
+      const buildFullThinkerPrompt = (fields) => {
+        return `${this.thinkingPrompt}\n\n## Context\n${contextStr}\n\nReturn a JSON with only CHANGED fields from this list: ${fields.join(', ')}.${outputRules}`;
+      };
+
+      const strategyFields = [
+        '_thinkingDescription (short English summary of this turn, 5-15 words, shown in UI)',
+        ...this.thinkerFields.map(f =>
+          typeof f === 'string' ? f : `${f.name}${f.description ? ` (${f.description})` : ''}`)
+      ];
+      const collectedFieldsList = this.fieldsToCollect.map(f =>
+        `${f.name}${f.description ? ` (${f.description})` : ''}`
+      );
+
+      const strategyPrompt = buildFullThinkerPrompt(strategyFields);
+      const fieldsPrompt = buildFullThinkerPrompt(collectedFieldsList);
+
+      // Add "return JSON" as last user message in history to anchor JSON mode
+      const thinkerHistory = [
+        ...historyMessages,
+        { role: 'user', content: 'Analyze the conversation and return JSON.' }
+      ];
 
       let thinkingAdvice = { fallback: true };
       const primaryThinkingModel = this.thinkingModel || 'claude-sonnet-4-6';
       let thinkerModelUsed = primaryThinkingModel;
       let thinkerFallbackUsed = false;
-      const thinkerKB = params.resolvedThinkerKB || null;
+      const _usageMeta = { agentName: this._agentName, crewMember: this.name, conversationId: this._externalConversationId, userId: this._userId };
+
       try {
-        console.log(`   🧠 [${this.name}] Running thinker with model: ${primaryThinkingModel}${thinkerKB?.enabled ? ' (KB enabled)' : ''}`);
-        const _usageMeta = { agentName: this._agentName, crewMember: this.name, conversationId: this._externalConversationId, userId: this._userId };
-        thinkingAdvice = await thinkingAdvisor.think(
-          { thinkingPrompt: enhancedPrompt, context: contextStr, historyMessages },
-          { model: primaryThinkingModel, knowledgeBase: thinkerKB, ..._usageMeta }
+        console.log(`   🧠 [${this.name}] Running thinker (parallel) with model: ${primaryThinkingModel}, strategy fields: ${strategyFields.length}, collected fields: ${collectedFieldsList.length}, history: ${thinkerHistory.length} msgs`);
+        // Uncomment for debugging:
+        // console.log(`   🧠 [${this.name}] === CALL A (strategy) prompt ===\n${strategyPrompt}`);
+        // console.log(`   🧠 [${this.name}] === CALL B (fields) prompt ===\n${fieldsPrompt}`);
+        // console.log(`   🧠 [${this.name}] === Context (shared) ===\n${contextStr}`);
+
+        // Run both calls in parallel if we have both lists
+        const hasFields = collectedFieldsList.length > 0;
+        const parallelStart = Date.now();
+
+        const strategyPromise = thinkingAdvisor.think(
+          { thinkingPrompt: strategyPrompt, context: null, historyMessages: thinkerHistory },
+          { model: primaryThinkingModel, ..._usageMeta }
         );
+
+        const fieldsPromise = hasFields
+          ? thinkingAdvisor.think(
+              { thinkingPrompt: fieldsPrompt, context: null, historyMessages: thinkerHistory },
+              { model: primaryThinkingModel, ..._usageMeta }
+            ).catch(err => {
+              console.warn(`   ⚠️ [${this.name}] Fields extraction call failed: ${err.message}`);
+              return {};
+            })
+          : Promise.resolve({});
+
+        const [strategyResult, rawFieldsResult] = await Promise.all([strategyPromise, fieldsPromise]);
+        const parallelElapsed = Date.now() - parallelStart;
+
+        // Strip fallback/error fields from fieldsResult — if the call failed,
+        // don't let { fallback: true, rawTextAdvice } contaminate the merge
+        const fieldsResult = (rawFieldsResult.fallback || rawFieldsResult.error) ? {} : rawFieldsResult;
+
+        // Merge: previous state as base, fields overwrite, strategy wins on conflicts.
+        // Strip failure artifacts from previous state so they don't pollute the context
+        // on the next turn (e.g. a Hebrew prose response from a failed fields call).
+        const prevState = await this.getContext(`${this.name}_state`, true) || {};
+        delete prevState.approach;
+        delete prevState.rawTextAdvice;
+        delete prevState.fallback;
+        delete prevState.error;
+        thinkingAdvice = { ...prevState, ...fieldsResult, ...strategyResult };
+
+        const strategyKeys = Object.keys(strategyResult).filter(k => !k.startsWith('_'));
+        console.log(`   🧠 [${this.name}] Strategy returned: ${strategyKeys.join(', ') || '(none)'}`);
+        if (hasFields) {
+          const fieldKeys = Object.keys(fieldsResult).filter(k => !k.startsWith('_'));
+          console.log(`   🧠 [${this.name}] Fields returned: ${fieldKeys.join(', ') || '(none)'}`);
+        }
+        const mergedKeys = Object.keys(thinkingAdvice).filter(k => !k.startsWith('_'));
+        console.log(`   🧠 [${this.name}] Merged total: ${mergedKeys.length} fields (${parallelElapsed}ms)`);
       } catch (err) {
         const isRetryable = _isThinkerRetryable(err);
         const fallbackModel = this.thinkingFallbackModel || 'gpt-4o';
         if (isRetryable && fallbackModel !== primaryThinkingModel) {
           console.warn(`   ⚠️ [${this.name}] Thinker primary model "${primaryThinkingModel}" failed (${err.status || err.message}). Retrying with fallback: "${fallbackModel}"`);
-          // Re-resolve KB for fallback model if provider differs
-          const fallbackKB = thinkerKB && kbResolver.getModelProvider(fallbackModel) !== thinkerKB.provider
-            ? null  // Different provider — KB IDs won't match, skip KB for fallback
-            : thinkerKB;
           try {
             thinkingAdvice = await thinkingAdvisor.think(
-              { thinkingPrompt: enhancedPrompt, context: contextStr, historyMessages },
-              { model: fallbackModel, knowledgeBase: fallbackKB, ..._usageMeta }
+              { thinkingPrompt: strategyPrompt, context: null, historyMessages: thinkerHistory },
+              { model: fallbackModel, ..._usageMeta }
             );
             thinkerModelUsed = fallbackModel;
             thinkerFallbackUsed = true;

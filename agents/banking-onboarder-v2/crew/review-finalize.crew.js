@@ -17,34 +17,22 @@ const THINKING_PROMPT = `You are the strategy brain for LYBI's closing crew. You
 
 Your job is to analyze where the user is in the closing flow and return a JSON object with your recommendations.
 
+## Output Format
+Return valid JSON only. No preamble.
+The list of available fields and output rules are appended automatically — do not define your own JSON schema.
+
 The closing flow has 4 steps:
 1. VERIFY — Present all personal details for confirmation. If anything is missing or incorrect, collect/fix it.
 2. CONSENT — Present account summary and terms, get explicit consent.
-3. SIGNATURE — Trigger digital signature process.
+3. SIGNATURE — Collect digital signature confirmation in text.
 4. CONFIRMATION — Deliver account status, app link, contact info, and close warmly.
-
-Return a JSON object with:
-{
-  "_thinkingDescription": "short summary — e.g. 'Verifying details' or 'Getting consent'",
-  "currentStep": 1|2|3|4,
-  "stepStatus": "in_progress|completed|blocked",
-  "missingFields": ["list of any missing mandatory fields"],
-  "correctedFields": {"fieldName": "newValue"},
-  "userIntent": "confirming|correcting|asking_question|declining|requesting_change|ready_to_proceed",
-  "consentStatus": "not_yet|granted|declined|reconsidering",
-  "signatureStatus": "not_yet|requested|completed|failed",
-  "shouldTriggerTool": null | "request_signature",
-  "responseStrategy": "Brief description of what the talking brain should do next",
-  "toneNote": "Any specific tone consideration for this moment"
-}
 
 Key rules:
 - If the user confirms details, move to the next step. Don't linger.
 - If the user corrects something, update and confirm briefly, then continue.
 - If the user declines consent, allow one reconsideration. If still declined, offer alternative channels.
 - If the user asks to change a product or track, allow it — note what needs to change and instruct the talking brain to handle it, then return to consent.
-- Never skip consent. Never skip signature.
-- If signature fails twice, recommend escalation to a human banker.`;
+- Never skip consent. Never skip signature.`;
 
 class ReviewFinalizeCrew extends CrewMember {
   constructor() {
@@ -73,6 +61,17 @@ class ReviewFinalizeCrew extends CrewMember {
       // Always-on guardrail appended to whatever prompt is resolved (file,
       // DB, or session override). Survives playground edits.
       promptSuffix: 'You have no tools available. Never say you are calling, triggering, or sending anything to a system. When the user confirms the signature in text, that IS the signature — just acknowledge it and move on.',
+      thinkerFields: [
+        'currentStep (1 | 2 | 3 | 4)',
+        'stepStatus (in_progress | completed | blocked)',
+        'verifySubState (presenting_collected | awaiting_confirmation | collecting_missing | complete)',
+        'userIntent (confirming | correcting | asking_question | declining | requesting_change | ready_to_proceed)',
+        'consentStatus (not_yet | granted | declined | reconsidering)',
+        'signatureStatus (not_yet | completed)',
+        'responseStrategy (what the talker should do next)',
+        'toneNote (tone adjustment if needed)',
+        'readyToTransfer (true only when all steps complete)',
+      ],
       fieldsToCollect: [
         { name: 'details_confirmed', type: 'boolean', description: 'Set true when user confirms all personal details are correct. Set false when user asks to change something.' },
         { name: 'id_photo_received', type: 'boolean', description: 'Set true when user sends or confirms ID photo (צילום תעודת זהות). Set false when user says they cannot provide it.' },

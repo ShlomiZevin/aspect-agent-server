@@ -93,7 +93,7 @@ class ClaudeService {
         console.log(`📚 Claude OneShot: ${anthropicFileIds.length} document block(s) injected`);
       }
 
-      console.log(`📜 Claude OneShot: system prompt ${promptText.length} chars, ${messages.length} messages`);
+      console.log(`📜 Claude OneShot: system prompt ${promptText.length} chars, ${messages.length} messages, jsonOutput=${jsonOutput}`);
 
       const requestParams = {
         model,
@@ -141,6 +141,7 @@ class ClaudeService {
    * @returns {AsyncGenerator} - Stream of text chunks or tool events
    */
   async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
+    const _streamStart = Date.now();
     const {
       prompt: systemPrompt = '',
       model = this.model,
@@ -370,7 +371,7 @@ class ClaudeService {
           console.log(`✅ Claude streaming complete. Total reply length: ${fullReply.length}`);
           // Yield usage event for tracking
           if (claudeInputTokens || claudeOutputTokens) {
-            yield { type: 'usage', inputTokens: claudeInputTokens, outputTokens: claudeOutputTokens };
+            yield { type: 'usage', inputTokens: claudeInputTokens, outputTokens: claudeOutputTokens, durationMs: Date.now() - _streamStart };
           }
           break;
         }

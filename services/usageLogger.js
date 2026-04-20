@@ -35,7 +35,7 @@ function getProviderFromModel(model) {
  * @param {string} [params.conversationId] - Conversation external ID
  * @param {number|string} [params.userId] - User ID
  */
-function logUsage({ process, model, provider, inputTokens, outputTokens, agentName, crewMember, conversationId, userId }) {
+function logUsage({ process, model, provider, inputTokens, outputTokens, durationMs, agentName, crewMember, conversationId, userId }) {
   try {
     const drizzle = db.getDrizzle();
     drizzle.insert(llmUsage).values({
@@ -44,6 +44,7 @@ function logUsage({ process, model, provider, inputTokens, outputTokens, agentNa
       provider: provider || getProviderFromModel(model),
       inputTokens: inputTokens || 0,
       outputTokens: outputTokens || 0,
+      durationMs: durationMs || null,
       agentName: agentName || null,
       crewMember: crewMember || null,
       conversationId: conversationId || null,

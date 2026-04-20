@@ -138,7 +138,9 @@ class LLMService {
   async sendOneShot(instructions, message, options = {}) {
     // Detect provider from model name (use context from options for logging)
     const provider = this._getProviderForModel(options.model, options.context || 'one-shot');
+    const start = Date.now();
     const result = await provider.sendOneShot(instructions, message, options);
+    const durationMs = Date.now() - start;
 
     // Providers return { text, usage } — log usage and return just text for backward compat
     if (result && typeof result === 'object' && 'text' in result) {
@@ -148,6 +150,7 @@ class LLMService {
           model: options.model || 'unknown',
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
+          durationMs,
           agentName: options.agentName,
           crewMember: options.crewMember,
           conversationId: options.conversationId,
