@@ -65,7 +65,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
       }
     }
 
-    const TOTAL = 7;
+    const TOTAL = 8;
 
     // 1. Sales by store
     const miss1 = missing(['sales.store_id', 'stores.store_id', 'stores.store_name', 'sales.revenue']);
@@ -179,7 +179,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
     }
 
     // 5. Sales by month
-    const miss5 = missing(['sales.date', 'sales.revenue']);
+    const miss5 = missing(['sales.date', 'sales.revenue', 'sales.customer_id']);
     if (miss5) {
       log(`[5/${TOTAL}] SKIP mv_sales_by_month — missing columns: ${miss5.join(', ')}`);
       skipped++;
@@ -193,6 +193,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
             EXTRACT(YEAR  FROM ${s}.parse_date_ddmmyyyy(${col(r, 'sales.date')}))::integer AS sale_year,
             EXTRACT(MONTH FROM ${s}.parse_date_ddmmyyyy(${col(r, 'sales.date')}))::integer AS sale_month,
             COUNT(*) AS transaction_count,
+            COUNT(DISTINCT ${s}.to_int_safe(${col(r, 'sales.customer_id')})) AS customer_count,
             SUM(${col(r, 'sales.revenue')}::numeric) AS total_revenue,
             AVG(${col(r, 'sales.revenue')}::numeric) AS avg_revenue
           FROM ${s}.sales
@@ -277,6 +278,41 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
         await client.query(`
           CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_sales_by_day_pk
           ON ${s}.mv_sales_by_day (sale_date)
+        `);
+      });
+    }
+
+    // 8. Inventory by item (pre-aggregated stock per product via InventoryKey → sales → items)
+    const miss8 = missing(['sales.item_code', 'items.item_code', 'items.item_name']);
+    if (miss8) {
+      log(`[8/${TOTAL}] SKIP mv_inventory_by_item — missing columns: ${miss8.join(', ')}`);
+      skipped++;
+    } else {
+      await makeView('mv_inventory_by_item', 8, TOTAL, async () => {
+        await client.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_inventory_by_item CASCADE`);
+        await client.query(`
+          CREATE MATERIALIZED VIEW ${s}.mv_inventory_by_item AS
+          SELECT
+            s.${col(r, 'sales.item_code')} AS item_code,
+            MAX(i.${col(r, 'items.item_name')}) AS item_name,
+            SUM(inv."יתרת מלאי"::numeric) AS total_stock,
+            SUM(inv."ערך מלאי"::numeric) AS total_value,
+            MIN(CASE WHEN mi."MLI_MINIMOM" IS NOT NULL
+                THEN mi."MLI_MINIMOM"::numeric END) AS min_stock
+          FROM ${s}.inventory inv
+          JOIN ${s}.sales s ON s."InventoryKey" = inv."InventoryKey"
+          JOIN ${s}.items i ON i.${col(r, 'items.item_code')} = s.${col(r, 'sales.item_code')}
+          LEFT JOIN ${s}.min_inventory mi ON mi."InventoryKey" = inv."InventoryKey"
+          WHERE s.${col(r, 'sales.item_code')} IS NOT NULL
+          GROUP BY s.${col(r, 'sales.item_code')}
+        `);
+        await client.query(`
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_inventory_by_item_pk
+          ON ${s}.mv_inventory_by_item (item_code)
+        `);
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_mv_inventory_by_item_stock
+          ON ${s}.mv_inventory_by_item (total_stock)
         `);
       });
     }
