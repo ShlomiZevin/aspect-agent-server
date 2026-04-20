@@ -1,11 +1,11 @@
 const { getOrCreateMapping, resetConversation } = require('./user-map.service');
-const { WhatsappService } = require('./whatsapp.service');
+const { getProvider } = require('./provider');
 const conversationService = require('../services/conversation.service');
 const llmService = require('../services/llm');
 const crewService = require('../crew/services/crew.service');
 const dispatcherService = require('../crew/services/dispatcher.service');
 
-const whatsapp = new WhatsappService();
+const whatsapp = getProvider();
 
 // Per-user lock to prevent overlapping responses
 const activeLocks = new Map();

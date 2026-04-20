@@ -29,7 +29,11 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
     database: process.env.DB_NAME,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    max: 8
+    max: 8,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
+    connectionTimeoutMillis: 60000,
+    idleTimeoutMillis: 600000,
   });
   const startTime = Date.now();
 
@@ -50,10 +54,10 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
     let totalRows = 0;
     const tableTimes = [];
 
-    // Files <= 100 MB load in parallel (up to 4 at once).
+    // Files <= 100 MB load in parallel (up to 2 at once).
     // Files > 100 MB load one at a time — they saturate DB/network I/O on their own.
     const LARGE_FILE_THRESHOLD = 100 * 1024 * 1024; // 100 MB
-    const SMALL_CONCURRENCY = 4;
+    const SMALL_CONCURRENCY = 2;
 
     const smallFiles = schemas.filter(s => (parseInt(s.fileSize) || 0) <= LARGE_FILE_THRESHOLD);
     const largeFiles = schemas.filter(s => (parseInt(s.fileSize) || 0) > LARGE_FILE_THRESHOLD);
@@ -63,23 +67,52 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
 
     let fileIndex = 0;
 
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 10000;
+
+    const isRetryable = (err) => {
+      const msg = err.message || '';
+      return msg.includes('Connection terminated') ||
+             msg.includes('EPIPE') ||
+             msg.includes('ECONNRESET') ||
+             msg.includes('stalled') ||
+             msg.includes('write EOF') ||
+             err.code === 'EPIPE' ||
+             err.code === 'ECONNRESET';
+    };
+
     const loadOne = async (schema, i) => {
       if (schema.error) {
         throw new Error(`${schema.fileName}: analysis error — ${schema.error}`);
       }
 
-      console.log(`\n[${i + 1}/${schemas.length}] 📥 Loading: ${schema.fileName} (${formatBytes(schema.fileSize)})`);
-      if (onProgress) onProgress({ type: 'file_start', file: schema.fileName, index: i, totalFiles: schemas.length });
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const attemptLabel = attempt > 1 ? ` (attempt ${attempt}/${MAX_RETRIES})` : '';
+          console.log(`\n[${i + 1}/${schemas.length}] 📥 Loading: ${schema.fileName} (${formatBytes(schema.fileSize)})${attemptLabel}`);
+          if (onProgress) onProgress({ type: 'file_start', file: schema.fileName, index: i, totalFiles: schemas.length });
 
-      const tableStart = Date.now();
-      const result = await loadCSVFile(schema, schemaName, pool, onProgress);
-      const tableTime = Date.now() - tableStart;
-      tableTimes.push({ name: schema.tableName, time: tableTime, rows: result });
-      const speed = result > 0 ? Math.round(result / (tableTime / 1000)) : 0;
-      console.log(`  ✅ ${schema.fileName}: ${result.toLocaleString()} rows in ${(tableTime / 1000).toFixed(1)}s (${speed.toLocaleString()} rows/s)`);
-      if (onProgress) onProgress({ type: 'file_complete', file: schema.fileName, rows: result, durationMs: tableTime });
-      totalLoaded++;
-      totalRows += result;
+          const tableStart = Date.now();
+          const result = await loadCSVFile(schema, schemaName, pool, onProgress);
+          const tableTime = Date.now() - tableStart;
+          tableTimes.push({ name: schema.tableName, time: tableTime, rows: result });
+          const speed = result > 0 ? Math.round(result / (tableTime / 1000)) : 0;
+          console.log(`  ✅ ${schema.fileName}: ${result.toLocaleString()} rows in ${(tableTime / 1000).toFixed(1)}s (${speed.toLocaleString()} rows/s)`);
+          if (onProgress) onProgress({ type: 'file_complete', file: schema.fileName, rows: result, durationMs: tableTime });
+          totalLoaded++;
+          totalRows += result;
+          return;
+        } catch (err) {
+          if (attempt < MAX_RETRIES && isRetryable(err)) {
+            const delay = RETRY_DELAY_MS * attempt;
+            console.warn(`  ⚠️  ${schema.fileName} failed (${err.message}) — retrying in ${delay / 1000}s...`);
+            if (onProgress) onProgress({ type: 'file_error', file: schema.fileName, error: `${err.message} — retrying (attempt ${attempt}/${MAX_RETRIES})` });
+            await new Promise(r => setTimeout(r, delay));
+          } else {
+            throw err;
+          }
+        }
+      }
     };
 
     // Phase A: small files in parallel batches

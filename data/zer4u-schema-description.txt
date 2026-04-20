@@ -159,6 +159,26 @@ ORDER BY total_revenue DESC
 LIMIT 10;
 ```
 
+### Sales by Day (`mv_sales_by_day`) - **USE THIS FOR DAILY QUERIES**
+Pre-aggregated daily sales for the last 90 days. **ALWAYS use this for daily trend questions.**
+
+**Columns:**
+- `sale_date` (date) - Calendar date
+- `transaction_count` (bigint) - Number of transactions
+- `total_revenue` (numeric) - Total revenue (without VAT)
+- `avg_revenue` (numeric) - Average transaction value
+
+**When to use:** "daily sales", "sales last 7 days", "day by day breakdown", "daily trend", etc.
+
+**Example queries:**
+```sql
+-- Daily sales for the last 7 days
+SELECT sale_date, transaction_count, total_revenue
+FROM zer4u.mv_sales_by_day
+WHERE sale_date >= CURRENT_DATE - INTERVAL '7 days'
+ORDER BY sale_date DESC;
+```
+
 ## Core Business Tables
 
 ### Sales Data (`sales` - 9.4M records)
@@ -168,7 +188,7 @@ Primary transaction table containing all sales activities:
 - **Keys**: `UniqueInvoiceKey`, `InventoryKey`, `TargetKey`
 - **Store Info**: `מס.חנות SALES` (store number - TEXT type), `CHNOT_ITSIRA` (store creation)
 - **Dates**: `תאריך מקורי SALES` (original date - TEXT type)
-- **Financial**: `מכירה ללא מע"מ` (sales without VAT - TEXT, needs ::numeric cast), `עלות ללא מע"מ` (cost without VAT)
+- **Financial**: `מכירה ללא מעמ` (sales without VAT - TEXT, needs ::numeric cast), `עלות ללא מעמ` (cost without VAT) — **NOTE: no quote character in these column names**
 - **Products**: `קוד פריט SALES` (item code - TEXT), `כמות ברמת שורה` (quantity - TEXT)
 - **Customers**: `מס.לקוח` (customer number - TEXT type)
 
@@ -180,9 +200,25 @@ Product catalog and pricing:
 - **Suppliers**: `שם ספק` (supplier name)
 
 ### Inventory (`inventory` - 19.8M records)
-Stock levels and values:
-- **Keys**: `InventoryKey`, `InventoryMahsanKey`
-- **Metrics**: `יתרת מלאי` (stock balance), `ערך מלאי` (stock value)
+Stock levels and values per warehouse entry:
+- **Keys**: `InventoryKey` (links to sales.InventoryKey and min_inventory.InventoryKey), `InventoryMahsanKey`
+- **Metrics**: `יתרת מלאי` (stock balance - TEXT, cast to numeric), `ערך מלאי` (stock value)
+- **⚠️ No item code column** — to get item name, join via `InventoryKey` → sales → items:
+  ```sql
+  SELECT DISTINCT s."קוד פריט SALES" AS item_code, i."שם פריט" AS item_name,
+    inv."יתרת מלאי"::numeric AS stock
+  FROM zer4u.inventory inv
+  JOIN zer4u.sales s ON s."InventoryKey" = inv."InventoryKey"
+  JOIN zer4u.items i ON i."קוד פריט" = s."קוד פריט SALES"
+  WHERE inv."יתרת מלאי"::numeric < 0
+  LIMIT 50
+  ```
+
+### Minimum Inventory (`min_inventory`)
+Minimum stock thresholds per inventory key:
+- **Keys**: `InventoryKey`
+- **Threshold**: `MLI_MINIMOM` (minimum required stock - TEXT, cast to numeric)
+- **Usage**: JOIN with `inventory` on `InventoryKey` to find items below minimum
 
 ### Customers (`customers` - 1.4M records)
 Customer information:

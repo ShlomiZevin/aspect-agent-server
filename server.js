@@ -36,8 +36,8 @@ const DataReloadService = require('./services/data-reload.service');
 
 // WhatsApp bridge
 const { handleIncomingMessage } = require('./whatsapp/bridge.service');
-const { WhatsappService } = require('./whatsapp/whatsapp.service');
-const whatsappService = new WhatsappService();
+const { getProvider: getWhatsappProvider } = require('./whatsapp/provider');
+const whatsappService = getWhatsappProvider();
 const { setMapping } = require('./whatsapp/user-map.service');
 
 // Register function handlers
@@ -2259,6 +2259,37 @@ app.post('/webhook', (req, res) => {
     }
   } catch (err) {
     console.error('❌ WhatsApp webhook parse error:', err.message);
+  }
+});
+
+// ========== TWILIO WHATSAPP WEBHOOK ENDPOINTS ==========
+
+// Twilio sends POST with form-encoded body when a message arrives.
+// Fields: From (e.g. "whatsapp:+972559880607"), Body, MessageSid
+app.post('/webhook/twilio', (req, res) => {
+  // Respond with empty TwiML immediately — Twilio requires a fast 200
+  res.set('Content-Type', 'text/xml');
+  res.status(200).send('<Response></Response>');
+
+  try {
+    const from = req.body?.From;  // e.g. "whatsapp:+972559880607"
+    const body = req.body?.Body;
+    const messageSid = req.body?.MessageSid;
+
+    if (!from || !body) {
+      console.warn('[Twilio] Received webhook with missing From or Body');
+      return;
+    }
+
+    // Normalize: strip "whatsapp:" prefix so bridge gets plain phone number
+    const phone = from.replace(/^whatsapp:/, '').replace(/^\+/, '');
+
+    console.log(`[Twilio] Incoming WhatsApp from ${phone}: "${body.substring(0, 80)}"`);
+
+    handleIncomingMessage(phone, body, messageSid)
+      .catch(err => console.error('[Twilio] Bridge error:', err.message));
+  } catch (err) {
+    console.error('[Twilio] Webhook parse error:', err.message);
   }
 });
 
