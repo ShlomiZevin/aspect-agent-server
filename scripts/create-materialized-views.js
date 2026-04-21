@@ -29,6 +29,9 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
     const r = await resolveColumns(pool, schemaName);
 
     // Drop orphaned composite types left by previously aborted runs.
+    // Exclude row types of existing materialized views (relkind='m') — those can't
+    // be dropped via DROP TYPE and don't need to be: the DROP MATERIALIZED VIEW
+    // below handles them.
     await client.query(`
       DO $$ DECLARE rec RECORD;
       BEGIN
@@ -37,6 +40,10 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
           FROM pg_type t
           JOIN pg_namespace n ON n.oid = t.typnamespace
           WHERE n.nspname = '${s}' AND t.typtype = 'c' AND t.typname LIKE 'mv_%'
+            AND NOT EXISTS (
+              SELECT 1 FROM pg_class c
+              WHERE c.oid = t.typrelid AND c.relkind = 'm'
+            )
         LOOP
           EXECUTE 'DROP TYPE IF EXISTS ${s}.' || quote_ident(rec.typname) || ' CASCADE';
         END LOOP;
