@@ -28,6 +28,19 @@ class DataReloadService {
   }
 
   /**
+   * Start periodic cleanup — every 30 minutes, mark runs stuck > 3h as failed.
+   * Call once after server startup (complements the one-time startup cleanup).
+   */
+  startPeriodicCleanup() {
+    const INTERVAL_MS = 30 * 60 * 1000;
+    setInterval(() => {
+      this.cleanupStaleRuns().catch(err =>
+        console.error('[DataReloadService] Periodic cleanup error:', err.message)
+      );
+    }, INTERVAL_MS);
+  }
+
+  /**
    * Mark any stale 'running' records as 'failed' on server startup.
    * For import runs: also drop the shadow schema.
    * For index runs: no cleanup needed (live schema is still intact).
@@ -483,7 +496,8 @@ class DataReloadService {
 
     if (!progressOnly && this.logBuffers[schemaName]) {
       this.logBuffers[schemaName].push(entry);
-      if (this.logBuffers[schemaName].length % 5 === 0) {
+      const len = this.logBuffers[schemaName].length;
+      if (len === 1 || len % 5 === 0) {
         const runId = this.currentRuns[schemaName]?.id;
         if (runId) {
           const logs = this.logBuffers[schemaName];

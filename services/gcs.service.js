@@ -4,6 +4,14 @@ const { Readable } = require('stream');
 const path = require('path');
 const fs = require('fs');
 
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 /**
  * Google Cloud Storage Service
  *
@@ -32,9 +40,11 @@ class GCSService {
    */
   async listCSVFiles(folderPrefix) {
     try {
-      const [files] = await this.storage
-        .bucket(this.bucketName)
-        .getFiles({ prefix: folderPrefix });
+      const [files] = await withTimeout(
+        this.storage.bucket(this.bucketName).getFiles({ prefix: folderPrefix }),
+        60_000,
+        `GCS listFiles(${folderPrefix})`
+      );
 
       const csvFiles = files
         .filter(file => file.name.toLowerCase().endsWith('.csv'))
@@ -190,7 +200,7 @@ class GCSService {
    * @returns {Promise<string[]>} - Array of column name strings
    */
   async getCSVHeaders(filePath) {
-    return new Promise((resolve, reject) => {
+    return withTimeout(new Promise((resolve, reject) => {
       const file = this.storage.bucket(this.bucketName).file(filePath);
       const stream = file.createReadStream();
       let buffer = '';
@@ -229,7 +239,7 @@ class GCSService {
         const headers = buffer.replace(/\r?\n$/, '').split(',').map(h => h.replace(/^\uFEFF/, '').trim());
         resolve(headers.filter(h => h.length > 0));
       });
-    });
+    }), 30_000, `getCSVHeaders(${filePath})`);
   }
 
   /**

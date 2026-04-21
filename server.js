@@ -5261,6 +5261,7 @@ async function startServer() {
     require('./agents/zer4u/data-reload').register(dataReloadService);
     app.set('dataReloadService', dataReloadService);
     await dataReloadService.cleanupStaleRuns();
+    dataReloadService.startPeriodicCleanup();
 
     // Pre-load provider config (API keys) into memory
     await providerConfigService.initialize();
