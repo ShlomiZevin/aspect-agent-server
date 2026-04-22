@@ -3398,6 +3398,19 @@ app.post('/api/admin/data-loader/:schema/cancel', async (req, res) => {
   const { schema } = req.params;
   try {
     const svc = req.app.get('dataReloadService');
+
+    // Kill all PG sessions touching this schema or its shadow (including active COPY/CREATE/ANALYZE)
+    const shadowSchema = `${schema}_new`;
+    await db.query(`
+      SELECT pg_terminate_backend(pid)
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND pid <> pg_backend_pid()
+        AND (query ILIKE $1 OR query ILIKE $2)
+    `, [`%${schema}%`, `%${shadowSchema}%`]).catch(e =>
+      console.warn('[cancel] pg_terminate_backend error (non-fatal):', e.message)
+    );
+
     const result = await db.query(
       `UPDATE public.data_reload_runs
        SET status = 'failed', completed_at = NOW(), error_message = 'Cancelled manually'

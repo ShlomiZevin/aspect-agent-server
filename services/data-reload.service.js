@@ -493,7 +493,6 @@ class DataReloadService {
           FROM pg_stat_activity
           WHERE datname = current_database()
             AND pid <> pg_backend_pid()
-            AND state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
             AND query ILIKE '%${schemaName}%'
         `).catch(() => {});
 
