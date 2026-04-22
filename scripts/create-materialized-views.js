@@ -67,7 +67,9 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
         const start = Date.now();
         log(`[${num}/${total}] Creating ${name}...`);
         try {
-          await c.query(`SET work_mem = '256MB'`);
+          await c.query(`SET work_mem = '64MB'`);
+          await c.query(`SET max_parallel_workers_per_gather = 0`);
+          await c.query(`SET max_parallel_maintenance_workers = 0`);
           await fn(c);
           const elapsed = ((Date.now() - start) / 1000).toFixed(0);
           log(`[${num}/${total}] ${name} done — ${elapsed}s`);
