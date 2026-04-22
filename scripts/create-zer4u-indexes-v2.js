@@ -19,9 +19,11 @@ const { Pool } = require('pg');
 
 const SOURCE_SCHEMA = 'zer4u'; // live schema to read index DDL from
 
-// Tables that are materialized views — their indexes are auto-created on REFRESH
+// Tables that are materialized views — their indexes are created by create-materialized-views.js
 const MV_TABLES = new Set([
+  'mv_inventory_by_item',
   'mv_sales_by_customer',
+  'mv_sales_by_day',
   'mv_sales_by_month',
   'mv_sales_by_product',
   'mv_sales_by_store',
