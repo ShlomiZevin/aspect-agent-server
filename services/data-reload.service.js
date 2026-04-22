@@ -229,24 +229,24 @@ class DataReloadService {
     const importRes = await this.db.query(
       `SELECT id, completed_at FROM public.data_reload_runs
        WHERE schema_name = $1 AND status = 'completed'
-         AND triggered_by = 'cron' AND total_files IS NOT NULL
+         AND total_files IS NOT NULL
        ORDER BY completed_at DESC LIMIT 1`,
       [schemaName]
     );
     if (importRes.rows.length === 0) {
-      return { action: 'skipped', reason: 'no completed cron import found' };
+      return { action: 'skipped', reason: 'no completed import found' };
     }
     const lastImport = importRes.rows[0];
 
-    const afterRes = await this.db.query(
-      `SELECT id, status FROM public.data_reload_runs
-       WHERE schema_name = $1 AND started_at > $2
+    const completedIndexRes = await this.db.query(
+      `SELECT id FROM public.data_reload_runs
+       WHERE schema_name = $1 AND status = 'completed'
+         AND triggered_by = 'index' AND started_at > $2
        LIMIT 1`,
       [schemaName, lastImport.completed_at]
     );
-    if (afterRes.rows.length > 0) {
-      const r = afterRes.rows[0];
-      return { action: 'skipped', reason: `run #${r.id} (${r.status}) already exists after last import` };
+    if (completedIndexRes.rows.length > 0) {
+      return { action: 'skipped', reason: `indexing already completed after last import (run #${completedIndexRes.rows[0].id})` };
     }
 
     const runId = await this.startIndexing(schemaName, 'cron');
