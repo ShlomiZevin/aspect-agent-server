@@ -163,6 +163,47 @@ class DataReloadService {
   }
 
   /**
+   * Idempotent check called by Cloud Scheduler at 07:00, 08:00, 09:00, 10:00, 11:00.
+   * Starts import only if:
+   *   1. Nothing is currently running
+   *   2. No completed import exists today (since midnight UTC)
+   * This enables automatic retry: if 07:00 run fails, 08:00 will retry, etc.
+   * Returns { action: 'started'|'skipped', reason?, runId? }
+   */
+  async ensureLoaded(schemaName) {
+    const current = this.currentRuns[schemaName];
+    if (current && current.status === 'running') {
+      return { action: 'skipped', reason: `${current.phase} already running in memory` };
+    }
+
+    const activeRes = await this.db.query(
+      `SELECT id FROM public.data_reload_runs
+       WHERE schema_name = $1 AND status = 'running' AND started_at > NOW() - INTERVAL '3 hours'
+       LIMIT 1`,
+      [schemaName]
+    );
+    if (activeRes.rows.length > 0) {
+      return { action: 'skipped', reason: `run #${activeRes.rows[0].id} still running in DB` };
+    }
+
+    const completedTodayRes = await this.db.query(
+      `SELECT id FROM public.data_reload_runs
+       WHERE schema_name = $1 AND status = 'completed'
+         AND total_files IS NOT NULL
+         AND started_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
+       LIMIT 1`,
+      [schemaName]
+    );
+    if (completedTodayRes.rows.length > 0) {
+      return { action: 'skipped', reason: `import already completed today (run #${completedTodayRes.rows[0].id})` };
+    }
+
+    const runId = await this.startLoad(schemaName, 'cron');
+    console.log(`[DataReloadService] ensure-loaded: started run #${runId} for ${schemaName}`);
+    return { action: 'started', runId };
+  }
+
+  /**
    * Idempotent check called by Cloud Scheduler every 15 min.
    * Starts indexing only if:
    *   1. Nothing is currently running (in-memory or DB within last 3h)

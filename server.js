@@ -3341,6 +3341,24 @@ app.post('/api/admin/data-loader/:schema/index', async (req, res) => {
   }
 });
 
+// POST /api/admin/data-loader/:schema/ensure-loaded — called by Cloud Scheduler at 07-11:00
+// Idempotent: starts import only if not already running and not completed today.
+// Enables automatic retry: 07:00 fails → 08:00 retries, etc.
+app.post('/api/admin/data-loader/:schema/ensure-loaded', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const dataReloadService = req.app.get('dataReloadService');
+    if (!dataReloadService?.reloaders[schema]) {
+      return res.status(404).json({ error: `Unknown schema: ${schema}` });
+    }
+    const result = await dataReloadService.ensureLoaded(schema);
+    res.json(result);
+  } catch (err) {
+    console.error(`[ensure-loaded] error:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/admin/data-loader/:schema/ensure-indexed — called by Cloud Scheduler every 15 min
 app.post('/api/admin/data-loader/:schema/ensure-indexed', async (req, res) => {
   try {
