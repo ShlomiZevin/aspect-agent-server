@@ -58,7 +58,7 @@ class DataReloadService {
             completed_at  = NOW(),
             error_message = 'Server restarted during reload'
         WHERE status = 'running'
-          AND started_at < NOW() - INTERVAL '3 hours'
+          AND started_at < NOW() - INTERVAL '5 hours'
         RETURNING id, schema_name, triggered_by, started_at
       `);
       if (result.rows.length > 0) {
@@ -87,21 +87,36 @@ class DataReloadService {
   // ── Public API ───────────────────────────────────────────────────────────────
 
   /**
+   * Throws 409 if any operation is currently running for this schema.
+   * Checks both in-memory state (fast path) and DB (survives server restarts).
+   */
+  async _assertNotBusy(schemaName) {
+    const current = this.currentRuns[schemaName];
+    if (current && current.status === 'running') {
+      throw { code: 409, message: `Schema ${schemaName} already has a running ${current.phase || 'operation'} in memory.` };
+    }
+    const activeRes = await this.db.query(
+      `SELECT id, triggered_by FROM public.data_reload_runs
+       WHERE schema_name = $1 AND status = 'running'
+       LIMIT 1`,
+      [schemaName]
+    );
+    if (activeRes.rows.length > 0) {
+      const r = activeRes.rows[0];
+      throw { code: 409, message: `Schema ${schemaName} already has a running operation in DB (run #${r.id}, by ${r.triggered_by}).` };
+    }
+  }
+
+  /**
    * Import: scan GCS → create tables → COPY data → schema swap → completed.
-   * Rejects with {code:409} if already running.
+   * Rejects with {code:409} if already running (checks memory + DB).
    * Returns runId immediately; import runs in background.
    */
   async startLoad(schemaName, triggeredBy = 'manual') {
     const reloader = this.reloaders[schemaName];
     if (!reloader) throw { code: 400, message: `No reloader registered for schema: ${schemaName}` };
 
-    const current = this.currentRuns[schemaName];
-    if (current && current.status === 'running') {
-      throw {
-        code: 409,
-        message: `Schema ${schemaName} is busy (status: running). Cannot start a new load.`,
-      };
-    }
+    await this._assertNotBusy(schemaName);
 
     const runId = await this._createRunInDB(schemaName, triggeredBy);
 
@@ -135,13 +150,7 @@ class DataReloadService {
     const reloader = this.reloaders[schemaName];
     if (!reloader) throw { code: 400, message: `No reloader registered for schema: ${schemaName}` };
 
-    const current = this.currentRuns[schemaName];
-    if (current && current.status === 'running') {
-      throw {
-        code: 409,
-        message: `Schema ${schemaName} is already running (phase: ${current.phase || 'unknown'}). Cannot start indexing.`,
-      };
-    }
+    await this._assertNotBusy(schemaName);
 
     const runId = await this._createRunInDB(schemaName, triggeredBy);
 
@@ -178,7 +187,7 @@ class DataReloadService {
 
     const activeRes = await this.db.query(
       `SELECT id FROM public.data_reload_runs
-       WHERE schema_name = $1 AND status = 'running' AND started_at > NOW() - INTERVAL '3 hours'
+       WHERE schema_name = $1 AND status = 'running' AND started_at > NOW() - INTERVAL '5 hours'
        LIMIT 1`,
       [schemaName]
     );
@@ -218,7 +227,7 @@ class DataReloadService {
 
     const activeRes = await this.db.query(
       `SELECT id FROM public.data_reload_runs
-       WHERE schema_name = $1 AND status = 'running' AND started_at > NOW() - INTERVAL '3 hours'
+       WHERE schema_name = $1 AND status = 'running' AND started_at > NOW() - INTERVAL '5 hours'
        LIMIT 1`,
       [schemaName]
     );
