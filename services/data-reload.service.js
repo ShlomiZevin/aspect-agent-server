@@ -250,7 +250,7 @@ class DataReloadService {
     const completedIndexRes = await this.db.query(
       `SELECT id FROM public.data_reload_runs
        WHERE schema_name = $1 AND status = 'completed'
-         AND triggered_by = 'index' AND started_at > $2
+         AND triggered_by IN ('index', 'cron') AND started_at > $2
        LIMIT 1`,
       [schemaName, lastImport.completed_at]
     );
