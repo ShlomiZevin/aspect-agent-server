@@ -21,6 +21,7 @@ const fieldsExtractor = require('../micro-agents/FieldsExtractorAgent');
 const promptService = require('../../services/prompt.service');
 const CrewMember = require('../base/CrewMember');
 const kbResolver = require('../../services/kb.resolver');
+const playgroundService = require('../../services/playground.service');
 
 class DispatcherService {
   constructor() {
@@ -40,13 +41,24 @@ class DispatcherService {
    * @param {string} overrideCrewName - Optional override crew name
    * @returns {Promise<CrewMember>} - The crew member to use
    */
-  async getCurrentCrew(agentName, conversationId, overrideCrewName = null) {
+  async getCurrentCrew(agentName, conversationId, overrideCrewName = null, playgroundConfig = null) {
     // 1. Check for override
     if (overrideCrewName) {
       const overrideCrew = await crewService.getCrewMember(agentName, overrideCrewName);
       if (overrideCrew) {
         console.log(`🔄 Using override crew: ${overrideCrewName}`);
         return overrideCrew;
+      }
+      // Playground crew not in memory (e.g. different Cloud Run instance).
+      // Rebuild on-the-fly from the config included in the request.
+      if (overrideCrewName.startsWith('playground-') && playgroundConfig) {
+        const sessionId = overrideCrewName.slice('playground-'.length);
+        await playgroundService.register(sessionId, agentName, playgroundConfig);
+        const rebuiltCrew = await crewService.getCrewMember(agentName, overrideCrewName);
+        if (rebuiltCrew) {
+          console.log(`🔄 Rebuilt playground crew on demand: ${overrideCrewName}`);
+          return rebuiltCrew;
+        }
       }
       console.warn(`⚠️ Override crew not found: ${overrideCrewName}, falling back`);
     }
@@ -100,11 +112,12 @@ class DispatcherService {
     const {
       conversationId,
       agentName,
-      overrideCrewMember = null
+      overrideCrewMember = null,
+      playgroundConfig = null,
     } = params;
 
     // Get current crew member
-    const crew = await this.getCurrentCrew(agentName, conversationId, overrideCrewMember);
+    const crew = await this.getCurrentCrew(agentName, conversationId, overrideCrewMember, playgroundConfig);
 
     console.log(`🚀 Dispatching to crew: ${crew.name} (${crew.displayName})`);
 
@@ -1163,8 +1176,8 @@ class DispatcherService {
    * @param {string} overrideCrewMember - Optional override
    * @returns {Promise<Object>} - Crew info for client
    */
-  async getCrewInfo(agentName, conversationId, overrideCrewMember = null) {
-    const crew = await this.getCurrentCrew(agentName, conversationId, overrideCrewMember);
+  async getCrewInfo(agentName, conversationId, overrideCrewMember = null, playgroundConfig = null) {
+    const crew = await this.getCurrentCrew(agentName, conversationId, overrideCrewMember, playgroundConfig);
     return crew ? crew.toJSON() : null;
   }
 

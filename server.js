@@ -1769,7 +1769,7 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled, temperatureOverrides, topKOverrides, profilerFreshStart, profilerEnabled } = req.body;
+  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled, temperatureOverrides, topKOverrides, profilerFreshStart, profilerEnabled, playgroundConfig } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -1846,7 +1846,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
       }
 
       // Get current crew info and send to client
-      const crewInfo = await dispatcherService.getCrewInfo(agentNameToUse, conversationId, overrideCrewMember);
+      const crewInfo = await dispatcherService.getCrewInfo(agentNameToUse, conversationId, overrideCrewMember, playgroundConfig || null);
       let currentCrewDisplayName = null;
       if (crewInfo) {
         currentCrewName = crewInfo.name;
@@ -1865,6 +1865,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         conversationId,
         agentName: agentNameToUse,
         overrideCrewMember,
+        playgroundConfig: playgroundConfig || null,
         agentConfig,
         debug,
         promptOverrides: promptOverrides || {},
@@ -3281,6 +3282,23 @@ app.get('/api/admin/data-loader/:schema/history', async (req, res) => {
     res.json({ history });
   } catch (err) {
     console.error('❌ data-loader history error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/cloud-run-logs — fetch Cloud Run logs from Cloud Logging API
+app.get('/api/admin/cloud-run-logs', async (req, res) => {
+  try {
+    const { severity = 'all', limit = '200', pageToken } = req.query;
+    const cloudRunLogsService = require('./services/cloud-run-logs.service');
+    const result = await cloudRunLogsService.fetchLogs({
+      severity,
+      limit: Math.min(parseInt(limit, 10) || 200, 500),
+      pageToken: pageToken || null,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Cloud Run logs error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
