@@ -41,11 +41,11 @@ class ThinkingAdvisorAgent {
       console.log(`   🧠 [ThinkingAdvisor] Running with model: ${model}`);
       const startTime = Date.now();
 
-      const { agentName, crewMember, conversationId, userId, knowledgeBase, ...restOpts } = options;
+      const { agentName, crewMember, conversationId, userId, knowledgeBase, processLabel, ...restOpts } = options;
       responseText = await llmService.sendOneShot(
         thinkingPrompt,
         context,
-        { model, maxTokens, jsonOutput, knowledgeBase, historyMessages, context: 'thinker', agentName, crewMember, conversationId, userId }
+        { model, maxTokens, jsonOutput, knowledgeBase, historyMessages, context: processLabel || 'thinker', agentName, crewMember, conversationId, userId }
       );
 
       const elapsed = Date.now() - startTime;

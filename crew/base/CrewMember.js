@@ -143,10 +143,18 @@ class CrewMember {
     this.thinkingModel = options.thinkingModel || null;
     this.thinkingFallbackModel = options.thinkingFallbackModel || 'gpt-4o';
 
-    // Extra strategy fields the thinker should return (merged with fieldsToCollect
-    // into one unified list at injection time). These are fields the thinker owns
-    // that aren't tracked as collected fields (e.g. conversationState, strategy).
-    this.thinkerFields = options.thinkerFields || [];
+    // Thinker field categories. Each is an array of strings like 'fieldName (description)'.
+    // - blocking: returned every turn. Talker waits for these.
+    // - background: runs in parallel, talker does NOT wait. Saved to context when ready.
+    // - hybrid: starts as blocking (no value yet), becomes background once a value exists.
+    this.thinkerFieldsBlocking = options.thinkerFieldsBlocking || [];
+    this.thinkerFieldsBackground = options.thinkerFieldsBackground || [];
+    this.thinkerFieldsHybrid = options.thinkerFieldsHybrid || [];
+
+    // Legacy: if crew uses old `thinkerFields`, treat them all as blocking
+    if (options.thinkerFields && !options.thinkerFieldsBlocking) {
+      this.thinkerFieldsBlocking = options.thinkerFields;
+    }
 
     // Fallback model — used when the primary model fails with a retriable error (429, 5xx, timeout)
     this.fallbackModel = options.fallbackModel || 'gpt-4o';
@@ -167,6 +175,11 @@ class CrewMember {
     // The dispatcher reads it directly to extract fields — no DB round-trip,
     // no namespace lookup, no name-mapping bugs.
     this._lastThinkerAdvice = null;
+
+    // Accumulated background thinker results (in-memory), keyed by conversation ID.
+    // Background calls write here when they finish. The next blocking call
+    // merges these in — no DB round-trip needed.
+    this._backgroundFieldsByConv = {};
   }
 
   /**
@@ -346,27 +359,51 @@ class CrewMember {
         console.warn(`   ⚠️ [${this.name}] Could not fetch history for thinker:`, err.message);
       }
 
-      // Assemble FULL prompt in one place: base + context + fields + output rules.
-      // No more relying on sendOneShot to append context — what we build here is
-      // exactly what the LLM sees. Context goes BEFORE field list so the field
-      // list + output rules are the last thing the LLM reads (strongest position).
-      const outputRules = `\nReturn valid JSON only — no prose, no markdown, no explanation.\nDo not extract from ASSISTANT messages — those are your own agent's words, not user data.\nDo not return null or false — just omit the field.\nAll string values: short phrase, never full sentences.`;
+      // ========== THINKER FIELD ROUTING ==========
+      // Route fields into blocking (talker waits) vs background (fire-and-forget).
+      // Hybrid fields start as blocking until they have a value, then become background.
+      const prevState = await this.getContext(`${this.name}_state`, true) || {};
+      // Strip failure artifacts from previous state
+      delete prevState.approach;
+      delete prevState.rawTextAdvice;
+      delete prevState.fallback;
+      delete prevState.error;
+
+      const blockingFields = [
+        '_thinkingDescription (short English summary of this turn, 5-15 words, shown in UI)',
+        ...this.thinkerFieldsBlocking,
+      ];
+      const backgroundFields = [...this.thinkerFieldsBackground];
+
+      // Route hybrid fields: if value exists in prevState → background, else → blocking
+      for (const f of this.thinkerFieldsHybrid) {
+        const fieldName = (typeof f === 'string' ? f : f.name).split(/[\s(]/)[0];
+        if (prevState[fieldName] !== undefined && prevState[fieldName] !== null && prevState[fieldName] !== '') {
+          backgroundFields.push(f);
+        } else {
+          blockingFields.push(f);
+        }
+      }
+
+      // fieldsToCollect: check if each has a value → background, else → blocking
+      for (const f of this.fieldsToCollect) {
+        const fieldStr = `${f.name}${f.description ? ` (${f.description})` : ''}`;
+        if (prevState[f.name] !== undefined && prevState[f.name] !== null && prevState[f.name] !== '') {
+          backgroundFields.push(fieldStr);
+        } else {
+          blockingFields.push(fieldStr);
+        }
+      }
+
+      // ========== BUILD PROMPTS ==========
+      const outputRules = `\nReturn valid JSON only — no prose, no markdown, no explanation.\nOnly include fields from the list above. Do not add any other fields.\nDo not extract from ASSISTANT messages — those are your own agent's words, not user data.\nDo not return null or false — just omit the field.\nAll string values: short phrase, never full sentences.`;
 
       const buildFullThinkerPrompt = (fields) => {
         return `${this.thinkingPrompt}\n\n## Context\n${contextStr}\n\nReturn a JSON with only CHANGED fields from this list: ${fields.join(', ')}.${outputRules}`;
       };
 
-      const strategyFields = [
-        '_thinkingDescription (short English summary of this turn, 5-15 words, shown in UI)',
-        ...this.thinkerFields.map(f =>
-          typeof f === 'string' ? f : `${f.name}${f.description ? ` (${f.description})` : ''}`)
-      ];
-      const collectedFieldsList = this.fieldsToCollect.map(f =>
-        `${f.name}${f.description ? ` (${f.description})` : ''}`
-      );
-
-      const strategyPrompt = buildFullThinkerPrompt(strategyFields);
-      const fieldsPrompt = buildFullThinkerPrompt(collectedFieldsList);
+      const blockingPrompt = buildFullThinkerPrompt(blockingFields);
+      const backgroundPrompt = backgroundFields.length > 0 ? buildFullThinkerPrompt(backgroundFields) : null;
 
       // Add "return JSON" as last user message in history to anchor JSON mode
       const thinkerHistory = [
@@ -378,59 +415,56 @@ class CrewMember {
       const primaryThinkingModel = this.thinkingModel || 'claude-sonnet-4-6';
       let thinkerModelUsed = primaryThinkingModel;
       let thinkerFallbackUsed = false;
+      const thinkerKB = params.resolvedThinkerKB || null;
       const _usageMeta = { agentName: this._agentName, crewMember: this.name, conversationId: this._externalConversationId, userId: this._userId };
 
       try {
-        console.log(`   🧠 [${this.name}] Running thinker (parallel) with model: ${primaryThinkingModel}, strategy fields: ${strategyFields.length}, collected fields: ${collectedFieldsList.length}, history: ${thinkerHistory.length} msgs`);
-        // Uncomment for debugging:
-        // console.log(`   🧠 [${this.name}] === CALL A (strategy) prompt ===\n${strategyPrompt}`);
-        // console.log(`   🧠 [${this.name}] === CALL B (fields) prompt ===\n${fieldsPrompt}`);
-        // console.log(`   🧠 [${this.name}] === Context (shared) ===\n${contextStr}`);
+        console.log(`   🧠 [${this.name}] Thinker: ${blockingFields.length} blocking, ${backgroundFields.length} background, history: ${thinkerHistory.length} msgs`);
 
-        // Run both calls in parallel if we have both lists
-        const hasFields = collectedFieldsList.length > 0;
-        const parallelStart = Date.now();
+        const blockingStart = Date.now();
 
-        const strategyPromise = thinkingAdvisor.think(
-          { thinkingPrompt: strategyPrompt, context: null, historyMessages: thinkerHistory },
-          { model: primaryThinkingModel, ..._usageMeta }
+        // BLOCKING CALL — talker waits for this
+        const blockingPromise = thinkingAdvisor.think(
+          { thinkingPrompt: blockingPrompt, context: null, historyMessages: thinkerHistory },
+          { model: primaryThinkingModel, knowledgeBase: thinkerKB, processLabel: 'thinker-blocking', ..._usageMeta }
         );
 
-        const fieldsPromise = hasFields
-          ? thinkingAdvisor.think(
-              { thinkingPrompt: fieldsPrompt, context: null, historyMessages: thinkerHistory },
-              { model: primaryThinkingModel, ..._usageMeta }
-            ).catch(err => {
-              console.warn(`   ⚠️ [${this.name}] Fields extraction call failed: ${err.message}`);
-              return {};
-            })
-          : Promise.resolve({});
-
-        const [strategyResult, rawFieldsResult] = await Promise.all([strategyPromise, fieldsPromise]);
-        const parallelElapsed = Date.now() - parallelStart;
-
-        // Strip fallback/error fields from fieldsResult — if the call failed,
-        // don't let { fallback: true, rawTextAdvice } contaminate the merge
-        const fieldsResult = (rawFieldsResult.fallback || rawFieldsResult.error) ? {} : rawFieldsResult;
-
-        // Merge: previous state as base, fields overwrite, strategy wins on conflicts.
-        // Strip failure artifacts from previous state so they don't pollute the context
-        // on the next turn (e.g. a Hebrew prose response from a failed fields call).
-        const prevState = await this.getContext(`${this.name}_state`, true) || {};
-        delete prevState.approach;
-        delete prevState.rawTextAdvice;
-        delete prevState.fallback;
-        delete prevState.error;
-        thinkingAdvice = { ...prevState, ...fieldsResult, ...strategyResult };
-
-        const strategyKeys = Object.keys(strategyResult).filter(k => !k.startsWith('_'));
-        console.log(`   🧠 [${this.name}] Strategy returned: ${strategyKeys.join(', ') || '(none)'}`);
-        if (hasFields) {
-          const fieldKeys = Object.keys(fieldsResult).filter(k => !k.startsWith('_'));
-          console.log(`   🧠 [${this.name}] Fields returned: ${fieldKeys.join(', ') || '(none)'}`);
+        // BACKGROUND CALL — fire and forget, results accumulate per conversation
+        const convId = this._externalConversationId || 'unknown';
+        if (backgroundPrompt) {
+          thinkingAdvisor.think(
+            { thinkingPrompt: backgroundPrompt, context: null, historyMessages: thinkerHistory },
+            { model: primaryThinkingModel, knowledgeBase: thinkerKB, processLabel: 'thinker-background', ..._usageMeta }
+          ).then(result => {
+            if (result && !result.fallback && !result.error) {
+              if (!this._backgroundFieldsByConv[convId]) this._backgroundFieldsByConv[convId] = {};
+              this._backgroundFieldsByConv[convId] = { ...this._backgroundFieldsByConv[convId], ...result };
+              // Also persist to DB for cross-restart survival
+              this.writeContext(`${this.name}_state`, { ...prevState, ...this._backgroundFieldsByConv[convId] }, true)
+                .catch(err => console.warn(`   ⚠️ [${this.name}] Background state persist failed: ${err.message}`));
+              const keys = Object.keys(result).filter(k => !k.startsWith('_'));
+              console.log(`   🧠 [${this.name}] Background completed: ${keys.join(', ') || '(none)'}`);
+            }
+          }).catch(err => {
+            console.warn(`   ⚠️ [${this.name}] Background thinker failed: ${err.message}`);
+          });
         }
+
+        // Wait ONLY for the blocking call
+        const blockingResult = await blockingPromise;
+        const blockingElapsed = Date.now() - blockingStart;
+
+        // Strip fallback from blocking result
+        const cleanBlocking = (blockingResult?.fallback || blockingResult?.error) ? {} : blockingResult;
+
+        // Merge: prevState + accumulated background + blocking (blocking wins)
+        const bgFields = this._backgroundFieldsByConv[convId] || {};
+        thinkingAdvice = { ...prevState, ...bgFields, ...cleanBlocking };
+
+        const blockingKeys = Object.keys(cleanBlocking).filter(k => !k.startsWith('_'));
+        console.log(`   🧠 [${this.name}] Blocking returned: ${blockingKeys.join(', ') || '(none)'} (${blockingElapsed}ms)`);
         const mergedKeys = Object.keys(thinkingAdvice).filter(k => !k.startsWith('_'));
-        console.log(`   🧠 [${this.name}] Merged total: ${mergedKeys.length} fields (${parallelElapsed}ms)`);
+        console.log(`   🧠 [${this.name}] Merged total: ${mergedKeys.length} fields`);
       } catch (err) {
         const isRetryable = _isThinkerRetryable(err);
         const fallbackModel = this.thinkingFallbackModel || 'gpt-4o';

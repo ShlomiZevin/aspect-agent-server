@@ -121,7 +121,7 @@ class AdvisorOneCrew extends CrewMember {
   constructor() {
     super({
       name: 'advisor-one',
-      displayName: 'ייעוץ והתאמה',
+      displayName: 'ייעוץ — חדש',
       description: 'Intent gathering, financial profiling, and personalized product recommendations',
       isDefault: false,
       model: 'gemini-2.5-flash',
@@ -134,32 +134,35 @@ class AdvisorOneCrew extends CrewMember {
       knowledgeBase: {
         enabled: true,
         sources: [
-          { name: 'Onboarding KB' },
+          { name: 'Hapoalim Dynamic KB unified' },
         ]
       },
       tools: [],
-      thinkerFields: [
-        'conversationState (intent | profiling | recommendation | objection | transition)',
-        'handlingPrinciple (first_account, young_user, bad_bank_experience, specific_purpose, life_event, offer_driven, adding_account, browsing)',
-        'earlyAnchor (user motivation or concern expressed early)',
-        'contextGathered (only return when changing to true)',
-        'creditUsage (expected מסגרת usage — calculate from income+expenses or ask)',
-        'relevantContext (student, irregular income, etc.)',
-        'mandatoryFieldsComplete (true when employment+incomeRange+expenseRange+creditUsage all known)',
+      thinkerFieldsBlocking: [],
+      // BACKGROUND: runs in parallel, talker does NOT wait
+      thinkerFieldsBackground: [
         'activeLayer (1, 2, or 3)',
+        'objectionStep (value_response / price_reframe / accept_decline)',
+        'nextAction (what Guidance should do this turn)',
+        'toneNote (tone adjustment if needed)',
+        'contextGathered (only return when changing to true)',
+        'mandatoryFieldsComplete (true when employment+incomeRange+expenseRange+creditUsage all known)',
+        'creditUsage (expected מסגרת usage — calculate from income+expenses or ask)',
         'pendingProduct (product currently being offered)',
-        'layer1Agreed (true on explicit acceptance of account track)',
-        'layer2Complete (true when card+checkbook both have a response)',
         'cardResponse (accepted / declined / skipped)',
         'checkbookResponse (accepted / declined / skipped)',
-        'objectionStep (value_response / price_reframe / accept_decline)',
-        'readyToTransfer (true only when layer1Agreed+layer2Complete)',
-        'recommendedOffer (basic / plus / premium)',
-        'offerPitch (why this offer fits THIS customer — short phrase)',
-        'nextAction (what Guidance should do this turn)',
-        'strategy (why this approach fits this user)',
-        'toneNote (tone adjustment if needed)',
       ],
+      // HYBRID: blocking until value exists, then background
+      thinkerFieldsHybrid: [
+        'conversationState (intent | profiling | recommendation | objection | transition)',
+        'handlingPrinciple (first_account, young_user, bad_bank_experience, specific_purpose, life_event, offer_driven, adding_account, browsing)',
+        'layer1Agreed (true on explicit acceptance of account track)',
+        'layer2Complete (true when card+checkbook both have a response)',
+        'readyToTransfer (true only when layer1Agreed+layer2Complete)',
+        'offerPitch (why this offer fits THIS customer — short phrase)',
+        'strategy (why this approach fits this user)',
+      ],
+      // Tracked fields (also hybrid: blocking until value, then background)
       fieldsToCollect: [
         { name: 'userIntent', description: 'Reason for opening the account' },
         { name: 'userType', description: 'Identified handling principle (first account, young user, bad experience, etc.)' },

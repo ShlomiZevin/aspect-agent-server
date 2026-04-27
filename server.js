@@ -1277,17 +1277,35 @@ app.post('/api/agents/:agentName/profiler/run', async (req, res) => {
     const profilerModel = overrides.model || profilerConfig.model || 'claude-sonnet-4-6';
     const profilerMaxTokens = profilerConfig.maxTokens || 4096;
 
+    const collectedFields = await agentContextService.getCollectedFields(conversationId);
+
     const existingProfile = await contextService.getContext(dbUserId, 'profile_data', conversation.id)
       || await contextService.getContext(dbUserId, 'profile_data')
       || {};
 
-    const result = await profilerAgent.run(
-      { profilerPrompt, conversationHistory, existingProfile },
+    const delta = await profilerAgent.run(
+      { profilerPrompt, conversationHistory, collectedFields, existingProfile },
       { model: profilerModel, maxTokens: profilerMaxTokens, agentName, conversationId, userId: dbUserId }
     );
 
-    if (result._error) {
-      return res.status(500).json({ error: result._message });
+    if (delta._error) {
+      return res.status(500).json({ error: delta._message });
+    }
+
+    // Merge delta into existing profile
+    const result = { ...existingProfile };
+    for (const [clusterId, clusterData] of Object.entries(delta)) {
+      if (clusterId.startsWith('_')) continue;
+      if (typeof clusterData !== 'object' || clusterData === null) continue;
+      if (clusterId === 'summary') {
+        result.summary = clusterData;
+        continue;
+      }
+      if (!result[clusterId]) result[clusterId] = {};
+      for (const [fieldKey, fieldData] of Object.entries(clusterData)) {
+        if (fieldKey.startsWith('_')) continue;
+        result[clusterId][fieldKey] = fieldData;
+      }
     }
 
     const confidenceThreshold = overrides.confidenceThreshold ?? 70;
@@ -1614,7 +1632,10 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
       content: m.content,
     }));
 
-    // 4. Load existing profile — conversation-level first, fallback to user-level (or start fresh)
+    // 4. Load collected fields (from crew field extraction — captures data beyond history window)
+    const collectedFields = await agentContextService.getCollectedFields(conversationId);
+
+    // 5. Load existing profile — conversation-level first, fallback to user-level (or start fresh)
     const existingProfile = freshStart ? {} : (
       await contextService.getContext(dbUserId, 'profile_data', conversation.id) ||
       await contextService.getContext(dbUserId, 'profile_data') ||
@@ -1628,24 +1649,39 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
     const profilerModel = overrides.model || profilerConfig.model || 'claude-sonnet-4-6';
     const profilerMaxTokens = profilerConfig.maxTokens || 4096;
 
-    // 6. Run the profiler LLM — simple: prompt + conversation + existing profile → full JSON
+    // 6. Run the profiler LLM — returns only changed fields (delta)
     const profilerStart = Date.now();
-    const result = await profilerAgent.run(
-      { profilerPrompt, conversationHistory, existingProfile },
+    const delta = await profilerAgent.run(
+      { profilerPrompt, conversationHistory, collectedFields, existingProfile },
       { model: profilerModel, maxTokens: profilerMaxTokens, agentName, conversationId, userId: dbUserId }
     );
     const profilerDurationSec = ((Date.now() - profilerStart) / 1000).toFixed(1);
 
     // Always send raw response for debug visibility (includes timing)
-    sendSSE({ type: 'profiler_raw', data: result, durationSec: profilerDurationSec, model: profilerModel });
+    sendSSE({ type: 'profiler_raw', data: delta, durationSec: profilerDurationSec, model: profilerModel });
 
-    if (result._error) {
-      console.error(`   📊 [Profiler] LLM error for ${agentName}: ${result._message}`);
+    if (delta._error) {
+      console.error(`   📊 [Profiler] LLM error for ${agentName}: ${delta._message}`);
       return;
     }
 
-    // 7. Strip low-confidence fields — prevents over-inference
-    // Threshold is configurable (default 70). Filtered fields get _filtered:true so UI can show them in debug mode.
+    // 7. Merge delta into existing profile
+    const result = { ...existingProfile };
+    for (const [clusterId, clusterData] of Object.entries(delta)) {
+      if (clusterId.startsWith('_')) continue;
+      if (typeof clusterData !== 'object' || clusterData === null) continue;
+      if (clusterId === 'summary') {
+        result.summary = clusterData; // Summary always fully replaces
+        continue;
+      }
+      if (!result[clusterId]) result[clusterId] = {};
+      for (const [fieldKey, fieldData] of Object.entries(clusterData)) {
+        if (fieldKey.startsWith('_')) continue;
+        result[clusterId][fieldKey] = fieldData; // Override field with new data
+      }
+    }
+
+    // 8. Strip low-confidence fields — prevents over-inference
     const confidenceThreshold = overrides.confidenceThreshold ?? 70;
     for (const [clusterId, clusterData] of Object.entries(result)) {
       if (clusterId === 'summary' || clusterId.startsWith('_')) continue;
@@ -1660,7 +1696,7 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
       }
     }
 
-    // 8. Save the full profile — conversation-level (per-conversation snapshot) + user-level (latest)
+    // 9. Save merged profile — conversation-level + user-level
     await contextService.saveContext(dbUserId, 'profile_data', result, conversation.id);
     await contextService.saveContext(dbUserId, 'profile_data', result);
 

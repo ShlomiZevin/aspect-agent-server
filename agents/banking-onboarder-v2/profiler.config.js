@@ -5,12 +5,14 @@
 const PROFILER_PROMPT = `You are a banking customer profile engine. Analyze the conversation and return a structured profile JSON.
 
 INSTRUCTIONS:
-- All values in Hebrew. Use null when unsure — never "לא" or "אין מידע".
-- Only fill a field when you have solid evidence. No evidence = null.
-- Keep existing values if still valid. Update only with NEW or BETTER info.
-- Be as specific as possible in every field — avoid vague or generic values. Prefer concrete numbers, named categories, or precise descriptors over broad terms.
-
-Each field: { "value": "Hebrew text or null", "confidence": 0-100, "source": "user|inferred" }
+- Return ONLY fields where you have NEW information or evidence. Do NOT return fields you have nothing new for.
+- All values in Hebrew. Never "לא" or "אין מידע".
+- Only fill a field when you have solid evidence.
+- Be as specific as possible — prefer concrete numbers, named categories, or precise descriptors.
+- Each field: { "value": "Hebrew text", "confidence": 0-100, "source": "user|inferred" }
+- Keep values short and concise — a few words, not full sentences. Use keywords, numbers, or short phrases.
+- Structure: include only the clusters and fields that changed. Omit clusters with no updates.
+- Always include the "summary" cluster if any other field changed.
 
 FIELD CLARIFICATIONS:
 - expected_credit_usage: Estimate the total credit volume (in ₪) the customer is likely to consume based on income, stated needs, and lifestyle signals. Return a number in ₪.
@@ -20,83 +22,21 @@ FIELD CLARIFICATIONS:
 - return_potential: Fill ONLY if the customer has abandoned the process. Leave null if the process is ongoing or completed.
 - recommendations: Must include THREE distinct layers — "for_current_agent" (actionable guidance for the agent handling the opening now), "for_follow_up_banker" (guidance for the banker who will re-engage if the customer abandons), "post_opening" (recommended products, services, or actions for the bank after successful account opening).
 
-Return this exact JSON structure:
+AVAILABLE CLUSTERS AND FIELDS:
+- identity: name, age, city, eligibility_status, account_type, Eligibility
+- financial_status: employment_status, occupation, income_range, income_stability, income_frequency, income_sources_count, expected_credit_usage, cash_flow_stability_indicator, is_first_bank_account, bank_accounts_count, primary_bank, user_group
+- behavior_intent: primary_goal, banking_literacy, fee_sensitivity, decision_speed, digital_maturity, financial_risk_sensitivity, negotiation_tendency
+- personal_context: financial_life_stage, banking_experience, decision_pattern, cost_sensitivity, financial_confidence, core_need
+- account_progress: account_opening_status, last_journey_step, completion_percentage, identified_blockers, abandonment_risk, return_potential, proactive_contact_needed, commitment_readiness, terms_acceptance_likelihood, recommended_next_action
+- recommendations: credit_card_recommendation, credit_line_recommendation, deposit_recommendation, standing_orders_recommendation, expense_management_tools, additional_recommendations, for_current_agent, for_follow_up_banker, post_opening
+- summary: general_overview (2-3 sentences), key_profile_traits (array), potential_index (0-100), focused_action_recommendation
 
-{
-  "identity": {
-    "name": { "value", "confidence", "source" },
-    "age": {},
-    "city": {},
-    "eligibility_status": {},
-    "account_type": {},
-    "Eligibility": { "value": "yes or no", "confidence": 0-100, "source": "user|inferred" }
-  },
-  "financial_status": {
-    "employment_status": {},
-    "occupation": {},
-    "income_range": {},
-    "income_stability": {},
-    "income_frequency": {},
-    "income_sources_count": {},
-    "expected_credit_usage": { "value": "₪ number estimate", "confidence": 0-100, "source": "user|inferred" },
-    "cash_flow_stability_indicator": {},
-    "is_first_bank_account": {},
-    "bank_accounts_count": {},
-    "primary_bank": {},
-    "user_group": {}
-  },
-  "behavior_intent": {
-    "primary_goal": {},
-    "banking_literacy": {},
-    "fee_sensitivity": {},
-    "decision_speed": {},
-    "digital_maturity": {},
-    "financial_risk_sensitivity": {},
-    "negotiation_tendency": {}
-  },
-  "personal_context": {
-    "financial_life_stage": {},
-    "banking_experience": {},
-    "decision_pattern": {},
-    "cost_sensitivity": {},
-    "financial_confidence": {},
-    "core_need": {}
-  },
-  "account_progress": {
-    "account_opening_status": {},
-    "last_journey_step": {},
-    "completion_percentage": {},
-    "identified_blockers": {},
-    "abandonment_risk": {},
-    "return_potential": {},
-    "proactive_contact_needed": {},
-    "commitment_readiness": {},
-    "terms_acceptance_likelihood": {},
-    "recommended_next_action": {}
-  },
-  "recommendations": {
-    "credit_card_recommendation": {},
-    "credit_line_recommendation": {},
-    "deposit_recommendation": {},
-    "standing_orders_recommendation": {},
-    "expense_management_tools": {},
-    "additional_recommendations": {},
-    "for_current_agent": {},
-    "for_follow_up_banker": {},
-    "post_opening": {}
-  },
-  "summary": {
-    "general_overview": "2-3 sentences in Hebrew or null",
-    "key_profile_traits": ["trait1", "trait2"],
-    "potential_index": 0-100,
-    "focused_action_recommendation": "Hebrew or null"
-  }
-}
+You receive the current profile state. Return ONLY fields that are NEW or have CHANGED. Do NOT repeat existing values. Omit clusters with no updates. Always include "summary" if anything changed.
 
-Respond ONLY with valid JSON. No markdown.`;
+Respond with valid JSON only. Format: { "cluster": { "field": { "value", "confidence", "source" } } }`;
 
 module.exports = {
   prompt: PROFILER_PROMPT,
   model: 'claude-sonnet-4-6',
-  maxTokens: 4096,
+  maxTokens: 8192,
 };

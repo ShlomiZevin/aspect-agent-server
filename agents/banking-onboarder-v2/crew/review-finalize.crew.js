@@ -61,7 +61,8 @@ class ReviewFinalizeCrew extends CrewMember {
       // Always-on guardrail appended to whatever prompt is resolved (file,
       // DB, or session override). Survives playground edits.
       promptSuffix: 'You have no tools available. Never say you are calling, triggering, or sending anything to a system. When the user confirms the signature in text, that IS the signature — just acknowledge it and move on.',
-      thinkerFields: [
+      // BLOCKING: talker waits for these every turn
+      thinkerFieldsBlocking: [
         'currentStep (1 | 2 | 3 | 4)',
         'stepStatus (in_progress | completed | blocked)',
         'verifySubState (presenting_collected | awaiting_confirmation | collecting_missing | complete)',
@@ -72,6 +73,8 @@ class ReviewFinalizeCrew extends CrewMember {
         'toneNote (tone adjustment if needed)',
         'readyToTransfer (true only when all steps complete)',
       ],
+      thinkerFieldsBackground: [],
+      thinkerFieldsHybrid: [],
       fieldsToCollect: [
         { name: 'details_confirmed', type: 'boolean', description: 'Set true when user confirms all personal details are correct. Set false when user asks to change something.' },
         { name: 'id_photo_received', type: 'boolean', description: 'Set true when user sends or confirms ID photo (צילום תעודת זהות). Set false when user says they cannot provide it.' },

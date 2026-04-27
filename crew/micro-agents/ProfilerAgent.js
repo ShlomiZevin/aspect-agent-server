@@ -21,36 +21,37 @@ class ProfilerAgent {
    * @param {Object} [params.existingProfile] - Current profile data from context
    * @returns {Promise<Object>} Profile JSON as returned by the LLM
    */
-  async run({ profilerPrompt, conversationHistory, existingProfile }, options = {}) {
+  async run({ profilerPrompt, conversationHistory, collectedFields, existingProfile }, options = {}) {
     const {
       model = 'claude-sonnet-4-6',
       maxTokens = 4096,
     } = options;
 
     // Build the user context message
-    const contextParts = [];
+    const parts = [];
 
-    // 1. Existing profile
+    // Current profile state — so the LLM knows what's already collected and can skip unchanged fields
     if (existingProfile && Object.keys(existingProfile).length > 0) {
-      contextParts.push(`## Existing Profile\n${JSON.stringify(existingProfile, null, 2)}`);
-    } else {
-      contextParts.push(`## Existing Profile\nEmpty — this is the first profiling run.`);
+      parts.push(`## Current Profile\n${JSON.stringify(existingProfile, null, 2)}`);
     }
 
-    // 2. Conversation history
-    if (conversationHistory && conversationHistory.length > 0) {
-      const historyText = conversationHistory
-        .map(m => `${m.role === 'user' ? 'USER' : 'ASSISTANT'}: ${m.content}`)
-        .join('\n\n');
-      contextParts.push(`## Recent Conversation\n${historyText}`);
+    // Collected fields from crew extraction (captures data from older messages beyond the history window)
+    if (collectedFields && Object.keys(collectedFields).length > 0) {
+      parts.push(`## Collected Fields\n${JSON.stringify(collectedFields, null, 2)}`);
     }
 
-    const contextMessage = contextParts.join('\n\n---\n\n');
+    // Conversation history
+    const historyText = (conversationHistory || [])
+      .map(m => `${m.role === 'user' ? 'USER' : 'ASSISTANT'}: ${m.content}`)
+      .join('\n\n');
+    parts.push(historyText || 'No messages yet.');
+
+    const contextMessage = parts.join('\n\n---\n\n');
 
     try {
-      console.log(`   📊 [Profiler] Running with model: ${model}`);
+      console.log(`   📊 [Profiler] Running with model: ${model} (prompt: ${profilerPrompt.length} chars, context: ${contextMessage.length} chars)`);
 
-      const { agentName, crewMember, conversationId, userId, ...restOpts } = options;
+      const { agentName, crewMember, conversationId, userId } = options;
       const responseText = await llmService.sendOneShot(
         profilerPrompt,
         contextMessage,
