@@ -3050,6 +3050,7 @@ app.get('/api/agents/:agentName/feedback/stats', async (req, res) => {
 
 const slowQueryService = require('./services/slow-query.service');
 const optimizationJobService = require('./services/optimization-job.service');
+const cloudRunLogsService = require('./services/cloud-run-logs.service');
 
 // List slow queries
 app.get('/api/admin/slow-queries', async (req, res) => {
@@ -3328,6 +3329,21 @@ app.post('/api/admin/db-kill/:pid', async (req, res) => {
     const { pid } = req.params;
     const result = await db.query(`SELECT pg_terminate_backend($1)`, [parseInt(pid)]);
     res.json({ terminated: result.rows[0].pg_terminate_backend, pid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/cloud-run-logs — fetch Cloud Run logs
+app.get('/api/admin/cloud-run-logs', async (req, res) => {
+  try {
+    const { severity = 'all', limit = '200', pageToken } = req.query;
+    const result = await cloudRunLogsService.fetchLogs({
+      severity,
+      limit: parseInt(limit, 10),
+      pageToken: pageToken || null,
+    });
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
