@@ -2490,6 +2490,27 @@ app.get('/api/kb/:kbId/files/:fileId/download', async (req, res) => {
 
 // Delete legacy file by openaiFileId (no DB record — file lives only in OpenAI VS)
 // Delete entire knowledge base (all files + providers + DB record)
+// PATCH /api/kb/:kbId — rename a knowledge base
+app.patch('/api/kb/:kbId', async (req, res) => {
+  try {
+    const { kbId } = req.params;
+    const { name } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
+    const { knowledgeBases: kbTable } = require('./db/schema');
+    const { eq: eqKb } = require('drizzle-orm');
+    const drizzleKb = db.getDrizzle();
+    const [kb] = await drizzleKb
+      .update(kbTable)
+      .set({ name: name.trim(), updatedAt: new Date() })
+      .where(eqKb(kbTable.id, parseInt(kbId)))
+      .returning();
+    if (!kb) return res.status(404).json({ error: 'Knowledge base not found' });
+    res.json({ knowledgeBase: _formatKB(kb) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.delete('/api/kb/:kbId', async (req, res) => {
   try {
     const { kbId } = req.params;
