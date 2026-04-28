@@ -77,7 +77,7 @@ class ReviewFinalizeCrew extends CrewMember {
       thinkerFieldsHybrid: [],
       fieldsToCollect: [
         { name: 'details_confirmed', type: 'boolean', description: 'Set true when user confirms all personal details are correct. Set false when user asks to change something.' },
-        { name: 'id_photo_received', type: 'boolean', description: 'Set true when user sends or confirms ID photo (צילום תעודת זהות). Set false when user says they cannot provide it.' },
+        { name: 'id_photo_received', type: 'boolean', description: 'Set true when user sends or confirms ID photo (צילום תעודת זהות). Set false when user says they cannot provide it.', ui: { type: 'id', label: 'העלאת תעודת זהות 📷' } },
         { name: 'consent_granted', type: 'boolean', description: 'Set true when user agrees to account terms and conditions. Set false when user refuses.' },
         { name: 'signature_completed', type: 'boolean', description: 'Set true when user completes the digital signature. Set false when user refuses to sign.' },
         { name: 'last_name_he', description: "User's last name in Hebrew (שם משפחה בעברית)", ui: { type: 'input', label: 'שם משפחה בעברית' } },

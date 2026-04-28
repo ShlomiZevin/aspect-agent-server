@@ -1332,23 +1332,26 @@ app.post('/api/agents/:agentName/profiler/run', async (req, res) => {
       { maxPercent: 100, label: 'פרופיל פרסונליזציה מלא' },
     ];
 
+    const profileSchema = profilerConfig.schema || {};
     let totalFields = 0, totalFilled = 0, totalConfidence = 0, filledCount = 0;
     const clusterScores = {};
-    for (const [clusterId, clusterData] of Object.entries(result)) {
-      if (clusterId === 'summary' || clusterId.startsWith('_')) continue;
-      if (typeof clusterData !== 'object' || clusterData === null) continue;
-      const fields = Object.entries(clusterData).filter(([k]) => !k.startsWith('_'));
-      const total = fields.length;
-      const filled = fields.filter(([, f]) => f && typeof f === 'object' && f.value != null).length;
+    for (const [clusterId, schemaFields] of Object.entries(profileSchema)) {
+      const total = schemaFields.length;
+      const clusterData = result[clusterId];
+      let filled = 0;
+      if (clusterData && typeof clusterData === 'object') {
+        for (const fieldKey of schemaFields) {
+          const f = clusterData[fieldKey];
+          if (f && typeof f === 'object' && f.value != null) {
+            filled++;
+            totalConfidence += f.confidence || 0;
+            filledCount++;
+          }
+        }
+      }
       clusterScores[clusterId] = { depth: total > 0 ? Math.round((filled / total) * 100) : 0 };
       totalFields += total;
       totalFilled += filled;
-      for (const [, f] of fields) {
-        if (f && typeof f === 'object' && f.value != null) {
-          totalConfidence += f.confidence || 0;
-          filledCount++;
-        }
-      }
     }
 
     const overallDepth = totalFields > 0 ? Math.round((totalFilled / totalFields) * 100) : 0;
@@ -1708,31 +1711,35 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
       { maxPercent: 100, label: 'פרופיל פרסונליזציה מלא' },
     ];
 
+    // Use schema for depth calculation — schema defines what 100% looks like
+    const profileSchema = profilerConfig.schema || {};
     let totalFields = 0;
     let totalFilled = 0;
     let totalConfidence = 0;
     let filledCount = 0;
     const clusterScores = {};
 
-    for (const [clusterId, clusterData] of Object.entries(result)) {
-      if (clusterId === 'summary' || clusterId.startsWith('_')) continue;
-      if (typeof clusterData !== 'object' || clusterData === null) continue;
+    for (const [clusterId, schemaFields] of Object.entries(profileSchema)) {
+      const total = schemaFields.length;
+      const clusterData = result[clusterId];
+      let filled = 0;
 
-      const fields = Object.entries(clusterData).filter(([k]) => !k.startsWith('_'));
-      const total = fields.length;
-      const filled = fields.filter(([, f]) => f && typeof f === 'object' && f.value != null).length;
+      if (clusterData && typeof clusterData === 'object') {
+        for (const fieldKey of schemaFields) {
+          const f = clusterData[fieldKey];
+          if (f && typeof f === 'object' && f.value != null) {
+            filled++;
+            totalConfidence += f.confidence || 0;
+            filledCount++;
+          }
+        }
+      }
+
       const depth = total > 0 ? Math.round((filled / total) * 100) : 0;
       clusterScores[clusterId] = { depth };
 
       totalFields += total;
       totalFilled += filled;
-
-      for (const [, f] of fields) {
-        if (f && typeof f === 'object' && f.value != null) {
-          totalConfidence += f.confidence || 0;
-          filledCount++;
-        }
-      }
     }
 
     const overallDepth = totalFields > 0 ? Math.round((totalFilled / totalFields) * 100) : 0;

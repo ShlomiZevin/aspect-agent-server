@@ -35,8 +35,21 @@ You receive the current profile state. Return ONLY fields that are NEW or have C
 
 Respond with valid JSON only. Format: { "cluster": { "field": { "value", "confidence", "source" } } }`;
 
+// Schema — defines the full field list per cluster for depth calculation.
+// This is independent of the prompt. The prompt tells the LLM what to extract;
+// the schema tells the server what 100% looks like.
+const SCHEMA = {
+  identity: ['name', 'age', 'city', 'eligibility_status', 'account_type', 'Eligibility'],
+  financial_status: ['employment_status', 'occupation', 'income_range', 'income_stability', 'income_frequency', 'income_sources_count', 'expected_credit_usage', 'cash_flow_stability_indicator', 'is_first_bank_account', 'bank_accounts_count', 'primary_bank', 'user_group'],
+  behavior_intent: ['primary_goal', 'banking_literacy', 'fee_sensitivity', 'decision_speed', 'digital_maturity', 'financial_risk_sensitivity', 'negotiation_tendency'],
+  personal_context: ['financial_life_stage', 'banking_experience', 'decision_pattern', 'cost_sensitivity', 'financial_confidence', 'core_need'],
+  account_progress: ['account_opening_status', 'last_journey_step', 'completion_percentage', 'identified_blockers', 'abandonment_risk', 'return_potential', 'proactive_contact_needed', 'commitment_readiness', 'terms_acceptance_likelihood', 'recommended_next_action'],
+  recommendations: ['credit_card_recommendation', 'credit_line_recommendation', 'deposit_recommendation', 'standing_orders_recommendation', 'expense_management_tools', 'additional_recommendations', 'for_current_agent', 'for_follow_up_banker', 'post_opening'],
+};
+
 module.exports = {
   prompt: PROFILER_PROMPT,
   model: 'claude-sonnet-4-6',
   maxTokens: 8192,
+  schema: SCHEMA,
 };
