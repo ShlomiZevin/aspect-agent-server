@@ -75,7 +75,7 @@ async function sendTaskAttentionEmail({ recipientEmail, recipientName, notificat
   const byTask = {};
   for (const n of notifications) {
     if (!byTask[n.task_id]) {
-      byTask[n.task_id] = { title: n.task_title, status: n.task_status, events: [] };
+      byTask[n.task_id] = { id: n.task_id, title: n.task_title, status: n.task_status, events: [] };
     }
     byTask[n.task_id].events.push(n);
   }
@@ -97,8 +97,8 @@ async function sendTaskAttentionEmail({ recipientEmail, recipientName, notificat
     return `
       <tr>
         <td style="padding:16px;border-bottom:1px solid #E5E7EB;vertical-align:top;">
-          <div style="font-weight:600;font-size:15px;color:#111827;margin-bottom:6px;">
-            ${task.title}
+          <div style="font-weight:600;font-size:15px;margin-bottom:6px;">
+            <a href="https://lybi.ai/tasks/${task.id}" style="color:#2563EB;text-decoration:none;font-weight:600;">${task.title}</a>
             <span style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;background:${statusBadge};color:#fff;font-size:11px;font-weight:500;vertical-align:middle;">${task.status.replace('_', ' ')}</span>
           </div>
           <ul style="margin:0;padding-left:18px;">${eventLines}</ul>
