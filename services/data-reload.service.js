@@ -601,6 +601,7 @@ class DataReloadService {
 
   async _finishRun(runId, schemaName, status, result, errorMessage = null) {
     const logs = this.logBuffers[schemaName] || [];
+    const qualityStats = result?.qualityReport ?? null;
 
     await this.db.query(
       `UPDATE public.data_reload_runs
@@ -611,8 +612,9 @@ class DataReloadService {
            total_rows    = $4,
            log_entries   = $5::jsonb,
            error_message = $6,
-           step          = $7
-       WHERE id = $8`,
+           step          = $7,
+           quality_stats = $8::jsonb
+       WHERE id = $9`,
       [
         status,
         result?.totalFiles ?? null,
@@ -621,6 +623,7 @@ class DataReloadService {
         JSON.stringify(logs),
         errorMessage,
         status,
+        qualityStats ? JSON.stringify(qualityStats) : null,
         runId,
       ]
     );

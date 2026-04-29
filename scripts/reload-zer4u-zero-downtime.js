@@ -16,6 +16,7 @@ const { createSchema } = require('./create-zer4u-schema');
 const { loadAllCSVFiles } = require('./load-csv-to-db-copy');
 const { createIndexes } = require('./create-zer4u-indexes-v2');
 const { createViews } = require('./create-materialized-views');
+const { buildColumnLookup } = require('./column-aliases');
 
 const GCS_FOLDER = 'zer4u/';
 
@@ -46,7 +47,13 @@ function sanitizeTableName(fileName) {
 /**
  * Build schema definitions from GCS file list + CSV headers only.
  * Reads just the first line of each file — no data rows downloaded.
- * All columns are TEXT; COPY handles any value without type errors.
+ *
+ * For each CSV header column, looks it up in column-aliases to determine:
+ *   - type: DATE / INTEGER / NUMERIC / TEXT
+ *   - name: English DB column name (for known concepts) or sanitized original
+ *
+ * The TypeConvertTransform in load-csv-to-db-copy.js will convert values at
+ * runtime for non-TEXT columns so they arrive at PostgreSQL in the right format.
  */
 async function buildSchemasFromHeaders(gcsFiles, emitLog) {
   const schemas = [];
@@ -54,12 +61,25 @@ async function buildSchemasFromHeaders(gcsFiles, emitLog) {
     const file = gcsFiles[i];
     try {
       const headers = await gcsService.getCSVHeaders(file.name);
+      const tableName = sanitizeTableName(file.basename);
+      const lookup = buildColumnLookup(tableName);
+
+      const columns = headers.map(h => {
+        const csvName = h.replace(/^﻿/, '').trim();
+        const schema = lookup.get(csvName);
+        return {
+          csvName,
+          name: schema ? schema.dbName : csvName,  // English if known, original otherwise
+          type: schema ? schema.type : 'TEXT',
+        };
+      });
+
       schemas.push({
         fileName: file.basename,
         filePath: file.name,
         fileSize: file.size,
-        tableName: sanitizeTableName(file.basename),
-        columns: headers.map(h => ({ name: h, type: 'TEXT' })),
+        tableName,
+        columns,
       });
       emitLog('scanning', `[${i + 1}/${gcsFiles.length}] ${file.basename}: ${headers.length} columns`, {
         filesCompleted: i + 1,
@@ -130,10 +150,20 @@ async function loadZer4u(targetSchema, emitLog) {
     }
   };
 
-  await loadAllCSVFiles(targetSchema, onProgress, schemas);
+  const { qualityReport } = await loadAllCSVFiles(targetSchema, onProgress, schemas) || {};
+
+  const tablesWithIssues = Object.keys(qualityReport || {}).length;
+  if (tablesWithIssues > 0) {
+    const totalNullified = Object.values(qualityReport).reduce((sum, cols) =>
+      sum + Object.values(cols).reduce((s, c) => s + c.nullified, 0), 0);
+    emitLog('data_quality', `Type conversion: ${totalNullified} values nullified across ${tablesWithIssues} table(s)`, { qualityReport });
+  } else {
+    emitLog('data_quality', 'Type conversion: all values loaded cleanly');
+  }
+
   emitLog('loading_data', `Data load complete: ${filesLoaded}/${totalFiles} files, ${totalRows.toLocaleString()} rows`);
 
-  return { totalFiles, filesLoaded, totalRows, fileResults };
+  return { totalFiles, filesLoaded, totalRows, fileResults, qualityReport: qualityReport || {} };
 }
 
 // ── Phase 2: Indexing ─────────────────────────────────────────────────────────
@@ -160,26 +190,32 @@ function formatBytes(bytes) {
 }
 
 /**
- * Returns the last date of data in the zer4u sales table.
- * Uses the functional index on parse_date_ddmmyyyy for fast MAX lookup.
- * Falls back to mv_sales_by_month if the index isn't available yet.
+ * Returns the last data month from zer4u.
+ * Primary: mv_sales_by_month (pre-aggregated, instant).
+ * Fallback: MAX(sale_date) on the indexed DATE column with a 5s timeout.
  */
 async function getZer4uDataInfo(db) {
   try {
     const result = await db.query(
-      `SELECT TO_CHAR(MAX(zer4u.parse_date_ddmmyyyy("תאריך מקורי SALES")), 'YYYY-MM') AS last_date FROM zer4u.sales`
+      `SELECT MAX(year_month) AS last_month FROM zer4u.mv_sales_by_month`
     );
-    return result.rows[0]?.last_date || null;
+    if (result.rows[0]?.last_month) return result.rows[0].last_month;
   } catch {
-    // Fall back to materialized view if sales table or function not available
+    // MV not available yet (e.g. first ever load)
+  }
+  try {
+    const client = await db.getClient();
     try {
-      const result = await db.query(
-        `SELECT MAX(year_month) AS last_month FROM zer4u.mv_sales_by_month`
+      await client.query(`SET statement_timeout = 5000`);
+      const result = await client.query(
+        `SELECT TO_CHAR(MAX(sale_date), 'YYYY-MM') AS last_date FROM zer4u.sales`
       );
-      return result.rows[0]?.last_month || null;
-    } catch {
-      return null;
+      return result.rows[0]?.last_date || null;
+    } finally {
+      client.release();
     }
+  } catch {
+    return null;
   }
 }
 

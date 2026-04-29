@@ -10,11 +10,214 @@ const { Pool } = require('pg');
 const gcsService = require('../services/gcs.service');
 const csv = require('csv-parser');
 const { Transform } = require('stream');
+const { StringDecoder } = require('string_decoder');
 const fs = require('fs').promises;
 const path = require('path');
 const { from: copyFrom } = require('pg-copy-streams');
 
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.json');
+
+// ── Inline type conversion ────────────────────────────────────────────────────
+
+/**
+ * Convert a single CSV field value to the target PostgreSQL type.
+ * Returns the converted string, or '' (empty = NULL in COPY) on bad input.
+ */
+function convertField(raw, type) {
+  const v = raw.trim();
+  if (v === '') return '';
+
+  if (type === 'DATE') {
+    // Accept DD/MM/YYYY or D/M/YYYY — convert to ISO YYYY-MM-DD
+    const m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!m) return '';
+    return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  }
+
+  if (type === 'INTEGER') {
+    // Accept plain integers only; "42.0" or "N/A" → NULL
+    if (/^-?\d+$/.test(v)) return v;
+    // Tolerate "42.0" style (common in Israeli ERP exports)
+    const asNum = Number(v);
+    if (!Number.isNaN(asNum) && Number.isFinite(asNum)) return String(Math.round(asNum));
+    return '';
+  }
+
+  if (type === 'NUMERIC') {
+    if (/^-?\d+(\.\d+)?$/.test(v)) return v;
+    return '';
+  }
+
+  return raw;
+}
+
+/**
+ * Split a string buffer into complete CSV lines, respecting quoted fields.
+ * A \n inside a quoted field is part of the field value, not a row delimiter.
+ * Returns { lines: string[], remainder: string } where remainder is any
+ * incomplete (unterminated) line at the end of the buffer.
+ */
+function splitCSVLines(buffer) {
+  const lines = [];
+  let lineStart = 0;
+  let inQuotes = false;
+
+  for (let i = 0; i < buffer.length; i++) {
+    const ch = buffer[i];
+    if (ch === '"') {
+      if (inQuotes && buffer[i + 1] === '"') {
+        i++; // skip "" escaped quote
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === '\n' && !inQuotes) {
+      // Strip trailing \r so Windows CRLF (\r\n) files work correctly.
+      // A \r inside a quoted field is in the middle of the buffer, not at i-1.
+      const end = (i > lineStart && buffer[i - 1] === '\r') ? i - 1 : i;
+      lines.push(buffer.slice(lineStart, end));
+      lineStart = i + 1;
+    }
+  }
+
+  return { lines, remainder: buffer.slice(lineStart) };
+}
+
+/**
+ * Parse one CSV line into an array of field strings.
+ * Handles double-quote escaping ("") and quoted fields containing commas.
+ * Does NOT handle multi-line fields (zer4u data never has embedded newlines).
+ */
+function parseCSVLine(line) {
+  const fields = [];
+  let i = 0;
+  while (i <= line.length) {
+    if (i === line.length) { fields.push(''); break; }
+    if (line[i] === '"') {
+      let field = '';
+      i++; // skip opening quote
+      while (i < line.length) {
+        if (line[i] === '"') {
+          if (line[i + 1] === '"') { field += '"'; i += 2; }
+          else { i++; break; }
+        } else {
+          field += line[i++];
+        }
+      }
+      fields.push(field);
+      if (line[i] === ',') i++;
+    } else {
+      const end = line.indexOf(',', i);
+      if (end === -1) { fields.push(line.slice(i)); break; }
+      fields.push(line.slice(i, end));
+      i = end + 1;
+    }
+  }
+  return fields;
+}
+
+/**
+ * Serialize an array of field strings back to a CSV line.
+ * Only adds quotes when the value contains a comma, double-quote, or newline.
+ */
+function serializeCSVLine(fields) {
+  return fields.map(f => {
+    if (f === null || f === undefined) return '';
+    const s = String(f);
+    if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  }).join(',');
+}
+
+/**
+ * Transform stream that converts typed columns inline before they reach COPY.
+ *
+ * - Reads the CSV header line to determine column positions (then passes it through).
+ * - For each subsequent data line, converts fields at typed positions:
+ *     DATE    → ISO YYYY-MM-DD  (from DD/MM/YYYY)
+ *     INTEGER → clean integer   (strips ".0", non-numeric → empty = NULL)
+ *     NUMERIC → clean decimal   (non-numeric → empty = NULL)
+ * - TEXT columns are passed through byte-for-byte without touching them.
+ * - Uses StringDecoder to handle multi-byte UTF-8 (Hebrew) correctly across
+ *   chunk boundaries.
+ *
+ * If no columns need conversion, returns null (caller uses raw stream).
+ */
+function createTypeConvertTransform(schema) {
+  const typedPositions = schema.columns
+    .map((col, idx) => ({ idx, type: col.type, name: col.name }))
+    .filter(c => c.type !== 'TEXT');
+
+  if (typedPositions.length === 0) return null;
+
+  // Quality stats: per column, track how many values couldn't be converted.
+  // Keeps up to 5 sample bad values for diagnosis.
+  const stats = {};
+  for (const { name, type } of typedPositions) {
+    stats[name] = { type, nullified: 0, samples: [] };
+  }
+
+  const decoder = new StringDecoder('utf8');
+  let headerSkipped = false;
+  let lineBuffer = '';
+
+  const transform = new Transform({
+    transform(chunk, _enc, callback) {
+      lineBuffer += decoder.write(chunk);
+      const { lines, remainder } = splitCSVLines(lineBuffer);
+      lineBuffer = remainder;
+
+      let out = '';
+      for (const line of lines) {
+        if (!headerSkipped) {
+          headerSkipped = true;
+          out += line + '\n'; // header — pass through unchanged, COPY will skip it
+          continue;
+        }
+        if (line === '') { out += '\n'; continue; }
+        out += convertLine(line) + '\n';
+      }
+      callback(null, Buffer.from(out, 'utf8'));
+    },
+    flush(callback) {
+      const tail = decoder.end() + lineBuffer;
+      if (!tail) { callback(); return; }
+      const converted = headerSkipped && tail.trim() ? convertLine(tail) : tail;
+      callback(null, Buffer.from(converted, 'utf8'));
+    },
+  });
+
+  function convertLine(line) {
+    const fields = parseCSVLine(line);
+    for (const { idx, type, name } of typedPositions) {
+      if (idx < fields.length) {
+        const raw = fields[idx];
+        const converted = convertField(raw, type);
+        // Track nullification: non-empty value that became empty (= NULL in COPY)
+        if (converted === '' && raw.trim() !== '') {
+          stats[name].nullified++;
+          if (stats[name].samples.length < 5) {
+            stats[name].samples.push(raw.trim().slice(0, 60));
+          }
+        }
+        fields[idx] = converted;
+      }
+    }
+    return serializeCSVLine(fields);
+  }
+
+  // Returns only columns that actually had issues (nullified > 0).
+  transform.getStats = () => {
+    const issues = {};
+    for (const [name, s] of Object.entries(stats)) {
+      if (s.nullified > 0) issues[name] = { type: s.type, nullified: s.nullified, samples: s.samples };
+    }
+    return issues;
+  };
+
+  return transform;
+}
 
 /**
  * @param {string} schemaName - target PostgreSQL schema name
@@ -53,6 +256,7 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
     let totalLoaded = 0;
     let totalRows = 0;
     const tableTimes = [];
+    const qualityReport = {}; // tableName → { colName: { nullified, samples } }
 
     // Files <= 100 MB load in parallel (up to 2 at once).
     // Files > 100 MB load one at a time — they saturate DB/network I/O on their own.
@@ -93,14 +297,19 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
           if (onProgress) onProgress({ type: 'file_start', file: schema.fileName, index: i, totalFiles: schemas.length });
 
           const tableStart = Date.now();
-          const result = await loadCSVFile(schema, schemaName, pool, onProgress);
+          const { rowCount, qualityStats } = await loadCSVFile(schema, schemaName, pool, onProgress);
           const tableTime = Date.now() - tableStart;
-          tableTimes.push({ name: schema.tableName, time: tableTime, rows: result });
-          const speed = result > 0 ? Math.round(result / (tableTime / 1000)) : 0;
-          console.log(`  ✅ ${schema.fileName}: ${result.toLocaleString()} rows in ${(tableTime / 1000).toFixed(1)}s (${speed.toLocaleString()} rows/s)`);
-          if (onProgress) onProgress({ type: 'file_complete', file: schema.fileName, rows: result, durationMs: tableTime });
+          tableTimes.push({ name: schema.tableName, time: tableTime, rows: rowCount });
+          const speed = rowCount > 0 ? Math.round(rowCount / (tableTime / 1000)) : 0;
+          console.log(`  ✅ ${schema.fileName}: ${rowCount.toLocaleString()} rows in ${(tableTime / 1000).toFixed(1)}s (${speed.toLocaleString()} rows/s)`);
+          if (Object.keys(qualityStats).length > 0) {
+            qualityReport[schema.tableName] = qualityStats;
+            const nullifiedTotal = Object.values(qualityStats).reduce((s, c) => s + c.nullified, 0);
+            console.warn(`  ⚠️  ${schema.tableName}: ${nullifiedTotal} values nullified during type conversion`);
+          }
+          if (onProgress) onProgress({ type: 'file_complete', file: schema.fileName, rows: rowCount, durationMs: tableTime, qualityStats });
           totalLoaded++;
-          totalRows += result;
+          totalRows += rowCount;
           return;
         } catch (err) {
           if (attempt < MAX_RETRIES && isRetryable(err)) {
@@ -152,6 +361,8 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
 
     console.log('\n✅ Data loading complete!\n');
 
+    return { qualityReport };
+
   } catch (error) {
     console.error('❌ Fatal error:', error);
     throw error;
@@ -184,6 +395,9 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
 
     // Get GCS stream
     const gcsStream = gcsService.getFileStream(filePath);
+
+    // Optional inline type-conversion transform (null if all columns are TEXT)
+    const typeTransform = createTypeConvertTransform(schema);
 
     // Create COPY stream
     const copyStream = client.query(copyFrom(copyQuery));
@@ -232,7 +446,14 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
     }, 15_000); // check every 15 seconds
 
     await new Promise((resolve, reject) => {
-      gcsStream
+      const abort = (err) => { clearInterval(watchdog); reject(err); };
+
+      // Pipeline: GCS → [typeTransform →] progressTransform → COPY
+      const upstream = typeTransform
+        ? gcsStream.pipe(typeTransform)
+        : gcsStream;
+
+      upstream
         .pipe(progressTransform)
         .pipe(copyStream)
         .on('finish', () => {
@@ -242,16 +463,17 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
           process.stdout.write(`  ✅ ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${elapsed.toFixed(1)}s\n`);
           resolve();
         })
-        .on('error', (err) => { clearInterval(watchdog); reject(err); });
+        .on('error', abort);
 
-      gcsStream.on('error', (err) => { clearInterval(watchdog); reject(err); });
-      progressTransform.on('error', (err) => { clearInterval(watchdog); reject(err); });
+      gcsStream.on('error', abort);
+      if (typeTransform) typeTransform.on('error', abort);
+      progressTransform.on('error', abort);
     });
 
-    // Return row count (approximate from line count)
     const rowCount = Math.max(0, totalRows - 1); // Subtract header line
-    client.release(); // normal release only on success
-    return rowCount;
+    const qualityStats = typeTransform ? typeTransform.getStats() : {};
+    client.release();
+    return { rowCount, qualityStats };
 
   } catch (err) {
     // Destroy the connection — a failed mid-stream COPY leaves the pg protocol

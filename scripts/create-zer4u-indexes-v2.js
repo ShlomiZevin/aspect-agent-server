@@ -45,6 +45,13 @@ RETURNS date AS $$
   END
 $$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
 
+-- Identity overload: typed columns are already DATE after migration.
+-- Allows MV SQL to call parse_date_ddmmyyyy(date_col) without changes.
+CREATE OR REPLACE FUNCTION ${schemaName}.parse_date_ddmmyyyy(date)
+RETURNS date AS $$
+  SELECT $1
+$$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+
 CREATE OR REPLACE FUNCTION ${schemaName}.to_numeric_safe(text)
 RETURNS numeric AS $$
   SELECT CASE
@@ -68,6 +75,13 @@ RETURNS integer AS $$
     ELSE $1::integer
   END
 $$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+
+-- Identity overload: typed columns are already INTEGER after migration.
+-- Allows MV SQL to call to_int_safe(int_col) without changes.
+CREATE OR REPLACE FUNCTION ${schemaName}.to_int_safe(integer)
+RETURNS integer AS $$
+  SELECT $1
+$$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
 `;
 }
 
@@ -78,22 +92,21 @@ $$ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
 function getBootstrapIndexSQL(schemaName) {
   const s = schemaName;
   return [
-    // sales — most queried table
-    { table: 'sales',     sql: `CREATE INDEX IF NOT EXISTS idx_sales_customer      ON ${s}.sales ("מס.לקוח")` },
-    { table: 'sales',     sql: `CREATE INDEX IF NOT EXISTS idx_sales_store         ON ${s}.sales ("מס.חנות SALES")` },
-    { table: 'sales',     sql: `CREATE INDEX IF NOT EXISTS idx_sales_item_code     ON ${s}.sales ("קוד פריט SALES")` },
-    { table: 'sales',     sql: `CREATE INDEX IF NOT EXISTS idx_sales_date_parsed   ON ${s}.sales (${s}.parse_date_ddmmyyyy("תאריך מקורי SALES"))` },
-    { table: 'sales',     sql: `CREATE INDEX IF NOT EXISTS idx_sales_invoice_key   ON ${s}.sales ("UniqueInvoiceKey")` },
-    { table: 'sales',     sql: `CREATE INDEX IF NOT EXISTS idx_sales_inventory_key ON ${s}.sales ("InventoryKey")` },
-    { table: 'sales',     sql: `CREATE INDEX IF NOT EXISTS idx_sales_doc_type      ON ${s}.sales ("סוג תעודה")` },
-    { table: 'sales',     sql: `CREATE INDEX IF NOT EXISTS idx_sales_revenue       ON ${s}.sales ("מכירה ללא מע\\"מ")` },
-    // customers
-    { table: 'customers', sql: `CREATE INDEX IF NOT EXISTS idx_customers_number    ON ${s}.customers ("מס.לקוח")` },
-    // items
-    { table: 'items',     sql: `CREATE INDEX IF NOT EXISTS idx_items_code          ON ${s}.items ("קוד פריט")` },
-    { table: 'items',     sql: `CREATE INDEX IF NOT EXISTS idx_items_group         ON ${s}.items ("קבוצת פריט")` },
+    // sales — typed English columns (post-migration schema)
+    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_sale_date    ON ${s}.sales (sale_date)` },
+    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_store_id     ON ${s}.sales (store_id)` },
+    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_customer_id  ON ${s}.sales (customer_id)` },
+    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_item_code    ON ${s}.sales (item_code)` },
+    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_revenue      ON ${s}.sales (revenue)` },
+    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_invoice_key  ON ${s}.sales ("UniqueInvoiceKey")` },
+    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_inv_key      ON ${s}.sales ("InventoryKey")` },
     // stores
-    { table: 'stores',    sql: `CREATE INDEX IF NOT EXISTS idx_stores_number       ON ${s}.stores ("מס.חנות")` },
+    { table: 'stores', sql: `CREATE INDEX IF NOT EXISTS idx_stores_store_id   ON ${s}.stores (store_id)` },
+    // customers
+    { table: 'customers', sql: `CREATE INDEX IF NOT EXISTS idx_customers_id   ON ${s}.customers (customer_id)` },
+    // items
+    { table: 'items', sql: `CREATE INDEX IF NOT EXISTS idx_items_code         ON ${s}.items (item_code)` },
+    { table: 'items', sql: `CREATE INDEX IF NOT EXISTS idx_items_group        ON ${s}.items (item_group)` },
   ];
 }
 
@@ -206,6 +219,9 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSche
       const c = await pool.connect();
       const startTime = Date.now();
       try {
+        // Disable statement timeout: index builds can take hours on large tables.
+        // The 30s DB-level killer must not abort index creation.
+        await c.query(`SET statement_timeout = 0`);
         // 1GB sort memory for the single active index build.
         // Sequential mode means no competition — full IOPS to one process.
         await c.query(`SET maintenance_work_mem = '1GB'`);

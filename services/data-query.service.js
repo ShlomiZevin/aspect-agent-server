@@ -18,7 +18,7 @@ class DataQueryService {
       database: process.env.DB_NAME,
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
-      max: 10
+      max: 5
     });
   }
 
@@ -42,96 +42,78 @@ class DataQueryService {
     console.log(`📊 Data Query Service: Processing question for ${customerSchema}`);
     console.log(`   Question: "${question}"`);
 
-    const client = await this.pool.connect();
-
-    // Generate SQL first (outside try/catch so we can return it even on error)
-    let sql, explanation, confidence;
     const startTime = Date.now();
+    let sql, explanation, confidence;
 
+    // Step 1: Generate SQL — no DB connection held during the LLM call
     try {
-      // Step 1: Generate SQL from question
       console.log(`   Step 1: Generating SQL...`);
-      const generated = await sqlGeneratorService.generateSQL(
-        question,
-        customerSchema
-      );
+      const generated = await sqlGeneratorService.generateSQL(question, customerSchema);
       sql = generated.sql;
       explanation = generated.explanation;
       confidence = generated.confidence;
-
       console.log(`   Generated SQL (confidence: ${confidence}):`);
       console.log(`   ${sql}`);
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      console.error('❌ SQL generation failed:', error.message);
+      slowQueryService.logSlowQuery({
+        agentName, schemaName: customerSchema, question, sql: '',
+        durationMs: duration, queryType: 'error', errorMessage: error.message,
+      }).catch(() => {});
+      return {
+        error: true, timeout: false, message: error.message,
+        sql: null, explanation: null, confidence: null, data: [], rowCount: 0,
+      };
+    }
 
-      // Step 2: Execute query with timeout
+    // Step 2: Execute query — connection acquired only now
+    const client = await this.pool.connect();
+    try {
       console.log(`   Step 2: Executing query...`);
-
-      // Set statement timeout for safety
       await client.query(`SET statement_timeout = ${timeout}`);
-
       const result = await client.query(sql);
       const duration = Date.now() - startTime;
 
       console.log(`   ✅ Query completed in ${duration}ms`);
       console.log(`   Rows returned: ${result.rows.length}`);
 
-      // Log slow queries (fire-and-forget — never blocks the response)
       if (duration > slowQueryService.threshold) {
         slowQueryService.logSlowQuery({
-          agentName,
-          schemaName: customerSchema,
-          question,
-          sql,
-          durationMs: duration,
-          rowsReturned: result.rows.length,
-          queryType: 'slow',
+          agentName, schemaName: customerSchema, question, sql,
+          durationMs: duration, rowsReturned: result.rows.length, queryType: 'slow',
         }).catch(() => {});
       }
 
-      // Step 3: Format and return results
       return {
-        sql,
-        explanation,
-        confidence,
+        sql, explanation, confidence,
         data: result.rows,
         rowCount: result.rows.length,
         duration,
-        columns: result.fields?.map(f => f.name) || []
+        columns: result.fields?.map(f => f.name) || [],
       };
 
     } catch (error) {
       const duration = Date.now() - startTime;
       console.error('❌ Query execution failed:', error.message);
 
-      // Detect timeout vs generic error
       const isTimeout = error.message?.includes('canceling statement due to statement timeout')
         || error.message?.includes('Query read timeout')
-        || error.code === '57014';  // PostgreSQL statement_timeout error code
+        || error.code === '57014';
 
-      // Log all failed queries to the optimizer (fire-and-forget)
       slowQueryService.logSlowQuery({
-        agentName,
-        schemaName: customerSchema,
-        question,
-        sql: sql ?? '',
-        durationMs: duration,
-        queryType: isTimeout ? 'timeout' : 'error',
+        agentName, schemaName: customerSchema, question, sql: sql ?? '',
+        durationMs: duration, queryType: isTimeout ? 'timeout' : 'error',
         errorMessage: error.message,
       }).catch(() => {});
 
-      // Return error with SQL (so user can see what was generated)
       return {
-        error: true,
-        timeout: isTimeout,
+        error: true, timeout: isTimeout,
         message: isTimeout ? this._getTimeoutMessage() : error.message,
-        sql,
-        explanation,
-        confidence,
-        data: [],
-        rowCount: 0
+        sql, explanation, confidence, data: [], rowCount: 0,
       };
 
     } finally {
-      // Reset timeout
       await client.query('RESET statement_timeout').catch(() => {});
       client.release();
     }

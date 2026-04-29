@@ -44,8 +44,9 @@ class SQLGeneratorService {
       );
       const response = (rawResponse && typeof rawResponse === 'object' && 'text' in rawResponse) ? rawResponse.text : rawResponse;
 
-      // Step 4: Parse response
+      // Step 4: Parse and validate response
       const result = this._parseResponse(response);
+      this._validateSQL(result.sql);
 
       console.log(`   ✅ Generated SQL for ${result.tables.length} tables`);
 
@@ -78,65 +79,48 @@ Generate a PostgreSQL query that answers the user's question based on the schema
 2. **Accuracy**: Only use tables and columns that exist in the schema
 3. **Clarity**: Prefer readable queries with proper aliases and formatting
 4. **Performance**: Use appropriate JOINs, WHERE clauses, and LIMIT when needed
-5. **Safety**: Never generate DROP, DELETE, UPDATE, or other destructive operations
-6. **Column Names**: CRITICAL - Column names with spaces or Hebrew MUST be quoted with double quotes
-7. **Quote Escaping**: If a column name contains a quote character (like מע"מ), you MUST escape it by doubling: "מכירה ללא מע""מ"
-8. **Aggregations**: Use appropriate GROUP BY, ORDER BY, and aggregate functions
-9. **Limits**: Add LIMIT clause for queries that might return many rows (default: 100)
-10. **Type Casting**: CRITICAL - Use the INDEXED helper functions for joins/filters on sales table columns:
-    - For store number: zer4u.to_int_safe(s."מס.חנות SALES") = st."מס.חנות" (uses index - FAST!)
-    - For customer number: zer4u.to_int_safe(s."מס.לקוח") = c."מס.לקוח" (uses index - FAST!)
-    - NEVER use ::integer cast directly for these columns - it skips the index and is SLOW
-11. **Date Handling**: CRITICAL - Date columns are stored as TEXT in DD/MM/YYYY format (Israeli format).
-    - NEVER use ::date cast - it fails with "date/time field value out of range"
-    - NEVER use TO_DATE(column, 'DD/MM/YYYY') in WHERE clauses - this is SLOW (no index)
-    - ALWAYS use zer4u.parse_date_ddmmyyyy(column) for date comparisons - uses an INDEX and is FAST!
-    - Example: WHERE zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES") >= CURRENT_DATE - INTERVAL '6 months'
-    - For GROUP BY month: TO_CHAR(zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES"), 'YYYY-MM') AS month
+5. **Safety**: Never generate DROP, DELETE, UPDATE, INSERT, or other destructive operations
+6. **Column Names**: Column names with spaces or Hebrew characters MUST be quoted with double quotes
+7. **Aggregations**: Use appropriate GROUP BY, ORDER BY, and aggregate functions
+8. **Limits**: Add LIMIT clause for queries that might return many rows (default: 100)
+9. **Typed Columns**: Key columns in the sales table have proper types and English names — use them directly:
+    - \`sale_date\` is DATE — use standard date comparisons: \`WHERE s.sale_date >= '2024-01-01'\`
+    - \`store_id\` is INTEGER — join directly: \`ON s.store_id = st.store_id\`
+    - \`customer_id\` is INTEGER — join directly: \`ON s.customer_id = c.customer_id\`
+    - \`revenue\` is NUMERIC — aggregate directly: \`SUM(s.revenue)\`
+    - \`cost\` is NUMERIC — use directly: \`SUM(s.cost)\`
+    - \`quantity\` is NUMERIC — use directly: \`SUM(s.quantity)\`
+    - \`item_code\` is TEXT — join with: \`ON s.item_code = i.item_code\`
+10. **Date Intervals**: Use standard PostgreSQL date arithmetic:
+    - Last 6 months: \`WHERE s.sale_date >= CURRENT_DATE - INTERVAL '6 months'\`
+    - Specific month: \`WHERE TO_CHAR(s.sale_date, 'YYYY-MM') = '2025-03'\`
+    - Group by month: \`TO_CHAR(s.sale_date, 'YYYY-MM') AS month\`
 
 ## Important Examples
 
-**WRONG** (quote not escaped):
-SELECT "מכירה ללא מע"מ" FROM zer4u.sales
-❌ This will cause: syntax error at or near "מ"
+**CORRECT** (date filter — sale_date is DATE):
+WHERE s.sale_date >= CURRENT_DATE - INTERVAL '6 months'
 
-**CORRECT** (quote escaped by doubling):
-SELECT "מכירה ללא מע""מ" FROM zer4u.sales
-✅ The quote inside the column name is escaped as ""
+**CORRECT** (join on typed integer columns):
+SELECT * FROM ${schemaName}.sales s
+JOIN ${schemaName}.stores st ON s.store_id = st.store_id
 
-**WRONG** (type mismatch in JOIN - SLOW, no index):
-SELECT * FROM zer4u.sales s JOIN zer4u.stores st ON s."מס.חנות SALES" = st."מס.חנות"
-❌ This will cause: operator does not exist: text = integer
-
-**WRONG** (::integer cast - SLOW, skips index):
-SELECT * FROM zer4u.sales s JOIN zer4u.stores st ON s."מס.חנות SALES"::integer = st."מס.חנות"
-❌ This skips the expression index and is slow
-
-**CORRECT** (use indexed helper function - FAST!):
-SELECT * FROM zer4u.sales s JOIN zer4u.stores st ON zer4u.to_int_safe(s."מס.חנות SALES") = st."מס.חנות"
-✅ Uses expression index idx_sales_store_date - much faster
-
-**WRONG** (date cast on Israeli format):
-WHERE s."תאריך מקורי SALES"::date >= CURRENT_DATE - INTERVAL '6 months'
-❌ This will cause: date/time field value out of range: "16/12/2024"
-
-**WRONG** (TO_DATE - SLOW, no index):
-WHERE TO_DATE(s."תאריך מקורי SALES", 'DD/MM/YYYY') >= CURRENT_DATE - INTERVAL '6 months'
-❌ This skips the expression index and is slow
-
-**CORRECT** (use indexed parse function - FAST!):
-WHERE zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES") >= CURRENT_DATE - INTERVAL '6 months'
-✅ Uses expression index idx_sales_date_parsed - much faster
-
-**CORRECT** (group by month - using indexed function):
-SELECT TO_CHAR(zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES"), 'YYYY-MM') AS month,
-       SUM(s."מכירה ללא מעמ"::numeric) AS total_revenue
-FROM zer4u.sales s
-WHERE zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES") >= CURRENT_DATE - INTERVAL '6 months'
+**CORRECT** (revenue aggregation — revenue is NUMERIC):
+SELECT TO_CHAR(s.sale_date, 'YYYY-MM') AS month,
+       SUM(s.revenue) AS total_revenue
+FROM ${schemaName}.sales s
+WHERE s.sale_date >= CURRENT_DATE - INTERVAL '6 months'
 GROUP BY month
 ORDER BY month
 
-**IMPORTANT - Revenue column name**: The revenue column is named "מכירה ללא מעמ" (NO quote character inside). Do NOT use "מכירה ללא מע""מ" — that column does not exist.
+**PREFER materialized views for aggregations** — they are pre-computed and much faster:
+- \`${schemaName}.mv_sales_by_month\` — monthly totals (use for monthly/period questions)
+- \`${schemaName}.mv_sales_by_year\` — annual totals
+- \`${schemaName}.mv_sales_by_store\` — per-store totals
+- \`${schemaName}.mv_sales_by_store_month\` — store + month breakdown
+- \`${schemaName}.mv_sales_by_product\` — per-product totals
+- \`${schemaName}.mv_sales_by_customer\` — per-customer totals
+- \`${schemaName}.mv_sales_by_day\` — daily totals (last 90 days)
 
 ## Output Format
 

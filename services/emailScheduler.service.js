@@ -6,6 +6,8 @@
  *
  *   - DEBOUNCE_MS (5 min): reset the send timer on every new notification.
  *   - MAX_WAIT_MS (15 min): send regardless, so urgent items aren't held forever.
+ *   - POLL_MS (10 min): periodic backlog sweep — catches any notifications missed
+ *     due to server restarts (in-memory timers are lost on redeploy).
  *
  * Only recipients listed in EMAIL_RECIPIENTS receive emails.
  * Multiple notifications arriving in quick succession are bundled into one email.
@@ -18,6 +20,9 @@ const DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes
 
 // Maximum wait from the FIRST notification regardless of ongoing activity
 const MAX_WAIT_MS = 15 * 60 * 1000; // 15 minutes
+
+// Periodic backlog sweep interval — catches notifications missed on server restart
+const POLL_MS = 10 * 60 * 1000; // 10 minutes
 
 // Per-recipient config: email address + allowed domains.
 // Never include "aspect" domain for anyone.
@@ -36,6 +41,39 @@ class EmailSchedulerService {
 
   initialize(db) {
     this.db = db;
+    // Run once immediately to catch any backlog from before restart
+    setTimeout(() => this._sweepBacklog(), 30 * 1000); // 30s after startup
+    // Then sweep every POLL_MS
+    setInterval(() => this._sweepBacklog(), POLL_MS);
+  }
+
+  /**
+   * Sweep DB for any un-emailed notifications missed due to server restart.
+   * For each recipient that has pending un-emailed notifications, send immediately.
+   */
+  async _sweepBacklog() {
+    if (!this.db) return;
+    try {
+      const result = await this.db.query(`
+        SELECT DISTINCT n.recipient
+        FROM task_notifications n
+        JOIN tasks t ON t.id = n.task_id
+        WHERE n.emailed_at IS NULL
+          AND n.created_at >= NOW() - INTERVAL '24 hours'
+          AND t.domain != 'aspect'
+        ORDER BY n.recipient
+      `);
+      for (const row of result.rows) {
+        const recipient = row.recipient;
+        // Only send if not already queued by the debounce mechanism
+        if (!this.pending[recipient] && EMAIL_RECIPIENTS[recipient]) {
+          console.log(`[EmailScheduler] Backlog sweep: sending pending notifications for ${recipient}`);
+          await this._sendBatch(recipient);
+        }
+      }
+    } catch (err) {
+      console.error('[EmailScheduler] Backlog sweep failed:', err.message);
+    }
   }
 
   /**

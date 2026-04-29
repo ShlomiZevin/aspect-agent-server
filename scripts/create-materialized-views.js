@@ -67,6 +67,8 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
         const start = Date.now();
         log(`[${num}/${total}] Creating ${name}...`);
         try {
+          // Disable statement timeout: MV creation on large tables takes up to 17 min.
+          await c.query(`SET statement_timeout = 0`);
           await c.query(`SET work_mem = '64MB'`);
           await c.query(`SET max_parallel_workers_per_gather = 0`);
           await c.query(`SET max_parallel_maintenance_workers = 0`);
