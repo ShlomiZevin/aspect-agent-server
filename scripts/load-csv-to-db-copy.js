@@ -52,6 +52,34 @@ function convertField(raw, type) {
 }
 
 /**
+ * Split a string buffer into complete CSV lines, respecting quoted fields.
+ * A \n inside a quoted field is part of the field value, not a row delimiter.
+ * Returns { lines: string[], remainder: string } where remainder is any
+ * incomplete (unterminated) line at the end of the buffer.
+ */
+function splitCSVLines(buffer) {
+  const lines = [];
+  let lineStart = 0;
+  let inQuotes = false;
+
+  for (let i = 0; i < buffer.length; i++) {
+    const ch = buffer[i];
+    if (ch === '"') {
+      if (inQuotes && buffer[i + 1] === '"') {
+        i++; // skip "" escaped quote
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === '\n' && !inQuotes) {
+      lines.push(buffer.slice(lineStart, i));
+      lineStart = i + 1;
+    }
+  }
+
+  return { lines, remainder: buffer.slice(lineStart) };
+}
+
+/**
  * Parse one CSV line into an array of field strings.
  * Handles double-quote escaping ("") and quoted fields containing commas.
  * Does NOT handle multi-line fields (zer4u data never has embedded newlines).
@@ -134,8 +162,8 @@ function createTypeConvertTransform(schema) {
   const transform = new Transform({
     transform(chunk, _enc, callback) {
       lineBuffer += decoder.write(chunk);
-      const lines = lineBuffer.split('\n');
-      lineBuffer = lines.pop(); // keep incomplete trailing line
+      const { lines, remainder } = splitCSVLines(lineBuffer);
+      lineBuffer = remainder;
 
       let out = '';
       for (const line of lines) {
