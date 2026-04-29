@@ -732,24 +732,43 @@ class DispatcherService {
       crew._useMinimalGuidance = false; // Reset after reading
     }
     const { characterGuidance, promptNotes, ...remainingContext } = context;
-    let assembledPrompt = resolvedPrompt;
-    if (characterGuidance) {
-      assembledPrompt += `\n\n## Persona\n${characterGuidance}`;
-    }
-    if (Object.keys(remainingContext).length > 0) {
-      assembledPrompt += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;
-    }
-    if (promptNotes) {
-      assembledPrompt += `\n\n${promptNotes}`;
-      // Emit prompt notes as a debug event so client can display them
-      if (params.debug) {
-        yield { type: 'debug_prompt_notes', data: { notes: promptNotes } };
+    let assembledPrompt;
+
+    // If crew has thinkerOnly flag and thinker advice is available, use it as the entire prompt
+    const advice = remainingContext.thinkingAdvice;
+    if (crew.thinkerOnly && advice && !advice.fallback) {
+      console.log(`🧠 [${crew.name}] thinkerOnly mode — using persona + thinker advice only`);
+      assembledPrompt = '';
+      if (characterGuidance) {
+        assembledPrompt += `## Persona\n${characterGuidance}\n\n`;
       }
-    }
-    // Append UI elements instruction if the crew has any fields with ui config
-    const uiInstruction = crew.getUIElementsInstruction();
-    if (uiInstruction) {
-      assembledPrompt += `\n\n${uiInstruction}`;
+      assembledPrompt += `## Follow this guidance for your next response:\n${JSON.stringify(advice, null, 2)}`;
+
+      // When in recommendation/objection phase, inject KB usage instruction
+      const state = advice.conversationState;
+      if (state === 'recommendation' || state === 'objection') {
+        assembledPrompt += '\n\nIMPORTANT: Always reference the knowledge base for product details, programs, terms, and pricing. Do not rely on memory — look up the actual details before presenting to the customer.';
+      }
+    } else {
+      console.log(`📝 [${crew.name}] Normal prompt assembly (thinkerOnly=${crew.thinkerOnly}, advice=${!!advice}, fallback=${advice?.fallback})`);
+      // Normal prompt assembly: guidance → persona → context → notes
+      assembledPrompt = resolvedPrompt;
+      if (characterGuidance) {
+        assembledPrompt += `\n\n## Persona\n${characterGuidance}`;
+      }
+      if (Object.keys(remainingContext).length > 0) {
+        assembledPrompt += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;
+      }
+      if (promptNotes) {
+        assembledPrompt += `\n\n${promptNotes}`;
+        if (params.debug) {
+          yield { type: 'debug_prompt_notes', data: { notes: promptNotes } };
+        }
+      }
+      const uiInstruction = crew.getUIElementsInstruction();
+      if (uiInstruction) {
+        assembledPrompt += `\n\n${uiInstruction}`;
+      }
     }
 
     // Build LLM config from crew member (provider-agnostic)

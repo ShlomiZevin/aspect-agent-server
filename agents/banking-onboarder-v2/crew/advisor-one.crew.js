@@ -124,6 +124,7 @@ class AdvisorOneCrew extends CrewMember {
       displayName: 'ייעוץ — חדש',
       description: 'Intent gathering, financial profiling, and personalized product recommendations',
       isDefault: false,
+      thinkerOnly: true,
       model: 'gemini-2.5-flash',
       fallbackModel: 'gpt-4o',
       maxTokens: 2048,
@@ -138,12 +139,13 @@ class AdvisorOneCrew extends CrewMember {
         ]
       },
       tools: [],
-      thinkerFieldsBlocking: [],
+      thinkerFieldsBlocking: [
+        'nextAction (what Guidance should do this turn)',
+      ],
       // BACKGROUND: runs in parallel, talker does NOT wait
       thinkerFieldsBackground: [
         'activeLayer (1, 2, or 3)',
         'objectionStep (value_response / price_reframe / accept_decline)',
-        'nextAction (what Guidance should do this turn)',
         'toneNote (tone adjustment if needed)',
         'contextGathered (only return when changing to true)',
         'mandatoryFieldsComplete (true when employment+incomeRange+expenseRange+creditUsage all known)',

@@ -139,6 +139,7 @@ class CrewMember {
     // When usesThinker is true and thinkingPrompt is set, buildContext()
     // auto-runs ThinkingAdvisorAgent and injects thinkingAdvice into context.
     this.usesThinker = options.usesThinker || false;
+    this.thinkerOnly = options.thinkerOnly || false;
     this.thinkingPrompt = options.thinkingPrompt || null;
     this.thinkingModel = options.thinkingModel || null;
     this.thinkingFallbackModel = options.thinkingFallbackModel || 'gpt-4o';
