@@ -150,10 +150,20 @@ async function loadZer4u(targetSchema, emitLog) {
     }
   };
 
-  await loadAllCSVFiles(targetSchema, onProgress, schemas);
+  const { qualityReport } = await loadAllCSVFiles(targetSchema, onProgress, schemas) || {};
+
+  const tablesWithIssues = Object.keys(qualityReport || {}).length;
+  if (tablesWithIssues > 0) {
+    const totalNullified = Object.values(qualityReport).reduce((sum, cols) =>
+      sum + Object.values(cols).reduce((s, c) => s + c.nullified, 0), 0);
+    emitLog('data_quality', `Type conversion: ${totalNullified} values nullified across ${tablesWithIssues} table(s)`, { qualityReport });
+  } else {
+    emitLog('data_quality', 'Type conversion: all values loaded cleanly');
+  }
+
   emitLog('loading_data', `Data load complete: ${filesLoaded}/${totalFiles} files, ${totalRows.toLocaleString()} rows`);
 
-  return { totalFiles, filesLoaded, totalRows, fileResults };
+  return { totalFiles, filesLoaded, totalRows, fileResults, qualityReport: qualityReport || {} };
 }
 
 // ── Phase 2: Indexing ─────────────────────────────────────────────────────────

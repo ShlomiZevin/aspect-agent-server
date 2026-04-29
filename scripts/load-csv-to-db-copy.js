@@ -115,10 +115,17 @@ function serializeCSVLine(fields) {
  */
 function createTypeConvertTransform(schema) {
   const typedPositions = schema.columns
-    .map((col, idx) => ({ idx, type: col.type }))
+    .map((col, idx) => ({ idx, type: col.type, name: col.name }))
     .filter(c => c.type !== 'TEXT');
 
   if (typedPositions.length === 0) return null;
+
+  // Quality stats: per column, track how many values couldn't be converted.
+  // Keeps up to 5 sample bad values for diagnosis.
+  const stats = {};
+  for (const { name, type } of typedPositions) {
+    stats[name] = { type, nullified: 0, samples: [] };
+  }
 
   const decoder = new StringDecoder('utf8');
   let headerSkipped = false;
@@ -152,13 +159,31 @@ function createTypeConvertTransform(schema) {
 
   function convertLine(line) {
     const fields = parseCSVLine(line);
-    for (const { idx, type } of typedPositions) {
+    for (const { idx, type, name } of typedPositions) {
       if (idx < fields.length) {
-        fields[idx] = convertField(fields[idx], type);
+        const raw = fields[idx];
+        const converted = convertField(raw, type);
+        // Track nullification: non-empty value that became empty (= NULL in COPY)
+        if (converted === '' && raw.trim() !== '') {
+          stats[name].nullified++;
+          if (stats[name].samples.length < 5) {
+            stats[name].samples.push(raw.trim().slice(0, 60));
+          }
+        }
+        fields[idx] = converted;
       }
     }
     return serializeCSVLine(fields);
   }
+
+  // Returns only columns that actually had issues (nullified > 0).
+  transform.getStats = () => {
+    const issues = {};
+    for (const [name, s] of Object.entries(stats)) {
+      if (s.nullified > 0) issues[name] = { type: s.type, nullified: s.nullified, samples: s.samples };
+    }
+    return issues;
+  };
 
   return transform;
 }
@@ -200,6 +225,7 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
     let totalLoaded = 0;
     let totalRows = 0;
     const tableTimes = [];
+    const qualityReport = {}; // tableName → { colName: { nullified, samples } }
 
     // Files <= 100 MB load in parallel (up to 2 at once).
     // Files > 100 MB load one at a time — they saturate DB/network I/O on their own.
@@ -240,14 +266,19 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
           if (onProgress) onProgress({ type: 'file_start', file: schema.fileName, index: i, totalFiles: schemas.length });
 
           const tableStart = Date.now();
-          const result = await loadCSVFile(schema, schemaName, pool, onProgress);
+          const { rowCount, qualityStats } = await loadCSVFile(schema, schemaName, pool, onProgress);
           const tableTime = Date.now() - tableStart;
-          tableTimes.push({ name: schema.tableName, time: tableTime, rows: result });
-          const speed = result > 0 ? Math.round(result / (tableTime / 1000)) : 0;
-          console.log(`  ✅ ${schema.fileName}: ${result.toLocaleString()} rows in ${(tableTime / 1000).toFixed(1)}s (${speed.toLocaleString()} rows/s)`);
-          if (onProgress) onProgress({ type: 'file_complete', file: schema.fileName, rows: result, durationMs: tableTime });
+          tableTimes.push({ name: schema.tableName, time: tableTime, rows: rowCount });
+          const speed = rowCount > 0 ? Math.round(rowCount / (tableTime / 1000)) : 0;
+          console.log(`  ✅ ${schema.fileName}: ${rowCount.toLocaleString()} rows in ${(tableTime / 1000).toFixed(1)}s (${speed.toLocaleString()} rows/s)`);
+          if (Object.keys(qualityStats).length > 0) {
+            qualityReport[schema.tableName] = qualityStats;
+            const nullifiedTotal = Object.values(qualityStats).reduce((s, c) => s + c.nullified, 0);
+            console.warn(`  ⚠️  ${schema.tableName}: ${nullifiedTotal} values nullified during type conversion`);
+          }
+          if (onProgress) onProgress({ type: 'file_complete', file: schema.fileName, rows: rowCount, durationMs: tableTime, qualityStats });
           totalLoaded++;
-          totalRows += result;
+          totalRows += rowCount;
           return;
         } catch (err) {
           if (attempt < MAX_RETRIES && isRetryable(err)) {
@@ -298,6 +329,8 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
     }
 
     console.log('\n✅ Data loading complete!\n');
+
+    return { qualityReport };
 
   } catch (error) {
     console.error('❌ Fatal error:', error);
@@ -406,10 +439,10 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
       progressTransform.on('error', abort);
     });
 
-    // Return row count (approximate from line count)
     const rowCount = Math.max(0, totalRows - 1); // Subtract header line
-    client.release(); // normal release only on success
-    return rowCount;
+    const qualityStats = typeTransform ? typeTransform.getStats() : {};
+    client.release();
+    return { rowCount, qualityStats };
 
   } catch (err) {
     // Destroy the connection — a failed mid-stream COPY leaves the pg protocol
