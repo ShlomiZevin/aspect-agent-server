@@ -1,5 +1,5 @@
 const claudeService = require('./llm.claude');
-const { Pool } = require('pg');
+const dbService = require('./db.pg');
 
 /**
  * Schema Descriptor Service
@@ -8,16 +8,8 @@ const { Pool } = require('pg');
  * for use in SQL generation prompts
  */
 class SchemaDescriptorService {
-  constructor() {
-    this.pool = new Pool({
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT,
-      database: process.env.DB_NAME,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      max: 5
-    });
-  }
+  // Uses the shared db.pg pool — no dedicated pool needed.
+  get pool() { return dbService.pool; }
 
   /**
    * Generate a comprehensive description of a schema
@@ -212,12 +204,6 @@ Format the description in a clear, structured way.`;
     return description;
   }
 
-  /**
-   * Close database connection
-   */
-  async close() {
-    await this.pool.end();
-  }
 }
 
 module.exports = new SchemaDescriptorService();

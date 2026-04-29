@@ -10,11 +10,158 @@ const { Pool } = require('pg');
 const gcsService = require('../services/gcs.service');
 const csv = require('csv-parser');
 const { Transform } = require('stream');
+const { StringDecoder } = require('string_decoder');
 const fs = require('fs').promises;
 const path = require('path');
 const { from: copyFrom } = require('pg-copy-streams');
 
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.json');
+
+// ── Inline type conversion ────────────────────────────────────────────────────
+
+/**
+ * Convert a single CSV field value to the target PostgreSQL type.
+ * Returns the converted string, or '' (empty = NULL in COPY) on bad input.
+ */
+function convertField(raw, type) {
+  const v = raw.trim();
+  if (v === '') return '';
+
+  if (type === 'DATE') {
+    // Accept DD/MM/YYYY or D/M/YYYY — convert to ISO YYYY-MM-DD
+    const m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!m) return '';
+    return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  }
+
+  if (type === 'INTEGER') {
+    // Accept plain integers only; "42.0" or "N/A" → NULL
+    if (/^-?\d+$/.test(v)) return v;
+    // Tolerate "42.0" style (common in Israeli ERP exports)
+    const asNum = Number(v);
+    if (!Number.isNaN(asNum) && Number.isFinite(asNum)) return String(Math.round(asNum));
+    return '';
+  }
+
+  if (type === 'NUMERIC') {
+    if (/^-?\d+(\.\d+)?$/.test(v)) return v;
+    return '';
+  }
+
+  return raw;
+}
+
+/**
+ * Parse one CSV line into an array of field strings.
+ * Handles double-quote escaping ("") and quoted fields containing commas.
+ * Does NOT handle multi-line fields (zer4u data never has embedded newlines).
+ */
+function parseCSVLine(line) {
+  const fields = [];
+  let i = 0;
+  while (i <= line.length) {
+    if (i === line.length) { fields.push(''); break; }
+    if (line[i] === '"') {
+      let field = '';
+      i++; // skip opening quote
+      while (i < line.length) {
+        if (line[i] === '"') {
+          if (line[i + 1] === '"') { field += '"'; i += 2; }
+          else { i++; break; }
+        } else {
+          field += line[i++];
+        }
+      }
+      fields.push(field);
+      if (line[i] === ',') i++;
+    } else {
+      const end = line.indexOf(',', i);
+      if (end === -1) { fields.push(line.slice(i)); break; }
+      fields.push(line.slice(i, end));
+      i = end + 1;
+    }
+  }
+  return fields;
+}
+
+/**
+ * Serialize an array of field strings back to a CSV line.
+ * Only adds quotes when the value contains a comma, double-quote, or newline.
+ */
+function serializeCSVLine(fields) {
+  return fields.map(f => {
+    if (f === null || f === undefined) return '';
+    const s = String(f);
+    if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  }).join(',');
+}
+
+/**
+ * Transform stream that converts typed columns inline before they reach COPY.
+ *
+ * - Reads the CSV header line to determine column positions (then passes it through).
+ * - For each subsequent data line, converts fields at typed positions:
+ *     DATE    → ISO YYYY-MM-DD  (from DD/MM/YYYY)
+ *     INTEGER → clean integer   (strips ".0", non-numeric → empty = NULL)
+ *     NUMERIC → clean decimal   (non-numeric → empty = NULL)
+ * - TEXT columns are passed through byte-for-byte without touching them.
+ * - Uses StringDecoder to handle multi-byte UTF-8 (Hebrew) correctly across
+ *   chunk boundaries.
+ *
+ * If no columns need conversion, returns null (caller uses raw stream).
+ */
+function createTypeConvertTransform(schema) {
+  const typedPositions = schema.columns
+    .map((col, idx) => ({ idx, type: col.type }))
+    .filter(c => c.type !== 'TEXT');
+
+  if (typedPositions.length === 0) return null;
+
+  const decoder = new StringDecoder('utf8');
+  let headerSkipped = false;
+  let lineBuffer = '';
+
+  const transform = new Transform({
+    transform(chunk, _enc, callback) {
+      lineBuffer += decoder.write(chunk);
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop(); // keep incomplete trailing line
+
+      let out = '';
+      for (const line of lines) {
+        if (!headerSkipped) {
+          headerSkipped = true;
+          out += line + '\n'; // header — pass through unchanged, COPY will skip it
+          continue;
+        }
+        if (line === '') { out += '\n'; continue; }
+        out += convertLine(line) + '\n';
+      }
+      callback(null, Buffer.from(out, 'utf8'));
+    },
+    flush(callback) {
+      const tail = decoder.end() + lineBuffer;
+      if (!tail) { callback(); return; }
+      const converted = headerSkipped && tail.trim() ? convertLine(tail) : tail;
+      callback(null, Buffer.from(converted, 'utf8'));
+    },
+  });
+
+  function convertLine(line) {
+    const fields = parseCSVLine(line);
+    for (const { idx, type } of typedPositions) {
+      if (idx < fields.length) {
+        fields[idx] = convertField(fields[idx], type);
+      }
+    }
+    return serializeCSVLine(fields);
+  }
+
+  return transform;
+}
 
 /**
  * @param {string} schemaName - target PostgreSQL schema name
@@ -185,6 +332,9 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
     // Get GCS stream
     const gcsStream = gcsService.getFileStream(filePath);
 
+    // Optional inline type-conversion transform (null if all columns are TEXT)
+    const typeTransform = createTypeConvertTransform(schema);
+
     // Create COPY stream
     const copyStream = client.query(copyFrom(copyQuery));
 
@@ -232,7 +382,14 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
     }, 15_000); // check every 15 seconds
 
     await new Promise((resolve, reject) => {
-      gcsStream
+      const abort = (err) => { clearInterval(watchdog); reject(err); };
+
+      // Pipeline: GCS → [typeTransform →] progressTransform → COPY
+      const upstream = typeTransform
+        ? gcsStream.pipe(typeTransform)
+        : gcsStream;
+
+      upstream
         .pipe(progressTransform)
         .pipe(copyStream)
         .on('finish', () => {
@@ -242,10 +399,11 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
           process.stdout.write(`  ✅ ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${elapsed.toFixed(1)}s\n`);
           resolve();
         })
-        .on('error', (err) => { clearInterval(watchdog); reject(err); });
+        .on('error', abort);
 
-      gcsStream.on('error', (err) => { clearInterval(watchdog); reject(err); });
-      progressTransform.on('error', (err) => { clearInterval(watchdog); reject(err); });
+      gcsStream.on('error', abort);
+      if (typeTransform) typeTransform.on('error', abort);
+      progressTransform.on('error', abort);
     });
 
     // Return row count (approximate from line count)
