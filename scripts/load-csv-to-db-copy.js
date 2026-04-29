@@ -71,7 +71,10 @@ function splitCSVLines(buffer) {
         inQuotes = !inQuotes;
       }
     } else if (ch === '\n' && !inQuotes) {
-      lines.push(buffer.slice(lineStart, i));
+      // Strip trailing \r so Windows CRLF (\r\n) files work correctly.
+      // A \r inside a quoted field is in the middle of the buffer, not at i-1.
+      const end = (i > lineStart && buffer[i - 1] === '\r') ? i - 1 : i;
+      lines.push(buffer.slice(lineStart, end));
       lineStart = i + 1;
     }
   }
