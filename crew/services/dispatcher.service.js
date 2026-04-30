@@ -736,13 +736,17 @@ class DispatcherService {
 
     // If crew has thinkerOnly flag and thinker advice is available, use it as the entire prompt
     const advice = remainingContext.thinkingAdvice;
-    if (crew.thinkerOnly && advice && !advice.fallback) {
-      console.log(`🧠 [${crew.name}] thinkerOnly mode — using persona + thinker advice only`);
+    const talkerProvider = kbResolver.getModelProvider(resolvedModel);
+    if (crew.thinkerOnly && advice && !advice.fallback && talkerProvider === 'openai') {
+      console.log(`🧠 [${crew.name}] thinkerOnly mode (OpenAI) — using persona + thinker advice only`);
       assembledPrompt = '';
       if (characterGuidance) {
         assembledPrompt += `## Persona\n${characterGuidance}\n\n`;
       }
       assembledPrompt += `## Follow this guidance for your next response:\n${JSON.stringify(advice, null, 2)}`;
+      if (advice.nextAction) {
+        assembledPrompt += `\n\nIf anything is not clear, always follow this: ${advice.nextAction}`;
+      }
 
       // When in recommendation/objection phase, inject KB usage instruction
       const state = advice.conversationState;
