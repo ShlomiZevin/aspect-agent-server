@@ -207,6 +207,24 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSche
           .replace(/^CREATE UNIQUE INDEX /, 'CREATE UNIQUE INDEX IF NOT EXISTS ');
         return { ...idx, sql: targetDef };
       });
+
+      // When reading from target schema itself (no external reference), also add any
+      // bootstrap indexes that aren't present yet — handles partial indexing restarts.
+      if (sourceSchema === schemaName) {
+        const existingNames = new Set(targetIndexes.map(idx => idx.name));
+        const missing = getBootstrapIndexSQL(schemaName).filter(entry => {
+          const match = entry.sql.match(/IF NOT EXISTS (\w+)/);
+          return match && !existingNames.has(match[1]);
+        }).map(entry => ({
+          name: entry.sql.match(/IF NOT EXISTS (\w+)/)[1],
+          table: entry.table,
+          sql: entry.sql,
+        }));
+        if (missing.length > 0) {
+          log(`Adding ${missing.length} bootstrap indexes not yet in schema...`);
+          targetIndexes = [...targetIndexes, ...missing];
+        }
+      }
     }
 
     // 4. Group indexes by table
