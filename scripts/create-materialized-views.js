@@ -9,18 +9,11 @@
  */
 
 require('dotenv').config();
-const { Pool } = require('pg');
+const { getPool } = require('../services/db.zer4u');
 const { resolveColumns, col } = require('./column-aliases');
 
 async function createViews(schemaName = 'zer4u', emitLog = null) {
-  const pool = new Pool({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    database: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    max: 12,
-  });
+  const pool = getPool({ max: 12 });
 
   const s = schemaName;
   const log = (msg) => { console.log(msg); if (emitLog) emitLog('creating_views', msg); };
@@ -62,14 +55,14 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
       }
 
       // Helper: run a single view in its own connection (parallel-safe)
-      async function makeView(name, num, total, fn) {
+      async function makeView(name, num, total, fn, workMem = '64MB') {
         const c = await pool.connect();
         const start = Date.now();
         log(`[${num}/${total}] Creating ${name}...`);
         try {
           // Disable statement timeout: MV creation on large tables takes up to 17 min.
           await c.query(`SET statement_timeout = 0`);
-          await c.query(`SET work_mem = '64MB'`);
+          await c.query(`SET work_mem = '${workMem}'`);
           await c.query(`SET max_parallel_workers_per_gather = 0`);
           await c.query(`SET max_parallel_maintenance_workers = 0`);
           await fn(c);
@@ -85,7 +78,8 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
       }
 
       const TOTAL = 8;
-      const tasks = [];
+      const tasks = [];       // run in parallel (light MVs)
+      const heavyTasks = [];  // run after parallel group (heavy MVs needing more work_mem)
 
       // 1. Sales by store
       const miss1 = missing(['sales.store_id', 'stores.store_id', 'stores.store_name', 'sales.revenue']);
@@ -107,7 +101,6 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
             LEFT JOIN ${s}.stores st
               ON ${s}.to_int_safe(s.${col(r, 'sales.store_id')}) = ${s}.to_int_safe(st.${col(r, 'stores.store_id')})
             WHERE s.${col(r, 'sales.revenue')} IS NOT NULL
-              AND s.${col(r, 'sales.revenue')} != ''
             GROUP BY ${s}.to_int_safe(s.${col(r, 'sales.store_id')}), st.${col(r, 'stores.store_name')}
           `);
           await c.query(`CREATE INDEX ON ${s}.mv_sales_by_store (store_number)`);
@@ -134,7 +127,6 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
             LEFT JOIN ${s}.customers c
               ON ${s}.to_int_safe(s.${col(r, 'sales.customer_id')}) = ${s}.to_int_safe(c.${col(r, 'customers.customer_id')})
             WHERE s.${col(r, 'sales.revenue')} IS NOT NULL
-              AND s.${col(r, 'sales.revenue')} != ''
             GROUP BY ${s}.to_int_safe(s.${col(r, 'sales.customer_id')}), c.${col(r, 'customers.customer_name')}
           `);
           await c.query(`CREATE INDEX ON ${s}.mv_sales_by_customer (customer_number)`);
@@ -160,7 +152,6 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
             FROM ${s}.sales s
             LEFT JOIN ${s}.items i ON s.${col(r, 'sales.item_code')} = i.${col(r, 'items.item_code')}
             WHERE s.${col(r, 'sales.quantity')} IS NOT NULL
-              AND s.${col(r, 'sales.quantity')} != ''
             GROUP BY s.${col(r, 'sales.item_code')}, i.${col(r, 'items.item_name')}
           `);
           await c.query(`CREATE INDEX ON ${s}.mv_sales_by_product (item_code)`);
@@ -187,7 +178,6 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
             FROM ${s}.sales
             WHERE ${col(r, 'sales.date')} IS NOT NULL
               AND ${col(r, 'sales.revenue')} IS NOT NULL
-              AND ${col(r, 'sales.revenue')} != ''
             GROUP BY sale_year
             ORDER BY sale_year
           `);
@@ -219,7 +209,6 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
             FROM ${s}.sales
             WHERE ${col(r, 'sales.date')} IS NOT NULL
               AND ${col(r, 'sales.revenue')} IS NOT NULL
-              AND ${col(r, 'sales.revenue')} != ''
             GROUP BY year_month, sale_year, sale_month
             ORDER BY year_month
           `);
@@ -257,7 +246,6 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
               ON ${s}.to_int_safe(s.${col(r, 'sales.store_id')}) = ${s}.to_int_safe(st.${col(r, 'stores.store_id')})
             WHERE s.${col(r, 'sales.date')} IS NOT NULL
               AND s.${col(r, 'sales.revenue')} IS NOT NULL
-              AND s.${col(r, 'sales.revenue')} != ''
             GROUP BY store_number, store_name, year_month, sale_year, sale_month
             ORDER BY store_number, year_month
           `);
@@ -290,7 +278,6 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
             FROM ${s}.sales
             WHERE ${col(r, 'sales.date')} IS NOT NULL
               AND ${col(r, 'sales.revenue')} IS NOT NULL
-              AND ${col(r, 'sales.revenue')} != ''
               AND ${s}.parse_date_ddmmyyyy(${col(r, 'sales.date')}) >= CURRENT_DATE - INTERVAL '90 days'
             GROUP BY sale_date
             ORDER BY sale_date
@@ -303,28 +290,35 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
       }
 
       // 8. Inventory by item
-      const miss8 = missing(['sales.item_code', 'items.item_code', 'items.item_name']);
+      const miss8 = missing(['sales.item_code', 'items.item_code', 'items.item_name',
+        'inventory.key', 'inventory.stock', 'inventory.value', 'min_inventory.min_stock']);
       if (miss8) {
         log(`[8/${TOTAL}] SKIP mv_inventory_by_item — missing columns: ${miss8.join(', ')}`);
         skipped++;
       } else {
-        tasks.push(makeView('mv_inventory_by_item', 8, TOTAL, async (c) => {
+        // Runs after parallel group with 512MB work_mem — avoids temp file spill
+        // when deduplicating 9.9M sales rows and joining 22M inventory rows
+        heavyTasks.push(makeView('mv_inventory_by_item', 8, TOTAL, async (c) => {
           await c.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_inventory_by_item CASCADE`);
           await c.query(`
             CREATE MATERIALIZED VIEW ${s}.mv_inventory_by_item AS
             SELECT
-              s.${col(r, 'sales.item_code')} AS item_code,
+              s_agg.item_code,
               MAX(i.${col(r, 'items.item_name')}) AS item_name,
-              SUM(inv."יתרת מלאי"::numeric) AS total_stock,
-              SUM(inv."ערך מלאי"::numeric) AS total_value,
-              MIN(CASE WHEN mi."MLI_MINIMOM" IS NOT NULL
-                  THEN mi."MLI_MINIMOM"::numeric END) AS min_stock
-            FROM ${s}.inventory inv
-            JOIN ${s}.sales s ON s."InventoryKey" = inv."InventoryKey"
-            JOIN ${s}.items i ON i.${col(r, 'items.item_code')} = s.${col(r, 'sales.item_code')}
-            LEFT JOIN ${s}.min_inventory mi ON mi."InventoryKey" = inv."InventoryKey"
-            WHERE s.${col(r, 'sales.item_code')} IS NOT NULL
-            GROUP BY s.${col(r, 'sales.item_code')}
+              SUM(inv.${col(r, 'inventory.stock')}::numeric) AS total_stock,
+              SUM(inv.${col(r, 'inventory.value')}::numeric) AS total_value,
+              MIN(CASE WHEN mi.${col(r, 'min_inventory.min_stock')} IS NOT NULL
+                  THEN mi.${col(r, 'min_inventory.min_stock')}::numeric END) AS min_stock
+            FROM (
+              SELECT DISTINCT ${col(r, 'sales.item_code')} AS item_code,
+                              ${col(r, 'sales.inventory_key')} AS "InventoryKey"
+              FROM ${s}.sales
+              WHERE ${col(r, 'sales.item_code')} IS NOT NULL
+            ) s_agg
+            JOIN ${s}.inventory inv ON inv.${col(r, 'inventory.key')} = s_agg."InventoryKey"
+            JOIN ${s}.items i ON i.${col(r, 'items.item_code')} = s_agg.item_code
+            LEFT JOIN ${s}.min_inventory mi ON mi.${col(r, 'min_inventory.key')} = inv.${col(r, 'inventory.key')}
+            GROUP BY s_agg.item_code
           `);
           await c.query(`
             CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_inventory_by_item_pk
@@ -334,12 +328,18 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
             CREATE INDEX IF NOT EXISTS idx_mv_inventory_by_item_stock
             ON ${s}.mv_inventory_by_item (total_stock)
           `);
-        }));
+        }, '512MB'));
       }
 
-      // Run all views in parallel — max time = slowest view, not sum of all
+      // Phase A: run 7 light MVs in parallel (each gets 64MB work_mem)
       log(`Starting ${tasks.length} materialized views in parallel...`);
       await Promise.all(tasks);
+
+      // Phase B: run heavy MVs sequentially with high work_mem (512MB each)
+      if (heavyTasks.length > 0) {
+        log(`Starting ${heavyTasks.length} heavy materialized view(s) sequentially...`);
+        for (const t of heavyTasks) await t;
+      }
 
     } finally {
       setupClient.release();
@@ -352,7 +352,6 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
     console.error(error.stack);
     throw error;
   } finally {
-    await pool.end();
   }
 }
 

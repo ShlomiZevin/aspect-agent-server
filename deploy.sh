@@ -20,7 +20,7 @@ case "$TARGET" in
   aspect)
     PROJECT_ID="aspect-agents"
     SERVICE_NAME="aspect-agent-server"
-    CLOUD_SQL_INSTANCES="aspect-agents:europe-west1:aspect-agents-db"
+    CLOUD_SQL_INSTANCES="aspect-agents:europe-west1:aspect-agents-db,aspect-agents:europe-west1:aspect-data-db"
     ENV_FILE=".env.production.aspect"
     ;;
   freeda)

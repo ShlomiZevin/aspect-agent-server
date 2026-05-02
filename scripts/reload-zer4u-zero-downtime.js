@@ -123,7 +123,10 @@ async function loadZer4u(targetSchema, emitLog) {
         filesCompleted: filesLoaded,
       });
     } else if (event.type === 'file_progress') {
-      emitLog('loading_data', `${event.file}: ${event.rowsLoaded.toLocaleString()} rows so far...`, {
+      const msg = event.finalizing
+        ? `${event.file}: ${event.rowsLoaded.toLocaleString()} rows — waiting for PostgreSQL commit${event.finalizingSec > 0 ? ` (${event.finalizingSec}s)` : ''}...`
+        : `${event.file}: ${event.rowsLoaded.toLocaleString()} rows so far...`;
+      emitLog('loading_data', msg, {
         file: event.file,
         rowsLoaded: event.rowsLoaded,
         totalFiles,
