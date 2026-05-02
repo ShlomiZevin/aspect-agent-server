@@ -208,9 +208,10 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSche
         return { ...idx, sql: targetDef };
       });
 
-      // When reading from target schema itself (no external reference), also add any
-      // bootstrap indexes that aren't present yet — handles partial indexing restarts.
-      if (sourceSchema === schemaName) {
+      // Always supplement with any bootstrap indexes not present in the source schema.
+      // This handles: (a) partial restarts on the target schema, (b) reference schemas
+      // (e.g. live zer4u) that predate the bootstrap list and lack newer indexes.
+      {
         const existingNames = new Set(targetIndexes.map(idx => idx.name));
         const missing = getBootstrapIndexSQL(schemaName).filter(entry => {
           const match = entry.sql.match(/IF NOT EXISTS (\w+)/);
@@ -221,7 +222,7 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSche
           sql: entry.sql,
         }));
         if (missing.length > 0) {
-          log(`Adding ${missing.length} bootstrap indexes not yet in schema...`);
+          log(`Adding ${missing.length} bootstrap indexes not yet in source schema...`);
           targetIndexes = [...targetIndexes, ...missing];
         }
       }

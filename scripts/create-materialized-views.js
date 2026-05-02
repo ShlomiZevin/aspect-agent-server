@@ -298,7 +298,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
       } else {
         // Runs after parallel group with 512MB work_mem — avoids temp file spill
         // when deduplicating 9.9M sales rows and joining 22M inventory rows
-        heavyTasks.push(makeView('mv_inventory_by_item', 8, TOTAL, async (c) => {
+        heavyTasks.push(() => makeView('mv_inventory_by_item', 8, TOTAL, async (c) => {
           await c.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_inventory_by_item CASCADE`);
           await c.query(`
             CREATE MATERIALIZED VIEW ${s}.mv_inventory_by_item AS
@@ -338,7 +338,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
       // Phase B: run heavy MVs sequentially with high work_mem (512MB each)
       if (heavyTasks.length > 0) {
         log(`Starting ${heavyTasks.length} heavy materialized view(s) sequentially...`);
-        for (const t of heavyTasks) await t;
+        for (const t of heavyTasks) await t();
       }
 
     } finally {
