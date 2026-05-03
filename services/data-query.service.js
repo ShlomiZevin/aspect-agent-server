@@ -9,10 +9,13 @@ const QUERY_TIMEOUT_MS = parseInt(process.env.QUERY_TIMEOUT_MS || '15000');
  *
  * Generic service for querying customer data schemas
  * Handles the full flow: question → SQL → results
+ *
+ * Accepts an optional pool in the constructor so zer4u (and future schemas
+ * on dedicated databases) can use their own connection without affecting others.
  */
 class DataQueryService {
-  constructor() {
-    this.pool = new Pool({
+  constructor(pool = null) {
+    this.pool = pool || new Pool({
       host: process.env.DB_HOST,
       port: process.env.DB_PORT,
       database: process.env.DB_NAME,
@@ -284,4 +287,6 @@ class DataQueryService {
   }
 }
 
-module.exports = new DataQueryService();
+const instance = new DataQueryService();
+module.exports = instance;
+module.exports.DataQueryService = DataQueryService;

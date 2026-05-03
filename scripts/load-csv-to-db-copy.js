@@ -6,7 +6,7 @@
  */
 
 require('dotenv').config();
-const { Pool } = require('pg');
+const { getPool } = require('../services/db.zer4u');
 const gcsService = require('../services/gcs.service');
 const csv = require('csv-parser');
 const { Transform } = require('stream');
@@ -104,7 +104,11 @@ function parseCSVLine(line) {
         }
       }
       fields.push(field);
-      if (line[i] === ',') i++;
+      if (line[i] === ',') {
+        i++; // comma found — more fields follow
+      } else {
+        break; // no comma after closing quote — this was the last field
+      }
     } else {
       const end = line.indexOf(',', i);
       if (end === -1) { fields.push(line.slice(i)); break; }
@@ -225,19 +229,7 @@ function createTypeConvertTransform(schema) {
  * @param {Array|null} schemas - pre-scanned schema definitions; if null, read from local JSON file (CLI use only)
  */
 async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas = null) {
-  // Pool created inside function so multiple sequential calls are safe
-  const pool = new Pool({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    database: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    max: 8,
-    keepAlive: true,
-    keepAliveInitialDelayMillis: 10000,
-    connectionTimeoutMillis: 60000,
-    idleTimeoutMillis: 600000,
-  });
+  const pool = getPool();
   const startTime = Date.now();
 
   try {
@@ -277,12 +269,14 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
     const isRetryable = (err) => {
       const msg = err.message || '';
       return msg.includes('Connection terminated') ||
+             msg.includes('terminating connection') ||  // 57P01 admin_shutdown
              msg.includes('EPIPE') ||
              msg.includes('ECONNRESET') ||
              msg.includes('stalled') ||
              msg.includes('write EOF') ||
              err.code === 'EPIPE' ||
-             err.code === 'ECONNRESET';
+             err.code === 'ECONNRESET' ||
+             err.code === '57P01';  // admin_shutdown: pg_terminate_backend or Cloud SQL recycling
     };
 
     const loadOne = async (schema, i) => {
@@ -366,8 +360,6 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
   } catch (error) {
     console.error('❌ Fatal error:', error);
     throw error;
-  } finally {
-    await pool.end();
   }
 }
 
@@ -391,27 +383,55 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
     // Create COPY command
     const copyQuery = `COPY ${tableName} (${columnNames}) FROM STDIN WITH (FORMAT csv, HEADER true, NULL '')`;
 
-    console.log(`  🔄 Starting COPY stream...`);
+    const tag = `[${schema.fileName}]`;
+
+    // Disable statement timeout for this connection — large files can take minutes.
+    // Same pattern used in create-zer4u-indexes-v2.js and create-materialized-views.js.
+    console.log(`${tag} disabling statement_timeout...`);
+    await client.query('SET statement_timeout = 0');
+    console.log(`${tag} statement_timeout disabled OK`);
+
+    console.log(`${tag} Starting COPY: ${copyQuery.slice(0, 120)}`);
 
     // Get GCS stream
     const gcsStream = gcsService.getFileStream(filePath);
 
     // Optional inline type-conversion transform (null if all columns are TEXT)
     const typeTransform = createTypeConvertTransform(schema);
+    console.log(`${tag} typeTransform: ${typeTransform ? 'YES' : 'no (all TEXT)'}`);
 
     // Create COPY stream
     const copyStream = client.query(copyFrom(copyQuery));
 
     let totalRows = 0;
+    let totalBytes = 0;
     let lastLogTime = Date.now();
     const startTime = Date.now();
 
     // Track progress
     let lastProgressRows = 0;
     let lastProgressTime = Date.now();
+    let firstChunkReceived = false;
+
+    // Finalization tracking: GCS stream ended, waiting for PostgreSQL to commit
+    let gcsEnded = false;
+    let gcsEndedAt = null;
+    let finalizeTimer = null;
+
+    // Heartbeat: proves the event loop is alive even when no chunks arrive
+    const heartbeat = setInterval(() => {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+      const phase = gcsEnded ? 'PG commit' : firstChunkReceived ? 'streaming' : 'waiting for first chunk';
+      console.log(`${tag} heartbeat ${elapsed}s | phase=${phase} | rows=${totalRows.toLocaleString()} | bytes=${formatBytes(totalBytes)}`);
+    }, 15_000);
 
     const progressTransform = new Transform({
       transform(chunk, encoding, callback) {
+        totalBytes += chunk.length;
+        if (!firstChunkReceived) {
+          firstChunkReceived = true;
+          console.log(`${tag} first chunk received (${chunk.length} bytes)`);
+        }
         const newlines = chunk.toString().split('\n').length - 1;
         totalRows += newlines;
 
@@ -425,7 +445,7 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
         if (now - lastLogTime > 2000) {
           const elapsed = (now - startTime) / 1000;
           const speed = Math.round(totalRows / elapsed);
-          process.stdout.write(`  ⏳ ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${elapsed.toFixed(1)}s elapsed...\r`);
+          process.stdout.write(`  ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${elapsed.toFixed(1)}s elapsed...\r`);
           if (onProgress) onProgress({ type: 'file_progress', file: schema.fileName, rowsLoaded: totalRows });
           lastLogTime = now;
         }
@@ -434,19 +454,59 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
       }
     });
 
-    // Watchdog: if row count hasn't grown for 5 minutes, the stream is genuinely stuck
+    // Watchdog: stall during GCS transfer = 5 min; stall waiting for PG commit = 10 min
     const STALL_MS = 5 * 60 * 1000;
+    const COMMIT_TIMEOUT_MS = 10 * 60 * 1000;
     const watchdog = setInterval(() => {
-      if (Date.now() - lastProgressTime > STALL_MS) {
+      const timedOut = gcsEnded
+        ? Date.now() - gcsEndedAt > COMMIT_TIMEOUT_MS
+        : Date.now() - lastProgressTime > STALL_MS;
+      if (timedOut) {
         clearInterval(watchdog);
-        gcsStream.destroy(new Error(
-          `COPY stalled: no row progress for 5 minutes (stuck at ${lastProgressRows.toLocaleString()} rows)`
-        ));
+        clearInterval(heartbeat);
+        if (finalizeTimer) { clearInterval(finalizeTimer); finalizeTimer = null; }
+        const msg = gcsEnded
+          ? `PostgreSQL commit timed out after 10 minutes (${lastProgressRows.toLocaleString()} rows)`
+          : `COPY stalled: no row progress for 5 minutes (stuck at ${lastProgressRows.toLocaleString()} rows)`;
+        console.log(`${tag} WATCHDOG: ${msg}`);
+        gcsStream.destroy(new Error(msg));
       }
-    }, 15_000); // check every 15 seconds
+    }, 15_000);
 
     await new Promise((resolve, reject) => {
-      const abort = (err) => { clearInterval(watchdog); reject(err); };
+      const abort = (err) => {
+        clearInterval(watchdog);
+        clearInterval(heartbeat);
+        if (finalizeTimer) { clearInterval(finalizeTimer); finalizeTimer = null; }
+        console.log(`${tag} ABORT: ${err.message}`);
+        // Destroy upstream immediately — a buffered chunk reaching copyStream after
+        // its pg connection died causes pg-copy-streams to throw a synchronous
+        // TypeError that bypasses error events and crashes the whole server.
+        try { gcsStream.destroy(); } catch (_) {}
+        try { progressTransform.destroy(); } catch (_) {}
+        if (typeTransform) { try { typeTransform.destroy(); } catch (_) {} }
+        reject(err);
+      };
+
+      // GCS stream lifecycle events
+      gcsStream.on('end', () => {
+        gcsEnded = true;
+        gcsEndedAt = Date.now();
+        const dataRows = Math.max(0, totalRows - 1);
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(`${tag} GCS stream ended: ${dataRows.toLocaleString()} rows, ${formatBytes(totalBytes)}, ${elapsed}s — waiting for PostgreSQL commit...`);
+        if (onProgress) onProgress({ type: 'file_progress', file: schema.fileName, rowsLoaded: dataRows, finalizing: true, finalizingSec: 0 });
+
+        finalizeTimer = setInterval(() => {
+          const waitSec = Math.round((Date.now() - gcsEndedAt) / 1000);
+          console.log(`${tag} PostgreSQL committing... ${waitSec}s`);
+          if (onProgress) onProgress({ type: 'file_progress', file: schema.fileName, rowsLoaded: dataRows, finalizing: true, finalizingSec: waitSec, progressOnly: true });
+        }, 5000);
+      });
+      gcsStream.on('close', () => console.log(`${tag} GCS stream closed`));
+
+      // copyStream lifecycle
+      copyStream.on('error', (err) => console.log(`${tag} copyStream error: ${err.message}`));
 
       // Pipeline: GCS → [typeTransform →] progressTransform → COPY
       const upstream = typeTransform
@@ -458,9 +518,11 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
         .pipe(copyStream)
         .on('finish', () => {
           clearInterval(watchdog);
+          clearInterval(heartbeat);
+          if (finalizeTimer) { clearInterval(finalizeTimer); finalizeTimer = null; }
           const elapsed = (Date.now() - startTime) / 1000;
           const speed = Math.round(totalRows / elapsed);
-          process.stdout.write(`  ✅ ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${elapsed.toFixed(1)}s\n`);
+          console.log(`${tag} COPY complete: ${totalRows.toLocaleString()} rows | ${speed.toLocaleString()} rows/s | ${formatBytes(totalBytes)} | ${elapsed.toFixed(1)}s`);
           resolve();
         })
         .on('error', abort);

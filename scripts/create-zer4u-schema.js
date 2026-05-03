@@ -6,7 +6,7 @@
  */
 
 require('dotenv').config();
-const { Pool } = require('pg');
+const { getPool, endPool } = require('../services/db.zer4u');
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -17,15 +17,7 @@ const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.
  * @param {Array|null} schemas - pre-scanned schema definitions; if null, read from local JSON file (CLI use only)
  */
 async function createSchema(schemaName = 'zer4u', schemas = null) {
-  // Pool created inside function so multiple sequential calls are safe
-  const pool = new Pool({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    database: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    max: 5
-  });
+  const pool = getPool({ max: 5 });
   const startTime = Date.now();
   console.log('Creating Zer4U schema in PostgreSQL...');
 
@@ -87,8 +79,9 @@ async function createSchema(schemaName = 'zer4u', schemas = null) {
     // Step 4: Grant permissions
     console.log('🔒 Step 4: Setting permissions...');
     const step4Start = Date.now();
-    await client.query(`GRANT USAGE ON SCHEMA ${schemaName} TO ${process.env.DB_USER}`);
-    await client.query(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA ${schemaName} TO ${process.env.DB_USER}`);
+    const dbUser = process.env.ZER4U_DB_USER || process.env.DB_USER;
+    await client.query(`GRANT USAGE ON SCHEMA ${schemaName} TO ${dbUser}`);
+    await client.query(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA ${schemaName} TO ${dbUser}`);
     console.log(`✅ Permissions set (${Date.now() - step4Start}ms)\n`);
 
     // Step 5: Summary
@@ -120,7 +113,6 @@ async function createSchema(schemaName = 'zer4u', schemas = null) {
     throw error;
   } finally {
     client.release();
-    await pool.end();
   }
 }
 

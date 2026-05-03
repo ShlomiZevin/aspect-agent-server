@@ -9,13 +9,13 @@
  * Helper functions (parse_date_ddmmyyyy, to_numeric_safe, to_int_safe)
  * are always created first since expression indexes depend on them.
  *
- * Strategy: group indexes by table, process all same-table indexes in
- * parallel (up to MAX_PER_TABLE=8). This maximizes OS page cache sharing —
- * first connection reads the table from disk, the rest read from RAM cache.
+ * Strategy: MAX_PER_TABLE=1 (sequential per table) — gives all IOPS to a
+ * single index build. Cloud SQL f1-micro disk cannot sustain parallel sorts
+ * on large tables without starving connections.
  */
 
 require('dotenv').config();
-const { Pool } = require('pg');
+const { getPool } = require('../services/db.zer4u');
 
 const SOURCE_SCHEMA = 'zer4u'; // live schema to read index DDL from
 
@@ -37,6 +37,9 @@ const MAX_PER_TABLE = 1;
 
 function getSetupSQL(schemaName) {
   return `
+-- pg_trgm enables GIN trigram indexes for fast ILIKE '%...%' searches on item names
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 CREATE OR REPLACE FUNCTION ${schemaName}.parse_date_ddmmyyyy(text)
 RETURNS date AS $$
   SELECT CASE
@@ -100,6 +103,7 @@ function getBootstrapIndexSQL(schemaName) {
     { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_revenue      ON ${s}.sales (revenue)` },
     { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_invoice_key  ON ${s}.sales ("UniqueInvoiceKey")` },
     { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_inv_key      ON ${s}.sales ("InventoryKey")` },
+    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_item_inv_key ON ${s}.sales (item_code, "InventoryKey")` },
     // stores
     { table: 'stores', sql: `CREATE INDEX IF NOT EXISTS idx_stores_store_id   ON ${s}.stores (store_id)` },
     // customers
@@ -107,6 +111,15 @@ function getBootstrapIndexSQL(schemaName) {
     // items
     { table: 'items', sql: `CREATE INDEX IF NOT EXISTS idx_items_code         ON ${s}.items (item_code)` },
     { table: 'items', sql: `CREATE INDEX IF NOT EXISTS idx_items_group        ON ${s}.items (item_group)` },
+    // Trigram indexes for fast ILIKE '%...%' searches (requires pg_trgm extension)
+    // These fix timeout queries on product name / item code searches
+    { table: 'items', sql: `CREATE INDEX IF NOT EXISTS idx_items_name_trgm   ON ${s}.items USING gin (item_name gin_trgm_ops)` },
+    { table: 'items', sql: `CREATE INDEX IF NOT EXISTS idx_items_code_trgm   ON ${s}.items USING gin (item_code gin_trgm_ops)` },
+    // Composite index for the common "product sales in date range" query pattern
+    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_date_item      ON ${s}.sales (sale_date, item_code)` },
+    // inventory — 22M rows, critical for mv_inventory_by_item JOIN
+    { table: 'inventory',     sql: `CREATE INDEX IF NOT EXISTS idx_inventory_key      ON ${s}.inventory ("InventoryKey")` },
+    { table: 'min_inventory', sql: `CREATE INDEX IF NOT EXISTS idx_min_inventory_key  ON ${s}.min_inventory ("InventoryKey")` },
   ];
 }
 
@@ -140,14 +153,7 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSche
     if (emitLog) emitLog('creating_indexes', msg);
   };
 
-  const pool = new Pool({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    database: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    max: MAX_PER_TABLE + 2,
-  });
+  const pool = getPool({ max: MAX_PER_TABLE + 2 });
 
   console.log('='.repeat(70));
   console.log('ZER4U INDEX CREATION — dynamic from live schema, table-local parallel');
@@ -201,6 +207,25 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSche
           .replace(/^CREATE UNIQUE INDEX /, 'CREATE UNIQUE INDEX IF NOT EXISTS ');
         return { ...idx, sql: targetDef };
       });
+
+      // Always supplement with any bootstrap indexes not present in the source schema.
+      // This handles: (a) partial restarts on the target schema, (b) reference schemas
+      // (e.g. live zer4u) that predate the bootstrap list and lack newer indexes.
+      {
+        const existingNames = new Set(targetIndexes.map(idx => idx.name));
+        const missing = getBootstrapIndexSQL(schemaName).filter(entry => {
+          const match = entry.sql.match(/IF NOT EXISTS (\w+)/);
+          return match && !existingNames.has(match[1]);
+        }).map(entry => ({
+          name: entry.sql.match(/IF NOT EXISTS (\w+)/)[1],
+          table: entry.table,
+          sql: entry.sql,
+        }));
+        if (missing.length > 0) {
+          log(`Adding ${missing.length} bootstrap indexes not yet in source schema...`);
+          targetIndexes = [...targetIndexes, ...missing];
+        }
+      }
     }
 
     // 4. Group indexes by table
@@ -290,7 +315,6 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSche
     process.exit(1);
   } finally {
     client.release();
-    await pool.end();
   }
 }
 

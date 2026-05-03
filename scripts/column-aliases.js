@@ -32,6 +32,13 @@ const ALIASES = {
   'items.item_code':  ['item_code',  'קוד פריט'],
   'items.item_name':  ['item_name',  'שם פריט'],
   'items.item_group': ['item_group', 'קבוצת פריט'],
+  // ── inventory ──────────────────────────────────────────────────────────────
+  'inventory.key':   ['InventoryKey'],
+  'inventory.stock': ['stock',       'יתרת מלאי'],
+  'inventory.value': ['stock_value', 'ערך מלאי'],
+  // ── min_inventory ──────────────────────────────────────────────────────────
+  'min_inventory.key':       ['InventoryKey'],
+  'min_inventory.min_stock': ['min_stock', 'MLI_MINIMOM'],
 };
 
 /**
@@ -91,7 +98,7 @@ async function resolveColumns(pool, schemaName) {
     SELECT table_name, column_name
     FROM information_schema.columns
     WHERE table_schema = $1
-      AND table_name IN ('sales', 'stores', 'customers', 'items')
+      AND table_name IN ('sales', 'stores', 'customers', 'items', 'inventory', 'min_inventory')
   `, [schemaName]);
 
   const tableColumns = {};

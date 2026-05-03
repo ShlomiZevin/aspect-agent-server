@@ -476,7 +476,8 @@ class DataReloadService {
     try {
       // Determine whether we have a freshly-loaded shadow schema to index+swap,
       // or whether we're re-indexing the live schema directly.
-      const shadowExists = (await this.db.query(
+      const dbForCheck = reloader.pool || this.db;
+      const shadowExists = (await dbForCheck.query(
         `SELECT 1 FROM information_schema.schemata WHERE schema_name = $1`, [shadowSchema]
       )).rowCount > 0;
 
@@ -485,38 +486,38 @@ class DataReloadService {
         emitLog('creating_indexes', `Indexing shadow schema ${shadowSchema} (reference: ${schemaName})...`);
         await reloader.indexFn(shadowSchema, emitLog, schemaName);
 
-        // ── Atomic schema swap ──────────────────────────────────────
-        emitLog('swapping', `Swapping schemas: ${shadowSchema} → ${schemaName}`);
-
-        await this.db.query(`
-          SELECT pg_terminate_backend(pid)
-          FROM pg_stat_activity
-          WHERE datname = current_database()
-            AND pid <> pg_backend_pid()
-            AND query ILIKE '%${schemaName}%'
-        `).catch(() => {});
-
-        const swapClient = await this.db.getClient();
-        try {
-          await swapClient.query('BEGIN');
-          await swapClient.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
-          await swapClient.query(`
-            DO $$ BEGIN
-              IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '${schemaName}') THEN
-                EXECUTE 'ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old';
-              END IF;
-            END $$
-          `);
-          await swapClient.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
-          await swapClient.query('COMMIT');
-        } catch (swapErr) {
-          await swapClient.query('ROLLBACK').catch(() => {});
-          throw swapErr;
-        } finally {
-          swapClient.release();
-        }
-
-        await this.db.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`).catch(() => {});
+        // ── Atomic schema swap — TEMPORARILY DISABLED for Phase 2 testing ──
+        // emitLog('swapping', `Swapping schemas: ${shadowSchema} → ${schemaName}`);
+        emitLog('swapping', `[SWAP DISABLED] Skipping schema swap — ${shadowSchema} stays as-is for inspection`);
+        // await this.db.query(`
+        //   SELECT pg_terminate_backend(pid)
+        //   FROM pg_stat_activity
+        //   WHERE datname = current_database()
+        //     AND pid <> pg_backend_pid()
+        //     AND query ILIKE '%${schemaName}%'
+        // `).catch(() => {});
+        //
+        // const swapClient = await this.db.getClient();
+        // try {
+        //   await swapClient.query('BEGIN');
+        //   await swapClient.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
+        //   await swapClient.query(`
+        //     DO $$ BEGIN
+        //       IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '${schemaName}') THEN
+        //         EXECUTE 'ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old';
+        //       END IF;
+        //     END $$
+        //   `);
+        //   await swapClient.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
+        //   await swapClient.query('COMMIT');
+        // } catch (swapErr) {
+        //   await swapClient.query('ROLLBACK').catch(() => {});
+        //   throw swapErr;
+        // } finally {
+        //   swapClient.release();
+        // }
+        //
+        // await this.db.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`).catch(() => {});
       } else {
         // Manual re-index: index live schema directly
         emitLog('creating_indexes', `Re-indexing live schema ${schemaName}...`);
