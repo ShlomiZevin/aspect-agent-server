@@ -12,7 +12,8 @@ require('dotenv').config();
 const { getPool } = require('../services/db.zer4u');
 const { resolveColumns, col } = require('./column-aliases');
 
-async function createViews(schemaName = 'zer4u', emitLog = null) {
+async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
+  const { force = true } = options;
   const pool = getPool({ max: 12 });
 
   const s = schemaName;
@@ -54,8 +55,22 @@ async function createViews(schemaName = 'zer4u', emitLog = null) {
         return absent.length > 0 ? absent : null;
       }
 
+      // Helper: check if a materialized view already exists in the schema
+      async function mvExists(name) {
+        const r = await pool.query(
+          `SELECT 1 FROM pg_matviews WHERE schemaname = $1 AND matviewname = $2`,
+          [s, name]
+        );
+        return r.rows.length > 0;
+      }
+
       // Helper: run a single view in its own connection (parallel-safe)
       async function makeView(name, num, total, fn, workMem = '64MB') {
+        if (!force && await mvExists(name)) {
+          log(`[${num}/${total}] SKIP ${name} — already exists`);
+          skipped++;
+          return;
+        }
         const c = await pool.connect();
         const start = Date.now();
         log(`[${num}/${total}] Creating ${name}...`);

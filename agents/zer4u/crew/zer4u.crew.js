@@ -6,7 +6,11 @@
  */
 
 const CrewMember = require('../../../crew/base/CrewMember');
-const dataQueryService = require('../../../services/data-query.service');
+const { DataQueryService } = require('../../../services/data-query.service');
+const { getPool } = require('../../../services/db.zer4u');
+
+// Zer4U queries run against the dedicated zer4u database (not the shared operational DB).
+const dataQueryService = new DataQueryService(getPool());
 
 class Zer4UCrew extends CrewMember {
   constructor() {

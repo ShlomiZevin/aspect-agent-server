@@ -3412,7 +3412,8 @@ app.post('/api/admin/data-loader/:schema/index', async (req, res) => {
     if (!dataReloadService?.reloaders[schema]) {
       return res.status(404).json({ error: `Unknown schema: ${schema}` });
     }
-    const runId = await dataReloadService.startIndexing(schema);
+    const { force = true } = req.body || {};
+    const runId = await dataReloadService.startIndexing(schema, 'manual', { force });
     res.json({ runId, status: 'running', phase: 'indexing' });
   } catch (err) {
     const code = err.code || 500;
