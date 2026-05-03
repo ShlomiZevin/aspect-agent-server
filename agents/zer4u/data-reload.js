@@ -7,10 +7,9 @@
 const { loadZer4u, indexZer4u, getZer4uDataInfo } = require('../../scripts/reload-zer4u-zero-downtime');
 const { getPool } = require('../../services/db.zer4u');
 
-// Zer4U reload is disabled until it gets its own dedicated Cloud SQL database.
-// Heavy indexing operations (CREATE INDEX on 26M+ row tables) block the shared DB
-// and affect other services (Lybi etc). Set DISABLE_ZER4U_RELOAD=false to re-enable.
-const DISABLED = process.env.DISABLE_ZER4U_RELOAD !== 'false';
+// Zer4U has its own dedicated Cloud SQL database so reload is enabled by default.
+// Set ZER4U_RELOAD_ENABLED=true in environment to enable; omit or set to anything else to disable.
+const DISABLED = process.env.ZER4U_RELOAD_ENABLED !== 'true';
 
 const disabledFn = async () => {
   throw new Error('Zer4U reload is disabled — waiting for dedicated database. Contact admin.');

@@ -170,37 +170,44 @@ Format the description in a clear, structured way.`;
   }
 
   /**
-   * Get a cached description or generate a new one
+   * Get a cached description from the DB, or generate a new one.
    * @param {string} schemaName - Schema name
    * @param {boolean} forceRegenerate - Force regeneration even if cached
-   * @param {Object} [pool] - Optional pg Pool (must point to the DB that contains schemaName)
+   * @param {Object} [pool] - Optional pg Pool pointing to the DB that contains schemaName (e.g. zer4u pool)
    * @returns {Promise<string>} - Schema description
    */
   async getDescription(schemaName, forceRegenerate = false, pool = null) {
-    const fs = require('fs').promises;
-    const path = require('path');
-    const cacheFile = path.join(__dirname, '..', 'data', `${schemaName}-schema-description.txt`);
-
-    // Check cache
+    // Check DB cache (main DB — always accessible regardless of schema location)
     if (!forceRegenerate) {
       try {
-        const cached = await fs.readFile(cacheFile, 'utf8');
-        console.log(`📄 Using cached description for ${schemaName}`);
-        return cached;
-      } catch (error) {
-        // Cache miss, generate new
+        const result = await this.pool.query(
+          'SELECT description FROM public.schema_descriptions WHERE schema_name = $1',
+          [schemaName]
+        );
+        if (result.rows.length > 0) {
+          console.log(`📄 Using cached description for ${schemaName} (DB)`);
+          return result.rows[0].description;
+        }
+      } catch (err) {
+        console.warn(`⚠️  DB cache read failed for ${schemaName}: ${err.message}`);
       }
     }
 
-    // Generate new description
+    // Generate new description using the correct pool for that schema
     const description = await this.generateSchemaDescription(schemaName, pool);
 
-    // Save to cache
+    // Save to DB cache
     try {
-      await fs.writeFile(cacheFile, description);
-      console.log(`💾 Cached description to: ${cacheFile}`);
-    } catch (error) {
-      console.warn('⚠️  Failed to cache description:', error.message);
+      await this.pool.query(
+        `INSERT INTO public.schema_descriptions (schema_name, description, generated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (schema_name) DO UPDATE
+           SET description = EXCLUDED.description, generated_at = NOW()`,
+        [schemaName, description]
+      );
+      console.log(`💾 Cached description for ${schemaName} in DB`);
+    } catch (err) {
+      console.warn(`⚠️  Failed to cache description in DB: ${err.message}`);
     }
 
     return description;
