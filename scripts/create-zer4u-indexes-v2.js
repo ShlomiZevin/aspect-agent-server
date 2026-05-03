@@ -103,7 +103,6 @@ function getBootstrapIndexSQL(schemaName) {
     { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_revenue      ON ${s}.sales (revenue)` },
     { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_invoice_key  ON ${s}.sales ("UniqueInvoiceKey")` },
     { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_inv_key      ON ${s}.sales ("InventoryKey")` },
-    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_item_inv_key ON ${s}.sales (item_code, "InventoryKey")` },
     // stores
     { table: 'stores', sql: `CREATE INDEX IF NOT EXISTS idx_stores_store_id   ON ${s}.stores (store_id)` },
     // customers
