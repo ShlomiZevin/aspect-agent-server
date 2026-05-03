@@ -103,6 +103,8 @@ function getBootstrapIndexSQL(schemaName) {
     { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_revenue      ON ${s}.sales (revenue)` },
     { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_invoice_key  ON ${s}.sales ("UniqueInvoiceKey")` },
     { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_inv_key      ON ${s}.sales ("InventoryKey")` },
+    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_item_inv_key ON ${s}.sales (item_code, "InventoryKey")` },
+    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_date_item    ON ${s}.sales (sale_date, item_code)` },
     // stores
     { table: 'stores', sql: `CREATE INDEX IF NOT EXISTS idx_stores_store_id   ON ${s}.stores (store_id)` },
     // customers
@@ -114,8 +116,6 @@ function getBootstrapIndexSQL(schemaName) {
     // These fix timeout queries on product name / item code searches
     { table: 'items', sql: `CREATE INDEX IF NOT EXISTS idx_items_name_trgm   ON ${s}.items USING gin (item_name gin_trgm_ops)` },
     { table: 'items', sql: `CREATE INDEX IF NOT EXISTS idx_items_code_trgm   ON ${s}.items USING gin (item_code gin_trgm_ops)` },
-    // Composite index for the common "product sales in date range" query pattern
-    { table: 'sales', sql: `CREATE INDEX IF NOT EXISTS idx_sales_date_item      ON ${s}.sales (sale_date, item_code)` },
     // inventory — 22M rows, critical for mv_inventory_by_item JOIN
     { table: 'inventory',     sql: `CREATE INDEX IF NOT EXISTS idx_inventory_key      ON ${s}.inventory ("InventoryKey")` },
     { table: 'min_inventory', sql: `CREATE INDEX IF NOT EXISTS idx_min_inventory_key  ON ${s}.min_inventory ("InventoryKey")` },
