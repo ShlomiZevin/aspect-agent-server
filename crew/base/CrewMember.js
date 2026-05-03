@@ -383,16 +383,18 @@ class CrewMember {
       // ========== BUILD PROMPTS ==========
       const outputRules = `\nReturn valid JSON only — no prose, no markdown, no explanation.\nDo not extract from ASSISTANT messages — those are your own agent's words, not user data.\nDo not return null or false — just omit the field.\nAll string values: short phrase, never full sentences.`;
 
-      // If no field lists are configured, the prompt itself defines the fields — don't inject a field list
+      // Field list is ADDITIONAL — append to whatever the prompt already asks for, don't override it
       const buildFullThinkerPrompt = (fields) => {
         const fieldInstruction = fields.length > 0
-          ? `\n\nReturn a JSON with only CHANGED fields from this list: ${fields.join(', ')}.`
+          ? `\n\nIn addition to the fields defined in the prompt above, also extract these if the USER mentioned them (only when changed): ${fields.join(', ')}.`
           : '';
         return `${this.thinkingPrompt}\n\n## Context\n${contextStr}${fieldInstruction}${outputRules}`;
       };
 
       const blockingPrompt = buildFullThinkerPrompt(blockingFields);
       const backgroundPrompt = backgroundFields.length > 0 ? buildFullThinkerPrompt(backgroundFields) : null;
+
+      console.log(`\n========== 🧠 [${this.name}] THINKER BLOCKING PROMPT ==========\n${blockingPrompt}\n========== END PROMPT ==========\n`);
 
       // Add "return JSON" as last user message in history to anchor JSON mode
       const thinkerHistory = [
