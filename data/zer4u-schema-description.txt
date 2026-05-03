@@ -133,29 +133,46 @@ ORDER BY total_purchases DESC
 LIMIT 10;
 ```
 
-### Sales by Product (`mv_sales_by_product`) - **USE THIS FOR PRODUCT QUERIES**
-Pre-aggregated sales by product. **ALWAYS use this for product analysis.**
+### Sales by Product (`mv_sales_by_product`) - **USE THIS FOR ALL-TIME PRODUCT QUERIES**
+Pre-aggregated **all-time** sales by product. **No year/date column** — totals span the entire history.
+
+**⚠️ IMPORTANT: mv_sales_by_product has NO date/year column. It cannot be filtered by year or period.**
+For year-specific or period-filtered product queries, query `zer4u.sales` + `zer4u.items` directly.
 
 **Columns:**
 - `item_code` (text) - Product code
 - `item_name` (text) - Product name in Hebrew
-- `total_quantity` (numeric) - Total units sold
-- `total_revenue` (numeric) - Total revenue from this product
+- `total_quantity` (numeric) - Total units sold (all time)
+- `total_revenue` (numeric) - Total revenue from this product (all time)
 
-**When to use:** Questions about "top selling products", "best sellers", "popular items", etc.
+**When to use:** "top selling products overall", "best sellers all time", "popular items" (no time filter).
+**Do NOT use when question includes:** "this year", "last month", "in 2025", or any time period.
 
 **Example queries:**
 ```sql
--- Top 10 products by quantity sold
-SELECT item_code, item_name, total_quantity
+-- Top 10 products all-time by revenue (no time filter)
+SELECT item_code, item_name, total_revenue, total_quantity
 FROM zer4u.mv_sales_by_product
-WHERE total_quantity IS NOT NULL
-ORDER BY total_quantity DESC
+ORDER BY total_revenue DESC
 LIMIT 10;
 
--- Top products by revenue
-SELECT item_code, item_name, total_revenue
-FROM zer4u.mv_sales_by_product
+-- Top products in a specific year — must use sales + items directly
+SELECT s.item_code, i.item_name, SUM(s.revenue) AS total_revenue, SUM(s.quantity) AS total_quantity
+FROM zer4u.sales s
+JOIN zer4u.items i ON s.item_code = i.item_code
+WHERE s.sale_date >= '2025-01-01' AND s.sale_date < '2026-01-01'
+  AND s.item_code IS NOT NULL
+GROUP BY s.item_code, i.item_name
+ORDER BY total_revenue DESC
+LIMIT 10;
+
+-- Top products this year
+SELECT s.item_code, i.item_name, SUM(s.revenue) AS total_revenue
+FROM zer4u.sales s
+JOIN zer4u.items i ON s.item_code = i.item_code
+WHERE s.sale_date >= DATE_TRUNC('year', CURRENT_DATE)
+  AND s.item_code IS NOT NULL
+GROUP BY s.item_code, i.item_name
 ORDER BY total_revenue DESC
 LIMIT 10;
 ```
@@ -182,16 +199,20 @@ ORDER BY sale_date DESC;
 
 ## Core Business Tables
 
-### Sales Data (`sales` - 9.4M records)
-**⚠️ WARNING: Direct aggregation on this table is VERY SLOW (2+ minutes). Use materialized views above for aggregated queries!**
+### Sales Data (`sales` - 69M records)
+**⚠️ WARNING: Direct aggregation on this table is VERY SLOW. Use materialized views above for aggregated queries!**
 
-Primary transaction table containing all sales activities:
-- **Keys**: `UniqueInvoiceKey`, `InventoryKey`, `TargetKey`
-- **Store Info**: `מס.חנות SALES` (store number - TEXT type), `CHNOT_ITSIRA` (store creation)
-- **Dates**: `תאריך מקורי SALES` (original date - TEXT type)
-- **Financial**: `מכירה ללא מעמ` (sales without VAT - TEXT, needs ::numeric cast), `עלות ללא מעמ` (cost without VAT) — **NOTE: no quote character in these column names**
-- **Products**: `קוד פריט SALES` (item code - TEXT), `כמות ברמת שורה` (quantity - TEXT)
-- **Customers**: `מס.לקוח` (customer number - TEXT type)
+Primary transaction table. **Key columns have been migrated to English with proper types — use them directly:**
+
+- `sale_date` (DATE) — fully indexed, use for all date filters: `WHERE s.sale_date >= '2025-01-01'`
+- `store_id` (INTEGER) — join with stores: `ON s.store_id = st.store_id`
+- `customer_id` (INTEGER) — join with customers: `ON s.customer_id = c.customer_id`
+- `item_code` (TEXT) — join with items: `ON s.item_code = i.item_code`
+- `revenue` (NUMERIC) — revenue without VAT, use directly: `SUM(s.revenue)`
+- `cost` (NUMERIC) — cost without VAT
+- `quantity` (NUMERIC) — units sold
+
+**⚠️ NEVER use old Hebrew column names for these fields** — `תאריך מקורי SALES`, `מס.חנות SALES`, `מס.לקוח`, `קוד פריט SALES`, `מכירה ללא מעמ` are the old names that cause errors. The migrated English columns above are what you MUST use.
 
 ### Items/Products (`items` - 28K records)
 Product catalog and pricing:
@@ -265,19 +286,62 @@ Minimum stock thresholds per inventory key:
 - **Usage**: Already included in `mv_inventory_by_item.min_stock` — no need to join directly
 
 ### Customers (`customers` - 1.4M records)
-Customer information:
-- **Identity**: `מס.לקוח` (customer number - INTEGER type), `שם לקוח` (customer name)
-- **Location**: `כתובת` (address), `ישוב` (settlement)
-- **Demographics**: `מין` (gender)
+Customer information. **English columns to use:**
+- `customer_id` (INTEGER) — primary key, join with sales: `ON s.customer_id = c.customer_id`
+- `customer_name` (TEXT) — customer name
+
+**Hebrew columns (must be double-quoted in SQL):**
+- `"ישוב"` — city/settlement (use for geographic analysis)
+- `"כתובת"` — address
+- `"מין"` — gender
+
+**JOIN example:**
+```sql
+SELECT c.customer_name, c."ישוב" AS city, SUM(s.revenue) AS total_revenue
+FROM zer4u.sales s
+JOIN zer4u.customers c ON s.customer_id = c.customer_id
+WHERE s.sale_date >= CURRENT_DATE - INTERVAL '12 months'
+GROUP BY c.customer_name, c."ישוב"
+ORDER BY total_revenue DESC
+LIMIT 20;
+```
 
 ### Stores (`stores` - 94 records)
-Store master data:
-- **Identity**: `מס.חנות` (store number - INTEGER type), `שם חנות` (store name)
-- **Management**: `מנהל איזור` (area manager), `סוג חנות` (store type)
-- **Lifecycle**: `תאריך פתיחת חנות` (opening date), `תאריך סגירת חנות` (closing date - stored as DD/MM/YYYY text)
-- **⚠️ No "active" column** — active stores have closing date >= today. Use: `WHERE zer4u.parse_date_ddmmyyyy("תאריך סגירת חנות") >= CURRENT_DATE`
-- **Active stores example**: `SELECT COUNT(*) FROM zer4u.stores WHERE zer4u.parse_date_ddmmyyyy("תאריך סגירת חנות") >= CURRENT_DATE`
-- **NOTE**: The CSV export sets closing date = today for currently active stores, and a past date for closed stores.
+Store master data. **English columns to use:**
+- `store_id` (INTEGER) — primary key, join with sales: `ON s.store_id = st.store_id`
+- `store_name` (TEXT) — store name in Hebrew
+
+**Hebrew columns (must be double-quoted in SQL):**
+- `"תאריך סגירת חנות"` — closing date (DD/MM/YYYY text)
+- Other columns: area manager, store type, opening date — all Hebrew, rarely needed
+
+**JOIN example:**
+```sql
+SELECT st.store_name, SUM(s.revenue) AS total_revenue
+FROM zer4u.sales s
+JOIN zer4u.stores st ON s.store_id = st.store_id
+GROUP BY st.store_name
+ORDER BY total_revenue DESC;
+```
+
+**For top N products per store (use ROW_NUMBER):**
+```sql
+WITH ranked AS (
+  SELECT s.store_id, st.store_name, s.item_code, i.item_name,
+         SUM(s.quantity) AS total_qty,
+         ROW_NUMBER() OVER (PARTITION BY s.store_id ORDER BY SUM(s.quantity) DESC) AS rnk
+  FROM zer4u.sales s
+  JOIN zer4u.stores st ON s.store_id = st.store_id
+  JOIN zer4u.items i ON s.item_code = i.item_code
+  WHERE s.sale_date >= CURRENT_DATE - INTERVAL '12 months'
+  GROUP BY s.store_id, st.store_name, s.item_code, i.item_name
+)
+SELECT store_id, store_name, item_code, item_name, total_qty
+FROM ranked WHERE rnk <= 3
+ORDER BY store_id, rnk;
+```
+
+**⚠️ No "active" column** — active stores have closing date >= today: `WHERE zer4u.parse_date_ddmmyyyy("תאריך סגירת חנות") >= CURRENT_DATE`
 
 ## Supporting Tables
 
@@ -322,6 +386,7 @@ After migration, the main sales columns are typed — use them directly, no cast
 2. **For monthly/period queries** ("this month", "last 3 months", "monthly trend", "how many customers this month"): Use `mv_sales_by_month` (has `customer_count` column) — instant!
 3. **For store+time queries** ("store performance in 2025"): Use `mv_sales_by_store_month` — instant!
 4. **For all-time aggregations by store/customer/product**: Use `mv_sales_by_store` / `mv_sales_by_customer` / `mv_sales_by_product`
+   **⚠️ For year/period-filtered product queries** ("top products this year"): `mv_sales_by_product` has NO date column — use `sales JOIN items` with `sale_date` filter directly
 5. **For daily trends** ("daily sales", "sales by day", "last 7 days"): Use `mv_sales_by_day` — instant!
 6. **For inventory queries** ("stock levels", "items below minimum", "out of stock"): Use `mv_inventory_by_item` — instant!
 7. **For active stores count**: `SELECT COUNT(*) FROM zer4u.stores WHERE store_id > 0` (or use a closing date filter if needed)
@@ -369,22 +434,27 @@ GROUP BY st.store_name, i.item_name
 ORDER BY qty_sold DESC
 LIMIT 20;
 
--- Returning vs new customers (based on first purchase date)
-SELECT
-  COUNT(CASE WHEN first_purchase >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
-              AND first_purchase < DATE_TRUNC('month', CURRENT_DATE) THEN 1 END) AS new_customers,
-  COUNT(CASE WHEN first_purchase < DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month') THEN 1 END) AS returning_customers
-FROM (
-  SELECT customer_id, MIN(sale_date) AS first_purchase
+-- Returning vs new customers for last month — FAST pattern (avoids full table scan)
+-- Step 1: find customers who purchased last month (small set, uses index)
+-- Step 2: find their first-ever purchase (scoped to that small set only)
+WITH month_customers AS (
+  SELECT DISTINCT customer_id
   FROM zer4u.sales
-  GROUP BY customer_id
-) fp
-WHERE EXISTS (
-  SELECT 1 FROM zer4u.sales s2
-  WHERE s2.customer_id = fp.customer_id
-    AND s2.sale_date >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
-    AND s2.sale_date < DATE_TRUNC('month', CURRENT_DATE)
-);
+  WHERE sale_date >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
+    AND sale_date < DATE_TRUNC('month', CURRENT_DATE)
+    AND customer_id IS NOT NULL
+),
+first_purchases AS (
+  SELECT s.customer_id, MIN(s.sale_date) AS first_purchase
+  FROM zer4u.sales s
+  INNER JOIN month_customers mc ON s.customer_id = mc.customer_id
+  GROUP BY s.customer_id
+)
+SELECT
+  COUNT(CASE WHEN first_purchase >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month') THEN 1 END) AS new_customers,
+  COUNT(CASE WHEN first_purchase < DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month') THEN 1 END) AS returning_customers
+FROM first_purchases;
+-- ⚠️ NEVER use the pattern: GROUP BY customer_id on the full sales table + EXISTS — it causes a timeout on 69M rows
 
 -- Items below minimum stock
 SELECT item_code, item_name, total_stock, min_stock,
