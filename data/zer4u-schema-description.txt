@@ -195,10 +195,29 @@ Primary transaction table containing all sales activities:
 
 ### Items/Products (`items` - 28K records)
 Product catalog and pricing:
-- **Identity**: `קוד פריט` (item code), `שם פריט` (item name)
-- **Pricing**: Multiple price fields (`מחיר עלות 0/6`, `מחיר מחירון 1/2/4`)
-- **Classification**: `קבוצת פריט` (item group), `תת קבוצת פריט` (sub-group)
+- **Identity**: `item_code` (item code - TEXT), `item_name` (item name in **Hebrew** - TEXT)
+- **Classification**: `item_group` (item group/category in Hebrew - TEXT), `תת קבוצת פריט` (sub-group)
+- **Pricing**: Multiple price fields (`מחיר עלות 0`, `מחיר עלות 6`, `מחיר מחירון 1/2/4`)
 - **Suppliers**: `שם ספק` (supplier name)
+- **⚠️ Item names are in Hebrew** — when user searches in English (e.g. "milk"), note that the catalog is in Hebrew and suggest the Hebrew equivalent (e.g., חלב). Still run the query but explain the result.
+
+**Example queries:**
+```sql
+-- Top categories by revenue
+SELECT i.item_group, SUM(s.revenue) AS total_revenue, COUNT(*) AS transactions
+FROM zer4u.sales s
+JOIN zer4u.items i ON s.item_code = i.item_code
+WHERE i.item_group IS NOT NULL
+GROUP BY i.item_group
+ORDER BY total_revenue DESC NULLS LAST
+LIMIT 10;
+
+-- Search by item name (Hebrew)
+SELECT item_code, item_name, item_group
+FROM zer4u.items
+WHERE item_name ILIKE '%ורד%'
+LIMIT 20;
+```
 
 ### Inventory (`inventory` - 19.8M records)
 Stock levels and values per warehouse entry:
@@ -277,35 +296,26 @@ Date dimension with Hebrew date fields:
 - **`shorot_kbla`**: Credit card payment details
 
 ## Key Relationships
-- Sales ↔ Items: `קוד פריט SALES` (text) = `קוד פריט` (text)
-- Sales ↔ Customers: `מס.לקוח` (text in sales, integer in customers) - USE INDEXED FUNCTION: `zer4u.to_int_safe(sales."מס.לקוח") = customers."מס.לקוח"` (FAST, uses index!)
-- Sales ↔ Stores: `מס.חנות SALES` (text) = `מס.חנות` (integer) - USE INDEXED FUNCTION: `zer4u.to_int_safe(sales."מס.חנות SALES") = stores."מס.חנות"` (FAST, uses index!)
-- Sales ↔ Calendar: `תאריך מקורי SALES` (text) = `תאריך מקורי` (text)
-- Sales ↔ Inventory: via `InventoryKey` (text)
-- Sales ↔ Targets: via `TargetKey` (text)
+After migration, the main sales columns are typed — use them directly, no cast needed:
+- Sales ↔ Items: `s.item_code = i.item_code` (both TEXT)
+- Sales ↔ Customers: `s.customer_id = c.customer_id` (both INTEGER — direct join, no cast!)
+- Sales ↔ Stores: `s.store_id = st.store_id` (both INTEGER — direct join, no cast!)
+- Sales ↔ Inventory: via `s."InventoryKey"` (text composite key)
+- Sales ↔ Targets: via `s."TargetKey"` (text)
 
 ## Important Notes
-1. **Language**: Most column names are in Hebrew; some are mixed Hebrew/English
-2. **Text Types**: Many numeric values stored as text fields - MUST cast with ::numeric or ::integer
-3. **Keys**: Complex composite keys used for linking (`UniqueInvoiceKey`, `InventoryKey`, etc.)
-4. **Dates**: Stored as text, various date dimension tables for analysis
-5. **Nullability**: All columns allow NULL values
-6. **Mixed Data**: Some tables contain both transactional and dimensional data
-7. **Type Mismatches**: CRITICAL - Use INDEXED helper functions for sales table joins/filters:
-   - Store numbers: `zer4u.to_int_safe(s."מס.חנות SALES") = st."מס.חנות"` (uses idx_sales_store_date - FAST!)
-   - Customer numbers: `zer4u.to_int_safe(s."מס.לקוח") = c."מס.לקוח"` (uses idx_sales_customer_date - FAST!)
-   - NEVER use `::integer` cast directly on these - skips the index and is SLOW
-   - Numeric values: stored as text - MUST cast: `"מכירה ללא מעמ"::numeric` (no quote inside the column name)
-8. **Date Filtering**: CRITICAL - Use the INDEXED parse function:
-   - `zer4u.parse_date_ddmmyyyy(s."תאריך מקורי SALES") >= 'YYYY-MM-DD'::date` (uses idx_sales_date_parsed - FAST!)
-   - NEVER use `TO_DATE(column, 'DD/MM/YYYY')` in WHERE clauses - skips index and is SLOW
-   - NEVER use `::date` cast - fails with "date/time field value out of range"
-9. **Performance**:
+1. **Migrated columns in sales** (use directly, no cast, fully indexed):
+   - `store_id` (integer), `customer_id` (integer), `item_code` (text)
+   - `sale_date` (date) — use direct date comparison: `s.sale_date >= '2025-01-01'`
+   - `revenue` (numeric), `quantity` (numeric), `cost` (numeric)
+2. **Hebrew columns** still exist in sales (many unmigrated fields) — avoid them for main queries
+3. **Item names are in Hebrew** — `item_name` in items table is Hebrew text
+4. **Nullability**: All columns allow NULL values
+5. **Performance**:
    - ✅ USE materialized views for aggregations (instant results)
-   - ✅ USE `zer4u.parse_date_ddmmyyyy()` for date filters (uses expression index)
-   - ✅ USE `zer4u.to_int_safe()` for store/customer joins (uses expression index)
-   - ❌ AVOID direct aggregation on full sales table without date filter (very slow)
-   - ❌ AVOID `TO_DATE()` or `::integer` casts on indexed columns (skips index)
+   - ✅ USE `sale_date` for date filters (indexed DATE column)
+   - ✅ USE `store_id`, `customer_id` directly for joins (indexed integers)
+   - ❌ AVOID direct aggregation on full sales table without date filter (slow on 69M rows)
 
 ## Query Strategy
 1. **For annual totals** ("sales for 2025", "this year"): Use `mv_sales_by_year` — instant!
@@ -314,18 +324,73 @@ Date dimension with Hebrew date fields:
 4. **For all-time aggregations by store/customer/product**: Use `mv_sales_by_store` / `mv_sales_by_customer` / `mv_sales_by_product`
 5. **For daily trends** ("daily sales", "sales by day", "last 7 days"): Use `mv_sales_by_day` — instant!
 6. **For inventory queries** ("stock levels", "items below minimum", "out of stock"): Use `mv_inventory_by_item` — instant!
-7. **For active stores count**: `SELECT COUNT(*) FROM zer4u.stores WHERE zer4u.parse_date_ddmmyyyy("תאריך סגירת חנות") >= CURRENT_DATE`
-8. **For detailed row-level data** (specific transactions, customer history within a date range): Use sales table with `zer4u.parse_date_ddmmyyyy()` filter
-6. **For JOINs on sales**: Use `zer4u.to_int_safe()` for store/customer, `::numeric` for amounts
-7. **NEVER aggregate directly on sales table without a narrow filter** — use the materialized views!
+7. **For active stores count**: `SELECT COUNT(*) FROM zer4u.stores WHERE store_id > 0` (or use a closing date filter if needed)
+8. **For categories by revenue**: JOIN sales + items on item_code, GROUP BY item_group
+9. **For returning vs new customers**: Use MIN(sale_date) per customer — see example below
+10. **NEVER aggregate directly on sales table without a narrow filter** — use the materialized views!
 
 ## Common Analysis Patterns
-- **Total sales for 2025**: `SELECT total_revenue FROM zer4u.mv_sales_by_year WHERE sale_year = 2025`
-- **Year over year**: `SELECT sale_year, total_revenue FROM zer4u.mv_sales_by_year ORDER BY sale_year`
-- **Sales this month**: `SELECT total_revenue FROM zer4u.mv_sales_by_month WHERE year_month = TO_CHAR(CURRENT_DATE, 'YYYY-MM')`
-- **Last 6 months trend**: `SELECT year_month, total_revenue FROM zer4u.mv_sales_by_month WHERE year_month >= TO_CHAR(CURRENT_DATE - INTERVAL '6 months', 'YYYY-MM') ORDER BY year_month`
-- **Top stores by revenue**: `SELECT * FROM zer4u.mv_sales_by_store ORDER BY total_revenue DESC LIMIT 10`
-- **Top customers**: `SELECT * FROM zer4u.mv_sales_by_customer ORDER BY total_purchases DESC LIMIT 10`
-- **Best selling products**: `SELECT * FROM zer4u.mv_sales_by_product ORDER BY total_quantity DESC LIMIT 10`
-- **Store performance in 2025**: `SELECT store_name, SUM(total_revenue) FROM zer4u.mv_sales_by_store_month WHERE sale_year = 2025 GROUP BY store_number, store_name ORDER BY SUM(total_revenue) DESC`
-- **Customer history** (specific dates): Use sales table with `zer4u.parse_date_ddmmyyyy()` and `zer4u.to_int_safe()` join
+```sql
+-- Total sales for 2025
+SELECT total_revenue FROM zer4u.mv_sales_by_year WHERE sale_year = 2025;
+
+-- Sales this month
+SELECT total_revenue FROM zer4u.mv_sales_by_month WHERE year_month = TO_CHAR(CURRENT_DATE, 'YYYY-MM');
+
+-- Top stores by revenue
+SELECT * FROM zer4u.mv_sales_by_store ORDER BY total_revenue DESC LIMIT 10;
+
+-- Top customers
+SELECT * FROM zer4u.mv_sales_by_customer ORDER BY total_purchases DESC LIMIT 10;
+
+-- Best selling products
+SELECT * FROM zer4u.mv_sales_by_product ORDER BY total_quantity DESC LIMIT 10;
+
+-- Categories by revenue (item_group)
+SELECT i.item_group, SUM(s.revenue) AS total_revenue, COUNT(*) AS transactions
+FROM zer4u.sales s
+JOIN zer4u.items i ON s.item_code = i.item_code
+WHERE i.item_group IS NOT NULL
+GROUP BY i.item_group
+ORDER BY total_revenue DESC NULLS LAST
+LIMIT 15;
+
+-- Stores that sold the most popular items last month
+SELECT st.store_name, i.item_name, SUM(s.quantity) AS qty_sold
+FROM zer4u.sales s
+JOIN zer4u.stores st ON s.store_id = st.store_id
+JOIN zer4u.items i ON s.item_code = i.item_code
+WHERE s.sale_date >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
+  AND s.sale_date < DATE_TRUNC('month', CURRENT_DATE)
+  AND s.item_code IN (
+    SELECT item_code FROM zer4u.mv_sales_by_product ORDER BY total_quantity DESC LIMIT 5
+  )
+GROUP BY st.store_name, i.item_name
+ORDER BY qty_sold DESC
+LIMIT 20;
+
+-- Returning vs new customers (based on first purchase date)
+SELECT
+  COUNT(CASE WHEN first_purchase >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
+              AND first_purchase < DATE_TRUNC('month', CURRENT_DATE) THEN 1 END) AS new_customers,
+  COUNT(CASE WHEN first_purchase < DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month') THEN 1 END) AS returning_customers
+FROM (
+  SELECT customer_id, MIN(sale_date) AS first_purchase
+  FROM zer4u.sales
+  GROUP BY customer_id
+) fp
+WHERE EXISTS (
+  SELECT 1 FROM zer4u.sales s2
+  WHERE s2.customer_id = fp.customer_id
+    AND s2.sale_date >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
+    AND s2.sale_date < DATE_TRUNC('month', CURRENT_DATE)
+);
+
+-- Items below minimum stock
+SELECT item_code, item_name, total_stock, min_stock,
+       (total_stock - min_stock) AS shortage
+FROM zer4u.mv_inventory_by_item
+WHERE min_stock IS NOT NULL AND total_stock < min_stock
+ORDER BY (total_stock - min_stock) ASC
+LIMIT 50;
+```

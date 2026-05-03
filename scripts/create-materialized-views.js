@@ -322,8 +322,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
               MAX(i.${col(r, 'items.item_name')}) AS item_name,
               SUM(inv.${col(r, 'inventory.stock')}::numeric) AS total_stock,
               SUM(inv.${col(r, 'inventory.value')}::numeric) AS total_value,
-              MIN(CASE WHEN mi.${col(r, 'min_inventory.min_stock')} IS NOT NULL
-                  THEN mi.${col(r, 'min_inventory.min_stock')}::numeric END) AS min_stock
+              min_data.min_stock
             FROM (
               SELECT DISTINCT ${col(r, 'sales.item_code')} AS item_code,
                               ${col(r, 'sales.inventory_key')} AS "InventoryKey"
@@ -332,8 +331,14 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
             ) s_agg
             JOIN ${s}.inventory inv ON inv.${col(r, 'inventory.key')} = s_agg."InventoryKey"
             JOIN ${s}.items i ON i.${col(r, 'items.item_code')} = s_agg.item_code
-            LEFT JOIN ${s}.min_inventory mi ON mi.${col(r, 'min_inventory.key')} = inv.${col(r, 'inventory.key')}
-            GROUP BY s_agg.item_code
+            LEFT JOIN (
+              SELECT SPLIT_PART(${col(r, 'min_inventory.key')}, '**', 2) AS item_code,
+                     MIN(${col(r, 'min_inventory.min_stock')}::numeric) AS min_stock
+              FROM ${s}.min_inventory
+              WHERE ${col(r, 'min_inventory.key')} IS NOT NULL
+              GROUP BY 1
+            ) min_data ON min_data.item_code = s_agg.item_code
+            GROUP BY s_agg.item_code, min_data.min_stock
           `);
           await c.query(`
             CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_inventory_by_item_pk
