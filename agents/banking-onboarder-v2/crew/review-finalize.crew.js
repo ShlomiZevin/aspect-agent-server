@@ -41,7 +41,7 @@ class ReviewFinalizeCrew extends CrewMember {
       displayName: 'סיכום ואישור',
       description: 'Closing crew: verify details, get consent, collect signature, and send the user off.',
       isDefault: false,
-      model: 'gemini-2.5-flash',
+      model: 'gpt-5-chat-latest',
       fallbackModel: 'gpt-4o',
       maxTokens: 2048,
       persona: getPersona(),
