@@ -177,6 +177,33 @@ async function seed() {
       console.log('✅ TikTok Comedy created successfully (ID:', insertedTiktok.id, ')');
     }
 
+    // Create Foreman agent (ERP / Master Data for infrastructure contractors)
+    console.log('Creating Foreman agent...');
+
+    const foremanAgent = {
+      name: 'Foreman',
+      domain: 'construction-erp',
+      urlSlug: 'foreman',
+      description: 'AI ERP & Master Data assistant for Israeli infrastructure contractors. Parses supplier price quotes, matches supplier SKUs to the master catalog, prices Bills of Quantities (BOQ), and handles general procurement / construction-finance Q&A.',
+      promptId: null,
+      config: {
+        model: process.env.OPENAI_MODEL || 'gpt-5-chat-latest',
+        vectorStoreId: null,
+        features: ['quote_parsing', 'sku_matching', 'boq_pricing', 'master_data', 'subcontractor_qa'],
+        supportedLanguages: ['he', 'en']
+      },
+      isActive: true
+    };
+
+    const existingForeman = await drizzle.select().from(agents).where(eq(agents.name, 'Foreman'));
+
+    if (existingForeman.length > 0) {
+      console.log('✅ Foreman already exists (ID:', existingForeman[0].id, ')');
+    } else {
+      const [insertedForeman] = await drizzle.insert(agents).values(foremanAgent).returning();
+      console.log('✅ Foreman created successfully (ID:', insertedForeman.id, ')');
+    }
+
     console.log('');
     console.log('🎉 Seed completed successfully!');
     process.exit(0);
