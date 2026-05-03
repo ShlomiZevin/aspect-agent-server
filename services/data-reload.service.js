@@ -374,7 +374,7 @@ class DataReloadService {
     let lastDataDate = null;
     if (reloader?.dataInfoFn) {
       try {
-        lastDataDate = await reloader.dataInfoFn(this.db);
+        lastDataDate = await reloader.dataInfoFn(reloader.pool || this.db);
       } catch {
         // dataInfoFn is optional and best-effort
       }
