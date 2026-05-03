@@ -1,5 +1,6 @@
 const claudeService = require('./llm.claude');
 const schemaDescriptorService = require('./schema-descriptor.service');
+const slowQueryService = require('./slow-query.service');
 
 /**
  * SQL Generator Service (Helper Agent)
@@ -8,6 +9,11 @@ const schemaDescriptorService = require('./schema-descriptor.service');
  * This is a stateless helper - NOT a crew member
  */
 class SQLGeneratorService {
+  constructor() {
+    // Cache slow queries per schema for 5 minutes to avoid fetching on every call
+    this._antiPatternCache = new Map(); // schemaName -> { queries, fetchedAt }
+  }
+
   /**
    * Generate SQL query from natural language question
    *
@@ -26,11 +32,14 @@ class SQLGeneratorService {
       const schemaDescription = options.schemaDescription ||
         await schemaDescriptorService.getDescription(schemaName);
 
-      // Step 2: Build the prompt for Claude
-      const systemPrompt = this._buildSystemPrompt(schemaName, schemaDescription);
+      // Step 2: Fetch slow query anti-patterns (cached)
+      const antiPatterns = await this._getAntiPatterns(schemaName);
+
+      // Step 3: Build the prompt for Claude
+      const systemPrompt = this._buildSystemPrompt(schemaName, schemaDescription, antiPatterns);
       const userMessage = this._buildUserMessage(question);
 
-      console.log(`   Calling Claude to generate SQL...`);
+      console.log(`   Calling Claude to generate SQL (${antiPatterns.length} anti-patterns loaded)...`);
 
       // Step 3: Call Claude
       const rawResponse = await claudeService.sendOneShot(
@@ -59,10 +68,30 @@ class SQLGeneratorService {
   }
 
   /**
+   * Fetch recent slow/error/timeout queries for a schema (5-min cache).
+   * Returns empty array on failure so generation is never blocked.
+   * @private
+   */
+  async _getAntiPatterns(schemaName) {
+    const cached = this._antiPatternCache.get(schemaName);
+    if (cached && (Date.now() - cached.fetchedAt) < 5 * 60 * 1000) {
+      return cached.queries;
+    }
+    try {
+      const queries = await slowQueryService.getSlowQueries({ agentName: schemaName, limit: 20 });
+      this._antiPatternCache.set(schemaName, { queries, fetchedAt: Date.now() });
+      return queries;
+    } catch (err) {
+      console.warn(`⚠️  Failed to load slow query anti-patterns: ${err.message}`);
+      return [];
+    }
+  }
+
+  /**
    * Build system prompt for SQL generation
    * @private
    */
-  _buildSystemPrompt(schemaName, schemaDescription) {
+  _buildSystemPrompt(schemaName, schemaDescription, antiPatterns = []) {
     return `You are an expert PostgreSQL query generator. Your task is to translate natural language questions into accurate SQL queries.
 
 ## Schema Information
@@ -121,7 +150,7 @@ ORDER BY month
 - \`${schemaName}.mv_sales_by_product\` — per-product totals
 - \`${schemaName}.mv_sales_by_customer\` — per-customer totals
 - \`${schemaName}.mv_sales_by_day\` — daily totals (last 90 days)
-
+${this._buildAntiPatternsSection(antiPatterns)}
 ## Output Format
 
 Respond with ONLY a JSON object (no markdown, no explanation):
@@ -134,6 +163,46 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 }
 
 If the question cannot be answered with the available schema, set confidence to "low" and explain why in the explanation field.`;
+  }
+
+  /**
+   * Build the anti-patterns section from slow query records.
+   * Returns empty string if no relevant queries.
+   * @private
+   */
+  _buildAntiPatternsSection(antiPatterns) {
+    if (!antiPatterns || antiPatterns.length === 0) return '';
+
+    const examples = antiPatterns
+      .filter(q => q.sql && q.sql.trim().length > 10)
+      .slice(0, 8)
+      .map(q => {
+        const label = q.query_type === 'timeout'
+          ? `TIMEOUT (${q.duration_ms}ms)`
+          : q.query_type === 'error'
+            ? `ERROR: ${(q.error_message || 'unknown').slice(0, 80)}`
+            : `SLOW (${q.duration_ms}ms)`;
+        const question = q.question ? `Question: "${q.question.slice(0, 100)}"` : '';
+        return `-- ${label}${question ? '\n-- ' + question : ''}\n${q.sql.slice(0, 400)}`;
+      });
+
+    if (examples.length === 0) return '';
+
+    return `
+
+## AVOID — Known Problem Queries
+
+The following queries caused timeouts or errors in production. Study them and do NOT reproduce their patterns:
+
+\`\`\`sql
+${examples.join('\n\n')}
+\`\`\`
+
+**Key anti-patterns to avoid:**
+- \`TO_DATE(col, 'DD/MM/YYYY')\` — \`sale_date\` is already a DATE column, use it directly
+- Hebrew column names (\`"קוד פריט SALES"\`, \`"שם פריט"\`, \`"מכירה ללא מעמ"\`) — use the English names: \`item_code\`, \`item_name\`, \`revenue\`
+- Scanning raw \`inventory\` or \`min_inventory\` tables for item-level data — use \`mv_inventory_by_item\` instead
+- Counting customers this month via \`mv_sales_by_customer\` — use \`mv_sales_by_month.customer_count\` instead`;
   }
 
   /**

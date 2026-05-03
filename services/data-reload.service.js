@@ -521,6 +521,12 @@ class DataReloadService {
         }
 
         await swapPool.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`).catch(() => {});
+
+        // Regenerate schema description cache in background using the zer4u pool
+        const schemaDescriptorService = require('./schema-descriptor.service');
+        schemaDescriptorService.getDescription(schemaName, true, swapPool)
+          .then(() => emitLog('swapping', `Schema description cache updated`))
+          .catch(err => console.warn(`⚠️  Schema description regen failed: ${err.message}`));
       } else {
         // Manual re-index: index live schema directly
         emitLog('creating_indexes', `Re-indexing live schema ${schemaName}...`);

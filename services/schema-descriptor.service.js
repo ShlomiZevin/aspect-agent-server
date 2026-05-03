@@ -14,12 +14,13 @@ class SchemaDescriptorService {
   /**
    * Generate a comprehensive description of a schema
    * @param {string} schemaName - The schema name (e.g., 'zer4u')
+   * @param {Object} [pool] - Optional pg Pool to use (pass zer4u pool for zer4u schema)
    * @returns {Promise<string>} - Human-readable schema description
    */
-  async generateSchemaDescription(schemaName) {
+  async generateSchemaDescription(schemaName, pool = null) {
     console.log(`📊 Generating description for schema: ${schemaName}`);
 
-    const client = await this.pool.connect();
+    const client = await (pool || this.pool).connect();
 
     try {
       // Step 1: Get all tables in the schema
@@ -172,9 +173,10 @@ Format the description in a clear, structured way.`;
    * Get a cached description or generate a new one
    * @param {string} schemaName - Schema name
    * @param {boolean} forceRegenerate - Force regeneration even if cached
+   * @param {Object} [pool] - Optional pg Pool (must point to the DB that contains schemaName)
    * @returns {Promise<string>} - Schema description
    */
-  async getDescription(schemaName, forceRegenerate = false) {
+  async getDescription(schemaName, forceRegenerate = false, pool = null) {
     const fs = require('fs').promises;
     const path = require('path');
     const cacheFile = path.join(__dirname, '..', 'data', `${schemaName}-schema-description.txt`);
@@ -191,7 +193,7 @@ Format the description in a clear, structured way.`;
     }
 
     // Generate new description
-    const description = await this.generateSchemaDescription(schemaName);
+    const description = await this.generateSchemaDescription(schemaName, pool);
 
     // Save to cache
     try {
