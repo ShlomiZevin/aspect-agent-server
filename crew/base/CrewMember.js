@@ -370,37 +370,25 @@ class CrewMember {
       delete prevState.fallback;
       delete prevState.error;
 
+      // All fields → blocking (hybrid + fieldsToCollect always treated as blocking)
       const blockingFields = [
-        '_thinkingDescription (short English summary of this turn, 5-15 words, shown in UI)',
         ...this.thinkerFieldsBlocking,
+        ...this.thinkerFieldsHybrid,
       ];
+      for (const f of this.fieldsToCollect) {
+        blockingFields.push(`${f.name}${f.description ? ` (${f.description})` : ''}`);
+      }
       const backgroundFields = [...this.thinkerFieldsBackground];
 
-      // Route hybrid fields: if value exists in prevState → background, else → blocking
-      for (const f of this.thinkerFieldsHybrid) {
-        const fieldName = (typeof f === 'string' ? f : f.name).split(/[\s(]/)[0];
-        if (prevState[fieldName] !== undefined && prevState[fieldName] !== null && prevState[fieldName] !== '') {
-          backgroundFields.push(f);
-        } else {
-          blockingFields.push(f);
-        }
-      }
-
-      // fieldsToCollect: check if each has a value → background, else → blocking
-      for (const f of this.fieldsToCollect) {
-        const fieldStr = `${f.name}${f.description ? ` (${f.description})` : ''}`;
-        if (prevState[f.name] !== undefined && prevState[f.name] !== null && prevState[f.name] !== '') {
-          backgroundFields.push(fieldStr);
-        } else {
-          blockingFields.push(fieldStr);
-        }
-      }
-
       // ========== BUILD PROMPTS ==========
-      const outputRules = `\nReturn valid JSON only — no prose, no markdown, no explanation.\nOnly include fields from the list above. Do not add any other fields.\nDo not extract from ASSISTANT messages — those are your own agent's words, not user data.\nDo not return null or false — just omit the field.\nAll string values: short phrase, never full sentences.`;
+      const outputRules = `\nReturn valid JSON only — no prose, no markdown, no explanation.\nDo not extract from ASSISTANT messages — those are your own agent's words, not user data.\nDo not return null or false — just omit the field.\nAll string values: short phrase, never full sentences.`;
 
+      // If no field lists are configured, the prompt itself defines the fields — don't inject a field list
       const buildFullThinkerPrompt = (fields) => {
-        return `${this.thinkingPrompt}\n\n## Context\n${contextStr}\n\nReturn a JSON with only CHANGED fields from this list: ${fields.join(', ')}.${outputRules}`;
+        const fieldInstruction = fields.length > 0
+          ? `\n\nReturn a JSON with only CHANGED fields from this list: ${fields.join(', ')}.`
+          : '';
+        return `${this.thinkingPrompt}\n\n## Context\n${contextStr}${fieldInstruction}${outputRules}`;
       };
 
       const blockingPrompt = buildFullThinkerPrompt(blockingFields);

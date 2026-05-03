@@ -139,45 +139,11 @@ class AdvisorOneCrew extends CrewMember {
         ]
       },
       tools: [],
-      thinkerFieldsBlocking: [
-        'nextAction (what Guidance should do this turn)',
-      ],
-      // BACKGROUND: runs in parallel, talker does NOT wait
-      thinkerFieldsBackground: [
-        'activeLayer (1, 2, or 3)',
-        'objectionStep (value_response / price_reframe / accept_decline)',
-        'toneNote (tone adjustment if needed)',
-        'contextGathered (only return when changing to true)',
-        'mandatoryFieldsComplete (true when employment+incomeRange+expenseRange+creditUsage all known)',
-        'creditUsage (expected מסגרת usage — calculate from income+expenses or ask)',
-        'pendingProduct (product currently being offered)',
-        'cardResponse (accepted / declined / skipped)',
-        'checkbookResponse (accepted / declined / skipped)',
-      ],
-      // HYBRID: blocking until value exists, then background
-      thinkerFieldsHybrid: [
-        'conversationState (intent | profiling | recommendation | objection | transition)',
-        'handlingPrinciple (first_account, young_user, bad_bank_experience, specific_purpose, life_event, offer_driven, adding_account, browsing)',
-        'layer1Agreed (true on explicit acceptance of account track)',
-        'layer2Complete (true when card+checkbook both have a response)',
-        'readyToTransfer (true only when layer1Agreed+layer2Complete)',
-        'offerPitch (why this offer fits THIS customer — short phrase)',
-        'strategy (why this approach fits this user)',
-      ],
-      // Tracked fields (also hybrid: blocking until value, then background)
-      fieldsToCollect: [
-        { name: 'userIntent', description: 'Reason for opening the account' },
-        { name: 'userType', description: 'Identified handling principle (first account, young user, bad experience, etc.)' },
-        { name: 'employment', description: 'Employment status and specific role when mentioned (e.g. "part-time waitress + student", not just "part-time")' },
-        { name: 'incomeRange', description: 'Monthly income in NIS — number or range (e.g. 4000, 4000-5000). Not qualitative.' },
-        { name: 'expensesRange', description: 'Monthly expenses in NIS — number or range (e.g. 3000, 3000-4000). Not qualitative.' },
-        { name: 'mainExpenseTypes', description: 'Main expense types' },
-        { name: 'financialCommitments', description: 'Existing financial commitments (high level)' },
-        { name: 'expectedAccountUsage', description: 'Expected account usage' },
-        { name: 'offerAccepted', description: 'Account track acceptance — explicit agreement only' },
-        { name: 'customerType', description: 'Overall read of the customer' },
-        { name: 'signals', description: 'Mood, hesitation, urgency, confidence' },
-      ],
+      // All fields are now defined in the thinking prompt itself
+      thinkerFieldsBlocking: [],
+      thinkerFieldsBackground: [],
+      thinkerFieldsHybrid: [],
+      fieldsToCollect: [],
       transitionTo: 'review-finalize',
     });
   }
