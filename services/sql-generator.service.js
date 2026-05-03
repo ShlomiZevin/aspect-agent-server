@@ -1,6 +1,7 @@
 const claudeService = require('./llm.claude');
 const schemaDescriptorService = require('./schema-descriptor.service');
 const slowQueryService = require('./slow-query.service');
+const { getPool: getZer4uPool } = require('./db.zer4u');
 
 /**
  * SQL Generator Service (Helper Agent)
@@ -28,9 +29,9 @@ class SQLGeneratorService {
     console.log(`   Question: "${question}"`);
 
     try {
-      // Step 1: Get schema description
+      // Step 1: Get schema description (cached in zer4u DB)
       const schemaDescription = options.schemaDescription ||
-        await schemaDescriptorService.getDescription(schemaName);
+        await schemaDescriptorService.getDescription(schemaName, false, null, getZer4uPool());
 
       // Step 2: Fetch slow query anti-patterns (cached)
       const antiPatterns = await this._getAntiPatterns(schemaName);

@@ -522,9 +522,9 @@ class DataReloadService {
 
         await swapPool.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`).catch(() => {});
 
-        // Regenerate schema description cache in background using the zer4u pool
+        // Regenerate schema description cache in background — both read schema + store cache in zer4u DB
         const schemaDescriptorService = require('./schema-descriptor.service');
-        schemaDescriptorService.getDescription(schemaName, true, swapPool)
+        schemaDescriptorService.getDescription(schemaName, true, swapPool, swapPool)
           .then(() => emitLog('swapping', `Schema description cache updated`))
           .catch(err => console.warn(`⚠️  Schema description regen failed: ${err.message}`));
       } else {

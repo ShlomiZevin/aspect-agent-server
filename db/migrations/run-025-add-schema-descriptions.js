@@ -1,10 +1,10 @@
 /**
- * Migration 025: Add schema_descriptions table
+ * Migration 025: Add schema_descriptions table to the zer4u DB
  *
- * Stores auto-generated schema descriptions (used by SQL generator)
- * in the DB instead of a local file, so they persist across Cloud Run deploys.
+ * Stores auto-generated schema descriptions in the zer4u dedicated DB
+ * (not main DB) since this is zer4u-specific metadata.
  *
- * Run via Cloud SQL Proxy:
+ * Run via Cloud SQL Proxy (zer4u DB must be proxied on ZER4U_DB_PORT):
  *   node db/migrations/run-025-add-schema-descriptions.js
  */
 require('dotenv').config();
@@ -13,11 +13,11 @@ const fs = require('fs');
 const path = require('path');
 
 const pool = new Pool({
-  host: process.env.DB_HOST_PROXY || process.env.DB_HOST,
-  port: process.env.DB_PORT_PROXY || process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
+  host:     process.env.ZER4U_DB_HOST     || process.env.DB_HOST,
+  port:     parseInt(process.env.ZER4U_DB_PORT || process.env.DB_PORT || 5432),
+  database: process.env.ZER4U_DB_NAME     || process.env.DB_NAME,
+  user:     process.env.ZER4U_DB_USER     || process.env.DB_USER,
+  password: process.env.ZER4U_DB_PASSWORD || process.env.DB_PASSWORD,
 });
 
 async function run() {
@@ -30,9 +30,9 @@ async function run() {
         generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
-    console.log('✅ Created schema_descriptions table');
+    console.log('✅ Created schema_descriptions table in zer4u DB');
 
-    // Seed from local cache file if it exists
+    // Seed from local cache file if it exists (preserves manually-curated content)
     const cacheFile = path.join(__dirname, '../../data/zer4u-schema-description.txt');
     if (fs.existsSync(cacheFile)) {
       const description = fs.readFileSync(cacheFile, 'utf8').trim();
@@ -47,7 +47,7 @@ async function run() {
         console.log('✅ Seeded zer4u description from local cache file');
       }
     } else {
-      console.log('ℹ️  No local cache file found — description will be generated on next Full Rebuild');
+      console.log('ℹ️  No local cache file — description will be generated on next Full Rebuild');
     }
   } finally {
     client.release();

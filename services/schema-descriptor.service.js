@@ -173,14 +173,17 @@ Format the description in a clear, structured way.`;
    * Get a cached description from the DB, or generate a new one.
    * @param {string} schemaName - Schema name
    * @param {boolean} forceRegenerate - Force regeneration even if cached
-   * @param {Object} [pool] - Optional pg Pool pointing to the DB that contains schemaName (e.g. zer4u pool)
+   * @param {Object} [schemaPool] - Pool pointing to the DB that contains schemaName (for generation)
+   * @param {Object} [cachePool]  - Pool for reading/writing the cache table (defaults to main DB pool)
    * @returns {Promise<string>} - Schema description
    */
-  async getDescription(schemaName, forceRegenerate = false, pool = null) {
-    // Check DB cache (main DB — always accessible regardless of schema location)
+  async getDescription(schemaName, forceRegenerate = false, schemaPool = null, cachePool = null) {
+    const cp = cachePool || this.pool;
+
+    // Check DB cache
     if (!forceRegenerate) {
       try {
-        const result = await this.pool.query(
+        const result = await cp.query(
           'SELECT description FROM public.schema_descriptions WHERE schema_name = $1',
           [schemaName]
         );
@@ -193,12 +196,12 @@ Format the description in a clear, structured way.`;
       }
     }
 
-    // Generate new description using the correct pool for that schema
-    const description = await this.generateSchemaDescription(schemaName, pool);
+    // Generate new description using the pool that has the actual schema tables
+    const description = await this.generateSchemaDescription(schemaName, schemaPool);
 
     // Save to DB cache
     try {
-      await this.pool.query(
+      await cp.query(
         `INSERT INTO public.schema_descriptions (schema_name, description, generated_at)
          VALUES ($1, $2, NOW())
          ON CONFLICT (schema_name) DO UPDATE
