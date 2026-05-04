@@ -193,7 +193,8 @@ class DataQueryService {
   /** @private — injected at the end of generated SQL when no LIMIT is present */
   _enforceLimit(sql, maxRows) {
     if (/\bLIMIT\b/i.test(sql)) return sql;
-    return `${sql.trimEnd()}\nLIMIT ${maxRows}`;
+    const clean = sql.trimEnd().replace(/;+$/, '');
+    return `${clean}\nLIMIT ${maxRows}`;
   }
 
   /** @private — rejects any SQL that contains DDL/DML keywords */
