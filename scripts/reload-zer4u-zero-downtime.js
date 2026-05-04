@@ -171,13 +171,13 @@ async function loadZer4u(targetSchema, emitLog) {
 
 // ── Phase 2: Indexing ─────────────────────────────────────────────────────────
 
-async function indexZer4u(targetSchema, emitLog, referenceSchema) {
+async function indexZer4u(targetSchema, emitLog, referenceSchema, options = {}) {
   emitLog('creating_indexes', 'Creating helper functions and indexes...');
   await createIndexes(targetSchema, emitLog, referenceSchema);
   emitLog('creating_indexes', 'Indexes created');
 
   emitLog('creating_views', 'Creating materialized views...');
-  await createViews(targetSchema, emitLog);
+  await createViews(targetSchema, emitLog, options);
   emitLog('creating_views', 'All materialized views created');
 }
 

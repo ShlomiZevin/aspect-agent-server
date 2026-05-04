@@ -14,12 +14,13 @@ class SchemaDescriptorService {
   /**
    * Generate a comprehensive description of a schema
    * @param {string} schemaName - The schema name (e.g., 'zer4u')
+   * @param {Object} [pool] - Optional pg Pool to use (pass zer4u pool for zer4u schema)
    * @returns {Promise<string>} - Human-readable schema description
    */
-  async generateSchemaDescription(schemaName) {
+  async generateSchemaDescription(schemaName, pool = null) {
     console.log(`📊 Generating description for schema: ${schemaName}`);
 
-    const client = await this.pool.connect();
+    const client = await (pool || this.pool).connect();
 
     try {
       // Step 1: Get all tables in the schema
@@ -169,36 +170,47 @@ Format the description in a clear, structured way.`;
   }
 
   /**
-   * Get a cached description or generate a new one
+   * Get a cached description from the DB, or generate a new one.
    * @param {string} schemaName - Schema name
    * @param {boolean} forceRegenerate - Force regeneration even if cached
+   * @param {Object} [schemaPool] - Pool pointing to the DB that contains schemaName (for generation)
+   * @param {Object} [cachePool]  - Pool for reading/writing the cache table (defaults to main DB pool)
    * @returns {Promise<string>} - Schema description
    */
-  async getDescription(schemaName, forceRegenerate = false) {
-    const fs = require('fs').promises;
-    const path = require('path');
-    const cacheFile = path.join(__dirname, '..', 'data', `${schemaName}-schema-description.txt`);
+  async getDescription(schemaName, forceRegenerate = false, schemaPool = null, cachePool = null) {
+    const cp = cachePool || this.pool;
 
-    // Check cache
+    // Check DB cache
     if (!forceRegenerate) {
       try {
-        const cached = await fs.readFile(cacheFile, 'utf8');
-        console.log(`📄 Using cached description for ${schemaName}`);
-        return cached;
-      } catch (error) {
-        // Cache miss, generate new
+        const result = await cp.query(
+          'SELECT description FROM public.schema_descriptions WHERE schema_name = $1',
+          [schemaName]
+        );
+        if (result.rows.length > 0) {
+          console.log(`📄 Using cached description for ${schemaName} (DB)`);
+          return result.rows[0].description;
+        }
+      } catch (err) {
+        console.warn(`⚠️  DB cache read failed for ${schemaName}: ${err.message}`);
       }
     }
 
-    // Generate new description
-    const description = await this.generateSchemaDescription(schemaName);
+    // Generate new description using the pool that has the actual schema tables
+    const description = await this.generateSchemaDescription(schemaName, schemaPool);
 
-    // Save to cache
+    // Save to DB cache
     try {
-      await fs.writeFile(cacheFile, description);
-      console.log(`💾 Cached description to: ${cacheFile}`);
-    } catch (error) {
-      console.warn('⚠️  Failed to cache description:', error.message);
+      await cp.query(
+        `INSERT INTO public.schema_descriptions (schema_name, description, generated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (schema_name) DO UPDATE
+           SET description = EXCLUDED.description, generated_at = NOW()`,
+        [schemaName, description]
+      );
+      console.log(`💾 Cached description for ${schemaName} in DB`);
+    } catch (err) {
+      console.warn(`⚠️  Failed to cache description in DB: ${err.message}`);
     }
 
     return description;

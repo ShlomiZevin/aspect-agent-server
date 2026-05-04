@@ -6,7 +6,11 @@
  */
 
 const CrewMember = require('../../../crew/base/CrewMember');
-const dataQueryService = require('../../../services/data-query.service');
+const { DataQueryService } = require('../../../services/data-query.service');
+const { getPool } = require('../../../services/db.zer4u');
+
+// Zer4U queries run against the dedicated zer4u database (not the shared operational DB).
+const dataQueryService = new DataQueryService(getPool());
 
 class Zer4UCrew extends CrewMember {
   constructor() {
@@ -88,7 +92,7 @@ You: *Call fetch_zer4u_data("top selling products")* → "המוצרים הנמ�
 User: "מה מצב המלאי?"
 You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה מצב המלאי הנוכחי..."`,
 
-      model: 'gpt-4o',
+      model: process.env.ZER4U_CREW_MODEL || 'gpt-4o',
       maxTokens: 4096,
 
       fieldsToCollect: [],
@@ -212,19 +216,19 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
   }
 
   _summarizeData(data, columns) {
-    if (!data || data.length === 0) {
-      return 'No data found.';
-    }
+    if (!data || data.length === 0) return 'No data found.';
 
+    const MAX_DISPLAY = 20;
     let summary = `Found ${data.length} records.\n\n`;
 
-    if (data.length <= 10) {
-      summary += 'All records:\n';
-      summary += JSON.stringify(data, null, 2);
-    } else {
-      summary += 'First 10 records:\n';
-      summary += JSON.stringify(data.slice(0, 10), null, 2);
-      summary += `\n\n... and ${data.length - 10} more records.`;
+    const displayData = data.slice(0, MAX_DISPLAY);
+    summary += data.length > MAX_DISPLAY
+      ? `First ${MAX_DISPLAY} of ${data.length} records:\n`
+      : 'All records:\n';
+    summary += JSON.stringify(displayData, null, 2);
+
+    if (data.length > MAX_DISPLAY) {
+      summary += `\n\n... and ${data.length - MAX_DISPLAY} more records.`;
 
       const numericCols = this._findNumericColumns(data[0]);
       if (numericCols.length > 0) {
@@ -233,10 +237,7 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
           const values = data.map(row => parseFloat(row[col])).filter(v => !isNaN(v));
           if (values.length > 0) {
             const sum = values.reduce((a, b) => a + b, 0);
-            const avg = sum / values.length;
-            const min = Math.min(...values);
-            const max = Math.max(...values);
-            summary += `- ${col}: Sum=${sum.toLocaleString()}, Avg=${avg.toFixed(2)}, Min=${min}, Max=${max}\n`;
+            summary += `- ${col}: Sum=${sum.toLocaleString()}, Avg=${(sum / values.length).toFixed(2)}, Min=${Math.min(...values)}, Max=${Math.max(...values)}\n`;
           }
         }
       }

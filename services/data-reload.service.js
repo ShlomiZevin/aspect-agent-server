@@ -67,7 +67,7 @@ class DataReloadService {
           // Only drop shadow schema for import runs (index runs operate on live schema).
           // Skip drop if the run started within the last 30 minutes — it may have been
           // kicked off just before a deployment and could still be running on the old revision.
-          if (r.triggered_by !== 'index') {
+          if (!r.triggered_by.includes('index')) {
             const ageMinutes = (Date.now() - new Date(r.started_at).getTime()) / 60000;
             const shadowSchema = `${r.schema_name}_new`;
             console.log(`[DataReloadService] Dropping leftover shadow schema ${shadowSchema}...`);
@@ -118,7 +118,7 @@ class DataReloadService {
 
     await this._assertNotBusy(schemaName);
 
-    const runId = await this._createRunInDB(schemaName, triggeredBy);
+    const runId = await this._createRunInDB(schemaName, `${triggeredBy}-import`);
 
     this.currentRuns[schemaName] = {
       id: runId,
@@ -146,13 +146,15 @@ class DataReloadService {
    * Creates its own run record (triggered_by='index').
    * Returns runId immediately; indexing runs in background.
    */
-  async startIndexing(schemaName, triggeredBy = 'index') {
+  async startIndexing(schemaName, triggeredBy = 'manual', options = {}) {
     const reloader = this.reloaders[schemaName];
     if (!reloader) throw { code: 400, message: `No reloader registered for schema: ${schemaName}` };
 
     await this._assertNotBusy(schemaName);
 
-    const runId = await this._createRunInDB(schemaName, triggeredBy);
+    const { force = false } = options;
+    const runType = force ? 'full-index' : 'index';
+    const runId = await this._createRunInDB(schemaName, `${triggeredBy}-${runType}`);
 
     this.currentRuns[schemaName] = {
       id: runId,
@@ -164,7 +166,7 @@ class DataReloadService {
     };
     this.logBuffers[schemaName] = [];
 
-    this._executeIndexing(runId, schemaName).catch(err => {
+    this._executeIndexing(runId, schemaName, options).catch(err => {
       console.error(`[DataReloadService] Unhandled indexing error for ${schemaName}:`, err.message);
     });
 
@@ -250,7 +252,7 @@ class DataReloadService {
     const completedIndexRes = await this.db.query(
       `SELECT id FROM public.data_reload_runs
        WHERE schema_name = $1 AND status = 'completed'
-         AND triggered_by IN ('index', 'cron') AND started_at > $2
+         AND (triggered_by LIKE '%-index' OR triggered_by LIKE '%-full-index' OR triggered_by IN ('index', 'cron')) AND started_at > $2
        LIMIT 1`,
       [schemaName, lastImport.completed_at]
     );
@@ -280,7 +282,7 @@ class DataReloadService {
       };
     }
 
-    const runId = await this._createRunInDB(schemaName, triggeredBy);
+    const runId = await this._createRunInDB(schemaName, `${triggeredBy}-import`);
 
     this.currentRuns[schemaName] = {
       id: runId,
@@ -372,7 +374,7 @@ class DataReloadService {
     let lastDataDate = null;
     if (reloader?.dataInfoFn) {
       try {
-        lastDataDate = await reloader.dataInfoFn(this.db);
+        lastDataDate = await reloader.dataInfoFn(reloader.pool || this.db);
       } catch {
         // dataInfoFn is optional and best-effort
       }
@@ -462,7 +464,7 @@ class DataReloadService {
    * Otherwise (manual re-index):
    *   - index the live schema directly (no swap needed)
    */
-  async _executeIndexing(runId, schemaName) {
+  async _executeIndexing(runId, schemaName, options = {}) {
     const reloader = this.reloaders[schemaName];
     const shadowSchema = `${schemaName}_new`;
 
@@ -484,40 +486,47 @@ class DataReloadService {
       if (shadowExists) {
         // Post-import: index shadow, then swap
         emitLog('creating_indexes', `Indexing shadow schema ${shadowSchema} (reference: ${schemaName})...`);
-        await reloader.indexFn(shadowSchema, emitLog, schemaName);
+        await reloader.indexFn(shadowSchema, emitLog, schemaName, options);
 
-        // ── Atomic schema swap — TEMPORARILY DISABLED for Phase 2 testing ──
-        // emitLog('swapping', `Swapping schemas: ${shadowSchema} → ${schemaName}`);
-        emitLog('swapping', `[SWAP DISABLED] Skipping schema swap — ${shadowSchema} stays as-is for inspection`);
-        // await this.db.query(`
-        //   SELECT pg_terminate_backend(pid)
-        //   FROM pg_stat_activity
-        //   WHERE datname = current_database()
-        //     AND pid <> pg_backend_pid()
-        //     AND query ILIKE '%${schemaName}%'
-        // `).catch(() => {});
-        //
-        // const swapClient = await this.db.getClient();
-        // try {
-        //   await swapClient.query('BEGIN');
-        //   await swapClient.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
-        //   await swapClient.query(`
-        //     DO $$ BEGIN
-        //       IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '${schemaName}') THEN
-        //         EXECUTE 'ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old';
-        //       END IF;
-        //     END $$
-        //   `);
-        //   await swapClient.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
-        //   await swapClient.query('COMMIT');
-        // } catch (swapErr) {
-        //   await swapClient.query('ROLLBACK').catch(() => {});
-        //   throw swapErr;
-        // } finally {
-        //   swapClient.release();
-        // }
-        //
-        // await this.db.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`).catch(() => {});
+        // ── Atomic schema swap ──
+        emitLog('swapping', `Swapping schemas: ${shadowSchema} → ${schemaName}...`);
+        const swapPool = reloader.pool || this.db;
+        await swapPool.query(`
+          SELECT pg_terminate_backend(pid)
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND pid <> pg_backend_pid()
+            AND query ILIKE '%${schemaName}%'
+        `).catch(() => {});
+
+        const swapClient = await swapPool.connect();
+        try {
+          await swapClient.query('BEGIN');
+          await swapClient.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
+          await swapClient.query(`
+            DO $$ BEGIN
+              IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '${schemaName}') THEN
+                EXECUTE 'ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old';
+              END IF;
+            END $$
+          `);
+          await swapClient.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
+          await swapClient.query('COMMIT');
+          emitLog('swapping', `Schema swap complete: ${schemaName} is now live`);
+        } catch (swapErr) {
+          await swapClient.query('ROLLBACK').catch(() => {});
+          throw swapErr;
+        } finally {
+          swapClient.release();
+        }
+
+        await swapPool.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`).catch(() => {});
+
+        // Regenerate schema description cache in background — both read schema + store cache in zer4u DB
+        const schemaDescriptorService = require('./schema-descriptor.service');
+        schemaDescriptorService.getDescription(schemaName, true, swapPool, swapPool)
+          .then(() => emitLog('swapping', `Schema description cache updated`))
+          .catch(err => console.warn(`⚠️  Schema description regen failed: ${err.message}`));
       } else {
         // Manual re-index: index live schema directly
         emitLog('creating_indexes', `Re-indexing live schema ${schemaName}...`);

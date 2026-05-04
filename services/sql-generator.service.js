@@ -1,5 +1,7 @@
 const claudeService = require('./llm.claude');
 const schemaDescriptorService = require('./schema-descriptor.service');
+const slowQueryService = require('./slow-query.service');
+const { getPool: getZer4uPool } = require('./db.zer4u');
 
 /**
  * SQL Generator Service (Helper Agent)
@@ -8,6 +10,11 @@ const schemaDescriptorService = require('./schema-descriptor.service');
  * This is a stateless helper - NOT a crew member
  */
 class SQLGeneratorService {
+  constructor() {
+    // Cache slow queries per schema for 5 minutes to avoid fetching on every call
+    this._antiPatternCache = new Map(); // schemaName -> { queries, fetchedAt }
+  }
+
   /**
    * Generate SQL query from natural language question
    *
@@ -22,15 +29,18 @@ class SQLGeneratorService {
     console.log(`   Question: "${question}"`);
 
     try {
-      // Step 1: Get schema description
+      // Step 1: Get schema description (cached in zer4u DB)
       const schemaDescription = options.schemaDescription ||
-        await schemaDescriptorService.getDescription(schemaName);
+        await schemaDescriptorService.getDescription(schemaName, false, null, getZer4uPool());
 
-      // Step 2: Build the prompt for Claude
-      const systemPrompt = this._buildSystemPrompt(schemaName, schemaDescription);
+      // Step 2: Fetch slow query anti-patterns (cached)
+      const antiPatterns = await this._getAntiPatterns(schemaName);
+
+      // Step 3: Build the prompt for Claude
+      const systemPrompt = this._buildSystemPrompt(schemaName, schemaDescription, antiPatterns);
       const userMessage = this._buildUserMessage(question);
 
-      console.log(`   Calling Claude to generate SQL...`);
+      console.log(`   Calling Claude to generate SQL (${antiPatterns.length} anti-patterns loaded)...`);
 
       // Step 3: Call Claude
       const rawResponse = await claudeService.sendOneShot(
@@ -44,9 +54,8 @@ class SQLGeneratorService {
       );
       const response = (rawResponse && typeof rawResponse === 'object' && 'text' in rawResponse) ? rawResponse.text : rawResponse;
 
-      // Step 4: Parse and validate response
+      // Step 4: Parse response (safety validation happens in data-query.service before execution)
       const result = this._parseResponse(response);
-      this._validateSQL(result.sql);
 
       console.log(`   ✅ Generated SQL for ${result.tables.length} tables`);
 
@@ -59,10 +68,30 @@ class SQLGeneratorService {
   }
 
   /**
+   * Fetch recent slow/error/timeout queries for a schema (5-min cache).
+   * Returns empty array on failure so generation is never blocked.
+   * @private
+   */
+  async _getAntiPatterns(schemaName) {
+    const cached = this._antiPatternCache.get(schemaName);
+    if (cached && (Date.now() - cached.fetchedAt) < 5 * 60 * 1000) {
+      return cached.queries;
+    }
+    try {
+      const queries = await slowQueryService.getSlowQueries({ agentName: schemaName, limit: 20 });
+      this._antiPatternCache.set(schemaName, { queries, fetchedAt: Date.now() });
+      return queries;
+    } catch (err) {
+      console.warn(`⚠️  Failed to load slow query anti-patterns: ${err.message}`);
+      return [];
+    }
+  }
+
+  /**
    * Build system prompt for SQL generation
    * @private
    */
-  _buildSystemPrompt(schemaName, schemaDescription) {
+  _buildSystemPrompt(schemaName, schemaDescription, antiPatterns = []) {
     return `You are an expert PostgreSQL query generator. Your task is to translate natural language questions into accurate SQL queries.
 
 ## Schema Information
@@ -116,12 +145,15 @@ ORDER BY month
 **PREFER materialized views for aggregations** — they are pre-computed and much faster:
 - \`${schemaName}.mv_sales_by_month\` — monthly totals (use for monthly/period questions)
 - \`${schemaName}.mv_sales_by_year\` — annual totals
-- \`${schemaName}.mv_sales_by_store\` — per-store totals
+- \`${schemaName}.mv_sales_by_store\` — per-store totals (all-time)
 - \`${schemaName}.mv_sales_by_store_month\` — store + month breakdown
-- \`${schemaName}.mv_sales_by_product\` — per-product totals
-- \`${schemaName}.mv_sales_by_customer\` — per-customer totals
+- \`${schemaName}.mv_sales_by_product\` — per-product totals (ALL-TIME only, NO date column — do NOT use when year/period is specified)
+- \`${schemaName}.mv_sales_by_product_month\` — product + month breakdown (USE THIS for year/period-filtered product queries like "top products this year")
+- \`${schemaName}.mv_sales_by_store_product\` — store + product all-time (USE THIS for top-N products per store)
+- \`${schemaName}.mv_sales_by_customer\` — per-customer totals (all-time)
+- \`${schemaName}.mv_sales_by_city\` — sales by customer city (USE THIS for geographic/city revenue breakdown)
 - \`${schemaName}.mv_sales_by_day\` — daily totals (last 90 days)
-
+${this._buildAntiPatternsSection(antiPatterns)}
 ## Output Format
 
 Respond with ONLY a JSON object (no markdown, no explanation):
@@ -134,6 +166,46 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 }
 
 If the question cannot be answered with the available schema, set confidence to "low" and explain why in the explanation field.`;
+  }
+
+  /**
+   * Build the anti-patterns section from slow query records.
+   * Returns empty string if no relevant queries.
+   * @private
+   */
+  _buildAntiPatternsSection(antiPatterns) {
+    if (!antiPatterns || antiPatterns.length === 0) return '';
+
+    const examples = antiPatterns
+      .filter(q => q.sql && q.sql.trim().length > 10)
+      .slice(0, 8)
+      .map(q => {
+        const label = q.query_type === 'timeout'
+          ? `TIMEOUT (${q.duration_ms}ms)`
+          : q.query_type === 'error'
+            ? `ERROR: ${(q.error_message || 'unknown').slice(0, 80)}`
+            : `SLOW (${q.duration_ms}ms)`;
+        const question = q.question ? `Question: "${q.question.slice(0, 100)}"` : '';
+        return `-- ${label}${question ? '\n-- ' + question : ''}\n${q.sql.slice(0, 400)}`;
+      });
+
+    if (examples.length === 0) return '';
+
+    return `
+
+## AVOID — Known Problem Queries
+
+The following queries caused timeouts or errors in production. Study them and do NOT reproduce their patterns:
+
+\`\`\`sql
+${examples.join('\n\n')}
+\`\`\`
+
+**Key anti-patterns to avoid:**
+- \`TO_DATE(col, 'DD/MM/YYYY')\` — \`sale_date\` is already a DATE column, use it directly
+- Hebrew column names (\`"קוד פריט SALES"\`, \`"שם פריט"\`, \`"מכירה ללא מעמ"\`) — use the English names: \`item_code\`, \`item_name\`, \`revenue\`
+- Scanning raw \`inventory\` or \`min_inventory\` tables for item-level data — use \`mv_inventory_by_item\` instead
+- Counting customers this month via \`mv_sales_by_customer\` — use \`mv_sales_by_month.customer_count\` instead`;
   }
 
   /**
@@ -154,13 +226,20 @@ Remember to respond with ONLY the JSON object.`;
    */
   _parseResponse(response) {
     try {
-      // Clean up response (remove markdown code blocks if present)
       let cleanResponse = response.trim();
       if (cleanResponse.startsWith('```')) {
-        cleanResponse = cleanResponse.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+        cleanResponse = cleanResponse.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
       }
 
-      const parsed = JSON.parse(cleanResponse);
+      // Extract the first complete JSON object even if Claude appended extra text
+      let parsed;
+      try {
+        parsed = JSON.parse(cleanResponse);
+      } catch {
+        const jsonStr = this._extractFirstJSON(cleanResponse);
+        if (!jsonStr) throw new Error('No JSON object found in response');
+        parsed = JSON.parse(jsonStr);
+      }
 
       // Validate required fields
       if (!parsed.sql) {
@@ -179,22 +258,21 @@ Remember to respond with ONLY the JSON object.`;
     }
   }
 
-  /**
-   * Validate generated SQL (basic safety checks)
-   * @private
-   */
-  _validateSQL(sql) {
-    const dangerous = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE', 'ALTER', 'CREATE'];
-    const upperSQL = sql.toUpperCase();
-
-    for (const keyword of dangerous) {
-      if (upperSQL.includes(keyword)) {
-        throw new Error(`SQL contains forbidden keyword: ${keyword}`);
+  /** @private — returns the first complete JSON object in text, or null */
+  _extractFirstJSON(text) {
+    let depth = 0, start = -1;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '{') {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (text[i] === '}') {
+        depth--;
+        if (depth === 0 && start !== -1) return text.slice(start, i + 1);
       }
     }
-
-    return true;
+    return null;
   }
+
 }
 
 module.exports = new SQLGeneratorService();

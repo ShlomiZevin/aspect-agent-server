@@ -93,10 +93,17 @@ class SlowQueryService {
   /**
    * Run EXPLAIN (FORMAT JSON) on the query's SQL, then use Claude to
    * generate an index recommendation. Stores result in the DB.
+   * Idempotent — skips if already analyzed.
    */
   async analyzeQuery(slowQueryId) {
     const sq = await this.getSlowQuery(slowQueryId);
     if (!sq) throw new Error(`Slow query ${slowQueryId} not found`);
+    if (sq.analyzed_at) {
+      const rec = typeof sq.recommendation === 'string'
+        ? JSON.parse(sq.recommendation)
+        : sq.recommendation;
+      return { plan: null, recommendation: rec, alreadyAnalyzed: true };
+    }
 
     // Run EXPLAIN without ANALYZE to avoid re-executing the slow query
     let plan = null;

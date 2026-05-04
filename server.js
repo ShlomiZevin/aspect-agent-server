@@ -3402,7 +3402,8 @@ app.post('/api/admin/data-loader/:schema/index', async (req, res) => {
     if (!dataReloadService?.reloaders[schema]) {
       return res.status(404).json({ error: `Unknown schema: ${schema}` });
     }
-    const runId = await dataReloadService.startIndexing(schema);
+    const { force = true } = req.body || {};
+    const runId = await dataReloadService.startIndexing(schema, 'manual', { force });
     res.json({ runId, status: 'running', phase: 'indexing' });
   } catch (err) {
     const code = err.code || 500;
@@ -3492,6 +3493,22 @@ app.post('/api/admin/data-loader/:schema/cancel', async (req, res) => {
       svc.currentRuns[schema].status = 'failed';
     }
     res.json({ cancelled: result.rows.map(r => r.id) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/data-loader/:schema/test-query — run a single NL question through the data-query pipeline
+app.post('/api/admin/data-loader/:schema/test-query', async (req, res) => {
+  const { schema } = req.params;
+  const { question } = req.body;
+  if (!question) return res.status(400).json({ error: 'question is required' });
+  try {
+    const { DataQueryService } = require('./services/data-query.service');
+    const { getPool } = require('./services/db.zer4u');
+    const svc = new DataQueryService(getPool());
+    const result = await svc.queryByQuestion(question, schema, { agentName: schema, maxRows: 10 });
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

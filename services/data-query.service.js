@@ -3,12 +3,14 @@ const sqlGeneratorService = require('./sql-generator.service');
 const slowQueryService = require('./slow-query.service');
 
 const QUERY_TIMEOUT_MS = parseInt(process.env.QUERY_TIMEOUT_MS || '15000');
+const SCHEMA_RE = /^[a-z0-9_]+$/i;
+const TABLE_RE  = /^[a-z0-9_]+$/i;
 
 /**
  * Data Query Service
  *
- * Generic service for querying customer data schemas
- * Handles the full flow: question → SQL → results
+ * Generic service for querying customer data schemas.
+ * Handles the full flow: question → SQL → results.
  *
  * Accepts an optional pool in the constructor so zer4u (and future schemas
  * on dedicated databases) can use their own connection without affecting others.
@@ -16,70 +18,66 @@ const QUERY_TIMEOUT_MS = parseInt(process.env.QUERY_TIMEOUT_MS || '15000');
 class DataQueryService {
   constructor(pool = null) {
     this.pool = pool || new Pool({
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT,
+      host:     process.env.DB_HOST,
+      port:     process.env.DB_PORT,
       database: process.env.DB_NAME,
-      user: process.env.DB_USER,
+      user:     process.env.DB_USER,
       password: process.env.DB_PASSWORD,
       max: 5
     });
   }
 
   /**
-   * Query data by asking a natural language question
+   * Query data by asking a natural language question.
    *
    * @param {string} question - Natural language question
    * @param {string} customerSchema - Customer schema name (e.g., 'zer4u')
-   * @param {Object} options - Query options
-   * @param {number} options.maxRows - Maximum rows to return (default: 100)
-   * @param {number} options.timeout - Query timeout in ms (default: 30000)
-   * @returns {Promise<Object>} - { sql, data, rowCount, explanation }
+   * @param {Object} options
+   * @param {number} options.maxRows - Hard row cap applied after generation (default: 100)
+   * @param {number} options.timeout - Statement timeout in ms (default: QUERY_TIMEOUT_MS)
+   * @param {string} options.agentName - Agent name for slow-query logging
+   * @returns {Promise<Object>} { sql, data, rowCount, explanation, confidence, duration, columns }
    */
   async queryByQuestion(question, customerSchema, options = {}) {
     const {
       maxRows = 100,
       timeout = QUERY_TIMEOUT_MS,
-      agentName = customerSchema,  // Agent name for logging (defaults to schema name)
+      agentName = customerSchema,
     } = options;
 
-    console.log(`📊 Data Query Service: Processing question for ${customerSchema}`);
-    console.log(`   Question: "${question}"`);
+    console.log(`Data Query: question for schema "${customerSchema}": "${question}"`);
 
     const startTime = Date.now();
     let sql, explanation, confidence;
 
     // Step 1: Generate SQL — no DB connection held during the LLM call
     try {
-      console.log(`   Step 1: Generating SQL...`);
       const generated = await sqlGeneratorService.generateSQL(question, customerSchema);
       sql = generated.sql;
       explanation = generated.explanation;
       confidence = generated.confidence;
-      console.log(`   Generated SQL (confidence: ${confidence}):`);
-      console.log(`   ${sql}`);
+      // Safety guard: sql-generator validates too, but enforce here as the last line of defence
+      this._validateSQL(sql);
+      // Ensure the query can't return more rows than the caller allows
+      sql = this._enforceLimit(sql, maxRows);
+      console.log(`   Generated SQL (confidence: ${confidence}): ${sql}`);
     } catch (error) {
       const duration = Date.now() - startTime;
-      console.error('❌ SQL generation failed:', error.message);
       slowQueryService.logSlowQuery({
         agentName, schemaName: customerSchema, question, sql: '',
         durationMs: duration, queryType: 'error', errorMessage: error.message,
       }).catch(() => {});
-      return {
-        error: true, timeout: false, message: error.message,
-        sql: null, explanation: null, confidence: null, data: [], rowCount: 0,
-      };
+      return { error: true, timeout: false, message: error.message, sql: null, explanation: null, confidence: null, data: [], rowCount: 0 };
     }
 
-    // Step 2: Execute query — connection acquired only now
+    // Step 2: Execute — connection acquired only now
     const client = await this.pool.connect();
     try {
-      console.log(`   Step 2: Executing query...`);
       await client.query(`SET statement_timeout = ${timeout}`);
       const result = await client.query(sql);
       const duration = Date.now() - startTime;
 
-      console.log(`   ✅ Query completed in ${duration}ms`);
-      console.log(`   Rows returned: ${result.rows.length}`);
+      console.log(`   Query done in ${duration}ms, ${result.rows.length} rows`);
 
       if (duration > slowQueryService.threshold) {
         slowQueryService.logSlowQuery({
@@ -98,8 +96,6 @@ class DataQueryService {
 
     } catch (error) {
       const duration = Date.now() - startTime;
-      console.error('❌ Query execution failed:', error.message);
-
       const isTimeout = error.message?.includes('canceling statement due to statement timeout')
         || error.message?.includes('Query read timeout')
         || error.code === '57014';
@@ -123,52 +119,34 @@ class DataQueryService {
   }
 
   /**
-   * Returns a user-friendly message when a query exceeds the timeout.
-   * The LLM will translate/adapt it to the user's language.
-   * @private
-   */
-  _getTimeoutMessage() {
-    return `The query took too long and was automatically stopped after ${QUERY_TIMEOUT_MS / 1000} seconds.\n\nIt has been logged in the Query Optimizer dashboard where an admin can analyze it and create the necessary database indexes to make similar queries much faster.\n\nIn the meantime, try asking a more specific question or narrowing the time range (e.g. "last week" instead of "last year").`;
-  }
-
-  /**
-   * Execute a pre-generated SQL query directly
+   * Execute a pre-generated SQL query directly (admin use only).
    *
    * @param {string} sql - The SQL query to execute
-   * @param {Object} options - Query options
-   * @returns {Promise<Object>} - { data, rowCount, columns }
+   * @param {Object} options
+   * @returns {Promise<Object>} { data, rowCount, columns, duration }
    */
   async executeSQL(sql, options = {}) {
     const { timeout = 30000 } = options;
 
-    console.log(`📊 Executing direct SQL query`);
+    this._validateSQL(sql);
 
     const client = await this.pool.connect();
-
     try {
-      // Validate SQL (basic safety check)
-      this._validateSQL(sql);
-
-      // Set timeout
       await client.query(`SET statement_timeout = ${timeout}`);
-
       const startTime = Date.now();
       const result = await client.query(sql);
       const duration = Date.now() - startTime;
 
-      console.log(`   ✅ Query completed in ${duration}ms, ${result.rows.length} rows`);
-
+      console.log(`   executeSQL done in ${duration}ms, ${result.rows.length} rows`);
       return {
         data: result.rows,
         rowCount: result.rows.length,
         columns: result.fields?.map(f => f.name) || [],
-        duration
+        duration,
       };
-
     } catch (error) {
-      console.error('❌ SQL execution failed:', error.message);
+      console.error('SQL execution failed:', error.message);
       throw error;
-
     } finally {
       await client.query('RESET statement_timeout').catch(() => {});
       client.release();
@@ -176,112 +154,69 @@ class DataQueryService {
   }
 
   /**
-   * Get sample data from a table
-   *
-   * @param {string} customerSchema - Schema name
-   * @param {string} tableName - Table name
-   * @param {number} limit - Number of rows (default: 10)
-   * @returns {Promise<Object>} - { data, rowCount, columns }
+   * Get sample data from a table.
+   * @param {string} customerSchema
+   * @param {string} tableName
+   * @param {number} limit
    */
   async getSampleData(customerSchema, tableName, limit = 10) {
-    const sql = `SELECT * FROM ${customerSchema}.${tableName} LIMIT ${limit}`;
-    return this.executeSQL(sql);
+    this._validateIdentifiers(customerSchema, tableName);
+    return this.executeSQL(`SELECT * FROM ${customerSchema}.${tableName} LIMIT ${parseInt(limit)}`);
   }
 
   /**
-   * Get table statistics
-   *
-   * @param {string} customerSchema - Schema name
-   * @param {string} tableName - Table name
-   * @returns {Promise<Object>} - { rowCount, columnCount, sampleData }
+   * Get row count, column count, and 5-row sample for a table.
+   * @param {string} customerSchema
+   * @param {string} tableName
    */
   async getTableStats(customerSchema, tableName) {
-    const client = await this.pool.connect();
+    this._validateIdentifiers(customerSchema, tableName);
 
-    try {
-      // Get row count
-      const countResult = await client.query(
-        `SELECT COUNT(*) as count FROM ${customerSchema}.${tableName}`
-      );
+    // Use pool.query() (not a single client) so the three queries run truly in parallel,
+    // each on its own connection automatically acquired and released by the pool.
+    const [countResult, colResult, sampleResult] = await Promise.all([
+      this.pool.query(`SELECT COUNT(*) AS count FROM ${customerSchema}.${tableName}`),
+      this.pool.query(
+        `SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2`,
+        [customerSchema, tableName]
+      ),
+      this.pool.query(`SELECT * FROM ${customerSchema}.${tableName} LIMIT 5`),
+    ]);
 
-      // Get column count
-      const colResult = await client.query(`
-        SELECT COUNT(*) as count
-        FROM information_schema.columns
-        WHERE table_schema = $1 AND table_name = $2
-      `, [customerSchema, tableName]);
-
-      // Get sample data
-      const sampleResult = await client.query(
-        `SELECT * FROM ${customerSchema}.${tableName} LIMIT 5`
-      );
-
-      return {
-        rowCount: parseInt(countResult.rows[0].count),
-        columnCount: parseInt(colResult.rows[0].count),
-        sampleData: sampleResult.rows
-      };
-
-    } finally {
-      client.release();
-    }
+    return {
+      rowCount:    parseInt(countResult.rows[0].count),
+      columnCount: parseInt(colResult.rows[0].count),
+      sampleData:  sampleResult.rows,
+    };
   }
 
-  /**
-   * Validate SQL for safety
-   * @private
-   */
+  /** @private — injected at the end of generated SQL when no LIMIT is present */
+  _enforceLimit(sql, maxRows) {
+    if (/\bLIMIT\b/i.test(sql)) return sql;
+    const clean = sql.trimEnd().replace(/;+$/, '');
+    return `${clean}\nLIMIT ${maxRows}`;
+  }
+
+  /** @private — rejects any SQL that contains DDL/DML keywords */
   _validateSQL(sql) {
-    const dangerous = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE', 'ALTER', 'CREATE'];
-    const upperSQL = sql.toUpperCase();
-
-    for (const keyword of dangerous) {
-      if (upperSQL.includes(keyword)) {
-        throw new Error(`SQL contains forbidden keyword: ${keyword}`);
-      }
+    const forbidden = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE', 'ALTER', 'CREATE'];
+    const upper = sql.toUpperCase();
+    for (const kw of forbidden) {
+      if (upper.includes(kw)) throw new Error(`SQL contains forbidden keyword: ${kw}`);
     }
-
-    return true;
   }
 
-  /**
-   * Format query results for display
-   *
-   * @param {Array} data - Query results
-   * @param {Object} options - Formatting options
-   * @returns {string} - Formatted output
-   */
-  formatResults(data, options = {}) {
-    const { format = 'table', maxRows = 20 } = options;
-
-    if (!data || data.length === 0) {
-      return 'No results found.';
-    }
-
-    if (format === 'json') {
-      return JSON.stringify(data, null, 2);
-    }
-
-    if (format === 'table') {
-      // Simple table formatting
-      const displayData = data.slice(0, maxRows);
-      let output = '';
-
-      if (data.length > maxRows) {
-        output += `Showing ${maxRows} of ${data.length} rows\n\n`;
-      }
-
-      output += JSON.stringify(displayData, null, 2);
-
-      return output;
-    }
-
-    return JSON.stringify(data);
+  /** @private — guards getSampleData / getTableStats against injection via identifier args */
+  _validateIdentifiers(schema, table) {
+    if (!SCHEMA_RE.test(schema)) throw new Error(`Invalid schema name: ${schema}`);
+    if (!TABLE_RE.test(table))   throw new Error(`Invalid table name: ${table}`);
   }
 
-  /**
-   * Close database connection
-   */
+  /** @private */
+  _getTimeoutMessage() {
+    return `The query took too long and was automatically stopped after ${QUERY_TIMEOUT_MS / 1000} seconds.\n\nIt has been logged in the Query Optimizer dashboard where an admin can analyze it and create the necessary database indexes to make similar queries much faster.\n\nIn the meantime, try asking a more specific question or narrowing the time range (e.g. "last week" instead of "last year").`;
+  }
+
   async close() {
     await this.pool.end();
   }
