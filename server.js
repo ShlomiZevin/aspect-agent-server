@@ -3508,6 +3508,22 @@ app.post('/api/admin/data-loader/:schema/cancel', async (req, res) => {
   }
 });
 
+// POST /api/admin/data-loader/:schema/test-query — run a single NL question through the data-query pipeline
+app.post('/api/admin/data-loader/:schema/test-query', async (req, res) => {
+  const { schema } = req.params;
+  const { question } = req.body;
+  if (!question) return res.status(400).json({ error: 'question is required' });
+  try {
+    const { DataQueryService } = require('./services/data-query.service');
+    const { getPool } = require('./services/db.zer4u');
+    const svc = new DataQueryService(getPool());
+    const result = await svc.queryByQuestion(question, schema, { agentName: schema, maxRows: 10 });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/admin/data-loader/:schema/logs — SSE live log stream
 app.get('/api/admin/data-loader/:schema/logs', (req, res) => {
   const { schema } = req.params;

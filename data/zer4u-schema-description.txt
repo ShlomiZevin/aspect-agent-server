@@ -177,6 +177,107 @@ ORDER BY total_revenue DESC
 LIMIT 10;
 ```
 
+### Sales by Product per Month (`mv_sales_by_product_month`) - **USE THIS FOR PERIOD-FILTERED PRODUCT QUERIES**
+Pre-aggregated product totals by month. **Use this when the question includes a year or period AND asks about products.**
+
+**Columns:**
+- `item_code` (text) - Product code
+- `item_name` (text) - Product name in Hebrew
+- `year_month` (text) - Period in 'YYYY-MM' format
+- `sale_year` (integer) - Year
+- `sale_month` (integer) - Month number (1-12)
+- `total_quantity` (numeric) - Units sold in this month
+- `total_revenue` (numeric) - Revenue in this month
+
+**When to use:** "top products this year", "best sellers in 2024", "products sold last month", "monthly product performance", etc.
+**Do NOT use:** `mv_sales_by_product` when a time period is specified — it has no date column.
+
+**Example queries:**
+```sql
+-- Top 10 products in 2025 by revenue
+SELECT item_code, item_name, SUM(total_revenue) AS revenue_2025, SUM(total_quantity) AS qty_2025
+FROM zer4u.mv_sales_by_product_month
+WHERE sale_year = 2025
+GROUP BY item_code, item_name
+ORDER BY revenue_2025 DESC
+LIMIT 10;
+
+-- Top products in last 3 months
+SELECT item_code, item_name, SUM(total_revenue) AS total_revenue
+FROM zer4u.mv_sales_by_product_month
+WHERE year_month >= TO_CHAR(CURRENT_DATE - INTERVAL '3 months', 'YYYY-MM')
+GROUP BY item_code, item_name
+ORDER BY total_revenue DESC
+LIMIT 10;
+
+-- Monthly trend for a specific product
+SELECT year_month, total_quantity, total_revenue
+FROM zer4u.mv_sales_by_product_month
+WHERE item_code = 'P001'
+ORDER BY year_month;
+```
+
+### Sales by Store + Product (`mv_sales_by_store_product`) - **USE THIS FOR STORE+PRODUCT QUERIES**
+Pre-aggregated all-time sales by store and product. **Use for top-product-per-store questions.**
+
+**Columns:**
+- `store_number` (integer) - Store ID
+- `store_name` (text) - Store name in Hebrew
+- `item_code` (text) - Product code
+- `item_name` (text) - Product name in Hebrew
+- `total_quantity` (numeric) - Units sold (all time)
+- `total_revenue` (numeric) - Revenue (all time)
+
+**When to use:** "top products per store", "which products sell best in store X", "store product mix", "top N items for each store", etc.
+
+**Example queries:**
+```sql
+-- Top 3 products per store by revenue (all time)
+WITH ranked AS (
+  SELECT store_number, store_name, item_code, item_name, total_revenue,
+         ROW_NUMBER() OVER (PARTITION BY store_number ORDER BY total_revenue DESC) AS rnk
+  FROM zer4u.mv_sales_by_store_product
+)
+SELECT store_number, store_name, item_code, item_name, total_revenue
+FROM ranked
+WHERE rnk <= 3
+ORDER BY store_number, rnk;
+
+-- Top 10 products in a specific store
+SELECT item_code, item_name, total_quantity, total_revenue
+FROM zer4u.mv_sales_by_store_product
+WHERE store_number = 5
+ORDER BY total_revenue DESC
+LIMIT 10;
+```
+
+### Sales by City (`mv_sales_by_city`) - **USE THIS FOR GEOGRAPHIC QUERIES**
+Pre-aggregated sales by customer city. **Use for geographic/regional revenue breakdown.**
+
+**Columns:**
+- `city` (text) - City/settlement name in Hebrew (from customers."ישוב")
+- `customer_count` (bigint) - Number of distinct customers from this city
+- `transaction_count` (bigint) - Number of transactions
+- `total_revenue` (numeric) - Total revenue from customers in this city
+
+**When to use:** "revenue by city", "which city has most customers", "geographic breakdown", "top cities by sales", etc.
+
+**Example queries:**
+```sql
+-- Top 15 cities by revenue
+SELECT city, customer_count, total_revenue
+FROM zer4u.mv_sales_by_city
+WHERE city IS NOT NULL
+ORDER BY total_revenue DESC
+LIMIT 15;
+
+-- Cities with more than 1000 customers
+SELECT city, customer_count, total_revenue
+FROM zer4u.mv_sales_by_city
+WHERE customer_count > 1000
+ORDER BY customer_count DESC;
+```
+
 ### Sales by Day (`mv_sales_by_day`) - **USE THIS FOR DAILY QUERIES**
 Pre-aggregated daily sales for the last 90 days. **ALWAYS use this for daily trend questions.**
 
@@ -216,11 +317,13 @@ Primary transaction table. **Key columns have been migrated to English with prop
 
 ### Items/Products (`items` - 28K records)
 Product catalog and pricing:
-- **Identity**: `item_code` (item code - TEXT), `item_name` (item name in **Hebrew** - TEXT)
-- **Classification**: `item_group` (item group/category in Hebrew - TEXT), `תת קבוצת פריט` (sub-group)
-- **Pricing**: Multiple price fields (`מחיר עלות 0`, `מחיר עלות 6`, `מחיר מחירון 1/2/4`)
-- **Suppliers**: `שם ספק` (supplier name)
+- **Identity**: `item_code` (TEXT, English), `item_name` (TEXT, Hebrew), `item_group` (TEXT, Hebrew category)
+- **Classification**: `"תת קבוצת פריט"` (sub-group), `"סוג פריט"` (item type), `"מידה"` (size/unit)
+- **Entry date**: `"תאריך פתיחת פריט"` (TEXT, DD/MM/YYYY format) — use `parse_date_ddmmyyyy("תאריך פתיחת פריט")` for date comparison
+- **Pricing**: `"מחיר עלות 0"`, `"מחיר עלות 6"`, `"מחיר מחירון 1"`, `"מחיר מחירון 2"`, `"מחיר מחירון 4"` (all TEXT, cast to numeric)
+- **Suppliers**: `"שם ספק"` (supplier name, Hebrew)
 - **⚠️ Item names are in Hebrew** — when user searches in English (e.g. "milk"), note that the catalog is in Hebrew and suggest the Hebrew equivalent (e.g., חלב). Still run the query but explain the result.
+- **⚠️ Column `"תאריך הכנסה"` does NOT exist** — use `"תאריך פתיחת פריט"` for item entry/launch date.
 
 **Example queries:**
 ```sql
@@ -345,6 +448,30 @@ ORDER BY store_id, rnk;
 
 ## Supporting Tables
 
+### Sales Targets (`targets`)
+Store sales targets. **Only 2 columns:**
+- `"TargetKey"` (TEXT) — composite key in format `<category>**<store_number>**<DD/MM/YYYY>`. Extract parts with SPLIT_PART.
+- `"Target"` (TEXT, cast to numeric) — target value
+
+**⚠️ No store_name or store_id column in targets.** Extract store_number via `SPLIT_PART("TargetKey", '**', 2)::integer`.
+Join with sales via `s."TargetKey" = t."TargetKey"`.
+
+**Example — sales achievement vs target by store:**
+```sql
+SELECT
+  SPLIT_PART(t."TargetKey", '**', 2)::integer AS store_number,
+  st.store_name,
+  SUM(t."Target"::numeric) AS total_target,
+  COALESCE(SUM(s.revenue), 0) AS actual_revenue,
+  ROUND(COALESCE(SUM(s.revenue), 0) / NULLIF(SUM(t."Target"::numeric), 0) * 100, 1) AS achievement_pct
+FROM zer4u.targets t
+LEFT JOIN zer4u.sales s ON s."TargetKey" = t."TargetKey"
+LEFT JOIN zer4u.stores st ON SPLIT_PART(t."TargetKey", '**', 2)::integer = st.store_id
+GROUP BY store_number, st.store_name
+ORDER BY achievement_pct DESC NULLS LAST
+LIMIT 50;
+```
+
 ### Calendar (`calendar` - 3.7K records)
 Date dimension with Hebrew date fields:
 - **Base**: `תאריך מקורי` (original date), `DateN` (date number)
@@ -385,14 +512,17 @@ After migration, the main sales columns are typed — use them directly, no cast
 1. **For annual totals** ("sales for 2025", "this year"): Use `mv_sales_by_year` — instant!
 2. **For monthly/period queries** ("this month", "last 3 months", "monthly trend", "how many customers this month"): Use `mv_sales_by_month` (has `customer_count` column) — instant!
 3. **For store+time queries** ("store performance in 2025"): Use `mv_sales_by_store_month` — instant!
-4. **For all-time aggregations by store/customer/product**: Use `mv_sales_by_store` / `mv_sales_by_customer` / `mv_sales_by_product`
-   **⚠️ For year/period-filtered product queries** ("top products this year"): `mv_sales_by_product` has NO date column — use `sales JOIN items` with `sale_date` filter directly
-5. **For daily trends** ("daily sales", "sales by day", "last 7 days"): Use `mv_sales_by_day` — instant!
-6. **For inventory queries** ("stock levels", "items below minimum", "out of stock"): Use `mv_inventory_by_item` — instant!
-7. **For active stores count**: `SELECT COUNT(*) FROM zer4u.stores WHERE store_id > 0` (or use a closing date filter if needed)
-8. **For categories by revenue**: JOIN sales + items on item_code, GROUP BY item_group
-9. **For returning vs new customers**: Use MIN(sale_date) per customer — see example below
-10. **NEVER aggregate directly on sales table without a narrow filter** — use the materialized views!
+4. **For all-time aggregations by store/customer**: Use `mv_sales_by_store` / `mv_sales_by_customer`
+5. **For product queries WITH a time period** ("top products this year", "best sellers in 2025", "items sold last month"): Use `mv_sales_by_product_month` — instant! **⚠️ NEVER use `mv_sales_by_product` when a year/period is specified — it has NO date column.**
+6. **For all-time product totals** (no time filter): Use `mv_sales_by_product`
+7. **For top products per store / store product mix**: Use `mv_sales_by_store_product` — instant!
+8. **For geographic/city analysis** ("revenue by city", "top cities"): Use `mv_sales_by_city` — instant!
+9. **For daily trends** ("daily sales", "sales by day", "last 7 days"): Use `mv_sales_by_day` — instant!
+10. **For inventory queries** ("stock levels", "items below minimum", "out of stock"): Use `mv_inventory_by_item` — instant!
+11. **For active stores count**: `SELECT COUNT(*) FROM zer4u.stores WHERE store_id > 0` (or use a closing date filter if needed)
+12. **For categories by revenue**: JOIN sales + items on item_code, GROUP BY item_group
+13. **For returning vs new customers**: Use MIN(sale_date) per customer — see example below
+14. **NEVER aggregate directly on sales table without a narrow filter** — use the materialized views!
 
 ## Common Analysis Patterns
 ```sql
@@ -433,6 +563,31 @@ WHERE s.sale_date >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
 GROUP BY st.store_name, i.item_name
 ORDER BY qty_sold DESC
 LIMIT 20;
+
+-- SEARCH BY ITEM NAME + PERIOD — use mv_sales_by_product_month (fast!)
+-- Step 1: find matching item_codes from items table (small, uses ILIKE on 28K rows)
+-- Step 2: aggregate from MV using those codes (instant)
+WITH matching_items AS (
+  SELECT item_code FROM zer4u.items WHERE item_name ILIKE '%search_term%'
+)
+SELECT m.item_code, MAX(i.item_name) AS item_name,
+       SUM(m.total_quantity) AS total_quantity, SUM(m.total_revenue) AS total_revenue
+FROM zer4u.mv_sales_by_product_month m
+JOIN matching_items mi ON m.item_code = mi.item_code
+JOIN zer4u.items i ON m.item_code = i.item_code
+WHERE m.sale_year = 2025 AND m.sale_month = 2  -- specific month
+GROUP BY m.item_code, i.item_name;
+-- ⚠️ NEVER use: WHERE EXTRACT(MONTH FROM sale_date) = 2  — scans ALL 69M rows without year filter!
+-- ⚠️ NEVER use: WHERE EXTRACT(MONTH FROM sale_date) = 2 AND EXTRACT(YEAR ...) = 2025  — use mv_sales_by_product_month instead
+
+-- NEW PRODUCT LAUNCHES in a given month (item entry date)
+SELECT item_code, item_name, item_group,
+       zer4u.parse_date_ddmmyyyy("תאריך פתיחת פריט") AS entry_date
+FROM zer4u.items
+WHERE zer4u.parse_date_ddmmyyyy("תאריך פתיחת פריט") >= '2025-01-01'
+  AND zer4u.parse_date_ddmmyyyy("תאריך פתיחת פריט") < '2025-02-01'
+ORDER BY entry_date;
+-- ⚠️ Column is "תאריך פתיחת פריט" — NOT "תאריך הכנסה" (does not exist!)
 
 -- Returning vs new customers for last month — FAST pattern (avoids full table scan)
 -- Step 1: find customers who purchased last month (small set, uses index)
