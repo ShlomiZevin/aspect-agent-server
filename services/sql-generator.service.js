@@ -54,9 +54,8 @@ class SQLGeneratorService {
       );
       const response = (rawResponse && typeof rawResponse === 'object' && 'text' in rawResponse) ? rawResponse.text : rawResponse;
 
-      // Step 4: Parse and validate response
+      // Step 4: Parse response (safety validation happens in data-query.service before execution)
       const result = this._parseResponse(response);
-      this._validateSQL(result.sql);
 
       console.log(`   ✅ Generated SQL for ${result.tables.length} tables`);
 
@@ -146,10 +145,13 @@ ORDER BY month
 **PREFER materialized views for aggregations** — they are pre-computed and much faster:
 - \`${schemaName}.mv_sales_by_month\` — monthly totals (use for monthly/period questions)
 - \`${schemaName}.mv_sales_by_year\` — annual totals
-- \`${schemaName}.mv_sales_by_store\` — per-store totals
+- \`${schemaName}.mv_sales_by_store\` — per-store totals (all-time)
 - \`${schemaName}.mv_sales_by_store_month\` — store + month breakdown
-- \`${schemaName}.mv_sales_by_product\` — per-product totals
-- \`${schemaName}.mv_sales_by_customer\` — per-customer totals
+- \`${schemaName}.mv_sales_by_product\` — per-product totals (ALL-TIME only, NO date column — do NOT use when year/period is specified)
+- \`${schemaName}.mv_sales_by_product_month\` — product + month breakdown (USE THIS for year/period-filtered product queries like "top products this year")
+- \`${schemaName}.mv_sales_by_store_product\` — store + product all-time (USE THIS for top-N products per store)
+- \`${schemaName}.mv_sales_by_customer\` — per-customer totals (all-time)
+- \`${schemaName}.mv_sales_by_city\` — sales by customer city (USE THIS for geographic/city revenue breakdown)
 - \`${schemaName}.mv_sales_by_day\` — daily totals (last 90 days)
 ${this._buildAntiPatternsSection(antiPatterns)}
 ## Output Format
@@ -249,22 +251,6 @@ Remember to respond with ONLY the JSON object.`;
     }
   }
 
-  /**
-   * Validate generated SQL (basic safety checks)
-   * @private
-   */
-  _validateSQL(sql) {
-    const dangerous = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE', 'ALTER', 'CREATE'];
-    const upperSQL = sql.toUpperCase();
-
-    for (const keyword of dangerous) {
-      if (upperSQL.includes(keyword)) {
-        throw new Error(`SQL contains forbidden keyword: ${keyword}`);
-      }
-    }
-
-    return true;
-  }
 }
 
 module.exports = new SQLGeneratorService();

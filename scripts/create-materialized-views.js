@@ -4,8 +4,8 @@
  * Views with missing required columns are skipped with a warning — not fatal.
  * Supports optional schemaName parameter for shadow schema reload.
  *
- * All 8 views run in parallel — each gets its own DB connection from the pool.
- * Max total time = slowest single view (~17 min) instead of sum of all (~55 min).
+ * Light views run in parallel — each gets its own DB connection from the pool.
+ * Heavy views run sequentially after the parallel group (higher work_mem).
  */
 
 require('dotenv').config();
@@ -92,7 +92,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
         }
       }
 
-      const TOTAL = 8;
+      const TOTAL = 11;
       const tasks = [];       // run in parallel (light MVs)
       const heavyTasks = [];  // run after parallel group (heavy MVs needing more work_mem)
 
@@ -351,7 +351,119 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
         }, '512MB'));
       }
 
-      // Phase A: run 7 light MVs in parallel (each gets 64MB work_mem)
+      // 9. Sales by product + month (for period-filtered product ranking queries)
+      const miss9 = missing(['sales.item_code', 'items.item_code', 'items.item_name',
+        'sales.date', 'sales.quantity', 'sales.revenue']);
+      if (miss9) {
+        log(`[9/${TOTAL}] SKIP mv_sales_by_product_month — missing columns: ${miss9.join(', ')}`);
+        skipped++;
+      } else {
+        tasks.push(makeView('mv_sales_by_product_month', 9, TOTAL, async (c) => {
+          await c.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_product_month CASCADE`);
+          await c.query(`
+            CREATE MATERIALIZED VIEW ${s}.mv_sales_by_product_month AS
+            SELECT
+              s.${col(r, 'sales.item_code')} AS item_code,
+              MAX(i.${col(r, 'items.item_name')}) AS item_name,
+              TO_CHAR(${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}), 'YYYY-MM') AS year_month,
+              EXTRACT(YEAR  FROM ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}))::integer AS sale_year,
+              EXTRACT(MONTH FROM ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}))::integer AS sale_month,
+              SUM(s.${col(r, 'sales.quantity')}::numeric) AS total_quantity,
+              SUM(s.${col(r, 'sales.revenue')}::numeric) AS total_revenue
+            FROM ${s}.sales s
+            LEFT JOIN ${s}.items i ON s.${col(r, 'sales.item_code')} = i.${col(r, 'items.item_code')}
+            WHERE s.${col(r, 'sales.date')} IS NOT NULL
+              AND s.${col(r, 'sales.revenue')} IS NOT NULL
+            GROUP BY s.${col(r, 'sales.item_code')}, year_month, sale_year, sale_month
+          `);
+          await c.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_sales_by_product_month_pk
+            ON ${s}.mv_sales_by_product_month (item_code, year_month)
+          `);
+          await c.query(`
+            CREATE INDEX IF NOT EXISTS idx_mv_sales_by_product_month_year
+            ON ${s}.mv_sales_by_product_month (sale_year)
+          `);
+          await c.query(`
+            CREATE INDEX IF NOT EXISTS idx_mv_sales_by_product_month_code
+            ON ${s}.mv_sales_by_product_month (item_code)
+          `);
+        }));
+      }
+
+      // 10. Sales by store + product (all-time; for top-N-per-store product queries)
+      const miss10 = missing(['sales.store_id', 'stores.store_id', 'stores.store_name',
+        'sales.item_code', 'items.item_code', 'items.item_name', 'sales.quantity', 'sales.revenue']);
+      if (miss10) {
+        log(`[10/${TOTAL}] SKIP mv_sales_by_store_product — missing columns: ${miss10.join(', ')}`);
+        skipped++;
+      } else {
+        heavyTasks.push(() => makeView('mv_sales_by_store_product', 10, TOTAL, async (c) => {
+          await c.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_store_product CASCADE`);
+          await c.query(`
+            CREATE MATERIALIZED VIEW ${s}.mv_sales_by_store_product AS
+            SELECT
+              ${s}.to_int_safe(s.${col(r, 'sales.store_id')}) AS store_number,
+              st.${col(r, 'stores.store_name')} AS store_name,
+              s.${col(r, 'sales.item_code')} AS item_code,
+              MAX(i.${col(r, 'items.item_name')}) AS item_name,
+              SUM(s.${col(r, 'sales.quantity')}::numeric) AS total_quantity,
+              SUM(s.${col(r, 'sales.revenue')}::numeric) AS total_revenue
+            FROM ${s}.sales s
+            LEFT JOIN ${s}.stores st
+              ON ${s}.to_int_safe(s.${col(r, 'sales.store_id')}) = ${s}.to_int_safe(st.${col(r, 'stores.store_id')})
+            LEFT JOIN ${s}.items i ON s.${col(r, 'sales.item_code')} = i.${col(r, 'items.item_code')}
+            WHERE s.${col(r, 'sales.revenue')} IS NOT NULL
+            GROUP BY store_number, store_name, s.${col(r, 'sales.item_code')}
+          `);
+          await c.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_sales_by_store_product_pk
+            ON ${s}.mv_sales_by_store_product (store_number, item_code)
+          `);
+          await c.query(`
+            CREATE INDEX IF NOT EXISTS idx_mv_sales_by_store_product_revenue
+            ON ${s}.mv_sales_by_store_product (store_number, total_revenue DESC)
+          `);
+          await c.query(`
+            CREATE INDEX IF NOT EXISTS idx_mv_sales_by_store_product_code
+            ON ${s}.mv_sales_by_store_product (item_code)
+          `);
+        }, '256MB'));
+      }
+
+      // 11. Sales by customer city (for geographic revenue breakdown; city = "ישוב" in customers)
+      const miss11 = missing(['sales.customer_id', 'customers.customer_id', 'sales.revenue']);
+      if (miss11) {
+        log(`[11/${TOTAL}] SKIP mv_sales_by_city — missing columns: ${miss11.join(', ')}`);
+        skipped++;
+      } else {
+        tasks.push(makeView('mv_sales_by_city', 11, TOTAL, async (c) => {
+          await c.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_city CASCADE`);
+          await c.query(`
+            CREATE MATERIALIZED VIEW ${s}.mv_sales_by_city AS
+            SELECT
+              c."ישוב" AS city,
+              COUNT(DISTINCT ${s}.to_int_safe(s.${col(r, 'sales.customer_id')})) AS customer_count,
+              COUNT(*) AS transaction_count,
+              SUM(s.${col(r, 'sales.revenue')}::numeric) AS total_revenue
+            FROM ${s}.sales s
+            LEFT JOIN ${s}.customers c
+              ON ${s}.to_int_safe(s.${col(r, 'sales.customer_id')}) = ${s}.to_int_safe(c.${col(r, 'customers.customer_id')})
+            WHERE s.${col(r, 'sales.revenue')} IS NOT NULL
+            GROUP BY c."ישוב"
+          `);
+          await c.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_sales_by_city_pk
+            ON ${s}.mv_sales_by_city (city)
+          `);
+          await c.query(`
+            CREATE INDEX IF NOT EXISTS idx_mv_sales_by_city_revenue
+            ON ${s}.mv_sales_by_city (total_revenue DESC)
+          `);
+        }));
+      }
+
+      // Phase A: run light MVs in parallel (each gets 64MB work_mem)
       log(`Starting ${tasks.length} materialized views in parallel...`);
       await Promise.all(tasks);
 

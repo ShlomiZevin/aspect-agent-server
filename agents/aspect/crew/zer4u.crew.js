@@ -2,11 +2,12 @@
  * Zer4U Crew Member
  *
  * Financial advisor for Zer4U flower shop business
- * Connects to REAL DATA from PostgreSQL zer4u schema
+ * Connects to REAL DATA from PostgreSQL zer4u schema via the zer4u-specific DB pool.
  */
 
 const CrewMember = require('../../../crew/base/CrewMember');
-const dataQueryService = require('../../../services/data-query.service');
+const { DataQueryService } = require('../../../services/data-query.service');
+const { getPool: getZer4uPool } = require('../../../services/db.zer4u');
 
 class Zer4UCrew extends CrewMember {
   constructor() {
@@ -80,7 +81,7 @@ You: *Call fetch_zer4u_data("top selling products")* → "The best-selling produ
 User: "How's our inventory situation?"
 You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's the current inventory status..."`,
 
-      model: 'gpt-4o',
+      model: process.env.ZER4U_CREW_MODEL || 'gpt-4o',
       maxTokens: 4096,
 
       fieldsToCollect: [],
@@ -110,6 +111,9 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
 
       knowledgeBase: null
     });
+
+    // Use the zer4u-specific DB pool — the zer4u schema lives in a separate database
+    this._dataQueryService = new DataQueryService(getZer4uPool());
   }
 
   /**
@@ -120,20 +124,17 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
     const thinkingService = require('../../../services/thinking.service');
 
     try {
-      console.log(`🔍 Zer4U Data Fetch: "${question}"`);
+      console.log(`Zer4U Data Fetch: "${question}"`);
 
-      // Use the data query service to get results
-      const result = await dataQueryService.queryByQuestion(
+      const result = await this._dataQueryService.queryByQuestion(
         question,
-        'zer4u', // Schema name
+        'zer4u',
         {
           maxRows: 100,
-          // timeout: use QUERY_TIMEOUT_MS env var default (15s)
-          agentName: 'aspect',  // Agent name for query optimizer logging
+          agentName: 'zer4u',
         }
       );
 
-      // Add thinking step with question and SQL (using external conversation ID)
       if (this._externalConversationId && result.sql) {
         thinkingService.addFunctionCallStep(
           this._externalConversationId,
@@ -160,7 +161,6 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
         };
       }
 
-      // Format response for the LLM
       return {
         success: true,
         question,
@@ -174,8 +174,7 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
       };
 
     } catch (error) {
-      console.error('❌ Data fetch failed:', error);
-
+      console.error('Data fetch failed:', error);
       return {
         error: true,
         message: error.message,
@@ -185,39 +184,33 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
   }
 
   /**
-   * Summarize data for better LLM understanding
+   * Summarize data for LLM consumption — show all rows up to 20, then first 20 + stats.
+   * Keeping the payload small avoids bloating the context window.
    * @private
    */
   _summarizeData(data, columns) {
-    if (!data || data.length === 0) {
-      return 'No data found.';
-    }
+    if (!data || data.length === 0) return 'No data found.';
 
+    const MAX_DISPLAY = 20;
     let summary = `Found ${data.length} records.\n\n`;
 
-    if (data.length <= 10) {
-      // For small datasets, show all
-      summary += 'All records:\n';
-      summary += JSON.stringify(data, null, 2);
-    } else {
-      // For large datasets, show first 10 and stats
-      summary += 'First 10 records:\n';
-      summary += JSON.stringify(data.slice(0, 10), null, 2);
-      summary += `\n\n... and ${data.length - 10} more records.`;
+    const displayData = data.slice(0, MAX_DISPLAY);
+    summary += data.length > MAX_DISPLAY
+      ? `First ${MAX_DISPLAY} of ${data.length} records:\n`
+      : 'All records:\n';
+    summary += JSON.stringify(displayData, null, 2);
 
-      // Add basic stats if numeric columns exist
+    if (data.length > MAX_DISPLAY) {
+      summary += `\n\n... and ${data.length - MAX_DISPLAY} more records.`;
+
       const numericCols = this._findNumericColumns(data[0]);
       if (numericCols.length > 0) {
         summary += '\n\nNumeric summaries:\n';
-        for (const col of numericCols.slice(0, 3)) { // Max 3 numeric columns
-          const values = data.map(row => parseFloat(row[col])).filter(v => !isNaN(v));
+        for (const col of numericCols.slice(0, 3)) {
+          const values = data.map(row => row[col]).filter(v => typeof v === 'number');
           if (values.length > 0) {
             const sum = values.reduce((a, b) => a + b, 0);
-            const avg = sum / values.length;
-            const min = Math.min(...values);
-            const max = Math.max(...values);
-
-            summary += `- ${col}: Sum=${sum.toLocaleString()}, Avg=${avg.toFixed(2)}, Min=${min}, Max=${max}\n`;
+            summary += `- ${col}: Sum=${sum.toLocaleString()}, Avg=${(sum / values.length).toFixed(2)}, Min=${Math.min(...values)}, Max=${Math.max(...values)}\n`;
           }
         }
       }
@@ -226,16 +219,13 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "Here's 
     return summary;
   }
 
-  /**
-   * Find numeric columns in a row
-   * @private
-   */
+  /** @private */
   _findNumericColumns(row) {
     if (!row) return [];
-
+    // pg returns NUMERIC/DECIMAL as strings — accept both JS numbers and numeric strings
     return Object.keys(row).filter(key => {
-      const value = row[key];
-      return typeof value === 'number' || (!isNaN(parseFloat(value)) && isFinite(value));
+      const v = row[key];
+      return typeof v === 'number' || (!isNaN(parseFloat(v)) && isFinite(v));
     });
   }
 }
