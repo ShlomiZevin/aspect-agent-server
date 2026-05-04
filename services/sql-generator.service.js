@@ -226,13 +226,20 @@ Remember to respond with ONLY the JSON object.`;
    */
   _parseResponse(response) {
     try {
-      // Clean up response (remove markdown code blocks if present)
       let cleanResponse = response.trim();
       if (cleanResponse.startsWith('```')) {
-        cleanResponse = cleanResponse.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+        cleanResponse = cleanResponse.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
       }
 
-      const parsed = JSON.parse(cleanResponse);
+      // Extract the first complete JSON object even if Claude appended extra text
+      let parsed;
+      try {
+        parsed = JSON.parse(cleanResponse);
+      } catch {
+        const jsonStr = this._extractFirstJSON(cleanResponse);
+        if (!jsonStr) throw new Error('No JSON object found in response');
+        parsed = JSON.parse(jsonStr);
+      }
 
       // Validate required fields
       if (!parsed.sql) {
@@ -249,6 +256,21 @@ Remember to respond with ONLY the JSON object.`;
     } catch (error) {
       throw new Error(`Failed to parse SQL generation response: ${error.message}`);
     }
+  }
+
+  /** @private — returns the first complete JSON object in text, or null */
+  _extractFirstJSON(text) {
+    let depth = 0, start = -1;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '{') {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (text[i] === '}') {
+        depth--;
+        if (depth === 0 && start !== -1) return text.slice(start, i + 1);
+      }
+    }
+    return null;
   }
 
 }
