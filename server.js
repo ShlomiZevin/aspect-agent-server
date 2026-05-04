@@ -1325,38 +1325,8 @@ app.post('/api/agents/:agentName/profiler/run', async (req, res) => {
     await contextService.saveContext(dbUserId, 'profile_data', result, conversation.id);
     await contextService.saveContext(dbUserId, 'profile_data', result);
 
-    const DEPTH_LABELS = [
-      { maxPercent: 25, label: 'פרופיל בסיסי' },
-      { maxPercent: 50, label: 'פרופיל פונקציונאלי' },
-      { maxPercent: 75, label: 'פרופיל תובנות מוכן' },
-      { maxPercent: 100, label: 'פרופיל פרסונליזציה מלא' },
-    ];
-
-    const profileSchema = profilerConfig.schema || {};
-    let totalFields = 0, totalFilled = 0, totalConfidence = 0, filledCount = 0;
-    const clusterScores = {};
-    for (const [clusterId, schemaFields] of Object.entries(profileSchema)) {
-      const total = schemaFields.length;
-      const clusterData = result[clusterId];
-      let filled = 0;
-      if (clusterData && typeof clusterData === 'object') {
-        for (const fieldKey of schemaFields) {
-          const f = clusterData[fieldKey];
-          if (f && typeof f === 'object' && f.value != null) {
-            filled++;
-            totalConfidence += f.confidence || 0;
-            filledCount++;
-          }
-        }
-      }
-      clusterScores[clusterId] = { depth: total > 0 ? Math.round((filled / total) * 100) : 0 };
-      totalFields += total;
-      totalFilled += filled;
-    }
-
-    const overallDepth = totalFields > 0 ? Math.round((totalFilled / totalFields) * 100) : 0;
-    const overallConfidence = filledCount > 0 ? Math.round(totalConfidence / filledCount) : 0;
-    const profileTier = overallDepth < 15 ? '' : (DEPTH_LABELS.find(l => overallDepth <= l.maxPercent) || DEPTH_LABELS[DEPTH_LABELS.length - 1])?.label || '';
+    const { clusterScores, overallDepth, overallConfidence, profileTier } =
+      computeProfileScores(result, profilerConfig.schema || {});
 
     res.json({
       success: true,
@@ -1602,6 +1572,65 @@ function resolveProfilerConfig(agentName) {
   return null;
 }
 
+const PROFILE_DEPTH_LABELS = [
+  { maxPercent: 25, label: 'פרופיל בסיסי' },
+  { maxPercent: 50, label: 'פרופיל פונקציונאלי' },
+  { maxPercent: 75, label: 'פרופיל תובנות מוכן' },
+  { maxPercent: 100, label: 'פרופיל פרסונליזציה מלא' },
+];
+
+/**
+ * Compute cluster depths, overall depth, overall confidence, and tier label
+ * from a profile result + schema. Used by both the async profiler trigger and
+ * the manual run endpoint.
+ *
+ * @param {Object} result - The merged profile data
+ * @param {Object} schema - { clusterId: [fieldKey, ...] }
+ * @returns {{ clusterScores, overallDepth, overallConfidence, profileTier }}
+ */
+function computeProfileScores(result, schema) {
+  let totalFields = 0, totalFilled = 0, totalConfidence = 0, filledCount = 0;
+  const clusterScores = {};
+
+  for (const [clusterId, schemaFields] of Object.entries(schema || {})) {
+    const total = schemaFields.length;
+    const clusterData = result[clusterId];
+    let filled = 0;
+
+    if (clusterData && typeof clusterData === 'object') {
+      for (const fieldKey of schemaFields) {
+        const f = clusterData[fieldKey];
+        if (f && typeof f === 'object' && f.value != null) {
+          filled++;
+          totalConfidence += f.confidence || 0;
+          filledCount++;
+        }
+      }
+    }
+
+    // account_progress depth = value of completion_percentage field, not filled/total
+    let depth;
+    if (clusterId === 'account_progress' && clusterData?.completion_percentage?.value != null) {
+      const raw = String(clusterData.completion_percentage.value).match(/\d+/);
+      depth = raw ? Math.min(100, Math.max(0, parseInt(raw[0], 10))) : 0;
+    } else {
+      depth = total > 0 ? Math.round((filled / total) * 100) : 0;
+    }
+    clusterScores[clusterId] = { depth };
+
+    totalFields += total;
+    totalFilled += filled;
+  }
+
+  const overallDepth = totalFields > 0 ? Math.round((totalFilled / totalFields) * 100) : 0;
+  const overallConfidence = filledCount > 0 ? Math.round(totalConfidence / filledCount) : 0;
+  const profileTier = overallDepth < 15
+    ? ''
+    : (PROFILE_DEPTH_LABELS.find(l => overallDepth <= l.maxPercent) || PROFILE_DEPTH_LABELS[PROFILE_DEPTH_LABELS.length - 1])?.label || '';
+
+  return { clusterScores, overallDepth, overallConfidence, profileTier };
+}
+
 /**
  * Run the profiler async — fire and forget.
  * Never blocks the conversation, never throws to the caller.
@@ -1704,47 +1733,8 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
     await contextService.saveContext(dbUserId, 'profile_data', result);
 
     // 8. Compute scores from the profile for the UI
-    const DEPTH_LABELS = [
-      { maxPercent: 25, label: 'פרופיל בסיסי' },
-      { maxPercent: 50, label: 'פרופיל פונקציונאלי' },
-      { maxPercent: 75, label: 'פרופיל תובנות מוכן' },
-      { maxPercent: 100, label: 'פרופיל פרסונליזציה מלא' },
-    ];
-
-    // Use schema for depth calculation — schema defines what 100% looks like
-    const profileSchema = profilerConfig.schema || {};
-    let totalFields = 0;
-    let totalFilled = 0;
-    let totalConfidence = 0;
-    let filledCount = 0;
-    const clusterScores = {};
-
-    for (const [clusterId, schemaFields] of Object.entries(profileSchema)) {
-      const total = schemaFields.length;
-      const clusterData = result[clusterId];
-      let filled = 0;
-
-      if (clusterData && typeof clusterData === 'object') {
-        for (const fieldKey of schemaFields) {
-          const f = clusterData[fieldKey];
-          if (f && typeof f === 'object' && f.value != null) {
-            filled++;
-            totalConfidence += f.confidence || 0;
-            filledCount++;
-          }
-        }
-      }
-
-      const depth = total > 0 ? Math.round((filled / total) * 100) : 0;
-      clusterScores[clusterId] = { depth };
-
-      totalFields += total;
-      totalFilled += filled;
-    }
-
-    const overallDepth = totalFields > 0 ? Math.round((totalFilled / totalFields) * 100) : 0;
-    const overallConfidence = filledCount > 0 ? Math.round(totalConfidence / filledCount) : 0;
-    const profileTier = overallDepth < 15 ? '' : (DEPTH_LABELS.find(l => overallDepth <= l.maxPercent) || DEPTH_LABELS[DEPTH_LABELS.length - 1])?.label || '';
+    const { clusterScores, overallDepth, overallConfidence, profileTier } =
+      computeProfileScores(result, profilerConfig.schema || {});
 
     // 9. Push profile_update SSE event — the full profile + computed scores
     sendSSE({
