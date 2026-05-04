@@ -3126,6 +3126,34 @@ app.post('/api/admin/slow-queries/:id/dismiss', async (req, res) => {
   }
 });
 
+// Delete slow queries by agent name
+app.delete('/api/admin/slow-queries', async (req, res) => {
+  try {
+    const { agentName } = req.query;
+    const deleted = await slowQueryService.deleteQueries(agentName);
+    res.json({ deleted });
+  } catch (err) {
+    console.error('Error deleting slow queries:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Force-regenerate schema description cache
+app.post('/api/admin/regenerate-schema-description', async (req, res) => {
+  const { schemaName } = req.body;
+  if (!schemaName) return res.status(400).json({ error: 'schemaName required' });
+  try {
+    const schemaDescriptorService = require('./services/schema-descriptor.service');
+    const { getPool: getZer4uPool } = require('./services/db.zer4u');
+    const zer4uPool = getZer4uPool();
+    const description = await schemaDescriptorService.getDescription(schemaName, true, zer4uPool, zer4uPool);
+    res.json({ success: true, length: description.length, preview: description.slice(0, 300) });
+  } catch (err) {
+    console.error('Error regenerating schema description:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // List optimization jobs
 app.get('/api/admin/optimization-jobs', async (req, res) => {
   try {
@@ -5390,6 +5418,7 @@ async function startServer() {
     // Initialize DataReloadService — register all agent-specific reloaders
     const dataReloadService = new DataReloadService(db);
     require('./agents/zer4u/data-reload').register(dataReloadService);
+    require('./agents/newdeli/data-reload').register(dataReloadService);
     app.set('dataReloadService', dataReloadService);
     await dataReloadService.cleanupStaleRuns();
     dataReloadService.startPeriodicCleanup();

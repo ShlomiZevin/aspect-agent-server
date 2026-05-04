@@ -112,6 +112,132 @@ Generate a PostgreSQL query that answers the user's question based on the schema
 6. **Column Names**: Column names with spaces or Hebrew characters MUST be quoted with double quotes
 7. **Aggregations**: Use appropriate GROUP BY, ORDER BY, and aggregate functions
 8. **Limits**: Add LIMIT clause for queries that might return many rows (default: 100)
+${this._getSchemaSpecificRules(schemaName)}
+${this._buildAntiPatternsSection(antiPatterns)}
+## Output Format
+
+Respond with ONLY a JSON object (no markdown, no explanation):
+
+{
+  "sql": "SELECT ... FROM ${schemaName}.table ...",
+  "explanation": "Brief explanation of what this query does",
+  "tables": ["table1", "table2"],
+  "confidence": "high" | "medium" | "low"
+}
+
+If the question cannot be answered with the available schema, set confidence to "low" and explain why in the explanation field.`;
+  }
+
+  /**
+   * Schema-specific SQL rules injected into the prompt.
+   * Keeps zer4u and newdeli rules separate — no cross-contamination.
+   * @private
+   */
+  _getSchemaSpecificRules(schemaName) {
+    if (schemaName === 'newdeli') {
+      return `
+## newdeli-Specific Rules (CRITICAL — follow exactly)
+
+**Tables**: facts (~3.7M rows), branches (44 rows), order_items (~3.7M rows)
+**NO materialized views exist** — query newdeli.facts directly for all aggregations.
+
+### RULE 1 — Never COUNT(DISTINCT)
+Each row in facts is already one unique order. NEVER use COUNT(DISTINCT ...).
+- WRONG: \`COUNT(DISTINCT f.order_id)\`
+- CORRECT: \`COUNT(*)\`
+
+### RULE 2 — Always filter by status = '2' (completed orders)
+Always add \`WHERE f.status = '2'\` unless the question explicitly asks about all orders including cancelled.
+The composite index (status, year_month) makes status-filtered queries very fast.
+
+### RULE 3 — Use year_month for all date filters (indexed TEXT, format 'YYYY-MM')
+- This month:  \`WHERE f.year_month = TO_CHAR(CURRENT_DATE, 'YYYY-MM') AND f.status = '2'\`
+- Specific month: \`WHERE f.year_month = '2024-03' AND f.status = '2'\`
+- Specific year:  \`WHERE f.year_month BETWEEN '2024-01' AND '2024-12' AND f.status = '2'\`
+- Date range:  \`WHERE f.year_month BETWEEN '2024-01' AND '2024-06' AND f.status = '2'\`
+- NEVER use \`TO_CHAR(order_date, 'YYYY-MM')\` for filtering — bypasses the index.
+- NEVER use \`WHERE f.year = 2024\` — no index on year column.
+
+### RULE 4 — order_items queries MUST always have a year_month date filter
+order_items has 3.7M rows. A full scan always times out. You MUST add a year_month filter via JOIN with facts.
+If the user does not specify a period, default to the last 3 months. Never query all-time dish data.
+- WRONG (no date filter → timeout): \`SELECT item_names, COUNT(*) FROM newdeli.order_items GROUP BY item_names\`
+- WRONG (no date filter → timeout): \`JOIN newdeli.facts f ON oi.order_id = f.order_id WHERE f.status = '2'\`
+- CORRECT (always include year_month filter):
+\`\`\`sql
+SELECT oi.item_names, COUNT(*) AS order_count
+FROM newdeli.order_items oi
+JOIN newdeli.facts f ON oi.order_id = f.order_id
+WHERE f.year_month >= TO_CHAR(CURRENT_DATE - INTERVAL '3 months', 'YYYY-MM')
+  AND f.status = '2'
+GROUP BY oi.item_names
+ORDER BY order_count DESC
+LIMIT 10
+\`\`\`
+
+### JOIN pattern for branches
+\`JOIN newdeli.branches b ON f.branch_id = b.branch_id\`
+
+### Reference examples
+
+**This month revenue:**
+\`\`\`sql
+SELECT SUM(f.order_revenue) AS total_revenue, COUNT(*) AS order_count
+FROM newdeli.facts f
+WHERE f.year_month = TO_CHAR(CURRENT_DATE, 'YYYY-MM') AND f.status = '2'
+\`\`\`
+
+**Monthly breakdown for 2024:**
+\`\`\`sql
+SELECT f.year_month, SUM(f.order_revenue) AS total_revenue, COUNT(*) AS order_count
+FROM newdeli.facts f
+WHERE f.year_month BETWEEN '2024-01' AND '2024-12' AND f.status = '2'
+GROUP BY f.year_month
+ORDER BY f.year_month
+\`\`\`
+
+**Top branches by revenue (all time):**
+\`\`\`sql
+SELECT b.branch_name, b.company, SUM(f.order_revenue) AS total_revenue, COUNT(*) AS order_count
+FROM newdeli.facts f
+JOIN newdeli.branches b ON f.branch_id = b.branch_id
+WHERE f.status = '2'
+GROUP BY b.branch_name, b.company
+ORDER BY total_revenue DESC
+LIMIT 10
+\`\`\`
+
+**Order count by order type:**
+\`\`\`sql
+SELECT f.order_type, COUNT(*) AS order_count, SUM(f.order_revenue) AS total_revenue
+FROM newdeli.facts f
+WHERE f.status = '2'
+GROUP BY f.order_type
+ORDER BY order_count DESC
+\`\`\`
+
+**Peak hours by order count:**
+\`\`\`sql
+SELECT f.hour, COUNT(*) AS order_count
+FROM newdeli.facts f
+WHERE f.status = '2'
+GROUP BY f.hour
+ORDER BY f.hour
+\`\`\`
+
+**Average order value by company:**
+\`\`\`sql
+SELECT b.company, ROUND(AVG(f.order_revenue)::numeric, 2) AS avg_order_value, COUNT(*) AS order_count
+FROM newdeli.facts f
+JOIN newdeli.branches b ON f.branch_id = b.branch_id
+WHERE f.status = '2'
+GROUP BY b.company
+ORDER BY avg_order_value DESC
+\`\`\``;
+    }
+
+    if (schemaName === 'zer4u') {
+      return `
 9. **Typed Columns**: Key columns in the sales table have proper types and English names — use them directly:
     - \`sale_date\` is DATE — use standard date comparisons: \`WHERE s.sale_date >= '2024-01-01'\`
     - \`store_id\` is INTEGER — join directly: \`ON s.store_id = st.store_id\`
@@ -152,20 +278,10 @@ ORDER BY month
 - \`${schemaName}.mv_sales_by_store_product\` — store + product all-time (USE THIS for top-N products per store)
 - \`${schemaName}.mv_sales_by_customer\` — per-customer totals (all-time)
 - \`${schemaName}.mv_sales_by_city\` — sales by customer city (USE THIS for geographic/city revenue breakdown)
-- \`${schemaName}.mv_sales_by_day\` — daily totals (last 90 days)
-${this._buildAntiPatternsSection(antiPatterns)}
-## Output Format
+- \`${schemaName}.mv_sales_by_day\` — daily totals (last 90 days)`;
+    }
 
-Respond with ONLY a JSON object (no markdown, no explanation):
-
-{
-  "sql": "SELECT ... FROM ${schemaName}.table ...",
-  "explanation": "Brief explanation of what this query does",
-  "tables": ["table1", "table2"],
-  "confidence": "high" | "medium" | "low"
-}
-
-If the question cannot be answered with the available schema, set confidence to "low" and explain why in the explanation field.`;
+    return '';
   }
 
   /**

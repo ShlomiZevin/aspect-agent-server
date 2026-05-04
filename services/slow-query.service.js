@@ -142,6 +142,18 @@ class SlowQueryService {
     );
   }
 
+  async deleteQueries(agentName) {
+    if (agentName) {
+      const result = await this.pool.query(
+        'DELETE FROM public.slow_queries WHERE agent_name = $1',
+        [agentName]
+      );
+      return result.rowCount;
+    }
+    const result = await this.pool.query('DELETE FROM public.slow_queries');
+    return result.rowCount;
+  }
+
   // ─── Private ───────────────────────────────────────────────────────────────
 
   async _generateRecommendation(sq, plan, explainError) {
