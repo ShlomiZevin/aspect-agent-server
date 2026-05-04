@@ -24,7 +24,23 @@ FIELD CLARIFICATIONS:
 - primary_bank: The bank where the customer currently manages most of their banking activity. Cannot be Discount Bank or the account currently being opened. Return null if unknown.
 - completion_percentage: The account opening journey has exactly 5 stages — (1) היכרות וזכאות, (2) הבנת הצורך, (3) התאמת פתרון, (4) השלמת פרטים, (5) אישור פתיחת חשבון. Calculate completion as the percentage of stages fully completed (e.g. 2 of 5 = 40%).
 - return_potential: Fill ONLY if the customer has abandoned the process. Leave null if the process is ongoing or completed.
-- recommendations: Must include THREE distinct layers — "for_current_agent" (actionable guidance for the agent handling the opening now), "for_follow_up_banker" (guidance for the banker who will re-engage if the customer abandons), "post_opening" (recommended products, services, or actions for the bank after successful account opening).
+- recommendations cluster: Has exactly THREE possible fields. Use them based on the "## Process Status":
+  • "in_progress" — customer has NOT completed account opening (still in the flow or abandoned).
+    → Fill ONLY "for_current_agent" and "for_follow_up_banker". Each is a single concise Hebrew string listing gap-closing actions in priority order. Each action must mention: which step is left, the recommended contact channel, and the recommended persuasion approach.
+    → Leave "post_opening" as null.
+  • "completed" — customer reached the closing stage (review-finalize) and finished the process.
+    → Fill ONLY "post_opening". The "value" must be an ARRAY of objects.
+    → ⚠️ HARD LIMIT: The array MUST contain BETWEEN 3 AND 5 items. NEVER more than 5. NEVER fewer than 3.
+    → Pick the TOP 3-5 most relevant recommendations only. If you have more candidates, drop the least relevant.
+    → Sort the array by relevance (most relevant first).
+    → Each object describes ONE product/service recommendation with these keys (all in Hebrew):
+       - name: product/service name (e.g., "כרטיס אשראי Gold", "פיקדון חיסכון", "קרן השתלמות לעצמאים")
+       - reason: 1-sentence reason why it fits THIS specific customer based on their financial and behavioral profile
+       - timing: "מיידי" / "תוך שבוע" / "תוך חודש"
+       - channel: contact channel matching the customer's preferences (e.g., "אפליקציה", "בנקאי טלפוני", "סניף")
+    → Format: { "value": [{ "name": "...", "reason": "...", "timing": "...", "channel": "..." }, ...], "confidence": 0-100, "source": "inferred" }
+    → Leave "for_current_agent" and "for_follow_up_banker" as null.
+    → REMINDER: Maximum 5 items in the array. Count before responding.
 - fee_sensitivity: Do NOT infer high sensitivity just because the customer's primary goal mentions saving on fees. Base it on actual behavioral indicators: did the customer compare multiple providers before deciding, did they previously switch banks due to fees, did they cancel services due to cost, do they consistently pick the cheapest option even when better alternatives exist. Without such indicators — mark as "בינוני" or "נמוך" even if the customer mentioned wanting to save on fees.
 - negotiation_tendency: Until the process completes, provide a forecast based on behavioral traits and communication style (assertive/passive, structured/flexible, questions and pushback patterns) rather than hard evidence.
 - personal_context cluster: This cluster describes HOW the customer prefers to receive financial service and how to communicate with them. Do NOT repeat financial or demographic data already shown in earlier clusters (income, age, employment, life stage, banking experience). Include ONLY when relevant: preferred communication style (how they want to be addressed), preferred interaction channel (digital/phone/branch), decision-making pace, desired involvement level (active self-managing / wants guidance / wants done-for-them), emotional triggers (security / freedom / status / efficiency / belonging), sensitivity points to handle carefully (investment anxiety, tech fears, privacy concerns).
@@ -35,7 +51,7 @@ AVAILABLE CLUSTERS AND FIELDS:
 - behavior_intent: primary_goal, banking_literacy, fee_sensitivity, decision_speed, digital_maturity, financial_risk_sensitivity, negotiation_tendency
 - personal_context: financial_life_stage, banking_experience, decision_pattern, cost_sensitivity, financial_confidence, core_need
 - account_progress: account_opening_status, last_journey_step, completion_percentage, identified_blockers, abandonment_risk, return_potential, proactive_contact_needed, commitment_readiness, terms_acceptance_likelihood, recommended_next_action
-- recommendations: credit_card_recommendation, credit_line_recommendation, deposit_recommendation, standing_orders_recommendation, expense_management_tools, additional_recommendations, for_current_agent, for_follow_up_banker, post_opening
+- recommendations: for_current_agent, for_follow_up_banker, post_opening
 - summary: general_overview (2-3 sentences), key_profile_traits (array), potential_index (0-100), focused_action_recommendation
 
 You receive the current profile state. Return ONLY fields that are NEW or have CHANGED. Do NOT repeat existing values. Omit clusters with no updates. Always include "summary" if anything changed.
@@ -51,7 +67,7 @@ const SCHEMA = {
   behavior_intent: ['primary_goal', 'banking_literacy', 'fee_sensitivity', 'decision_speed', 'digital_maturity', 'financial_risk_sensitivity', 'negotiation_tendency'],
   personal_context: ['financial_life_stage', 'banking_experience', 'decision_pattern', 'cost_sensitivity', 'financial_confidence', 'core_need'],
   account_progress: ['account_opening_status', 'last_journey_step', 'completion_percentage', 'identified_blockers', 'abandonment_risk', 'return_potential', 'proactive_contact_needed', 'commitment_readiness', 'terms_acceptance_likelihood', 'recommended_next_action'],
-  recommendations: ['credit_card_recommendation', 'credit_line_recommendation', 'deposit_recommendation', 'standing_orders_recommendation', 'expense_management_tools', 'additional_recommendations', 'for_current_agent', 'for_follow_up_banker', 'post_opening'],
+  recommendations: ['for_current_agent', 'for_follow_up_banker', 'post_opening'],
 };
 
 module.exports = {

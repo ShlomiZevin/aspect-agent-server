@@ -21,7 +21,7 @@ class ProfilerAgent {
    * @param {Object} [params.existingProfile] - Current profile data from context
    * @returns {Promise<Object>} Profile JSON as returned by the LLM
    */
-  async run({ profilerPrompt, conversationHistory, collectedFields, existingProfile }, options = {}) {
+  async run({ profilerPrompt, conversationHistory, collectedFields, existingProfile, processStatus }, options = {}) {
     const {
       model = 'claude-sonnet-4-6',
       maxTokens = 4096,
@@ -29,6 +29,12 @@ class ProfilerAgent {
 
     // Build the user context message
     const parts = [];
+
+    // Process status — tells the profiler whether the customer completed the onboarding or is still in progress
+    // Drives the recommendations cluster scenario (in_progress = gap-closing actions, completed = product recommendations)
+    if (processStatus) {
+      parts.push(`## Process Status\n${processStatus}`);
+    }
 
     // Current profile state — so the LLM knows what's already collected and can skip unchanged fields
     if (existingProfile && Object.keys(existingProfile).length > 0) {

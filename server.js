@@ -1283,8 +1283,10 @@ app.post('/api/agents/:agentName/profiler/run', async (req, res) => {
       || await contextService.getContext(dbUserId, 'profile_data')
       || {};
 
+    const processStatus = resolveProcessStatus(conversation.currentCrewMember);
+
     const delta = await profilerAgent.run(
-      { profilerPrompt, conversationHistory, collectedFields, existingProfile },
+      { profilerPrompt, conversationHistory, collectedFields, existingProfile, processStatus },
       { model: profilerModel, maxTokens: profilerMaxTokens, agentName, conversationId, userId: dbUserId }
     );
 
@@ -1572,6 +1574,16 @@ function resolveProfilerConfig(agentName) {
   return null;
 }
 
+/**
+ * Map current crew member to a process status string for the profiler.
+ * Drives the recommendations cluster scenario branching.
+ */
+function resolveProcessStatus(currentCrewMember) {
+  if (!currentCrewMember) return 'in_progress';
+  if (currentCrewMember === 'review-finalize') return 'completed';
+  return 'in_progress';
+}
+
 const PROFILE_DEPTH_LABELS = [
   { maxPercent: 25, label: 'פרופיל בסיסי' },
   { maxPercent: 50, label: 'פרופיל פונקציונאלי' },
@@ -1682,9 +1694,10 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
     const profilerMaxTokens = profilerConfig.maxTokens || 4096;
 
     // 6. Run the profiler LLM — returns only changed fields (delta)
+    const processStatus = resolveProcessStatus(conversation.currentCrewMember);
     const profilerStart = Date.now();
     const delta = await profilerAgent.run(
-      { profilerPrompt, conversationHistory, collectedFields, existingProfile },
+      { profilerPrompt, conversationHistory, collectedFields, existingProfile, processStatus },
       { model: profilerModel, maxTokens: profilerMaxTokens, agentName, conversationId, userId: dbUserId }
     );
     const profilerDurationSec = ((Date.now() - profilerStart) / 1000).toFixed(1);
