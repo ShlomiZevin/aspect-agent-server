@@ -23,6 +23,7 @@ const agents = pgTable('agents', {
   description: text('description'),
   config: jsonb('config'), // Agent-specific configuration (includes promptId, vectorStoreId, etc.)
   isActive: boolean('is_active').default(true).notNull(),
+  contactEmail: text('contact_email'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

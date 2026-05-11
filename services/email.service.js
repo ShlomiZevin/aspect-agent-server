@@ -164,4 +164,26 @@ async function sendTaskAttentionEmail({ recipientEmail, recipientName, notificat
   });
 }
 
-module.exports = { sendLybiContactEmail, sendTaskAttentionEmail };
+async function sendAgentErrorEmail({ agentName, contactEmails, errorMessage, conversationId }) {
+  const recipients = contactEmails.filter(Boolean).join(', ');
+  if (!recipients) return;
+
+  const subject = `Agent error: ${agentName}`;
+
+  const lines = [
+    `An error occurred in the ${agentName} agent chat.`,
+    ``,
+    `Error:          ${errorMessage || 'Unknown error'}`,
+    `Conversation:   ${conversationId || '—'}`,
+    `Time:           ${new Date().toISOString()}`,
+  ];
+
+  await transporter.sendMail({
+    from: `"${agentName} Alerts" <${process.env.GMAIL_USER}>`,
+    to: recipients,
+    subject,
+    text: lines.join('\n'),
+  });
+}
+
+module.exports = { sendLybiContactEmail, sendTaskAttentionEmail, sendAgentErrorEmail };

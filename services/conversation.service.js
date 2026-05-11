@@ -92,6 +92,14 @@ class ConversationService {
     return result[0];
   }
 
+  async updateAgentContactEmail(agentName, contactEmail) {
+    if (!this.drizzle) this.initialize();
+    await this.drizzle
+      .update(agents)
+      .set({ contactEmail: contactEmail || null })
+      .where(eq(agents.name, agentName));
+  }
+
   /**
    * Get agent by ID
    * @param {number} agentId - Agent ID
