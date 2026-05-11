@@ -663,6 +663,34 @@ app.delete('/api/agents/:agentName/crew/:crewName/prompts/:versionId', async (re
   }
 });
 
+// Authenticate user by exact name + phone + tenant match.
+// Tenant comes from the agent URL slug (e.g. /banking-v2/login → tenant=banking-v2).
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { name, phone, tenant } = req.body;
+    if (!name || !phone || !tenant) {
+      return res.status(400).json({ error: 'Name, phone, and tenant are required' });
+    }
+
+    const user = await adminService.findUserByNameAndPhone(name, phone, tenant);
+    if (!user) {
+      return res.status(401).json({ error: 'invalid_credentials' });
+    }
+
+    // Update last active
+    await adminService.updateLastActive(user.id);
+
+    res.json({
+      userId: user.externalId,
+      name: user.name,
+      phone: user.phone,
+    });
+  } catch (err) {
+    console.error('❌ Error during login:', err.message);
+    res.status(500).json({ error: 'Error during login: ' + err.message });
+  }
+});
+
 // Create new anonymous user
 app.post('/api/user/create', async (req, res) => {
   try {
@@ -3607,6 +3635,14 @@ app.get('/api/admin/data-loader/:schema/runs/:id/log', async (req, res) => {
 
 // ========== ADMIN ENDPOINTS ==========
 
+// Super-admin override: when this header is present and matches, the request
+// can see across all tenants (including null-tenant/anonymous users).
+// This is intentionally lightweight — the key is shared with internal users only.
+const SUPER_ADMIN_KEY = '6724';
+function isSuperAdminRequest(req) {
+  return req.headers['x-super-admin-key'] === SUPER_ADMIN_KEY;
+}
+
 // Get all users with filters
 app.get('/api/admin/users', async (req, res) => {
   try {
@@ -3621,7 +3657,7 @@ app.get('/api/admin/users', async (req, res) => {
       offset: offset ? parseInt(offset, 10) : 0,
     };
 
-    const result = await adminService.getUsers(filters);
+    const result = await adminService.getUsers(filters, { includeAllTenants: isSuperAdminRequest(req) });
     res.json(result);
   } catch (err) {
     console.error('❌ Error fetching users:', err.message);
@@ -3632,8 +3668,12 @@ app.get('/api/admin/users', async (req, res) => {
 // Get admin dashboard stats
 app.get('/api/admin/stats', async (req, res) => {
   try {
-    const { agentName } = req.query;
-    const stats = await adminService.getStats(agentName || null);
+    const { agentName, tenant } = req.query;
+    const stats = await adminService.getStats(
+      agentName || null,
+      tenant || null,
+      { includeAllTenants: isSuperAdminRequest(req) },
+    );
     res.json(stats);
   } catch (err) {
     console.error('❌ Error fetching stats:', err.message);

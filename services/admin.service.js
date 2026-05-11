@@ -31,13 +31,21 @@ class AdminService {
    * @param {number} filters.offset - Offset for pagination
    * @returns {Promise<Object>} - { users: Array, total: number }
    */
-  async getUsers(filters = {}) {
+  async getUsers(filters = {}, options = {}) {
     if (!this.drizzle) this.initialize();
 
     const { source, tenant, subscription, search, agentName, limit = 100, offset = 0 } = filters;
+    const { includeAllTenants = false } = options;
 
     // Build WHERE conditions
     const conditions = [];
+
+    // Hide users with no tenant (anonymous/internal users) from the admin list.
+    // Each client's admin should only see their own tenanted users.
+    // Super admin (`includeAllTenants`) bypasses this to see everything.
+    if (!includeAllTenants) {
+      conditions.push(sql`${users.tenant} IS NOT NULL AND ${users.tenant} != ''`);
+    }
 
     if (source) {
       conditions.push(eq(users.source, source));
@@ -238,35 +246,38 @@ class AdminService {
 
     const { phone, tenant, subscription, role, name, email } = userData;
 
+    if (!name) {
+      throw new Error('Name is required');
+    }
     if (!phone) {
       throw new Error('Phone number is required');
     }
 
-    // Check if user with this phone already exists
-    const existingByPhone = await this.drizzle
+    // Uniqueness key is (name, phone, tenant). The same phone can recur across
+    // tenants — each tenant runs its own population of users.
+    const tenantValue = tenant || null;
+    const dupConditions = [eq(users.name, name), eq(users.phone, phone)];
+    dupConditions.push(
+      tenantValue === null
+        ? sql`${users.tenant} IS NULL`
+        : eq(users.tenant, tenantValue)
+    );
+
+    const existing = await this.drizzle
       .select()
       .from(users)
-      .where(eq(users.phone, phone))
+      .where(and(...dupConditions))
       .limit(1);
 
-    if (existingByPhone.length > 0) {
-      throw new Error(`User with phone ${phone} already exists`);
+    if (existing.length > 0) {
+      const where = tenantValue ? `tenant "${tenantValue}"` : 'tenant null';
+      throw new Error(`User "${name}" with phone ${phone} already exists in ${where}`);
     }
 
-    // Check if WhatsApp user with this phone exists
-    const waExternalId = `wa_${phone}`;
-    const existingByExternalId = await this.drizzle
-      .select()
-      .from(users)
-      .where(eq(users.externalId, waExternalId))
-      .limit(1);
-
-    if (existingByExternalId.length > 0) {
-      throw new Error(`WhatsApp user with phone ${phone} already exists`);
-    }
-
-    // Create user with generated externalId
-    const externalId = `manual_${phone}_${Date.now()}`;
+    // Create user with generated externalId. Include tenant in the key so the
+    // same phone in different tenants can each get a manual_ id.
+    const externalIdParts = ['manual', tenantValue || 'no-tenant', phone, Date.now()];
+    const externalId = externalIdParts.join('_');
 
     const [newUser] = await this.drizzle
       .insert(users)
@@ -480,6 +491,33 @@ class AdminService {
   }
 
   /**
+   * Find a user by exact name + phone match within a tenant (used for login).
+   * The (name, phone, tenant) tuple is the uniqueness key, so all three are
+   * required — the same phone may repeat across tenants.
+   * @param {string} name - Exact name match
+   * @param {string} phone - Exact phone match
+   * @param {string} tenant - Exact tenant match (required)
+   * @returns {Promise<Object|null>} - User or null if not found
+   */
+  async findUserByNameAndPhone(name, phone, tenant) {
+    if (!this.drizzle) this.initialize();
+
+    if (!tenant) return null;
+
+    const result = await this.drizzle
+      .select()
+      .from(users)
+      .where(and(
+        eq(users.name, name),
+        eq(users.phone, phone),
+        eq(users.tenant, tenant),
+      ))
+      .limit(1);
+
+    return result.length > 0 ? result[0] : null;
+  }
+
+  /**
    * Update user's last active timestamp
    * @param {number} userId - User ID
    * @returns {Promise<void>}
@@ -495,47 +533,77 @@ class AdminService {
 
   /**
    * Get admin dashboard stats
+   * @param {string|null} agentName - Optional agent slug/name filter
+   * @param {string|null} tenant - Optional tenant filter (matches the list view)
    * @returns {Promise<Object>} - Stats object
    */
-  async getStats(agentName = null) {
+  async getStats(agentName = null, tenant = null, options = {}) {
     if (!this.drizzle) this.initialize();
 
-    const agentFilter = agentName
+    const { includeAllTenants = false } = options;
+
+    // Match the user-list scoping: usually exclude null-tenant users so stats
+    // line up with the table; super admin sees everything.
+    const baseUserFilter = includeAllTenants
+      ? null
+      : sql`${users.tenant} IS NOT NULL AND ${users.tenant} != ''`;
+
+    const agentUserFilter = agentName
       ? sql`id IN (
           SELECT DISTINCT c.user_id FROM conversations c
           JOIN agents a ON a.id = c.agent_id
           WHERE LOWER(a.url_slug) = ${agentName.toLowerCase()} OR LOWER(a.name) = ${agentName.toLowerCase()}
         )`
-      : undefined;
+      : null;
 
-    const agentConvFilter = agentName
-      ? sql`agent_id IN (SELECT id FROM agents WHERE LOWER(url_slug) = ${agentName.toLowerCase()} OR LOWER(name) = ${agentName.toLowerCase()})`
-      : undefined;
+    const tenantFilter = tenant ? eq(users.tenant, tenant) : null;
+
+    const userWhere = (...extra) => and(
+      ...(baseUserFilter ? [baseUserFilter] : []),
+      ...(agentUserFilter ? [agentUserFilter] : []),
+      ...(tenantFilter ? [tenantFilter] : []),
+      ...extra,
+    );
 
     const [totalUsers] = await this.drizzle
       .select({ count: count() })
       .from(users)
-      .where(agentFilter);
+      .where(userWhere());
 
     const [webUsers] = await this.drizzle
       .select({ count: count() })
       .from(users)
-      .where(agentFilter ? and(eq(users.source, 'web'), agentFilter) : eq(users.source, 'web'));
+      .where(userWhere(eq(users.source, 'web')));
 
     const [whatsappUsers] = await this.drizzle
       .select({ count: count() })
       .from(users)
-      .where(agentFilter ? and(eq(users.source, 'whatsapp'), agentFilter) : eq(users.source, 'whatsapp'));
+      .where(userWhere(eq(users.source, 'whatsapp')));
 
     const [proUsers] = await this.drizzle
       .select({ count: count() })
       .from(users)
-      .where(agentFilter ? and(eq(users.subscription, 'pro'), agentFilter) : eq(users.subscription, 'pro'));
+      .where(userWhere(eq(users.subscription, 'pro')));
+
+    // Conversations: scope to active + same agent/tenant context (via user join when tenant set).
+    const agentConvFilter = agentName
+      ? sql`agent_id IN (SELECT id FROM agents WHERE LOWER(url_slug) = ${agentName.toLowerCase()} OR LOWER(name) = ${agentName.toLowerCase()})`
+      : null;
+
+    const tenantConvFilter = tenant
+      ? sql`user_id IN (SELECT id FROM users WHERE tenant = ${tenant})`
+      : null;
+
+    const convWhere = and(
+      eq(conversations.status, 'active'),
+      ...(agentConvFilter ? [agentConvFilter] : []),
+      ...(tenantConvFilter ? [tenantConvFilter] : []),
+    );
 
     const [totalConversations] = await this.drizzle
       .select({ count: count() })
       .from(conversations)
-      .where(agentConvFilter ? and(eq(conversations.status, 'active'), agentConvFilter) : eq(conversations.status, 'active'));
+      .where(convWhere);
 
     return {
       totalUsers: totalUsers?.count || 0,
