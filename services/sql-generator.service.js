@@ -130,10 +130,107 @@ If the question cannot be answered with the available schema, set confidence to 
 
   /**
    * Schema-specific SQL rules injected into the prompt.
-   * Keeps zer4u and newdeli rules separate — no cross-contamination.
+   * Keeps zer4u, newdeli and thestock rules separate — no cross-contamination.
    * @private
    */
   _getSchemaSpecificRules(schemaName) {
+    if (schemaName === 'thestock') {
+      return `
+## thestock-Specific Rules (CRITICAL — follow exactly)
+
+**Tables**: payments (~9.8M rows), credits (~158K), customers (~1.07M), products (~61K), warehouses (168), inventory_c100 (~901K), calendar (868), calendar_compare (868)
+**NO sales facts table exists** — there is NO item-level link between products and transactions. Do NOT attempt to join products to payments/credits via transaction lines.
+
+### RULE 1 — There is NO date / time column on payments or credits (CRITICAL)
+Neither \`payments\` nor \`credits\` has any date, year, month, or timestamp column. The columns on \`payments\` are EXACTLY: amount (NUMERIC), payment_type_code (TEXT), payment_type (TEXT), transaction_id (TEXT). On \`credits\`: transaction_id (TEXT), credit_issued, cash_credit, card_credit, employee_discount, special_discount (all NUMERIC).
+
+This means:
+- "this year", "this month", "last week", "in 2024", any time-bound filter on payments or credits is IMPOSSIBLE.
+- \`transaction_id\` is TEXT (e.g. 'C4501000049', 'G3942001208', '4801006315') and does NOT encode any date. NEVER attempt \`EXTRACT(YEAR FROM transaction_id)\`, \`CAST(transaction_id AS DATE)\`, or any similar hack — it will fail at runtime.
+- The \`calendar\` table is a standalone date dimension with no foreign key to payments/credits. You CANNOT JOIN payments to calendar on any meaningful key.
+
+If the user asks a time-bound payment/credit question, set confidence to "low" and explain in the \`explanation\` field that the loaded schema has no transaction date — offer to return the equivalent metric across ALL data (no time filter) instead.
+
+### RULE 2 — No item-level sales
+If the user asks about top products, sales by category, revenue per branch, customer baskets, or sales trends over time, return confidence "low" with an explanation that this data is not available in the loaded schema.
+
+### RULE 3 — payments table joins
+\`payments\` and \`credits\` share \`transaction_id\` (TEXT, often with a prefix letter like 'C', 'G').
+- JOIN: \`JOIN thestock.credits c ON p.transaction_id = c.transaction_id\`
+
+### RULE 4 — Always LIMIT on large tables
+\`payments\` (9.8M) and \`customers\` (1.07M) and \`inventory_c100\` (901K) must be aggregated or LIMITed.
+- Never \`SELECT * FROM thestock.payments\` without aggregation or LIMIT.
+
+### RULE 5 — Inventory at C100
+\`inventory_c100\` represents disconnected items at warehouse C100. Negative values are common and meaningful.
+- JOIN with products: \`JOIN thestock.products p ON i.sku = p.sku\`
+
+### RULE 6 — Cross-brand cost
+\`products\` has BOTH The Stock cost (\`standard_cost_ils\`) and the sister brand Hyper Toy cost (\`standard_cost_ils_hypertoy\`). The difference is precomputed in \`cost_difference\`.
+
+### Reference examples
+
+**Customer count by city:**
+\`\`\`sql
+SELECT city, COUNT(*) AS customer_count
+FROM thestock.customers
+WHERE city IS NOT NULL AND city <> ''
+GROUP BY city
+ORDER BY customer_count DESC
+LIMIT 20
+\`\`\`
+
+**Payment-method totals:**
+\`\`\`sql
+SELECT payment_type, SUM(amount) AS total_amount, COUNT(*) AS line_count
+FROM thestock.payments
+GROUP BY payment_type
+ORDER BY total_amount DESC
+\`\`\`
+
+**Refund / credit summary:**
+\`\`\`sql
+SELECT
+  SUM(credit_issued)      AS total_credit_issued,
+  SUM(cash_credit)        AS total_cash_credit,
+  SUM(card_credit)        AS total_card_credit,
+  SUM(employee_discount)  AS total_employee_discount,
+  SUM(special_discount)   AS total_special_discount,
+  COUNT(*)                AS transaction_count
+FROM thestock.credits
+\`\`\`
+
+**SKUs with negative C100 inventory:**
+\`\`\`sql
+SELECT i.sku, i.c100_inventory, p.item_description, p.family_description
+FROM thestock.inventory_c100 i
+LEFT JOIN thestock.products p ON i.sku = p.sku
+WHERE i.c100_inventory < 0
+ORDER BY i.c100_inventory ASC
+LIMIT 50
+\`\`\`
+
+**Top suppliers by number of products:**
+\`\`\`sql
+SELECT preferred_supplier, COUNT(*) AS product_count
+FROM thestock.products
+WHERE preferred_supplier IS NOT NULL AND preferred_supplier <> ''
+GROUP BY preferred_supplier
+ORDER BY product_count DESC
+LIMIT 20
+\`\`\`
+
+**Largest cost gaps vs Hyper Toy:**
+\`\`\`sql
+SELECT sku, item_description, standard_cost_ils, standard_cost_ils_hypertoy, cost_difference
+FROM thestock.products
+WHERE cost_difference IS NOT NULL
+ORDER BY ABS(cost_difference) DESC
+LIMIT 20
+\`\`\``;
+    }
+
     if (schemaName === 'newdeli') {
       return `
 ## newdeli-Specific Rules (CRITICAL — follow exactly)
