@@ -5499,6 +5499,7 @@ async function startServer() {
     require('./agents/zer4u/data-reload').register(dataReloadService);
     require('./agents/newdeli/data-reload').register(dataReloadService);
     require('./agents/thestock/data-reload').register(dataReloadService);
+    require('./agents/hypertoy/data-reload').register(dataReloadService);
     app.set('dataReloadService', dataReloadService);
     await dataReloadService.cleanupStaleRuns();
     dataReloadService.startPeriodicCleanup();

@@ -427,21 +427,27 @@ GROUP BY st.store_name
 ORDER BY total_revenue DESC;
 ```
 
-**For top N products per store (use ROW_NUMBER):**
+**For top N products per store — use `mv_sales_by_store_product` (instant!):**
 ```sql
+-- ⚠️ NEVER join raw sales + stores + items for this — it times out on 69M rows!
 WITH ranked AS (
-  SELECT s.store_id, st.store_name, s.item_code, i.item_name,
-         SUM(s.quantity) AS total_qty,
-         ROW_NUMBER() OVER (PARTITION BY s.store_id ORDER BY SUM(s.quantity) DESC) AS rnk
-  FROM zer4u.sales s
-  JOIN zer4u.stores st ON s.store_id = st.store_id
-  JOIN zer4u.items i ON s.item_code = i.item_code
-  WHERE s.sale_date >= CURRENT_DATE - INTERVAL '12 months'
-  GROUP BY s.store_id, st.store_name, s.item_code, i.item_name
+  SELECT sp.store_number, sp.store_name, sp.item_code, sp.item_name,
+         sp.total_quantity,
+         ROW_NUMBER() OVER (PARTITION BY sp.store_number ORDER BY sp.total_quantity DESC) AS rnk
+  FROM zer4u.mv_sales_by_store_product sp
 )
-SELECT store_id, store_name, item_code, item_name, total_qty
+SELECT store_number, store_name, item_code, item_name, total_quantity
 FROM ranked WHERE rnk <= 3
-ORDER BY store_id, rnk;
+ORDER BY store_number, rnk;
+```
+
+**For store performance in a specific month — use `mv_sales_by_store_month` (instant!):**
+```sql
+-- Sales at a specific store in January 2025
+SELECT sm.store_name, sm.total_revenue, sm.transaction_count
+FROM zer4u.mv_sales_by_store_month sm
+WHERE sm.store_name ILIKE '%מודיעין%'  -- or filter by store_id
+  AND sm.sale_year = 2025 AND sm.sale_month = 1;
 ```
 
 **⚠️ No "active" column** — active stores have closing date >= today: `WHERE zer4u.parse_date_ddmmyyyy("תאריך סגירת חנות") >= CURRENT_DATE`
@@ -504,9 +510,12 @@ After migration, the main sales columns are typed — use them directly, no cast
 4. **Nullability**: All columns allow NULL values
 5. **Performance**:
    - ✅ USE materialized views for aggregations (instant results)
-   - ✅ USE `sale_date` for date filters (indexed DATE column)
-   - ✅ USE `store_id`, `customer_id` directly for joins (indexed integers)
+   - ✅ USE `sale_date` for date filters (indexed DATE column): `WHERE s.sale_date BETWEEN '2025-02-01' AND '2025-02-28'`
+   - ✅ USE `store_id`, `customer_id`, `item_code` directly for joins (all indexed)
    - ❌ AVOID direct aggregation on full sales table without date filter (slow on 69M rows)
+   - ❌ AVOID `EXTRACT(MONTH FROM sale_date) = N` without year — scans ALL years (full table scan!)
+   - ❌ AVOID `TO_DATE(col, 'DD/MM/YYYY')` on sales — old Hebrew columns are REMOVED; `sale_date` is a real DATE
+   - ❌ AVOID `NOT IN (SELECT ... FROM zer4u.sales ...)` — use LEFT JOIN with a materialized view instead
 
 ## Query Strategy
 1. **For annual totals** ("sales for 2025", "this year"): Use `mv_sales_by_year` — instant!
@@ -523,6 +532,10 @@ After migration, the main sales columns are typed — use them directly, no cast
 12. **For categories by revenue**: JOIN sales + items on item_code, GROUP BY item_group
 13. **For returning vs new customers**: Use MIN(sale_date) per customer — see example below
 14. **NEVER aggregate directly on sales table without a narrow filter** — use the materialized views!
+15. **For specific product sales by period** (user asks about "product X in month Y"): Query `mv_sales_by_product_month` directly — it already has `item_name`, filter with ILIKE + year + month:
+    `WHERE item_name ILIKE '%name%' AND sale_year = Y AND sale_month = M`
+    - ⚠️ NEVER do: JOIN raw sales + items WHERE item_name ILIKE + EXTRACT(MONTH...) — times out on 69M rows!
+16. **For items NOT sold in a period**: Use LEFT JOIN with `mv_sales_by_product_month` (NOT IN subquery on raw sales times out!)
 
 ## Common Analysis Patterns
 ```sql
@@ -565,20 +578,26 @@ ORDER BY qty_sold DESC
 LIMIT 20;
 
 -- SEARCH BY ITEM NAME + PERIOD — use mv_sales_by_product_month (fast!)
--- Step 1: find matching item_codes from items table (small, uses ILIKE on 28K rows)
--- Step 2: aggregate from MV using those codes (instant)
-WITH matching_items AS (
-  SELECT item_code FROM zer4u.items WHERE item_name ILIKE '%search_term%'
-)
-SELECT m.item_code, MAX(i.item_name) AS item_name,
-       SUM(m.total_quantity) AS total_quantity, SUM(m.total_revenue) AS total_revenue
-FROM zer4u.mv_sales_by_product_month m
-JOIN matching_items mi ON m.item_code = mi.item_code
-JOIN zer4u.items i ON m.item_code = i.item_code
-WHERE m.sale_year = 2025 AND m.sale_month = 2  -- specific month
-GROUP BY m.item_code, i.item_name;
--- ⚠️ NEVER use: WHERE EXTRACT(MONTH FROM sale_date) = 2  — scans ALL 69M rows without year filter!
--- ⚠️ NEVER use: WHERE EXTRACT(MONTH FROM sale_date) = 2 AND EXTRACT(YEAR ...) = 2025  — use mv_sales_by_product_month instead
+-- ⚠️ NEVER: JOIN raw sales + items WHERE item_name ILIKE + EXTRACT(MONTH ...) — TIMES OUT on 69M rows!
+-- mv_sales_by_product_month ALREADY has item_name — search directly in the MV:
+SELECT item_code, item_name,
+       SUM(total_quantity) AS total_quantity, SUM(total_revenue) AS total_revenue
+FROM zer4u.mv_sales_by_product_month
+WHERE item_name ILIKE '%search_term%'   -- e.g. '%קוביה של אושר%'
+  AND sale_year = 2025 AND sale_month = 2  -- always specify both year AND month
+GROUP BY item_code, item_name
+ORDER BY total_revenue DESC;
+
+-- ITEMS IN INVENTORY BUT NOT SOLD in a specific period — LEFT JOIN (fast!)
+-- ⚠️ NEVER: NOT IN (SELECT item_code FROM zer4u.sales WHERE parse_date...) — TIMES OUT on 69M rows!
+SELECT inv.item_code, inv.item_name, inv.total_stock
+FROM zer4u.mv_inventory_by_item inv
+LEFT JOIN zer4u.mv_sales_by_product_month pm
+  ON pm.item_code = inv.item_code AND pm.sale_year = 2026 AND pm.sale_month = 3
+WHERE inv.total_stock > 0
+  AND pm.item_code IS NULL  -- no sales in that period
+ORDER BY inv.total_stock DESC
+LIMIT 50;
 
 -- NEW PRODUCT LAUNCHES in a given month (item entry date)
 SELECT item_code, item_name, item_group,
