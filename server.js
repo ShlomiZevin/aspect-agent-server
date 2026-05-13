@@ -629,6 +629,43 @@ app.post('/api/agents/:agentName/crew/:crewName/prompts/:versionId/activate', as
   }
 });
 
+// Publish a specific prompt version (the version outside users see).
+// Independent of activate — admins can keep iterating on isActive while
+// the published version stays stable for end users.
+app.post('/api/agents/:agentName/crew/:crewName/prompts/:versionId/publish', async (req, res) => {
+  const { agentName, crewName, versionId } = req.params;
+
+  try {
+    const published = await promptService.publishVersion(
+      agentName,
+      crewName,
+      parseInt(versionId)
+    );
+
+    console.log(`📣 Published prompt version: ${crewName} v${published.version}`);
+    res.json({
+      success: true,
+      version: published,
+    });
+  } catch (err) {
+    console.error('❌ Error publishing prompt version:', err.message);
+    res.status(500).json({ error: 'Error publishing prompt version: ' + err.message });
+  }
+});
+
+// Unpublish all versions (outside users fall back to active).
+app.post('/api/agents/:agentName/crew/:crewName/prompts/unpublish-all', async (req, res) => {
+  const { agentName, crewName } = req.params;
+  try {
+    await promptService.unpublishAll(agentName, crewName);
+    console.log(`📣 Unpublished all versions: ${crewName}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error unpublishing:', err.message);
+    res.status(500).json({ error: 'Error unpublishing: ' + err.message });
+  }
+});
+
 // Deactivate all prompt versions (revert to code default)
 app.post('/api/agents/:agentName/crew/:crewName/prompts/revert-to-code', async (req, res) => {
   const { agentName, crewName } = req.params;
@@ -1800,7 +1837,7 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
 
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled, temperatureOverrides, topKOverrides, profilerFreshStart, profilerEnabled } = req.body;
+  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled, temperatureOverrides, topKOverrides, profilerFreshStart, profilerEnabled, restrictedMode } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -1908,7 +1945,8 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         thinkerDisabled: thinkerDisabled || {},
         temperatureOverrides: temperatureOverrides || {},
         topKOverrides: topKOverrides || {},
-        agentId: agent?.id || null
+        agentId: agent?.id || null,
+        restrictedMode: !!restrictedMode
       })) {
         // Check if chunk is a function call event (object) or text (string)
         if (typeof chunk === 'object' && chunk.type) {

@@ -64,6 +64,7 @@ class PromptService {
         temperature: crewPrompts.temperature,
         topK: crewPrompts.topK,
         isActive: crewPrompts.isActive,
+        isPublished: crewPrompts.isPublished,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
       })
@@ -103,6 +104,7 @@ class PromptService {
         temperature: crewPrompts.temperature,
         topK: crewPrompts.topK,
         isActive: crewPrompts.isActive,
+        isPublished: crewPrompts.isPublished,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
       })
@@ -144,6 +146,7 @@ class PromptService {
         temperature: crewPrompts.temperature,
         topK: crewPrompts.topK,
         isActive: crewPrompts.isActive,
+        isPublished: crewPrompts.isPublished,
         createdAt: crewPrompts.createdAt,
         updatedAt: crewPrompts.updatedAt,
       })
@@ -179,6 +182,7 @@ class PromptService {
         temperature: prompt.temperature,
         topK: prompt.topK,
         isActive: prompt.isActive,
+        isPublished: prompt.isPublished,
         createdAt: prompt.createdAt?.toISOString(),
         updatedAt: prompt.updatedAt?.toISOString(),
       });
@@ -257,6 +261,7 @@ class PromptService {
       temperature: newVersion.temperature,
       topK: newVersion.topK,
       isActive: newVersion.isActive,
+      isPublished: newVersion.isPublished,
       createdAt: newVersion.createdAt?.toISOString(),
       updatedAt: newVersion.updatedAt?.toISOString(),
     };
@@ -322,6 +327,7 @@ class PromptService {
       temperature: updated.temperature,
       topK: updated.topK,
       isActive: updated.isActive,
+      isPublished: updated.isPublished,
       createdAt: updated.createdAt?.toISOString(),
       updatedAt: updated.updatedAt?.toISOString(),
     };
@@ -367,6 +373,7 @@ class PromptService {
       prompt: activated.prompt,
       transitionSystemPrompt: activated.transitionSystemPrompt,
       isActive: activated.isActive,
+      isPublished: activated.isPublished,
       createdAt: activated.createdAt?.toISOString(),
       updatedAt: activated.updatedAt?.toISOString(),
     };
@@ -381,6 +388,114 @@ class PromptService {
     await this.drizzle
       .update(crewPrompts)
       .set({ isActive: false, updatedAt: new Date() })
+      .where(and(
+        eq(crewPrompts.agentId, agent.id),
+        eq(crewPrompts.crewMemberName, crewMemberName)
+      ));
+  }
+
+  /**
+   * Get the published prompt for a crew member (used by outside-user chat).
+   * Falls back to the active prompt if no version is explicitly published yet
+   * (chosen behaviour: outside users never get nothing).
+   * Returns null if neither published nor active exists (caller falls back to code default).
+   */
+  async getPublishedPrompt(agentName, crewMemberName) {
+    if (!this.drizzle) this.initialize();
+
+    const agent = await this.getAgentByName(agentName);
+
+    const [publishedPrompt] = await this.drizzle
+      .select({
+        id: crewPrompts.id,
+        version: crewPrompts.version,
+        name: crewPrompts.name,
+        description: crewPrompts.description,
+        prompt: crewPrompts.prompt,
+        transitionSystemPrompt: crewPrompts.transitionSystemPrompt,
+        model: crewPrompts.model,
+        provider: crewPrompts.provider,
+        kbSources: crewPrompts.kbSources,
+        persona: crewPrompts.persona,
+        thinkingPrompt: crewPrompts.thinkingPrompt,
+        thinkingModel: crewPrompts.thinkingModel,
+        temperature: crewPrompts.temperature,
+        topK: crewPrompts.topK,
+        isActive: crewPrompts.isActive,
+        isPublished: crewPrompts.isPublished,
+        createdAt: crewPrompts.createdAt,
+        updatedAt: crewPrompts.updatedAt,
+      })
+      .from(crewPrompts)
+      .where(and(
+        eq(crewPrompts.agentId, agent.id),
+        eq(crewPrompts.crewMemberName, crewMemberName),
+        eq(crewPrompts.isPublished, true)
+      ))
+      .limit(1);
+
+    if (publishedPrompt) return publishedPrompt;
+
+    // Fallback: no explicit published version → use the admin's active one.
+    return this.getActivePrompt(agentName, crewMemberName);
+  }
+
+  /**
+   * Publish a specific version (the version outside users see).
+   * Independent from isActive — same version can be both, or different versions.
+   */
+  async publishVersion(agentName, crewMemberName, versionId) {
+    if (!this.drizzle) this.initialize();
+
+    const agent = await this.getAgentByName(agentName);
+
+    // Unpublish all versions for this crew (only one published at a time).
+    await this.drizzle
+      .update(crewPrompts)
+      .set({ isPublished: false, updatedAt: new Date() })
+      .where(and(
+        eq(crewPrompts.agentId, agent.id),
+        eq(crewPrompts.crewMemberName, crewMemberName)
+      ));
+
+    // Publish the requested version.
+    const [published] = await this.drizzle
+      .update(crewPrompts)
+      .set({ isPublished: true, updatedAt: new Date() })
+      .where(and(
+        eq(crewPrompts.id, versionId),
+        eq(crewPrompts.agentId, agent.id),
+        eq(crewPrompts.crewMemberName, crewMemberName)
+      ))
+      .returning();
+
+    if (!published) {
+      throw new Error(`Prompt version not found: ${versionId}`);
+    }
+
+    return {
+      id: String(published.id),
+      version: published.version,
+      name: published.name,
+      description: published.description,
+      prompt: published.prompt,
+      transitionSystemPrompt: published.transitionSystemPrompt,
+      isActive: published.isActive,
+      isPublished: published.isPublished,
+      createdAt: published.createdAt?.toISOString(),
+      updatedAt: published.updatedAt?.toISOString(),
+    };
+  }
+
+  /**
+   * Unpublish all versions for a crew member (outside users will fall back to active).
+   */
+  async unpublishAll(agentName, crewMemberName) {
+    if (!this.drizzle) this.initialize();
+    const agent = await this.getAgentByName(agentName);
+    await this.drizzle
+      .update(crewPrompts)
+      .set({ isPublished: false, updatedAt: new Date() })
       .where(and(
         eq(crewPrompts.agentId, agent.id),
         eq(crewPrompts.crewMemberName, crewMemberName)
@@ -413,6 +528,9 @@ class PromptService {
 
     if (version.isActive) {
       throw new Error('Cannot delete active version. Activate another version first.');
+    }
+    if (version.isPublished) {
+      throw new Error('Cannot delete published version. Publish another version first.');
     }
 
     // Delete the version

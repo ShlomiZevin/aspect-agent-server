@@ -160,7 +160,8 @@ const crewPrompts = pgTable('crew_prompts', {
   thinkingModel: varchar('thinking_model', { length: 100 }), // Thinker model override (e.g., 'claude-opus-4-6')
   temperature: real('temperature'),                // LLM temperature override (0.0 - 2.0)
   topK: real('top_k'),                             // LLM top_k override (provider-dependent)
-  isActive: boolean('is_active').default(false).notNull(), // Only one version should be active per crew member
+  isActive: boolean('is_active').default(false).notNull(), // Only one version should be active per crew member (admin/working)
+  isPublished: boolean('is_published').default(false).notNull(), // Only one version should be published per crew member (outside users)
   createdBy: integer('created_by').references(() => users.id), // Who created this version
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

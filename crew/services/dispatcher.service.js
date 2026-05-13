@@ -401,7 +401,8 @@ class DispatcherService {
       thinkerDisabled = {},         // Session override: { crewName: true } to disable thinker
       temperatureOverrides = {},    // Session override: { crewName: number }
       topKOverrides = {},           // Session override: { crewName: number }
-      agentId                      // Agent DB ID for KB resolver
+      agentId,                     // Agent DB ID for KB resolver
+      restrictedMode = false       // True for outside-user chat: use published version, not active
     } = params;
 
     // Get conversation for context
@@ -418,10 +419,13 @@ class DispatcherService {
     }
 
     // ========== LOAD DB PROMPT (needed for persona + prompt resolution) ==========
+    // restrictedMode (outside-user chat) → published version; admin/debug → active version.
     let dbPrompt = null;
     if (!promptOverrides[crew.name]) {
       try {
-        dbPrompt = await promptService.getActivePrompt(agentName, crew.name);
+        dbPrompt = restrictedMode
+          ? await promptService.getPublishedPrompt(agentName, crew.name)
+          : await promptService.getActivePrompt(agentName, crew.name);
       } catch (err) {
         // DB not available - will fall back to code default
       }
