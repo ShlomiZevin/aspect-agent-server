@@ -130,10 +130,254 @@ If the question cannot be answered with the available schema, set confidence to 
 
   /**
    * Schema-specific SQL rules injected into the prompt.
-   * Keeps zer4u and newdeli rules separate — no cross-contamination.
+   * Keeps zer4u, newdeli, thestock and hypertoy rules separate — no cross-contamination.
    * @private
    */
   _getSchemaSpecificRules(schemaName) {
+    if (schemaName === 'hypertoy') {
+      return `
+## hypertoy-Specific Rules (CRITICAL — follow exactly)
+
+**Tables**: facts (~1.97M wide, mixed record types), payments (~670K), pay_accounts (~726K), credits (~38K), customers (~128K), products (~60K), warehouses (50), stores (96), inventory_500 (~3K), calendar (346), calendar_compare (346)
+
+### RULE 1 — facts is a WIDE table mixing 3 record types — ALWAYS filter
+The \`facts\` table mixes three kinds of records. NEVER aggregate without filtering by \`record_type\`:
+- \`record_type = 'מכירות'\` (sales transactions) — use for revenue, qty sold, profit, customer analysis
+- \`record_type = 'מלאי'\` (inventory snapshots) — use \`inventory_balance\`, \`inventory_value\`
+- \`record_type = 'יעדים'\` (targets) — use \`sales_target\`, \`loyalty_target\`
+
+Default for any sales/revenue/profit question: \`WHERE record_type = 'מכירות'\`.
+
+### RULE 2 — Use transaction_date for time filters
+\`facts.transaction_date\` is a DATE column. Filter examples:
+- This year: \`transaction_date >= DATE_TRUNC('year', CURRENT_DATE)\`
+- This month: \`transaction_date >= DATE_TRUNC('month', CURRENT_DATE)\`
+- Specific year: \`EXTRACT(YEAR FROM transaction_date) = 2025\`
+- Combine with record_type filter: \`WHERE record_type = 'מכירות' AND transaction_date >= '2025-01-01'\`
+
+### RULE 3 — Always include record_type filter even for COUNT
+A bare \`SELECT COUNT(*) FROM hypertoy.facts\` returns the mixed count (sales + inventory + targets) and is misleading. Always specify the record_type.
+
+### RULE 3.5 — NEVER use COUNT(DISTINCT transaction_id) over the entire facts table
+\`facts\` has ~1.97M rows. \`COUNT(DISTINCT transaction_id)\` on the full table without a narrow date filter times out at 15s. Each row in facts already represents one transaction line — use \`COUNT(*)\` (lines) instead of \`COUNT(DISTINCT transaction_id)\` (transactions) for top-N / per-store / per-cashier reports. If you specifically need transaction counts, narrow with \`transaction_date >= ...\` first.
+- WRONG (times out): \`SELECT warehouse_code, COUNT(DISTINCT transaction_id), SUM(sales_ex_vat) FROM hypertoy.facts WHERE record_type='מכירות' GROUP BY warehouse_code\`
+- CORRECT: \`SELECT warehouse_code, COUNT(*) AS line_count, SUM(sales_ex_vat) FROM hypertoy.facts WHERE record_type='מכירות' GROUP BY warehouse_code\`
+
+### RULE 3.6 — Customer-count defaults
+"How many customers" / "total customers" should default to \`SELECT COUNT(*) FROM hypertoy.customers\` (registered customer master). Use \`COUNT(DISTINCT customer_id) FROM hypertoy.facts WHERE record_type='מכירות' AND customer_id IS NOT NULL AND customer_id <> ''\` ONLY when the user explicitly asks about active / purchasing / buying customers.
+
+### RULE 3.7 — Franchisee attribution
+The columns \`facts.franchisee_code\` and \`facts.franchisee_name\` are EMPTY (NULL) in this dataset — do NOT GROUP BY them. Sister-brand and franchisee attribution is encoded in \`facts.register_name\` (קופה — e.g. 'קופת סניף פיראט אילת') and the corresponding \`facts.warehouse_code\` → \`warehouses.warehouse_name\` (e.g. 'פיראט סינימה'). For franchisee questions, group by \`warehouse_code\` joined to \`warehouses.warehouse_name\` and detect sister brand by string match on the warehouse name (e.g. \`warehouse_name LIKE '%פיראט%'\`).
+
+### RULE 4 — JOINs
+- Products: \`JOIN hypertoy.products p ON f.part = p.part\`
+- Warehouses: \`JOIN hypertoy.warehouses w ON f.warehouse_code = w.warehouse_code\`
+- Stores (better attribution): \`JOIN hypertoy.stores s ON f.warehouse_code = s.store_id\` (warehouse_code on facts often matches store_id)
+- Payments: \`JOIN hypertoy.payments pay ON f.transaction_id = pay.transaction_id\`
+- Customers: \`JOIN hypertoy.customers c ON f.customer_id = c.customer_id\`
+
+### RULE 5 — Profit / margin metrics
+- Profit fields are already calculated: \`profit_ex_vat\`, \`profit_inc_vat\`
+- Cost fields: \`cost_ex_vat\`, \`cost_inc_vat\`, \`COSTT\` (column name \`costt\`)
+- Margin % = SUM(profit_ex_vat) / NULLIF(SUM(sales_ex_vat), 0) * 100
+
+### RULE 6 — Cross-brand cost analysis (products only)
+\`products\` has three cost columns side by side:
+- \`standard_cost_ils\` — Hyper Toy cost (the brand the agent represents)
+- \`standard_cost_ils_thestock\` — sister brand The Stock cost
+- \`standard_cost_ils_pirat\` — sister brand Pirat cost
+- \`cost_difference\` — pre-computed gap
+
+**CRITICAL — always filter out 0/NULL costs on BOTH sides being compared.** Many products are sold by only one of the three brands, so the missing brand's cost is 0 or NULL and produces a meaningless "gap". For "biggest cost gaps between Hyper Toy and The Stock", the query MUST include \`WHERE standard_cost_ils > 0 AND standard_cost_ils_thestock > 0\`. For Pirat: \`WHERE standard_cost_ils > 0 AND standard_cost_ils_pirat > 0\`. For "biggest gap across all three sister brands": \`WHERE standard_cost_ils > 0 AND standard_cost_ils_thestock > 0 AND standard_cost_ils_pirat > 0\`. Without this filter the top rows are always products one brand doesn't carry — useless to the user.
+
+Reference query for "biggest cost gaps between Hyper Toy and The Stock / Pirat":
+\`\`\`sql
+SELECT sku, item_description,
+       standard_cost_ils       AS hypertoy_cost,
+       standard_cost_ils_thestock AS thestock_cost,
+       standard_cost_ils_pirat AS pirat_cost,
+       GREATEST(standard_cost_ils, standard_cost_ils_thestock, standard_cost_ils_pirat)
+         - LEAST(standard_cost_ils, standard_cost_ils_thestock, standard_cost_ils_pirat) AS cost_gap
+FROM hypertoy.products
+WHERE standard_cost_ils > 0
+  AND standard_cost_ils_thestock > 0
+  AND standard_cost_ils_pirat > 0
+ORDER BY cost_gap DESC
+LIMIT 20
+\`\`\`
+
+### Reference examples
+
+**Total revenue this month:**
+\`\`\`sql
+SELECT SUM(sales_ex_vat) AS revenue, SUM(profit_ex_vat) AS profit, COUNT(*) AS line_count
+FROM hypertoy.facts
+WHERE record_type = 'מכירות'
+  AND transaction_date >= DATE_TRUNC('month', CURRENT_DATE)
+\`\`\`
+
+**Top 10 selling products by quantity this year:**
+\`\`\`sql
+SELECT p.sku, p.item_description, p.family_description,
+       SUM(f.qty_sold) AS qty, SUM(f.sales_ex_vat) AS revenue, SUM(f.profit_ex_vat) AS profit
+FROM hypertoy.facts f
+JOIN hypertoy.products p ON f.part = p.part
+WHERE f.record_type = 'מכירות'
+  AND EXTRACT(YEAR FROM f.transaction_date) = EXTRACT(YEAR FROM CURRENT_DATE)
+GROUP BY p.sku, p.item_description, p.family_description
+ORDER BY qty DESC
+LIMIT 10
+\`\`\`
+
+**Top stores by revenue:**
+\`\`\`sql
+SELECT f.warehouse_code, w.warehouse_name, w.branch_name,
+       SUM(f.sales_ex_vat) AS revenue
+FROM hypertoy.facts f
+LEFT JOIN hypertoy.warehouses w ON f.warehouse_code = w.warehouse_code
+WHERE f.record_type = 'מכירות'
+GROUP BY f.warehouse_code, w.warehouse_name, w.branch_name
+ORDER BY revenue DESC
+LIMIT 10
+\`\`\`
+
+**Profit margin by product family:**
+\`\`\`sql
+SELECT p.family_description,
+       SUM(f.sales_ex_vat) AS revenue,
+       SUM(f.profit_ex_vat) AS profit,
+       ROUND((SUM(f.profit_ex_vat) / NULLIF(SUM(f.sales_ex_vat), 0) * 100)::numeric, 2) AS margin_pct
+FROM hypertoy.facts f
+JOIN hypertoy.products p ON f.part = p.part
+WHERE f.record_type = 'מכירות'
+GROUP BY p.family_description
+ORDER BY revenue DESC
+LIMIT 20
+\`\`\`
+
+**Sales targets vs actual:**
+\`\`\`sql
+SELECT TO_CHAR(t.transaction_date, 'YYYY-MM') AS month, t.warehouse_code,
+       SUM(t.sales_target) AS target,
+       (SELECT SUM(sales_ex_vat) FROM hypertoy.facts s
+        WHERE s.record_type = 'מכירות'
+          AND s.warehouse_code = t.warehouse_code
+          AND DATE_TRUNC('month', s.transaction_date) = DATE_TRUNC('month', t.transaction_date)
+       ) AS actual
+FROM hypertoy.facts t
+WHERE t.record_type = 'יעדים'
+ORDER BY month DESC, t.warehouse_code
+LIMIT 50
+\`\`\`
+
+**Top cashiers by revenue:**
+\`\`\`sql
+SELECT cashier, COUNT(DISTINCT transaction_id) AS transactions, SUM(sales_ex_vat) AS revenue
+FROM hypertoy.facts
+WHERE record_type = 'מכירות' AND cashier IS NOT NULL AND cashier <> ''
+GROUP BY cashier
+ORDER BY revenue DESC
+LIMIT 10
+\`\`\``;
+    }
+
+    if (schemaName === 'thestock') {
+      return `
+## thestock-Specific Rules (CRITICAL — follow exactly)
+
+**Tables**: payments (~9.8M rows), credits (~158K), customers (~1.07M), products (~61K), warehouses (168), inventory_c100 (~901K), calendar (868), calendar_compare (868)
+**NO sales facts table exists** — there is NO item-level link between products and transactions. Do NOT attempt to join products to payments/credits via transaction lines.
+
+### RULE 1 — There is NO date / time column on payments or credits (CRITICAL)
+Neither \`payments\` nor \`credits\` has any date, year, month, or timestamp column. The columns on \`payments\` are EXACTLY: amount (NUMERIC), payment_type_code (TEXT), payment_type (TEXT), transaction_id (TEXT). On \`credits\`: transaction_id (TEXT), credit_issued, cash_credit, card_credit, employee_discount, special_discount (all NUMERIC).
+
+This means:
+- "this year", "this month", "last week", "in 2024", any time-bound filter on payments or credits is IMPOSSIBLE.
+- \`transaction_id\` is TEXT (e.g. 'C4501000049', 'G3942001208', '4801006315') and does NOT encode any date. NEVER attempt \`EXTRACT(YEAR FROM transaction_id)\`, \`CAST(transaction_id AS DATE)\`, or any similar hack — it will fail at runtime.
+- The \`calendar\` table is a standalone date dimension with no foreign key to payments/credits. You CANNOT JOIN payments to calendar on any meaningful key.
+
+If the user asks a time-bound payment/credit question, set confidence to "low" and explain in the \`explanation\` field that the loaded schema has no transaction date — offer to return the equivalent metric across ALL data (no time filter) instead.
+
+### RULE 2 — No item-level sales
+If the user asks about top products, sales by category, revenue per branch, customer baskets, or sales trends over time, return confidence "low" with an explanation that this data is not available in the loaded schema.
+
+### RULE 3 — payments table joins
+\`payments\` and \`credits\` share \`transaction_id\` (TEXT, often with a prefix letter like 'C', 'G').
+- JOIN: \`JOIN thestock.credits c ON p.transaction_id = c.transaction_id\`
+
+### RULE 4 — Always LIMIT on large tables
+\`payments\` (9.8M) and \`customers\` (1.07M) and \`inventory_c100\` (901K) must be aggregated or LIMITed.
+- Never \`SELECT * FROM thestock.payments\` without aggregation or LIMIT.
+
+### RULE 5 — Inventory at C100
+\`inventory_c100\` represents disconnected items at warehouse C100. Negative values are common and meaningful.
+- JOIN with products: \`JOIN thestock.products p ON i.sku = p.sku\`
+
+### RULE 6 — Cross-brand cost
+\`products\` has BOTH The Stock cost (\`standard_cost_ils\`) and the sister brand Hyper Toy cost (\`standard_cost_ils_hypertoy\`). The difference is precomputed in \`cost_difference\`.
+
+### Reference examples
+
+**Customer count by city:**
+\`\`\`sql
+SELECT city, COUNT(*) AS customer_count
+FROM thestock.customers
+WHERE city IS NOT NULL AND city <> ''
+GROUP BY city
+ORDER BY customer_count DESC
+LIMIT 20
+\`\`\`
+
+**Payment-method totals:**
+\`\`\`sql
+SELECT payment_type, SUM(amount) AS total_amount, COUNT(*) AS line_count
+FROM thestock.payments
+GROUP BY payment_type
+ORDER BY total_amount DESC
+\`\`\`
+
+**Refund / credit summary:**
+\`\`\`sql
+SELECT
+  SUM(credit_issued)      AS total_credit_issued,
+  SUM(cash_credit)        AS total_cash_credit,
+  SUM(card_credit)        AS total_card_credit,
+  SUM(employee_discount)  AS total_employee_discount,
+  SUM(special_discount)   AS total_special_discount,
+  COUNT(*)                AS transaction_count
+FROM thestock.credits
+\`\`\`
+
+**SKUs with negative C100 inventory:**
+\`\`\`sql
+SELECT i.sku, i.c100_inventory, p.item_description, p.family_description
+FROM thestock.inventory_c100 i
+LEFT JOIN thestock.products p ON i.sku = p.sku
+WHERE i.c100_inventory < 0
+ORDER BY i.c100_inventory ASC
+LIMIT 50
+\`\`\`
+
+**Top suppliers by number of products:**
+\`\`\`sql
+SELECT preferred_supplier, COUNT(*) AS product_count
+FROM thestock.products
+WHERE preferred_supplier IS NOT NULL AND preferred_supplier <> ''
+GROUP BY preferred_supplier
+ORDER BY product_count DESC
+LIMIT 20
+\`\`\`
+
+**Largest cost gaps vs Hyper Toy:**
+\`\`\`sql
+SELECT sku, item_description, standard_cost_ils, standard_cost_ils_hypertoy, cost_difference
+FROM thestock.products
+WHERE cost_difference IS NOT NULL
+ORDER BY ABS(cost_difference) DESC
+LIMIT 20
+\`\`\``;
+    }
+
     if (schemaName === 'newdeli') {
       return `
 ## newdeli-Specific Rules (CRITICAL — follow exactly)

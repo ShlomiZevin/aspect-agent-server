@@ -1844,13 +1844,12 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
   }
 
   let sendSSE = null; // defined here so catch block can access it
+  let agent = null;
+  const agentNameToUse = agentName || 'Aspect';
 
   try {
-    // Default to Aspect if no agent name specified (for backward compatibility)
-    const agentNameToUse = agentName || 'Aspect';
-
     // Get agent configuration from database
-    const agent = await conversationService.getAgentByName(agentNameToUse);
+    agent = await conversationService.getAgentByName(agentNameToUse);
 
     // Set headers for Server-Sent Events (SSE)
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -2281,6 +2280,13 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     // Clean up thinking context on error
     if (thinkingService.hasActiveContext(conversationId)) {
       await thinkingService.endContext(conversationId);
+    }
+
+    // Notify contact person if configured for this agent
+    if (agent?.contactEmail) {
+      const emails = agent.contactEmail.split(',').map(e => e.trim()).filter(Boolean);
+      sendAgentErrorEmail({ agentName: agentNameToUse, contactEmails: emails, errorMessage: err.message, conversationId })
+        .catch(mailErr => console.error('❌ Failed to send error email:', mailErr.message));
     }
 
     const errorText = 'סליחה, יש אצלי עומס זמני... כדאי לנסות לשלוח שוב בעוד רגע.';
@@ -4540,7 +4546,7 @@ app.post('/api/demo-mockups/upload-logo', upload.single('logo'), async (req, res
 });
 
 // Lybi contact form
-const { sendLybiContactEmail } = require('./services/email.service');
+const { sendLybiContactEmail, sendAgentErrorEmail } = require('./services/email.service');
 
 app.post('/api/lybi/contact', async (req, res) => {
   const { name, email, company, message } = req.body;
@@ -4922,6 +4928,39 @@ app.get('/api/admin/billing', async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error('Billing fetch error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Agent Settings admin routes
+
+/**
+ * GET /api/admin/agents/:agentName/settings
+ * Returns editable agent settings (currently: contact_email).
+ */
+app.get('/api/admin/agents/:agentName/settings', async (req, res) => {
+  try {
+    const agent = await conversationService.getAgentByName(req.params.agentName);
+    res.json({ contactEmail: agent.contactEmail || '' });
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+/**
+ * PATCH /api/admin/agents/:agentName/settings
+ * Update editable agent settings.
+ * Body: { contactEmail: "a@x.com,b@x.com" }
+ */
+app.patch('/api/admin/agents/:agentName/settings', async (req, res) => {
+  try {
+    const { agentName } = req.params;
+    const { contactEmail } = req.body;
+    await conversationService.updateAgentContactEmail(agentName, contactEmail);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('❌ Failed to update agent settings:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -5497,6 +5536,8 @@ async function startServer() {
     const dataReloadService = new DataReloadService(db);
     require('./agents/zer4u/data-reload').register(dataReloadService);
     require('./agents/newdeli/data-reload').register(dataReloadService);
+    require('./agents/thestock/data-reload').register(dataReloadService);
+    require('./agents/hypertoy/data-reload').register(dataReloadService);
     app.set('dataReloadService', dataReloadService);
     await dataReloadService.cleanupStaleRuns();
     dataReloadService.startPeriodicCleanup();

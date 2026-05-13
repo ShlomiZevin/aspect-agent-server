@@ -164,4 +164,79 @@ async function sendTaskAttentionEmail({ recipientEmail, recipientName, notificat
   });
 }
 
-module.exports = { sendLybiContactEmail, sendTaskAttentionEmail };
+async function sendAgentErrorEmail({ agentName, contactEmails, errorMessage, conversationId }) {
+  const recipients = contactEmails.filter(Boolean).join(', ');
+  if (!recipients) return;
+
+  const subject = `Agent error: ${agentName}`;
+  const time = new Date().toUTCString();
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#F9FAFB;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F9FAFB;padding:32px 0;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.08);overflow:hidden;">
+
+        <tr>
+          <td style="background:#2563EB;padding:24px 32px;">
+            <span style="color:#fff;font-size:20px;font-weight:700;">${agentName}</span>
+            <span style="color:#BFDBFE;font-size:14px;margin-left:12px;">Error alert</span>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:24px 32px 8px;">
+            <p style="margin:0;color:#374151;font-size:15px;">A chat error occurred and the user received an error message.</p>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:8px 32px 24px;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E5E7EB;border-radius:6px;overflow:hidden;">
+              <tr>
+                <td style="padding:16px;border-bottom:1px solid #E5E7EB;vertical-align:top;">
+                  <div style="font-size:11px;font-weight:600;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Error</div>
+                  <div style="font-size:13px;color:#B91C1C;font-family:monospace;word-break:break-all;">${errorMessage || 'Unknown error'}</div>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:12px 16px;border-bottom:1px solid #E5E7EB;">
+                  <div style="font-size:11px;font-weight:600;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Conversation ID</div>
+                  <div style="font-size:13px;color:#374151;font-family:monospace;">${conversationId || '—'}</div>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:12px 16px;">
+                  <div style="font-size:11px;font-weight:600;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Time</div>
+                  <div style="font-size:13px;color:#374151;">${time}</div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:16px 32px;border-top:1px solid #E5E7EB;background:#F9FAFB;">
+            <p style="margin:0;color:#9CA3AF;font-size:12px;">Automated alert from your agent platform. Configure recipients in the agent admin dashboard.</p>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  await transporter.sendMail({
+    from: `"${agentName} Alerts" <${process.env.GMAIL_USER}>`,
+    to: recipients,
+    subject,
+    html,
+    text: `An error occurred in the ${agentName} agent chat.\n\nError: ${errorMessage || 'Unknown error'}\nConversation: ${conversationId || '—'}\nTime: ${time}`,
+  });
+}
+
+module.exports = { sendLybiContactEmail, sendTaskAttentionEmail, sendAgentErrorEmail };
