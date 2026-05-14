@@ -12,7 +12,9 @@ function generateCreateTableSQL(schemaName, tableSchema) {
     const name = c.name.replace(/^﻿/, '').trim().replace(/"/g, '""');
     return `  "${name}" ${c.type} NULL`;
   });
-  return `CREATE UNLOGGED TABLE ${schemaName}.${tableSchema.tableName} (\n${cols.join(',\n')}\n)`;
+  // Tables are LOGGED from the start (shared pattern across all agents).
+  // Avoids the SET LOGGED heap rewrite at Phase 2 — silent and slow on big tables.
+  return `CREATE TABLE ${schemaName}.${tableSchema.tableName} (\n${cols.join(',\n')}\n)`;
 }
 
 async function createSchema(targetSchema, schemas) {

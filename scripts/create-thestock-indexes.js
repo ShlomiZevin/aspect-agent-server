@@ -1,172 +1,82 @@
 /**
  * Create indexes for the thestock schema.
- * Run: node scripts/create-thestock-indexes.js
  *
- * Creates indexes on key analytical columns and converts the tables from
- * UNLOGGED to regular (logged) once data is confirmed good.
+ * All actual building logic lives in scripts/lib/index-builder.js — this file
+ * is just the index list specific to thestock.
+ *
+ * Heavy aggregation queries (top products / stores / cashiers / revenue by
+ * date) are served by materialized views (see create-thestock-mvs.js), not
+ * covering indexes. Indexes here cover ad-hoc lookups and JOINs.
+ *
+ * Run: node scripts/create-thestock-indexes.js
  */
 
 require('dotenv').config();
 const { getPool, endPool } = require('../services/db.zer4u');
+const { createIndexesForSchema } = require('./lib/index-builder');
 
 const SCHEMA = 'thestock';
 
 const INDEXES = [
-  // payments — transaction_id for JOIN with credits and groupings
-  {
-    name: 'idx_payments_transaction_id',
-    table: 'payments',
-    col: '"transaction_id"',
-  },
-  // payments — payment_type for filtering / grouping by payment method
-  {
-    name: 'idx_payments_payment_type',
-    table: 'payments',
-    col: '"payment_type"',
-  },
-  // payments — payment_type_code
-  {
-    name: 'idx_payments_payment_type_code',
-    table: 'payments',
-    col: '"payment_type_code"',
-  },
+  // ── facts ─────────────────────────────────────────────────────────────────
+  // Composite — workhorse filter for "record_type='מכירות' AND date BETWEEN ..."
+  { name: 'idx_facts_rt_date',          table: 'facts', col: '"record_type", "transaction_date"' },
+  // Standalone columns — for JOINs and ad-hoc filters not covered by MVs
+  { name: 'idx_facts_sku',              table: 'facts', col: '"sku"' },
+  { name: 'idx_facts_transaction_date', table: 'facts', col: '"transaction_date"' },
+  { name: 'idx_facts_warehouse_code',   table: 'facts', col: '"warehouse_code"' },
+  { name: 'idx_facts_transaction_id',   table: 'facts', col: '"transaction_id"' },
+  { name: 'idx_facts_customer_id',      table: 'facts', col: '"customer_id"' },
+  { name: 'idx_facts_cashier',          table: 'facts', col: '"cashier"' },
 
-  // credits — transaction_id for JOIN with payments
-  {
-    name: 'idx_credits_transaction_id',
-    table: 'credits',
-    col: '"transaction_id"',
-  },
+  // ── payments (~9.8M rows) ─────────────────────────────────────────────────
+  { name: 'idx_payments_transaction_id',   table: 'payments', col: '"transaction_id"' },
+  { name: 'idx_payments_payment_type',     table: 'payments', col: '"payment_type"' },
+  { name: 'idx_payments_payment_type_code',table: 'payments', col: '"payment_type_code"' },
 
-  // customers — customer_id (PK surrogate)
-  {
-    name: 'idx_customers_customer_id',
-    table: 'customers',
-    col: '"customer_id"',
-  },
-  // customers — national_id (used for lookups)
-  {
-    name: 'idx_customers_national_id',
-    table: 'customers',
-    col: '"national_id"',
-  },
-  // customers — city for geographic grouping
-  {
-    name: 'idx_customers_city',
-    table: 'customers',
-    col: '"city"',
-  },
+  // ── credits ───────────────────────────────────────────────────────────────
+  { name: 'idx_credits_transaction_id', table: 'credits', col: '"transaction_id"' },
 
-  // products — sku (PK surrogate, used for JOINs with inventory_c100)
-  {
-    name: 'idx_products_sku',
-    table: 'products',
-    col: '"sku"',
-  },
-  // products — barcode for barcode lookups
-  {
-    name: 'idx_products_barcode',
-    table: 'products',
-    col: '"barcode"',
-  },
-  // products — family_code for grouping by product family
-  {
-    name: 'idx_products_family_code',
-    table: 'products',
-    col: '"family_code"',
-  },
-  // products — supplier_code
-  {
-    name: 'idx_products_supplier_code',
-    table: 'products',
-    col: '"supplier_code"',
-  },
+  // ── customers (~1.07M rows) ───────────────────────────────────────────────
+  { name: 'idx_customers_customer_id', table: 'customers', col: '"customer_id"' },
+  { name: 'idx_customers_national_id', table: 'customers', col: '"national_id"' },
+  { name: 'idx_customers_city',        table: 'customers', col: '"city"' },
 
-  // warehouses — warehouse_code (PK surrogate)
-  {
-    name: 'idx_warehouses_warehouse_code',
-    table: 'warehouses',
-    col: '"warehouse_code"',
-  },
-  // warehouses — branch_code
-  {
-    name: 'idx_warehouses_branch_code',
-    table: 'warehouses',
-    col: '"branch_code"',
-  },
+  // ── products ──────────────────────────────────────────────────────────────
+  { name: 'idx_products_sku',             table: 'products', col: '"sku"' },
+  { name: 'idx_products_barcode',         table: 'products', col: '"barcode"' },
+  { name: 'idx_products_family_code',     table: 'products', col: '"family_code"' },
+  { name: 'idx_products_supplier_code',   table: 'products', col: '"supplier_code"' },
 
-  // inventory_c100 — sku for JOIN with products
-  {
-    name: 'idx_inventory_c100_sku',
-    table: 'inventory_c100',
-    col: '"sku"',
-  },
+  // ── warehouses ────────────────────────────────────────────────────────────
+  { name: 'idx_warehouses_warehouse_code', table: 'warehouses', col: '"warehouse_code"' },
+  { name: 'idx_warehouses_branch_code',    table: 'warehouses', col: '"branch_code"' },
 
-  // calendar — date for time queries
-  {
-    name: 'idx_calendar_date',
-    table: 'calendar',
-    col: '"date"',
-  },
-  // calendar — year_month for monthly grouping
-  {
-    name: 'idx_calendar_year_month',
-    table: 'calendar',
-    col: '"year_month"',
-  },
-  // calendar — year
-  {
-    name: 'idx_calendar_year',
-    table: 'calendar',
-    col: '"year"',
-  },
+  // ── inventory_c100 (~901K rows) ───────────────────────────────────────────
+  { name: 'idx_inventory_c100_sku', table: 'inventory_c100', col: '"sku"' },
 
-  // calendar_compare — compare_date
-  {
-    name: 'idx_calendar_compare_date',
-    table: 'calendar_compare',
-    col: '"compare_date"',
-  },
+  // ── calendar / calendar_compare ───────────────────────────────────────────
+  { name: 'idx_calendar_date',         table: 'calendar',         col: '"date"' },
+  { name: 'idx_calendar_year_month',   table: 'calendar',         col: '"year_month"' },
+  { name: 'idx_calendar_year',         table: 'calendar',         col: '"year"' },
+  { name: 'idx_calendar_compare_date', table: 'calendar_compare', col: '"compare_date"' },
 ];
 
 async function createIndexes(targetSchema, emitLog) {
   const schema = targetSchema || SCHEMA;
-  const log = emitLog || ((_, msg) => console.log(msg));
-  const pool = getPool();
-  const client = await pool.connect();
+  const log = emitLog
+    ? (msg) => emitLog('creating_indexes', msg)
+    : (msg) => console.log(msg);
 
-  log('creating_indexes', 'Creating indexes for schema: ' + schema);
+  await createIndexesForSchema({
+    pool: getPool(),
+    schema,
+    indexes: INDEXES,
+    statementTimeoutMs: 3600000, // 60 min per index — facts has 40M rows on db-g1-small
+    log,
+  });
 
-  try {
-    const tables = ['payments', 'credits', 'customers', 'products', 'warehouses',
-      'inventory_c100', 'calendar', 'calendar_compare'];
-
-    for (const t of tables) {
-      try {
-        await client.query(`ALTER TABLE ${schema}.${t} SET LOGGED`);
-        log('creating_indexes', '  SET LOGGED: ' + t);
-      } catch {
-        // Already logged or table doesn't exist — skip
-      }
-    }
-
-    for (const idx of INDEXES) {
-      const sql = `CREATE INDEX IF NOT EXISTS ${idx.name} ON ${schema}.${idx.table} (${idx.col})`;
-      const start = Date.now();
-      try {
-        await client.query('SET statement_timeout = 600000'); // 10 min per index
-        await client.query(sql);
-        log('creating_indexes', '  ' + idx.name + ' (' + (Date.now() - start) + 'ms)');
-      } catch (err) {
-        log('creating_indexes', '  FAILED ' + idx.name + ': ' + err.message);
-      }
-    }
-
-    log('creating_indexes', 'All indexes created.');
-  } finally {
-    client.release();
-    if (!targetSchema) await endPool();
-  }
+  if (!targetSchema) await endPool();
 }
 
 if (require.main === module) {

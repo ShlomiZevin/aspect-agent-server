@@ -12,7 +12,11 @@ function generateCreateTableSQL(schemaName, tableSchema) {
     const name = c.name.replace(/^﻿/, '').trim().replace(/"/g, '""');
     return `  "${name}" ${c.type} NULL`;
   });
-  return `CREATE UNLOGGED TABLE ${schemaName}.${tableSchema.tableName} (\n${cols.join(',\n')}\n)`;
+  // Tables are created LOGGED from the start (zer4u pattern). Avoids the
+  // SET LOGGED rewrite step at Phase 2, which on a 40M-row facts table on
+  // db-g1-small takes many minutes (heap rewrite with WAL) and produces no
+  // visible progress in the UI.
+  return `CREATE TABLE ${schemaName}.${tableSchema.tableName} (\n${cols.join(',\n')}\n)`;
 }
 
 async function createSchema(targetSchema, schemas) {
