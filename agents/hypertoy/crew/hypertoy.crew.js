@@ -178,6 +178,9 @@ User: "אילו סניפים מובילים במכירות?"
       const result = await dataQueryService.queryByQuestion(question, 'hypertoy', {
         maxRows: 100,
         agentName: 'hypertoy',
+        llmAgentName: this._agentName,
+        conversationId: this._externalConversationId,
+        userId: this._userId,
       });
 
       if (this._externalConversationId && result.sql) {

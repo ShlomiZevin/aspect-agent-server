@@ -35,7 +35,10 @@ class DataQueryService {
    * @param {Object} options
    * @param {number} options.maxRows - Hard row cap applied after generation (default: 100)
    * @param {number} options.timeout - Statement timeout in ms (default: QUERY_TIMEOUT_MS)
-   * @param {string} options.agentName - Agent name for slow-query logging
+   * @param {string} options.agentName - Schema-level agent identifier for slow-query logging (e.g., 'zer4u')
+   * @param {string} options.llmAgentName - Canonical agent name for LLM usage logging (e.g., 'Zer4U' from agent config)
+   * @param {string} options.conversationId - Conversation ID for usage logging
+   * @param {number|string} options.userId - User ID for usage logging
    * @returns {Promise<Object>} { sql, data, rowCount, explanation, confidence, duration, columns }
    */
   async queryByQuestion(question, customerSchema, options = {}) {
@@ -43,6 +46,9 @@ class DataQueryService {
       maxRows = 100,
       timeout = QUERY_TIMEOUT_MS,
       agentName = customerSchema,
+      llmAgentName,
+      conversationId,
+      userId,
     } = options;
 
     console.log(`Data Query: question for schema "${customerSchema}": "${question}"`);
@@ -52,7 +58,11 @@ class DataQueryService {
 
     // Step 1: Generate SQL — no DB connection held during the LLM call
     try {
-      const generated = await sqlGeneratorService.generateSQL(question, customerSchema);
+      const generated = await sqlGeneratorService.generateSQL(question, customerSchema, {
+        agentName: llmAgentName || agentName,
+        conversationId,
+        userId,
+      });
       sql = generated.sql;
       explanation = generated.explanation;
       confidence = generated.confidence;

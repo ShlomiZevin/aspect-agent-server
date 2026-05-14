@@ -140,6 +140,9 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
         {
           maxRows: 100,
           agentName: 'zer4u',
+          llmAgentName: this._agentName,
+          conversationId: this._externalConversationId,
+          userId: this._userId,
         }
       );
 

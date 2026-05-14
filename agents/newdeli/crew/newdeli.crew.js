@@ -150,6 +150,9 @@ User: "מה שיא שעת הזמן?"
       const result = await dataQueryService.queryByQuestion(question, 'newdeli', {
         maxRows: 100,
         agentName: 'newdeli',
+        llmAgentName: this._agentName,
+        conversationId: this._externalConversationId,
+        userId: this._userId,
       });
 
       if (this._externalConversationId && result.sql) {

@@ -177,6 +177,9 @@ User: "כמה מלאי שלילי במחסן C100?"
       const result = await dataQueryService.queryByQuestion(question, 'thestock', {
         maxRows: 100,
         agentName: 'thestock',
+        llmAgentName: this._agentName,
+        conversationId: this._externalConversationId,
+        userId: this._userId,
       });
 
       if (this._externalConversationId && result.sql) {

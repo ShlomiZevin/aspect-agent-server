@@ -1,4 +1,4 @@
-const claudeService = require('./llm.claude');
+const llmService = require('./llm');
 const schemaDescriptorService = require('./schema-descriptor.service');
 const slowQueryService = require('./slow-query.service');
 const { getPool: getZer4uPool } = require('./db.zer4u');
@@ -22,6 +22,9 @@ class SQLGeneratorService {
    * @param {string} schemaName - The schema to query (e.g., 'zer4u')
    * @param {Object} options - Additional options
    * @param {string} options.schemaDescription - Pre-loaded schema description (optional)
+   * @param {string} options.agentName - Agent name for usage logging
+   * @param {string} options.conversationId - Conversation ID for usage logging
+   * @param {number|string} options.userId - User ID for usage logging
    * @returns {Promise<Object>} - { sql, explanation, tables }
    */
   async generateSQL(question, schemaName, options = {}) {
@@ -42,17 +45,20 @@ class SQLGeneratorService {
 
       console.log(`   Calling Claude to generate SQL (${antiPatterns.length} anti-patterns loaded)...`);
 
-      // Step 3: Call Claude
-      const rawResponse = await claudeService.sendOneShot(
+      // Step 3: Call Claude via central router so usage is logged
+      const response = await llmService.sendOneShot(
         systemPrompt,
         userMessage,
         {
           model: 'claude-sonnet-4-6',
           maxTokens: 4096,
-          jsonOutput: true
+          jsonOutput: true,
+          context: 'sql_generation',
+          agentName: options.agentName,
+          conversationId: options.conversationId,
+          userId: options.userId,
         }
       );
-      const response = (rawResponse && typeof rawResponse === 'object' && 'text' in rawResponse) ? rawResponse.text : rawResponse;
 
       // Step 4: Parse response (safety validation happens in data-query.service before execution)
       const result = this._parseResponse(response);
