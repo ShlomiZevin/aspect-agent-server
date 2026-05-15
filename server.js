@@ -825,7 +825,8 @@ app.get('/api/conversation/:conversationId/history', async (req, res) => {
       conversationId,
       messageCount: history.length,
       messages: history,
-      currentCrewMember: conversation?.currentCrewMember || null
+      currentCrewMember: conversation?.currentCrewMember || null,
+      metadata: conversation?.metadata || null,
     });
   } catch (err) {
     console.error('❌ Error fetching history:', err.message);
@@ -2326,6 +2327,26 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
   }
 });
 
+// ========== NON-STREAMING CHAT (one turn, JSON response) ==========
+// Server-side scripts (test runner, CI, etc.) call this to drive the agent
+// like a robot client without consuming SSE. Same DB writes as /stream — just buffered.
+const { runChatTurn } = require('./services/chat-turn.service');
+
+app.post('/api/finance-assistant/turn', async (req, res) => {
+  const { message, conversationId } = req.body || {};
+  if (!message || !conversationId) {
+    return res.status(400).json({ error: 'Missing message or conversationId' });
+  }
+
+  try {
+    const result = await runChatTurn(req.body);
+    return res.json(result);
+  } catch (err) {
+    console.error('❌ /turn error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== WHATSAPP WEBHOOK ENDPOINTS ==========
 
 // Webhook verification (Meta sends GET to verify endpoint)
@@ -3690,13 +3711,14 @@ function isSuperAdminRequest(req) {
 // Get all users with filters
 app.get('/api/admin/users', async (req, res) => {
   try {
-    const { source, tenant, subscription, search, limit, offset, agentName } = req.query;
+    const { source, tenant, subscription, search, limit, offset, agentName, includeSynthetic } = req.query;
     const filters = {
       source,
       tenant,
       subscription,
       search,
       agentName,
+      includeSynthetic: includeSynthetic === 'true',
       limit: limit ? parseInt(limit, 10) : 100,
       offset: offset ? parseInt(offset, 10) : 0,
     };
@@ -5062,7 +5084,6 @@ app.post('/api/admin/test-runs/:id/execute', async (req, res) => {
       case 'individuals':
         result = await testRunnerService.generateIndividuals(run.id);
         break;
-      // case 'conversation': (future)
       // case 'review': (future)
       default:
         return res.status(400).json({ error: `Unsupported run type: ${run.type}` });
@@ -5070,6 +5091,79 @@ app.post('/api/admin/test-runs/:id/execute', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Error executing test run:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== Step 3: Synthetic conversation orchestration (Phase 0) =====
+
+const syntheticUserService = require('./services/synthetic-user.service');
+
+// Upsert a synthetic user from a persona (idempotent)
+app.post('/api/admin/test-runner/synthetic-users/upsert', async (req, res) => {
+  try {
+    const { persona, populationRunId } = req.body || {};
+    if (!persona || !persona.id) {
+      return res.status(400).json({ error: 'persona with id is required' });
+    }
+    const result = await syntheticUserService.upsert({ persona, populationRunId: populationRunId || null });
+    res.json({ userId: result.user.id, externalId: result.user.externalId, name: result.user.name, created: result.created });
+  } catch (err) {
+    console.error('Error upserting synthetic user:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Start a synthetic conversation (Phase 0 entry point)
+// Creates synthetic user + conversation + test_runs row; returns conversation URL.
+app.post('/api/admin/test-runner/conversations/start', async (req, res) => {
+  try {
+    const { agentName, persona, populationRunId, maxTurns, model } = req.body || {};
+    if (!agentName) return res.status(400).json({ error: 'agentName is required' });
+    if (!persona || !persona.id) return res.status(400).json({ error: 'persona with id is required' });
+
+    const result = await testRunnerService.startConversation({
+      agentName,
+      persona,
+      populationRunId: populationRunId || null,
+      maxTurns,
+      model,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('Error starting synthetic conversation:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Generate the synthetic user's next message (pure LLM call, no DB writes).
+// Useful for debugging the persona prompt in isolation.
+app.post('/api/admin/test-runner/synthetic-user/next-message', async (req, res) => {
+  try {
+    const { persona, transcript, agentName } = req.body || {};
+    if (!agentName) return res.status(400).json({ error: 'agentName is required' });
+    if (!persona) return res.status(400).json({ error: 'persona is required' });
+    const result = await testRunnerService.generateNextMessage({
+      persona,
+      transcript: transcript || [],
+      agentName,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('Error generating synthetic user message:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Advance ONE turn of a synthetic conversation. Atomic, stateless.
+// This is the cockpit's "Next turn" button.
+app.post('/api/admin/test-runs/:id/turn', async (req, res) => {
+  try {
+    const runId = parseInt(req.params.id);
+    const result = await testRunnerService.advanceConversationTurn(runId);
+    res.json(result);
+  } catch (err) {
+    console.error('Error advancing conversation turn:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

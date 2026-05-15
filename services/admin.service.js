@@ -34,7 +34,7 @@ class AdminService {
   async getUsers(filters = {}, options = {}) {
     if (!this.drizzle) this.initialize();
 
-    const { source, tenant, subscription, search, agentName, limit = 100, offset = 0 } = filters;
+    const { source, tenant, subscription, search, agentName, includeSynthetic = false, limit = 100, offset = 0 } = filters;
     const { includeAllTenants = false } = options;
 
     // Build WHERE conditions
@@ -45,6 +45,11 @@ class AdminService {
     // Super admin (`includeAllTenants`) bypasses this to see everything.
     if (!includeAllTenants) {
       conditions.push(sql`${users.tenant} IS NOT NULL AND ${users.tenant} != ''`);
+    }
+
+    // Hide synthetic users (test-runner personas) by default.
+    if (!includeSynthetic) {
+      conditions.push(sql`(${users.metadata}->>'synthetic' IS NULL OR ${users.metadata}->>'synthetic' = 'false')`);
     }
 
     if (source) {
