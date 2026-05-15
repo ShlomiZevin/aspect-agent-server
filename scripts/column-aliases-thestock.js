@@ -8,6 +8,62 @@
  */
 
 const COLUMN_MAP = {
+  // NOTE: gcsService.getCSVHeaders strips ALL `"` chars from headers (its naive CSV parser
+  // toggles state on every quote and never emits one). So `"מק""ט"` arrives as `מקט`,
+  // and `"סה""כ מחיר"` arrives as `סהכ מחיר`. Keys below match the parser's output.
+  facts: [
+    // identifiers
+    { csvName: 'מקט',                        dbName: 'sku',                  type: 'TEXT'    },
+    { csvName: 'תאריך',                       dbName: 'transaction_date',     type: 'DATE'    },
+    { csvName: 'קוד מחסן',                    dbName: 'warehouse_code',       type: 'TEXT'    },
+    { csvName: 'מספר עסקה',                  dbName: 'transaction_id',       type: 'TEXT'    },
+    { csvName: 'מספר עסקה מקורית',           dbName: 'original_transaction_id', type: 'TEXT' },
+    { csvName: 'סוג רשומה',                   dbName: 'record_type',          type: 'TEXT'    },
+
+    // purchase orders (record_type empty + הזמנת רכש filled)
+    { csvName: 'הזמנת רכש',                   dbName: 'purchase_order',       type: 'TEXT'    },
+    { csvName: 'סטטוס הזמנה',                 dbName: 'order_status',         type: 'TEXT'    },
+    { csvName: 'כמות בהזמנה',                 dbName: 'order_qty',            type: 'NUMERIC' },
+    { csvName: 'יתרה לאספקה',                 dbName: 'supply_balance',       type: 'NUMERIC' },
+    { csvName: 'מחיר ליחידה',                 dbName: 'unit_price',           type: 'NUMERIC' },
+    { csvName: 'מטבע המרה',                   dbName: 'conversion_currency',  type: 'TEXT'    },
+    { csvName: 'סהכ מחיר',                    dbName: 'total_price',          type: 'NUMERIC' },
+    { csvName: 'פרטים',                       dbName: 'details',              type: 'TEXT'    },
+    { csvName: 'מטבע בהזמנה',                 dbName: 'order_currency',       type: 'TEXT'    },
+
+    // inventory (record_type='מלאי')
+    { csvName: 'סטטוס מלאי',                  dbName: 'inventory_status',     type: 'TEXT'    },
+    { csvName: 'יתרת מלאי',                   dbName: 'inventory_balance',    type: 'NUMERIC' },
+    { csvName: 'מלאי במחסן C100',             dbName: 'c100_inventory',       type: 'NUMERIC' },
+    { csvName: 'ערך מלאי',                    dbName: 'inventory_value',      type: 'NUMERIC' },
+
+    // document / transaction
+    { csvName: 'סוג מסמך',                    dbName: 'document_type',        type: 'TEXT'    },
+    { csvName: 'מספר קופה',                   dbName: 'register_number',      type: 'TEXT'    },
+    { csvName: 'קופה',                         dbName: 'register_name',        type: 'TEXT'    },
+    { csvName: 'עמדת מכירה',                  dbName: 'sales_position',       type: 'TEXT'    },
+    { csvName: 'שם עמדת מכירה',               dbName: 'sales_position_name',  type: 'TEXT'    },
+    { csvName: 'שעת עסקה',                    dbName: 'transaction_time',     type: 'TEXT'    },
+    { csvName: 'TRANSTYPE',                   dbName: 'trans_type',           type: 'TEXT'    },
+    { csvName: 'סוג עסקה',                    dbName: 'transaction_kind',     type: 'TEXT'    },
+
+    // people
+    { csvName: 'מס. לקוח',                    dbName: 'customer_id',          type: 'TEXT'    },
+    { csvName: 'קופאי',                       dbName: 'cashier',              type: 'TEXT'    },
+
+    // sales metrics (record_type='מכירות')
+    { csvName: 'אחוז מעמ',                    dbName: 'vat_pct',              type: 'NUMERIC' },
+    { csvName: 'מחיר מכירה',                  dbName: 'sale_price',           type: 'NUMERIC' },
+    { csvName: 'כמות שנמכרה',                 dbName: 'qty_sold',             type: 'NUMERIC' },
+    { csvName: 'כמות צירופי מועדון',          dbName: 'loyalty_count',        type: 'NUMERIC' },
+    { csvName: 'מכירות ללא מעמ',              dbName: 'sales_ex_vat',         type: 'NUMERIC' },
+    { csvName: 'מכירות כולל מעמ',             dbName: 'sales_inc_vat',        type: 'NUMERIC' },
+
+    // targets (record_type='יעדים')
+    { csvName: 'יעד מכירות',                  dbName: 'sales_target',         type: 'NUMERIC' },
+    { csvName: 'יעד צירופי מועדון',           dbName: 'loyalty_target',       type: 'NUMERIC' },
+  ],
+
   payments: [
     { csvName: 'סכום לתשלום',   dbName: 'amount',            type: 'NUMERIC' },
     { csvName: 'קוד סוג תשלום', dbName: 'payment_type_code', type: 'TEXT'    },

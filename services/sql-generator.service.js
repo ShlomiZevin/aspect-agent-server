@@ -261,18 +261,35 @@ ORDER BY revenue DESC
 LIMIT 20
 \`\`\`
 
-**Sales targets vs actual:**
+**Sales targets vs actual (use two CTEs + FULL OUTER JOIN, NOT correlated subquery):**
 \`\`\`sql
-SELECT TO_CHAR(t.transaction_date, 'YYYY-MM') AS month, t.warehouse_code,
-       SUM(t.sales_target) AS target,
-       (SELECT SUM(sales_ex_vat) FROM hypertoy.facts s
-        WHERE s.record_type = 'מכירות'
-          AND s.warehouse_code = t.warehouse_code
-          AND DATE_TRUNC('month', s.transaction_date) = DATE_TRUNC('month', t.transaction_date)
-       ) AS actual
-FROM hypertoy.facts t
-WHERE t.record_type = 'יעדים'
-ORDER BY month DESC, t.warehouse_code
+-- Correlated subqueries re-scan facts for each target row and time out.
+-- Aggregate targets and actuals separately, then FULL OUTER JOIN on (month, warehouse_code).
+WITH targets AS (
+  SELECT DATE_TRUNC('month', transaction_date) AS month, warehouse_code,
+         SUM(sales_target) AS target
+  FROM hypertoy.facts
+  WHERE record_type = 'יעדים'
+    AND transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY 1, 2
+),
+actuals AS (
+  SELECT DATE_TRUNC('month', transaction_date) AS month, warehouse_code,
+         SUM(sales_ex_vat) AS actual
+  FROM hypertoy.facts
+  WHERE record_type = 'מכירות'
+    AND transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY 1, 2
+)
+SELECT COALESCE(t.month, a.month)                    AS month,
+       COALESCE(t.warehouse_code, a.warehouse_code)  AS warehouse_code,
+       t.target, a.actual,
+       (a.actual - t.target)                          AS variance
+FROM targets t
+FULL OUTER JOIN actuals a USING (month, warehouse_code)
+ORDER BY month DESC, warehouse_code
 LIMIT 50
 \`\`\`
 
@@ -291,47 +308,256 @@ LIMIT 10
       return `
 ## thestock-Specific Rules (CRITICAL — follow exactly)
 
-**Tables**: payments (~9.8M rows), credits (~158K), customers (~1.07M), products (~61K), warehouses (168), inventory_c100 (~901K), calendar (868), calendar_compare (868)
-**NO sales facts table exists** — there is NO item-level link between products and transactions. Do NOT attempt to join products to payments/credits via transaction lines.
+**Tables**:
+- \`facts\` (~40M rows, wide table mixing sales / inventory / targets / purchase orders)
+- \`payments\` (~9.8M), \`credits\` (~158K), \`customers\` (~1.07M), \`products\` (~61K)
+- \`warehouses\` (168), \`inventory_c100\` (~901K), \`calendar\` (868), \`calendar_compare\` (868)
 
-### RULE 1 — There is NO date / time column on payments or credits (CRITICAL)
-Neither \`payments\` nor \`credits\` has any date, year, month, or timestamp column. The columns on \`payments\` are EXACTLY: amount (NUMERIC), payment_type_code (TEXT), payment_type (TEXT), transaction_id (TEXT). On \`credits\`: transaction_id (TEXT), credit_issued, cash_credit, card_credit, employee_discount, special_discount (all NUMERIC).
+**Materialized views (PRE-AGGREGATED — use these for top-N / revenue questions):**
+- \`mv_sales_daily\` — (transaction_date, line_count, total_qty, revenue_ex_vat, revenue_inc_vat, loyalty_count). ~1,800 rows. Use for "total revenue / sales by period / daily trend".
+- \`mv_sales_daily_sku\` — (transaction_date, sku, total_qty, revenue_ex_vat, revenue_inc_vat, line_count). ~5-10M rows. Use for "top selling products by period".
+- \`mv_sales_daily_store\` — (transaction_date, warehouse_code, total_qty, revenue_ex_vat, revenue_inc_vat, line_count). ~300K rows. Use for "top stores by period".
+- \`mv_sales_daily_cashier\` — (transaction_date, cashier, total_qty, revenue_ex_vat, revenue_inc_vat, line_count). ~900K rows. Use for "top cashiers by period".
 
-This means:
-- "this year", "this month", "last week", "in 2024", any time-bound filter on payments or credits is IMPOSSIBLE.
-- \`transaction_id\` is TEXT (e.g. 'C4501000049', 'G3942001208', '4801006315') and does NOT encode any date. NEVER attempt \`EXTRACT(YEAR FROM transaction_id)\`, \`CAST(transaction_id AS DATE)\`, or any similar hack — it will fail at runtime.
-- The \`calendar\` table is a standalone date dimension with no foreign key to payments/credits. You CANNOT JOIN payments to calendar on any meaningful key.
+### RULE 0 — Sales aggregations MUST use materialized views (CRITICAL)
+\`facts\` has 40M rows on a small DB tier. Aggregating it directly for "top products", "top stores", "top cashiers", "revenue this year/month" times out at 15s. ALWAYS use the relevant MV instead:
 
-If the user asks a time-bound payment/credit question, set confidence to "low" and explain in the \`explanation\` field that the loaded schema has no transaction date — offer to return the equivalent metric across ALL data (no time filter) instead.
+| Question pattern | MV to use |
+|---|---|
+| "total revenue / sales this year/month/week" | \`mv_sales_daily\` |
+| "top N products / best selling products" | \`mv_sales_daily_sku\` then JOIN to \`products\` |
+| "top N stores / branches by sales" | \`mv_sales_daily_store\` then JOIN to \`warehouses\` |
+| "top N cashiers by sales" | \`mv_sales_daily_cashier\` |
+| "daily / monthly trend of sales" | \`mv_sales_daily\` |
 
-### RULE 2 — No item-level sales
-If the user asks about top products, sales by category, revenue per branch, customer baskets, or sales trends over time, return confidence "low" with an explanation that this data is not available in the loaded schema.
+MVs already filter \`record_type='מכירות'\` and drop NULL keys — DO NOT add those filters when querying MVs. Use \`transaction_date >= ... AND transaction_date < ...\` for time windows.
 
-### RULE 3 — payments table joins
-\`payments\` and \`credits\` share \`transaction_id\` (TEXT, often with a prefix letter like 'C', 'G').
-- JOIN: \`JOIN thestock.credits c ON p.transaction_id = c.transaction_id\`
+Query \`facts\` directly ONLY for:
+- Customer-level analysis (\`customer_id\`) — not in MVs
+- Specific transaction lookup (\`transaction_id\`)
+- Inventory queries (\`record_type='מלאי'\`) — not in MVs
+- Target queries (\`record_type='יעדים'\`) — not in MVs
 
-### RULE 4 — Always LIMIT on large tables
-\`payments\` (9.8M) and \`customers\` (1.07M) and \`inventory_c100\` (901K) must be aggregated or LIMITed.
-- Never \`SELECT * FROM thestock.payments\` without aggregation or LIMIT.
+### RULE 1 — facts is a WIDE table mixing record types — ALWAYS filter
+The \`facts\` table mixes four kinds of records. NEVER aggregate without filtering by \`record_type\`:
+- \`record_type = 'מכירות'\` (sales transactions) — use for revenue, qty sold, customer analysis. Filled columns: \`transaction_date\`, \`transaction_id\`, \`sku\`, \`customer_id\`, \`cashier\`, \`register_number\`, \`register_name\`, \`sale_price\`, \`qty_sold\`, \`sales_ex_vat\`, \`sales_inc_vat\`, \`vat_pct\`
+- \`record_type = 'מלאי'\` (inventory snapshots) — use \`inventory_balance\`, \`inventory_value\`, \`c100_inventory\`, \`warehouse_code\`
+- \`record_type = 'יעדים'\` (targets) — use \`sales_target\`, \`loyalty_target\`
+- \`record_type IS NULL\` AND \`purchase_order IS NOT NULL\` (purchase order lines) — use \`order_qty\`, \`unit_price\`, \`total_price\`, \`order_status\`
 
-### RULE 5 — Inventory at C100
-\`inventory_c100\` represents disconnected items at warehouse C100. Negative values are common and meaningful.
-- JOIN with products: \`JOIN thestock.products p ON i.sku = p.sku\`
+Default for any sales/revenue question: \`WHERE record_type = 'מכירות'\`.
 
-### RULE 6 — Cross-brand cost
-\`products\` has BOTH The Stock cost (\`standard_cost_ils\`) and the sister brand Hyper Toy cost (\`standard_cost_ils_hypertoy\`). The difference is precomputed in \`cost_difference\`.
+### RULE 2 — Use transaction_date for time filters (sargable!)
+\`facts.transaction_date\` is a DATE column with a composite index \`(record_type, transaction_date)\`. NEVER wrap it in EXTRACT/DATE_PART/TO_CHAR in the WHERE clause — that disables the index and forces a full scan of 40M rows.
+- This year (CORRECT): \`transaction_date >= DATE_TRUNC('year', CURRENT_DATE) AND transaction_date < DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'\`
+- This month (CORRECT): \`transaction_date >= DATE_TRUNC('month', CURRENT_DATE) AND transaction_date < DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'\`
+- Specific year (CORRECT): \`transaction_date >= '2025-01-01' AND transaction_date < '2026-01-01'\`
+- WRONG (full scan, will time out): \`EXTRACT(YEAR FROM transaction_date) = 2025\`
+- Always combine with record_type filter: \`WHERE record_type = 'מכירות' AND transaction_date >= '2025-01-01' AND transaction_date < '2026-01-01'\`
+
+### RULE 3 — NEVER use COUNT(DISTINCT transaction_id) over the entire facts table
+\`facts\` has ~100M rows. \`COUNT(DISTINCT transaction_id)\` on the full table without a narrow date filter times out. Each row in facts already represents one transaction line — use \`COUNT(*)\` (lines) instead of \`COUNT(DISTINCT transaction_id)\` (transactions) for top-N / per-store / per-cashier reports.
+- WRONG (times out): \`SELECT warehouse_code, COUNT(DISTINCT transaction_id), SUM(sales_ex_vat) FROM thestock.facts WHERE record_type='מכירות' GROUP BY warehouse_code\`
+- CORRECT: \`SELECT warehouse_code, COUNT(*) AS line_count, SUM(sales_ex_vat) FROM thestock.facts WHERE record_type='מכירות' GROUP BY warehouse_code\`
+
+### RULE 3.5 — Customer-count defaults
+"How many customers" / "total customers" should default to \`SELECT COUNT(*) FROM thestock.customers\` (registered customer master). Use \`COUNT(DISTINCT customer_id) FROM thestock.facts WHERE record_type='מכירות' AND customer_id IS NOT NULL AND customer_id <> ''\` ONLY when the user explicitly asks about active / purchasing / buying customers AND narrow with a date filter.
+
+### RULE 4 — JOINs
+- Products: \`JOIN thestock.products p ON f.sku = p.sku\` (Stock facts uses SKU, NOT part)
+- Warehouses: \`JOIN thestock.warehouses w ON f.warehouse_code = w.warehouse_code\`
+- Payments: \`JOIN thestock.payments pay ON f.transaction_id = pay.transaction_id\` (payments has NO date — get date from facts)
+- Credits: \`JOIN thestock.credits c ON p.transaction_id = c.transaction_id\`
+- Inventory C100: \`JOIN thestock.inventory_c100 i ON i.sku = p.sku\`
+
+### RULE 5 — Profit / margin require a JOIN to products
+Unlike Hyper Toy, \`thestock.facts\` does NOT carry cost or profit columns. To compute margin:
+- Revenue: \`SUM(f.sales_ex_vat)\` from facts
+- Cost: \`SUM(f.qty_sold * p.standard_cost_ils)\` — JOIN to products and multiply by quantity
+- Margin %: \`(SUM(f.sales_ex_vat) - SUM(f.qty_sold * p.standard_cost_ils)) / NULLIF(SUM(f.sales_ex_vat), 0) * 100\`
+
+### RULE 6 — Cross-brand cost (products only)
+\`products\` has BOTH The Stock cost (\`standard_cost_ils\`) and the sister brand Hyper Toy cost (\`standard_cost_ils_hypertoy\`). Pre-computed gap in \`cost_difference\`.
+
+**CRITICAL — always filter out 0/NULL on BOTH sides being compared.** Products sold by only one brand have 0 cost on the other side, producing meaningless "gaps". For "biggest cost gaps Stock vs Hyper Toy": \`WHERE standard_cost_ils > 0 AND standard_cost_ils_hypertoy > 0\`.
+
+### RULE 7 — Always LIMIT on large tables
+\`facts\` (40M), \`payments\` (9.8M), \`customers\` (1.07M), \`inventory_c100\` (901K) must always be aggregated or LIMITed.
+
+### RULE 8 — Pre-aggregate before JOIN for top-N queries (CRITICAL)
+For any "top-N products / stores / cashiers / customers" question, do NOT JOIN \`facts\` to a dimension table inside the GROUP BY. The 15-second query timeout will fire because the JOIN materializes millions of intermediate rows.
+
+Correct pattern: aggregate facts in a CTE first (using only the composite index, no JOIN), then LEFT JOIN the small top-N result to the dimension table afterwards. See the "Top 10 selling products" reference example below.
+
+Rule of thumb: the GROUP BY must touch ONLY facts columns. Bring in dimension descriptions in an outer SELECT against the already-aggregated 10 rows.
+
+### RULE 9 — ALL aggregations on facts MUST include a date range (CRITICAL)
+Never aggregate over the full 40M-row \`facts\` table without a date filter. Even simple GROUP BY queries time out without one. Always include a sargable \`transaction_date >= ... AND transaction_date < ...\` predicate. When the user asks an open-ended question ("top cashiers", "best stores"), default the date range to the current year:
+- \`transaction_date >= DATE_TRUNC('year', CURRENT_DATE) AND transaction_date < DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'\`
+
+WRONG (full table scan, will time out): \`SELECT cashier, SUM(sales_ex_vat) FROM thestock.facts WHERE record_type='מכירות' GROUP BY cashier ORDER BY ... LIMIT 10\`
+CORRECT: add the date range filter shown above.
+
+### RULE 10 — Refunds / credits / discounts come from the credits table, NOT payments
+The \`thestock.credits\` table is the source of truth for refund/credit/discount summaries. Columns: \`credit_issued\`, \`cash_credit\`, \`card_credit\`, \`employee_discount\`, \`special_discount\` (all NUMERIC, ~158K rows).
+
+Do NOT try to derive refunds from \`payments\` using \`payment_type ILIKE '%זיכוי%'\` or \`amount < 0\`. The payments table has 9.8M rows and ILIKE on Hebrew text is slow; credits has it all pre-classified.
+
+Example (refund summary):
+\`\`\`sql
+SELECT
+  SUM(credit_issued)     AS total_credit_issued,
+  SUM(cash_credit)       AS total_cash_credit,
+  SUM(card_credit)       AS total_card_credit,
+  SUM(employee_discount) AS total_employee_discount,
+  SUM(special_discount)  AS total_special_discount,
+  COUNT(*)               AS transaction_count
+FROM thestock.credits
+\`\`\`
+
+### RULE 11 — Targets vs actual: use FULL JOIN of two CTEs, not correlated subqueries
+Correlated subqueries that re-scan facts per row time out. Aggregate targets and actuals separately, then FULL OUTER JOIN on the grouping keys.
+
+\`\`\`sql
+WITH targets AS (
+  SELECT DATE_TRUNC('month', transaction_date) AS month, warehouse_code,
+         SUM(sales_target) AS target
+  FROM thestock.facts
+  WHERE record_type = 'יעדים'
+    AND transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY 1, 2
+),
+actuals AS (
+  SELECT DATE_TRUNC('month', transaction_date) AS month, warehouse_code,
+         SUM(sales_ex_vat) AS actual
+  FROM thestock.facts
+  WHERE record_type = 'מכירות'
+    AND transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY 1, 2
+)
+SELECT COALESCE(t.month, a.month) AS month,
+       COALESCE(t.warehouse_code, a.warehouse_code) AS warehouse_code,
+       t.target, a.actual,
+       (a.actual - t.target) AS variance
+FROM targets t
+FULL OUTER JOIN actuals a USING (month, warehouse_code)
+ORDER BY month DESC, warehouse_code
+LIMIT 50
+\`\`\`
 
 ### Reference examples
 
-**Customer count by city:**
+**Total revenue this year (via mv_sales_daily — instant):**
 \`\`\`sql
-SELECT city, COUNT(*) AS customer_count
-FROM thestock.customers
-WHERE city IS NOT NULL AND city <> ''
-GROUP BY city
-ORDER BY customer_count DESC
-LIMIT 20
+SELECT SUM(revenue_ex_vat) AS revenue,
+       SUM(revenue_inc_vat) AS revenue_inc_vat,
+       SUM(line_count)      AS line_count
+FROM thestock.mv_sales_daily
+WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+  AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+\`\`\`
+
+**Top 10 selling products this year (via mv_sales_daily_sku — instant):**
+\`\`\`sql
+WITH top_skus AS (
+  SELECT sku,
+         SUM(total_qty)      AS qty,
+         SUM(revenue_ex_vat) AS revenue
+  FROM thestock.mv_sales_daily_sku
+  WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY sku
+  ORDER BY revenue DESC
+  LIMIT 10
+)
+SELECT t.sku, p.item_description, p.family_description,
+       t.qty, t.revenue,
+       (t.qty * p.standard_cost_ils)                          AS cost,
+       (t.revenue - t.qty * p.standard_cost_ils)              AS profit,
+       ROUND(((t.revenue - t.qty * p.standard_cost_ils)
+              / NULLIF(t.revenue, 0) * 100)::numeric, 2)      AS margin_pct
+FROM top_skus t
+LEFT JOIN thestock.products p ON p.sku = t.sku
+ORDER BY t.revenue DESC
+\`\`\`
+
+**Top 10 stores by revenue this year (via mv_sales_daily_store — instant):**
+\`\`\`sql
+WITH top_stores AS (
+  SELECT warehouse_code,
+         SUM(revenue_ex_vat) AS revenue,
+         SUM(line_count)     AS line_count
+  FROM thestock.mv_sales_daily_store
+  WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY warehouse_code
+  ORDER BY revenue DESC
+  LIMIT 10
+)
+SELECT t.warehouse_code, w.warehouse_name, w.branch_name, t.revenue, t.line_count
+FROM top_stores t
+LEFT JOIN thestock.warehouses w ON w.warehouse_code = t.warehouse_code
+ORDER BY t.revenue DESC
+\`\`\`
+
+**Top 10 cashiers by revenue this year (via mv_sales_daily_cashier — instant):**
+\`\`\`sql
+SELECT cashier, SUM(revenue_ex_vat) AS revenue, SUM(line_count) AS line_count
+FROM thestock.mv_sales_daily_cashier
+WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+  AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+GROUP BY cashier
+ORDER BY revenue DESC
+LIMIT 10
+\`\`\`
+
+**Profit margin this year (mv + JOIN to products for cost):**
+\`\`\`sql
+WITH agg AS (
+  SELECT sku, SUM(total_qty) AS qty, SUM(revenue_ex_vat) AS revenue
+  FROM thestock.mv_sales_daily_sku
+  WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY sku
+)
+SELECT SUM(a.revenue)                                  AS revenue,
+       SUM(a.qty * p.standard_cost_ils)                AS cost,
+       SUM(a.revenue - a.qty * p.standard_cost_ils)    AS profit,
+       ROUND((SUM(a.revenue - a.qty * p.standard_cost_ils)
+              / NULLIF(SUM(a.revenue), 0) * 100)::numeric, 2) AS margin_pct
+FROM agg a
+JOIN thestock.products p ON p.sku = a.sku
+\`\`\`
+
+**Sales targets vs actual by month (targets from facts, actuals from mv):**
+\`\`\`sql
+WITH targets AS (
+  SELECT DATE_TRUNC('month', transaction_date) AS month, warehouse_code,
+         SUM(sales_target) AS target
+  FROM thestock.facts
+  WHERE record_type = 'יעדים'
+    AND transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY 1, 2
+),
+actuals AS (
+  SELECT DATE_TRUNC('month', transaction_date) AS month, warehouse_code,
+         SUM(revenue_ex_vat) AS actual
+  FROM thestock.mv_sales_daily_store
+  WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY 1, 2
+)
+SELECT COALESCE(t.month, a.month)                   AS month,
+       COALESCE(t.warehouse_code, a.warehouse_code) AS warehouse_code,
+       t.target, a.actual,
+       (a.actual - t.target)                         AS variance
+FROM targets t
+FULL OUTER JOIN actuals a USING (month, warehouse_code)
+ORDER BY month DESC, warehouse_code
+LIMIT 50
 \`\`\`
 
 **Payment-method totals:**
@@ -340,18 +566,6 @@ SELECT payment_type, SUM(amount) AS total_amount, COUNT(*) AS line_count
 FROM thestock.payments
 GROUP BY payment_type
 ORDER BY total_amount DESC
-\`\`\`
-
-**Refund / credit summary:**
-\`\`\`sql
-SELECT
-  SUM(credit_issued)      AS total_credit_issued,
-  SUM(cash_credit)        AS total_cash_credit,
-  SUM(card_credit)        AS total_card_credit,
-  SUM(employee_discount)  AS total_employee_discount,
-  SUM(special_discount)   AS total_special_discount,
-  COUNT(*)                AS transaction_count
-FROM thestock.credits
 \`\`\`
 
 **SKUs with negative C100 inventory:**
@@ -364,22 +578,13 @@ ORDER BY i.c100_inventory ASC
 LIMIT 50
 \`\`\`
 
-**Top suppliers by number of products:**
-\`\`\`sql
-SELECT preferred_supplier, COUNT(*) AS product_count
-FROM thestock.products
-WHERE preferred_supplier IS NOT NULL AND preferred_supplier <> ''
-GROUP BY preferred_supplier
-ORDER BY product_count DESC
-LIMIT 20
-\`\`\`
-
 **Largest cost gaps vs Hyper Toy:**
 \`\`\`sql
-SELECT sku, item_description, standard_cost_ils, standard_cost_ils_hypertoy, cost_difference
+SELECT sku, item_description, standard_cost_ils, standard_cost_ils_hypertoy,
+       ROUND(ABS(standard_cost_ils - standard_cost_ils_hypertoy)::numeric, 2) AS gap
 FROM thestock.products
-WHERE cost_difference IS NOT NULL
-ORDER BY ABS(cost_difference) DESC
+WHERE standard_cost_ils > 0 AND standard_cost_ils_hypertoy > 0
+ORDER BY gap DESC
 LIMIT 20
 \`\`\``;
     }

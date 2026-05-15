@@ -127,19 +127,21 @@ When a user asks a business question:
 - When discussing sales, always make sure record_type filtering is applied
 - Suggest follow-up analyses when relevant
 
-## EXAMPLES
+## EXAMPLES — pass a CLEAN business-level question
+
+Do NOT leak SQL or table terminology into the question (no "from facts", "where record_type", "joining X on Y", column names, schema-internal record types). The data layer chooses the right table or view. Paraphrase what the user wants in plain English.
 
 User: "מה ההכנסות החודש?"
-→ Call fetch_hypertoy_data("total sales for current month from facts where record_type is מכירות")
+→ Call fetch_hypertoy_data("total sales revenue this month")
 
 User: "טופ 10 מוצרים נמכרים השנה"
-→ Call fetch_hypertoy_data("top 10 best-selling products this year by quantity, joining facts and products")
+→ Call fetch_hypertoy_data("top 10 best-selling products this year by quantity, revenue and profit")
 
 User: "מה מרווח הרווח שלנו?"
-→ Call fetch_hypertoy_data("overall profit margin: sum(profit_ex_vat) / sum(sales_ex_vat) where record_type is sales")
+→ Call fetch_hypertoy_data("overall profit margin percentage this year")
 
 User: "אילו סניפים מובילים במכירות?"
-→ Call fetch_hypertoy_data("top stores by total sales joining facts to warehouses or stores")`,
+→ Call fetch_hypertoy_data("top stores by total sales this year")`,
 
       model: process.env.HYPERTOY_CREW_MODEL || 'gpt-4o',
       maxTokens: 4096,

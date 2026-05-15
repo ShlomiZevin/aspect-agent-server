@@ -16,10 +16,12 @@ const { buildColumnLookup } = require('./column-aliases-thestock');
 const { createSchema } = require('./create-thestock-schema');
 const { loadAllCSVFiles } = require('./load-csv-to-db-copy');
 const { createIndexes } = require('./create-thestock-indexes');
+const { createMVs } = require('./create-thestock-mvs');
 
 const GCS_FOLDER = 'thestock/';
 
 const FILE_TO_TABLE = {
+  'Fact_CSV.csv':              'facts',
   'PaymentType_CSV.csv':       'payments',
   'Credit_CSV.csv':            'credits',
   'Customers_CSV.csv':         'customers',
@@ -141,6 +143,13 @@ async function indexTheStock(targetSchema, emitLog) {
   emitLog('creating_indexes', `Creating indexes on ${targetSchema}...`);
   await createIndexes(targetSchema, emitLog);
   emitLog('creating_indexes', 'Indexes created');
+
+  // After indexes: build/refresh materialized views. MVs precompute heavy
+  // aggregations so the agent answers top-N / revenue-by-period questions
+  // within the 15s query timeout (reads thousands of MV rows vs 40M facts).
+  emitLog('creating_views', `Creating materialized views on ${targetSchema}...`);
+  await createMVs(targetSchema, emitLog);
+  emitLog('creating_views', 'Materialized views ready');
 }
 
 // ── Data info ─────────────────────────────────────────────────────────────────
@@ -149,7 +158,9 @@ async function getTheStockDataInfo() {
   const pool = getPool();
   try {
     const result = await pool.query(
-      `SELECT MAX("year_month") AS last_month FROM thestock.calendar`
+      `SELECT TO_CHAR(MAX("transaction_date"), 'YYYY-MM') AS last_month
+         FROM thestock.facts
+        WHERE "record_type" = 'מכירות'`
     );
     return result.rows[0]?.last_month || null;
   } catch {
