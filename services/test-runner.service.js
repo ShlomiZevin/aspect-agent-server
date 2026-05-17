@@ -666,6 +666,66 @@ class TestRunnerService {
   }
 
   /**
+   * Drive a conversation run to completion by repeatedly calling
+   * advanceConversationTurn. Checks the run row between turns for a
+   * `cancelled` flag and stops cleanly if cancelled.
+   *
+   * Returns the final run row.
+   */
+  async runConversationToCompletion(runId) {
+    if (!this.drizzle) this.initialize();
+    let safety = 1000; // hard ceiling against any logic bug — maxTurns is the real limit
+
+    while (safety-- > 0) {
+      // Cancellation check between turns
+      const current = await this.getRun(runId);
+      if (!current) return null;
+      if (['completed', 'failed', 'cancelled'].includes(current.status)) {
+        return current;
+      }
+      if (current.output?.cancelled === true) {
+        const [cancelled] = await this.drizzle
+          .update(testRuns)
+          .set({
+            status: 'cancelled',
+            output: { ...(current.output || {}), terminationReason: 'cancelled' },
+            updatedAt: new Date(),
+          })
+          .where(eq(testRuns.id, runId))
+          .returning();
+        return cancelled;
+      }
+
+      const { run, terminated } = await this.advanceConversationTurn(runId);
+      if (terminated) return run;
+    }
+    return this.getRun(runId);
+  }
+
+  /**
+   * Request cancellation of a running conversation. The server-side loop
+   * (and the batch driver) check this flag between turns and exit cleanly.
+   * If the run is already terminal, this is a no-op.
+   */
+  async cancelConversationRun(runId) {
+    if (!this.drizzle) this.initialize();
+
+    const run = await this.getRun(runId);
+    if (!run) return null;
+    if (['completed', 'failed', 'cancelled'].includes(run.status)) return run;
+
+    const [updated] = await this.drizzle
+      .update(testRuns)
+      .set({
+        output: { ...(run.output || {}), cancelled: true },
+        updatedAt: new Date(),
+      })
+      .where(eq(testRuns.id, runId))
+      .returning();
+    return updated;
+  }
+
+  /**
    * Resolve persona for a conversation run. Prefer synthetic user metadata,
    * fall back to the persona field stored on the run input.
    */

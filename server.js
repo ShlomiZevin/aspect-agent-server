@@ -5168,6 +5168,48 @@ app.post('/api/admin/test-runs/:id/turn', async (req, res) => {
   }
 });
 
+// Run a synthetic conversation to completion in the background.
+// Fire-and-forget — returns 202 immediately; client polls the run for status.
+app.post('/api/admin/test-runs/:id/run-to-completion', async (req, res) => {
+  try {
+    const runId = parseInt(req.params.id);
+    const run = await testRunnerService.getRun(runId);
+    if (!run) return res.status(404).json({ error: 'Not found' });
+    if (run.type !== 'conversation') {
+      return res.status(400).json({ error: `Run type "${run.type}" not supported for run-to-completion` });
+    }
+    if (['completed', 'failed', 'cancelled'].includes(run.status)) {
+      return res.json({ run, alreadyTerminal: true });
+    }
+
+    // Fire-and-forget. Errors are logged + persisted to the run row by the loop.
+    setImmediate(() => {
+      testRunnerService.runConversationToCompletion(runId).catch(err => {
+        console.error(`❌ run-to-completion (run=${runId}) crashed:`, err.message);
+      });
+    });
+
+    res.status(202).json({ runId, status: 'running', message: 'Loop started — poll the run row for progress' });
+  } catch (err) {
+    console.error('Error starting run-to-completion:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cancel a running synthetic conversation. Cooperative — the loop checks
+// the flag between turns and exits cleanly.
+app.post('/api/admin/test-runs/:id/cancel', async (req, res) => {
+  try {
+    const runId = parseInt(req.params.id);
+    const result = await testRunnerService.cancelConversationRun(runId);
+    if (!result) return res.status(404).json({ error: 'Not found' });
+    res.json(result);
+  } catch (err) {
+    console.error('Error cancelling run:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Update a test run's input (e.g. rename)
 app.patch('/api/admin/test-runs/:id', async (req, res) => {
   try {

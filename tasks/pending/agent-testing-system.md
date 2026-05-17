@@ -27,10 +27,11 @@ Each step produces output that must be reviewable before feeding into the next. 
 |------|------|--------|-----------|
 | 1 | Individuals | **DONE** | [services/test-runner.service.js](../services/test-runner.service.js) + [components/dashboard/TestRunnerPage/](../../aspect-react-client/src/components/dashboard/TestRunnerPage/) |
 | 2 | Populations | **DONE** | Same files (PopulationsTab in TestRunnerPage.tsx) |
-| 3 | Conversations | **PENDING** | [agent-testing-step-3-conversations.md](./agent-testing-step-3-conversations.md) |
+| 3 | Conversations — Phase 0 (manual cockpit) | **DONE (2026-05-15)** | [agent-testing-step-3-conversations.md](./agent-testing-step-3-conversations.md) — see "Phase 0 Implementation Notes" |
+| 3 | Conversations — Phase 1 (run-to-completion + batch) | **PENDING** | Same spec |
 | 4 | Reviewer | **NOT STARTED** | — |
 
-The Conversations tab and Reviewer tab are currently rendered disabled in the UI.
+The Conversations tab in Test Runner and the Reviewer tab are still rendered disabled in the UI — Phase 0 of Step 3 ships with a per-persona cockpit entry point from the Individuals tab and a SyntheticControlPanel that replaces ChatInput inside synthetic conversations.
 
 ---
 
@@ -164,7 +165,7 @@ Takes individuals from one or more completed Step 1 runs and assembles them into
 
 ---
 
-## Step 3 — Conversation Simulator (PENDING — phased)
+## Step 3 — Conversation Simulator (Phase 0 ✅ shipped · Phase 1 pending)
 
 **See dedicated spec:** [agent-testing-step-3-conversations.md](./agent-testing-step-3-conversations.md).
 
@@ -172,15 +173,16 @@ Summary: drives synthetic personas through real conversations with the target ag
 
 **Phased delivery:**
 
-- **Phase 0 — Manual cockpit (BUILD FIRST):** From the Individuals tab, "Start synthetic conversation" on a persona creates a synthetic user + a real conversation + a `test_runs` row, returns a URL. The chat page detects synthetic conversations and renders a **SyntheticControlPanel** (Next turn / status / terminated state) instead of the regular input. The admin can step through one turn at a time by hand. Used to validate the wiring before any automation.
-- **Phase 1 — Run-to-completion + Conversations tab:** Adds "Run to completion" and "Stop" to the cockpit, plus a Conversations tab in Test Runner that batches a saved population serially (no concurrency).
+- ✅ **Phase 0 — Manual cockpit (SHIPPED 2026-05-15):** From the Individuals tab, "Start synthetic conversation" on a persona creates a synthetic user + a real conversation + a `test_runs` row, returns a URL. The chat page detects synthetic conversations and renders a **SyntheticControlPanel** (Next turn / status / terminated state) instead of the regular input. The admin steps through one turn at a time by hand. Verified end-to-end with banking-onboarder-v2.
+- **Phase 1 — Run-to-completion + Conversations tab (NEXT):** Adds "Run to completion" and "Stop" to the cockpit, plus a Conversations tab in Test Runner that batches a saved population serially (no concurrency). Purely additive on top of Phase 0.
 - **Phase 2 (separate task, later):** Concurrency, scheduled runs, regression comparison.
 
-**Key architecture decisions** (full detail in the step-3 spec):
-- New non-streaming chat endpoint `POST /api/finance-assistant/turn` — buffered JSON variant of the existing SSE `/stream`. Microservice-friendly. Useful beyond the simulator (CI, debug tooling).
-- New endpoint `POST /api/admin/test-runs/:id/turn` — atomic "advance one turn" call, the unit the cockpit fires per click and the loop fires per iteration.
-- Zero DB migrations. Synthetic flag in existing `users.metadata` jsonb. Conversation linkage to test run in existing `conversations.metadata` jsonb. Synthetic-user prompt in existing `test_configs.metadata` jsonb.
-- Users page gets `?includeSynthetic=true` filter (default off) + "Show synthetic users" toggle.
+**Key architecture decisions** (implemented in Phase 0, full detail in the step-3 spec):
+- New non-streaming chat endpoint `POST /api/finance-assistant/turn` — buffered JSON variant of the existing SSE `/stream`. Thin wrapper over a shared `services/chat-turn.service.js` helper (`runChatTurn`) that the test-runner also calls directly. Microservice-friendly. Useful beyond the simulator (CI, debug tooling).
+- New endpoint `POST /api/admin/test-runs/:id/turn` — atomic "advance one turn" call, the unit the cockpit fires per click and (in Phase 1) the run-to-completion loop will fire per iteration.
+- Zero DB migrations. Synthetic flag in existing `users.metadata` jsonb. Conversation linkage to test run in existing `conversations.metadata` jsonb. Synthetic-user prompt in existing `test_configs.metadata` jsonb. ⚠️ Pre-existing gap: `test_runs`/`test_configs` tables exist in dev DB via ad-hoc creation but have no migration file (write 027 before prod).
+- Users page gets `?includeSynthetic=true` filter (default off) + "Show synthetic users" toggle + 🤖 badge.
+- Cockpit reads `conversation.metadata.synthetic` to decide whether to render `SyntheticControlPanel` instead of `ChatInput`. Persona summary comes from `test_runs.input.persona` (snapshot) with a fallback fetch of `users.metadata.persona` for old runs.
 
 ---
 

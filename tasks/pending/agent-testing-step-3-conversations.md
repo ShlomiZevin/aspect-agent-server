@@ -4,7 +4,9 @@
 **Domain:** `general` (infra) + `banking-onboarder-v2` (first domain consumer)
 **Type:** Feature
 **Priority:** High
-**Status:** Pending
+**Status:** **Phase 0 SHIPPED (2026-05-15)** · Phase 1 pending · Phase 2 future
+
+> **Phase 0 verified working end-to-end:** admin starts a synthetic conversation from a persona → opens the chat URL → SyntheticControlPanel renders → clicking "Next turn" produces a Hebrew opening from the synthetic user, a Libi/welcome-crew reply, turn counter advances 0/30 → 1/30, full crew journey lights up. See "Phase 0 Implementation Notes" at the bottom of this doc.
 
 ---
 
@@ -28,11 +30,13 @@ Drive synthetic personas through real conversations with the target agent — th
 
 ## Phased Delivery
 
-### Phase 0 — Manual cockpit (BUILD FIRST)
+### Phase 0 — Manual cockpit ✅ SHIPPED
 
 **Outcome:** From the Test Runner's Individuals tab, the admin clicks a persona → clicks "Start synthetic conversation" → gets a conversation URL. They open it in the chat UI, which detects it's synthetic and renders a **SyntheticControlPanel** instead of the regular input box. Clicking "Next turn" advances the conversation by exactly one user→assistant exchange. They can step manually, indefinitely, until the run terminates or they close the tab.
 
 This phase exists so we can verify the entire wiring (synthetic user, real conversation, dispatcher integration, transcript persistence) with our own eyes before automating anything.
+
+**Status:** verified working with banking-onboarder-v2 on 2026-05-15. Synthetic user generated a contextual Hebrew opening for a `first_account`/student persona, agent's welcome crew responded in character, crew journey advanced correctly, transcript appended to `test_runs.output.transcript`, both messages persisted in the regular `messages` table.
 
 ### Phase 1 — Run-to-completion + Conversations tab
 
@@ -382,15 +386,15 @@ Default off. When on, `getUsers()` adds `?includeSynthetic=true`. A small "🤖"
 
 ## Acceptance Criteria
 
-### Phase 0
-- [ ] From Individuals tab, clicking "Start synthetic conversation" creates: one `users` row (synthetic), one `conversations` row (synthetic, with `testRunId`), one `test_runs` row (type=`conversation`, status=`running`, empty transcript). Returns a conversation URL.
-- [ ] Opening that URL shows the regular chat page with the `SyntheticControlPanel` in place of the input.
-- [ ] "Next turn" advances exactly one user→assistant exchange, both saved to the messages table, both reflected in the chat UI, both appended to `test_runs.output.transcript`.
-- [ ] After enough "Next turn" clicks (or persona-driven `end`), the run terminates and the panel shows the terminated state.
-- [ ] Users page hides synthetic users by default; "Show synthetic users" toggle reveals them.
-- [ ] HistorySidebar (banking-v2 or any agent) does NOT show synthetic conversations.
-- [ ] `POST /api/finance-assistant/turn` works as a non-streaming variant — independently testable with curl.
-- [ ] No DB migration was required.
+### Phase 0 ✅
+- [x] From Individuals tab, clicking "Start synthetic conversation" creates: one `users` row (synthetic), one `conversations` row (synthetic, with `testRunId`), one `test_runs` row (type=`conversation`, status=`running`, empty transcript). Returns a conversation URL.
+- [x] Opening that URL shows the regular chat page with the `SyntheticControlPanel` in place of the input.
+- [x] "Next turn" advances exactly one user→assistant exchange, both saved to the messages table, both reflected in the chat UI, both appended to `test_runs.output.transcript`.
+- [ ] After enough "Next turn" clicks (or persona-driven `end`), the run terminates and the panel shows the terminated state. *(end_signal path implemented but not yet observed in a long-running test — needs a real conversation to reach a natural end.)*
+- [x] Users page hides synthetic users by default; "Show synthetic users" toggle reveals them.
+- [x] HistorySidebar (banking-v2 or any agent) does NOT show synthetic conversations. *(They belong to synthetic users only, so user-scoped queries filter them out automatically.)*
+- [x] `POST /api/finance-assistant/turn` works as a non-streaming variant — independently testable with curl.
+- [x] No DB migration was required.
 
 ### Phase 1
 - [ ] "Run to completion" on the cockpit drives the conversation to termination server-side; panel updates via polling.
@@ -408,3 +412,97 @@ Default off. When on, `getUsers()` adds `?includeSynthetic=true`. A small "🤖"
 - Comparing transcripts across runs.
 - Conversation replay / reset.
 - Editing persona schema from UI.
+
+---
+
+## Phase 0 Implementation Notes (2026-05-15)
+
+### Files actually created / modified
+
+**Server (new)**
+- [services/synthetic-user.service.js](../services/synthetic-user.service.js) — `upsert({ persona, populationRunId })`. Idempotent. Writes `users.metadata.synthetic = true`, `users.metadata.persona = <profile>`, deterministic `externalId = synthetic-(pop<id>|direct)-<personaId>`.
+- [services/chat-turn.service.js](../services/chat-turn.service.js) — exports `runChatTurn(opts)`. Buffered, non-streaming version of the dispatcher loop. Same DB writes as the SSE `/stream` handler (user msg + assistant msg + pre/post-transfer transitions + usage logging). Used by both the HTTP `/turn` endpoint and the test-runner's `advanceConversationTurn`.
+- [test-prompts/banking-onboarder-v2/conversation-agent.prompt.js](../test-prompts/banking-onboarder-v2/conversation-agent.prompt.js) — first-time seed for `test_configs.metadata.conversationPrompt`. Hebrew persona-roleplay system prompt with `{{persona_json}}`, `{{motivation_description}}`, `{{name}}`, `{{transcript}}` placeholders. Output shape `{ message, end, reason? }`.
+
+**Server (modified)**
+- [services/test-runner.service.js](../services/test-runner.service.js)
+  - `getConfig()` now lazily seeds `metadata.conversationPrompt` from the new prompt file (handles both first-time seed and backfill into existing configs).
+  - New: `startConversation({ agentName, persona, populationRunId, maxTurns, model })` — upserts user, creates `conversations` row tagged synthetic, creates `test_runs` row of type `conversation` (snapshots the full persona into `input.persona`), returns conversation URL.
+  - New: `generateNextMessage({ persona, transcript, agentName })` — pure `sendOneShot` call against `conversationPrompt`. No DB writes. Returns `{ message, end, reason? }`.
+  - New: `advanceConversationTurn(runId)` — the atomic per-turn unit. Reads run, generates next user message, calls `runChatTurn`, appends both turns to transcript, persists. Handles max_turns / end_signal / failure terminations.
+  - Private: `_loadPersonaForRun(input)` — falls back to `users.metadata.persona` if the run was created before persona-in-input.
+- [server.js](../server.js)
+  - `POST /api/finance-assistant/turn` — thin wrapper over `runChatTurn`.
+  - `POST /api/admin/test-runner/synthetic-users/upsert`
+  - `POST /api/admin/test-runner/conversations/start` (Phase 0 entry point)
+  - `POST /api/admin/test-runner/synthetic-user/next-message`
+  - `POST /api/admin/test-runs/:id/turn`
+  - `GET /api/admin/users` — added `?includeSynthetic=true` query param.
+  - `GET /api/conversation/:id/history` — now also returns `metadata` on the conversation, so the chat client can detect synthetic mode.
+- [services/admin.service.js](../services/admin.service.js) — `getUsers` defaults to `WHERE metadata->>'synthetic' IS DISTINCT FROM 'true'`; `?includeSynthetic=true` opts out.
+
+**Client (new)**
+- [src/components/chat/SyntheticControlPanel/](../../aspect-react-client/src/components/chat/SyntheticControlPanel/) — cockpit component. Status dot + persona summary + ▶ Next turn button + terminated state. Falls back to fetching `users.metadata.persona` via `GET /api/admin/users/:id` when `run.input.persona` is missing (handles runs created before persona-in-input).
+
+**Client (modified)**
+- [src/types/testRunner.ts](../../aspect-react-client/src/types/testRunner.ts) — added `ConversationTurn`, `ConversationOutput`, `StartConversationResponse`, `AdvanceTurnResponse`, `SyntheticUserUpsertResponse`, `ConversationMetadata`.
+- [src/services/testRunnerService.ts](../../aspect-react-client/src/services/testRunnerService.ts) — added `startSyntheticConversation`, `advanceConversationTurn`, `upsertSyntheticUser`, `previewSyntheticUserMessage`.
+- [src/types/admin.ts](../../aspect-react-client/src/types/admin.ts) + [src/services/adminService.ts](../../aspect-react-client/src/services/adminService.ts) — `AdminUserFilters.includeSynthetic` plumbed through to query param.
+- [src/services/conversationService.ts](../../aspect-react-client/src/services/conversationService.ts) — `getConversationHistory` now returns `metadata`.
+- [src/hooks/useChat.ts](../../aspect-react-client/src/hooks/useChat.ts) — `loadHistory` returns `metadata`.
+- [src/context/ChatContext.tsx](../../aspect-react-client/src/context/ChatContext.tsx) — adds `conversationMetadata` state, populated from all 4 `loadHistory` call sites (initial mount, switchToChat, linkPhone, goMobile). Exposed on the context value.
+- [src/components/chat/ChatContainer/ChatContainer.tsx](../../aspect-react-client/src/components/chat/ChatContainer/ChatContainer.tsx) — conditional render: `conversationMetadata?.synthetic === true ? <SyntheticControlPanel /> : <ChatInput />`.
+- [src/components/dashboard/TestRunnerPage/TestRunnerPage.tsx](../../aspect-react-client/src/components/dashboard/TestRunnerPage/TestRunnerPage.tsx) — added "▶ Start synthetic conversation" button to `IndividualDetail`. Opens the conversation URL in a new tab.
+- [src/components/dashboard/UsersPage/UsersPage.tsx](../../aspect-react-client/src/components/dashboard/UsersPage/UsersPage.tsx) — "Show synthetic users" checkbox in the filter row + 🤖 badge column rendering when `user.metadata?.synthetic === true`.
+
+### Late tweaks during smoke testing
+
+1. **Persona snapshot in `run.input`** — initially I only stored `personaId`; the cockpit's "Loading persona…" label hung forever because the full persona JSON wasn't on the run. Fixed by snapshotting the full persona into `run.input.persona` at `startConversation` time.
+2. **Cockpit fallback fetch** — even with (1), the run already running at the time of the fix didn't have a persona snapshot. Added a fallback `useEffect` in the cockpit that fetches the synthetic user via `GET /api/admin/users/:id` and pulls `metadata.persona` when `run.input.persona` is missing. Handles old runs without restart.
+
+### Microservice composition (the actual call graph)
+
+```
+Click "▶ Start synthetic conversation"
+  → POST /api/admin/test-runner/conversations/start
+      → syntheticUserService.upsert            (creates/reuses users row)
+      → INSERT test_runs (type='conversation') (with persona snapshot in input)
+      → INSERT conversations (metadata.synthetic=true, metadata.testRunId)
+      → returns { testRunId, conversationUrl, ... }
+  → window.open(conversationUrl)               (new tab)
+
+Open the chat URL in new tab
+  → GET /api/conversation/:id/history          (returns metadata.synthetic=true)
+  → ChatContext.conversationMetadata populated
+  → ChatContainer renders <SyntheticControlPanel />
+  → cockpit fetches GET /api/admin/test-runs/:id
+
+Click "▶ Next turn"
+  → POST /api/admin/test-runs/:id/turn
+      → testRunnerService.advanceConversationTurn
+          → generateNextMessage                 (llmService.sendOneShot, jsonOutput)
+          → runChatTurn                          (dispatcher loop, buffered)
+              → conversationService.saveUserMessage
+              → dispatcherService.dispatch       (crew, KB, tools — all production)
+              → conversationService.saveAssistantMessage
+          → append both turns to test_runs.output.transcript
+  → cockpit re-fetches conversation history
+  → both new bubbles appear in the chat
+```
+
+### What did NOT change
+
+- No DB migration (only existing jsonb columns used).
+- No changes to the regular SSE chat endpoint `/api/finance-assistant/stream`. The legacy path is untouched; the new `/turn` lives alongside it.
+- No changes to the dispatcher, crew system, KB, tools, or thinking advisor. Synthetic conversations flow through the same production code path.
+- No changes to the `messages` table schema or write path. Synthetic messages are real messages.
+
+### Phase 1 hand-off
+
+Phase 1 is purely additive on top of Phase 0:
+- Add `POST /api/admin/test-runs/:id/run-to-completion` (server-side loop calling `advanceConversationTurn`).
+- Add `POST /api/admin/test-runs/:id/cancel` (sets a `cancelled` flag the loop checks).
+- Add "⏩ Run to completion" and "⏸ Stop" buttons to `SyntheticControlPanel` with 2s polling on the run.
+- Enable the disabled Conversations tab in `TestRunnerPage`. Build `ConversationsTab` that picks a saved population, runs each persona serially.
+
+Nothing built in Phase 0 needs to change for Phase 1.
