@@ -13,7 +13,9 @@
  * Multiple notifications arriving in quick succession are bundled into one email.
  */
 
-const { sendTaskAttentionEmail } = require('./email.service');
+const { sendTaskAttentionEmail, sendDeployedDigestEmail } = require('./email.service');
+// commentsService is loaded lazily inside _sendBatch — top-level require would
+// create a cycle (commentsService → notifications.service → emailScheduler).
 
 // How long to wait after the LAST notification before sending (debounce)
 const DEBOUNCE_MS = 5 * 60 * 1000; // 5 minutes
@@ -24,11 +26,15 @@ const MAX_WAIT_MS = 15 * 60 * 1000; // 15 minutes
 // Periodic backlog sweep interval — catches notifications missed on server restart
 const POLL_MS = 10 * 60 * 1000; // 10 minutes
 
+// Separate digest for deployed tasks — fires every 3 hours, one email per recipient
+// listing all deployed tasks they haven't dismissed from "What's New" yet.
+const DEPLOYED_DIGEST_MS = 3 * 60 * 60 * 1000; // 3 hours
+
 // Per-recipient config: email address + allowed domains.
 // Never include "aspect" domain for anyone.
 const EMAIL_RECIPIENTS = {
   Shlomi: { email: 'shlomi@boostart.io',          domains: ['lybi', 'freeda', 'freeda-1.0', 'banking', 'engine', 'general'] },
-  Noa:    { email: 'noa@lybi.ai',                 domains: ['lybi', 'banking', 'engine'] },
+  Noa:    { email: 'noa@lybi.ai',                 domains: ['lybi', 'banking', 'engine', 'general'] },
   Kosta:  { email: 'ziben.konstantin@gmail.com',  domains: ['lybi', 'freeda', 'freeda-1.0', 'banking', 'engine', 'general'] },
 };
 
@@ -45,6 +51,10 @@ class EmailSchedulerService {
     setTimeout(() => this._sweepBacklog(), 30 * 1000); // 30s after startup
     // Then sweep every POLL_MS
     setInterval(() => this._sweepBacklog(), POLL_MS);
+
+    // Deployed-tasks digest — first run 5 min after startup, then every 3 hours.
+    setTimeout(() => this._sendDeployedDigests(), 5 * 60 * 1000);
+    setInterval(() => this._sendDeployedDigests(), DEPLOYED_DIGEST_MS);
   }
 
   /**
@@ -158,9 +168,33 @@ class EmailSchedulerService {
     const rows = result.rows;
     if (rows.length === 0) return;
 
-    console.log(`[EmailScheduler] Sending ${rows.length} notification(s) to ${email}`);
+    // Also fetch "open items still needing your attention" — tasks where the
+    // last comment is not by this recipient and they haven't interacted since.
+    // Skip tasks already represented in this batch's notifications.
+    const notificationTaskIds = new Set(rows.map(r => r.task_id));
+    let needsAttention = [];
+    try {
+      const commentsService = require('./comments.service');
+      const attentionIds = await commentsService.getTasksNeedingAttention(recipient);
+      const remaining = attentionIds.filter(id => !notificationTaskIds.has(id));
+      if (remaining.length > 0) {
+        const attRes = await this.db.query(`
+          SELECT id AS task_id, title AS task_title, status AS task_status, domain AS task_domain
+          FROM tasks
+          WHERE id = ANY($1::int[])
+            AND domain = ANY($2::text[])
+            AND is_completed = false
+          ORDER BY updated_at DESC
+        `, [remaining, domains]);
+        needsAttention = attRes.rows;
+      }
+    } catch (err) {
+      console.error(`[EmailScheduler] Failed to fetch needs-attention for ${recipient}:`, err.message);
+    }
 
-    await sendTaskAttentionEmail({ recipientEmail: email, recipientName: recipient, notifications: rows });
+    console.log(`[EmailScheduler] Sending ${rows.length} notification(s) + ${needsAttention.length} needs-attention to ${email}`);
+
+    await sendTaskAttentionEmail({ recipientEmail: email, recipientName: recipient, notifications: rows, needsAttention });
 
     // Mark all as emailed
     const ids = rows.map(r => r.id);
@@ -171,6 +205,35 @@ class EmailSchedulerService {
     `, [ids]);
 
     console.log(`[EmailScheduler] Email sent and ${ids.length} notification(s) marked as emailed.`);
+  }
+
+  /**
+   * Send a separate "What's New" digest email to each recipient listing every
+   * deployed task they haven't dismissed yet. Mirrors the in-app What's New
+   * list. Skips recipients whose list is empty.
+   */
+  async _sendDeployedDigests() {
+    if (!this.db) return;
+    for (const [recipient, config] of Object.entries(EMAIL_RECIPIENTS)) {
+      try {
+        const { email, domains } = config;
+        const result = await this.db.query(`
+          SELECT id AS task_id, title AS task_title, status AS task_status, domain AS task_domain, deployed_at
+          FROM tasks
+          WHERE deployed_at IS NOT NULL
+            AND NOT (COALESCE(deployed_reviewed_by, '[]'::jsonb) ? $1)
+            AND domain = ANY($2::text[])
+          ORDER BY deployed_at DESC
+        `, [recipient, domains]);
+
+        if (result.rows.length === 0) continue;
+
+        console.log(`[EmailScheduler] Sending deployed digest with ${result.rows.length} task(s) to ${email}`);
+        await sendDeployedDigestEmail({ recipientEmail: email, recipientName: recipient, tasks: result.rows });
+      } catch (err) {
+        console.error(`[EmailScheduler] Deployed digest failed for ${recipient}:`, err.message);
+      }
+    }
   }
 }
 

@@ -64,7 +64,7 @@ function deriveBoardName(notifications) {
   return 'Task Board';
 }
 
-async function sendTaskAttentionEmail({ recipientEmail, recipientName, notifications }) {
+async function sendTaskAttentionEmail({ recipientEmail, recipientName, notifications, needsAttention = [] }) {
   const count = notifications.length;
   const boardName = deriveBoardName(notifications);
   const subject = count === 1
@@ -140,6 +140,36 @@ async function sendTaskAttentionEmail({ recipientEmail, recipientName, notificat
             </table>
           </td>
         </tr>
+
+        ${needsAttention.length > 0 ? `
+        <!-- Needs my attention section -->
+        <tr>
+          <td style="padding:8px 32px 4px;">
+            <h2 style="margin:0 0 6px;color:#111827;font-size:15px;font-weight:600;">
+              Open items still needing your attention
+            </h2>
+            <p style="margin:0 0 10px;color:#6B7280;font-size:12px;">
+              Tasks where someone replied or @mentioned you and you haven't responded yet.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 32px 24px;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E5E7EB;border-radius:6px;overflow:hidden;">
+              ${needsAttention.map(t => {
+                const badge = ({ todo: '#6B7280', in_progress: '#2563EB', done: '#16A34A' })[t.task_status] || '#6B7280';
+                return `
+                  <tr>
+                    <td style="padding:12px 16px;border-bottom:1px solid #E5E7EB;">
+                      <a href="https://lybi.ai/tasks/${t.task_id}" style="color:#2563EB;text-decoration:none;font-weight:600;font-size:14px;">${t.task_title}</a>
+                      <span style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;background:${badge};color:#fff;font-size:11px;font-weight:500;vertical-align:middle;">${t.task_status.replace('_', ' ')}</span>
+                    </td>
+                  </tr>`;
+              }).join('')}
+            </table>
+          </td>
+        </tr>
+        ` : ''}
 
         <!-- Footer -->
         <tr>
@@ -239,4 +269,86 @@ async function sendAgentErrorEmail({ agentName, contactEmails, errorMessage, con
   });
 }
 
-module.exports = { sendLybiContactEmail, sendTaskAttentionEmail, sendAgentErrorEmail };
+/**
+ * Send a "What's New" digest email listing every deployed task that the
+ * recipient hasn't dismissed yet. Mirrors the in-app What's New list.
+ *
+ * @param {object} params
+ * @param {string} params.recipientEmail
+ * @param {string} params.recipientName
+ * @param {Array}  params.tasks - { task_id, task_title, task_status, task_domain, deployed_at }
+ */
+async function sendDeployedDigestEmail({ recipientEmail, recipientName, tasks }) {
+  const count = tasks.length;
+  const subject = count === 1
+    ? `Task Board - 1 newly deployed task`
+    : `Task Board - ${count} newly deployed tasks`;
+
+  const rows = tasks.map(t => {
+    const badge = ({ todo: '#6B7280', in_progress: '#2563EB', done: '#16A34A' })[t.task_status] || '#6B7280';
+    const deployedDate = t.deployed_at ? new Date(t.deployed_at).toISOString().slice(0, 10) : '';
+    return `
+      <tr>
+        <td style="padding:14px 16px;border-bottom:1px solid #E5E7EB;">
+          <a href="https://lybi.ai/tasks/${t.task_id}" style="color:#2563EB;text-decoration:none;font-weight:600;font-size:14px;">${t.task_title}</a>
+          <span style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;background:${badge};color:#fff;font-size:11px;font-weight:500;vertical-align:middle;">${t.task_status.replace('_', ' ')}</span>
+          <div style="margin-top:4px;color:#9CA3AF;font-size:11px;">Deployed ${deployedDate}</div>
+        </td>
+      </tr>`;
+  }).join('');
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#F9FAFB;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F9FAFB;padding:32px 0;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.08);overflow:hidden;">
+
+        <tr>
+          <td style="background:#16A34A;padding:24px 32px;">
+            <span style="color:#fff;font-size:20px;font-weight:700;">What's New</span>
+            <span style="color:#DCFCE7;font-size:14px;margin-left:12px;">Recently deployed</span>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:24px 32px 8px;">
+            <p style="margin:0;color:#374151;font-size:15px;">
+              Hi ${recipientName}, ${count === 1 ? 'a task was' : `${count} tasks were`} deployed and you haven't reviewed ${count === 1 ? 'it' : 'them'} yet.
+            </p>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:8px 32px 24px;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E5E7EB;border-radius:6px;overflow:hidden;">
+              ${rows}
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:16px 32px;border-top:1px solid #E5E7EB;background:#F9FAFB;">
+            <p style="margin:0;color:#9CA3AF;font-size:12px;">
+              Open each task to dismiss it from your What's New list. This digest is sent every 3 hours while items remain.
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  await transporter.sendMail({
+    from: `"Task Board" <${process.env.GMAIL_USER}>`,
+    to: recipientEmail,
+    subject,
+    html,
+  });
+}
+
+module.exports = { sendLybiContactEmail, sendTaskAttentionEmail, sendAgentErrorEmail, sendDeployedDigestEmail };
