@@ -217,11 +217,15 @@ class EmailSchedulerService {
     for (const [recipient, config] of Object.entries(EMAIL_RECIPIENTS)) {
       try {
         const { email, domains } = config;
+        // Only include tasks the recipient hasn't dismissed AND hasn't already
+        // been emailed for. Anti-spam: each deployed task hits each recipient
+        // at most once via this digest.
         const result = await this.db.query(`
           SELECT id AS task_id, title AS task_title, status AS task_status, domain AS task_domain, deployed_at
           FROM tasks
           WHERE deployed_at IS NOT NULL
             AND NOT (COALESCE(deployed_reviewed_by, '[]'::jsonb) ? $1)
+            AND NOT (COALESCE(deployed_email_sent_to, '[]'::jsonb) ? $1)
             AND domain = ANY($2::text[])
           ORDER BY deployed_at DESC
         `, [recipient, domains]);
@@ -230,6 +234,15 @@ class EmailSchedulerService {
 
         console.log(`[EmailScheduler] Sending deployed digest with ${result.rows.length} task(s) to ${email}`);
         await sendDeployedDigestEmail({ recipientEmail: email, recipientName: recipient, tasks: result.rows });
+
+        // Mark these tasks as emailed to this recipient so the next 3h run
+        // only picks up newly deployed tasks.
+        const taskIds = result.rows.map(r => r.task_id);
+        await this.db.query(`
+          UPDATE tasks
+          SET deployed_email_sent_to = COALESCE(deployed_email_sent_to, '[]'::jsonb) || $1::jsonb
+          WHERE id = ANY($2::int[])
+        `, [JSON.stringify([recipient]), taskIds]);
       } catch (err) {
         console.error(`[EmailScheduler] Deployed digest failed for ${recipient}:`, err.message);
       }
