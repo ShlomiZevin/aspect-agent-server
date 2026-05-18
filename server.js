@@ -66,7 +66,7 @@ if (process.env.NODE_ENV === 'development') {
   app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type']
+    allowedHeaders: ['Content-Type', 'X-Super-Admin-Key']
   }));
 } else {
   // Production CORS (strict)
@@ -90,7 +90,7 @@ if (process.env.NODE_ENV === 'development') {
       }
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type']
+    allowedHeaders: ['Content-Type', 'X-Super-Admin-Key']
   }));
 }
 

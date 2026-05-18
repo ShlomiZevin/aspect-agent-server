@@ -703,9 +703,20 @@ class TestRunnerService {
   }
 
   /**
-   * Request cancellation of a running conversation. The server-side loop
-   * (and the batch driver) check this flag between turns and exit cleanly.
+   * Request cancellation of a running conversation. Cooperative — the
+   * server-side loop checks status/flag between turns and exits cleanly.
    * If the run is already terminal, this is a no-op.
+   *
+   * We set BOTH `status='cancelled'` and `output.cancelled=true`:
+   * - `status` is the durable signal: `advanceConversationTurn`'s success-path
+   *   write only touches `output`/`updatedAt`, so a cancelled status survives
+   *   an in-flight turn that started before cancel fired.
+   * - `output.cancelled` is kept for older clients/UI that read the flag.
+   *
+   * Race note: if the in-flight turn happens to reach a terminal branch
+   * (max_turns / end_signal / failed) while we're cancelling, it will overwrite
+   * `status` with its own terminal value. That's acceptable — the run still
+   * stops; it's just labelled with the natural reason instead of "cancelled".
    */
   async cancelConversationRun(runId) {
     if (!this.drizzle) this.initialize();
@@ -717,7 +728,8 @@ class TestRunnerService {
     const [updated] = await this.drizzle
       .update(testRuns)
       .set({
-        output: { ...(run.output || {}), cancelled: true },
+        status: 'cancelled',
+        output: { ...(run.output || {}), cancelled: true, terminationReason: 'cancelled' },
         updatedAt: new Date(),
       })
       .where(eq(testRuns.id, runId))
