@@ -6,18 +6,18 @@
  */
 const db = require('./db.pg');
 const { llmUsage } = require('../db/schema');
+const modelsService = require('./models.service');
 
 /**
- * Derive provider name from model string.
+ * Derive provider name from model id by consulting the central
+ * models registry. Falls back to 'openai' for unknown ids so a
+ * one-off log line never throws.
+ *
  * @param {string} model
  * @returns {string} 'anthropic' | 'google' | 'openai'
  */
 function getProviderFromModel(model) {
-  if (!model) return 'openai';
-  const m = model.toLowerCase();
-  if (m.startsWith('claude-')) return 'anthropic';
-  if (m.startsWith('gemini-')) return 'google';
-  return 'openai';
+  return modelsService.tryProviderOf(model) || 'openai';
 }
 
 /**

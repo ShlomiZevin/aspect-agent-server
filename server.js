@@ -103,6 +103,29 @@ app.get('/health', async (req, res) => {
   res.status(200).json({});
 });
 
+// ─── V2 Builder routes ─────────────────────────────────────────────
+// Builder doc CRUD (creating projects/agents/crews, saving versions,
+// setting active/viewing pointers). All under /api/builder/*.
+app.use('/api/builder', require('./builder/routes/projectsRoute'));
+// Runtime + conversations + history. Mounted at /api/agents so a
+// future customer-facing v2 chat can call the same endpoints with
+// version: 'active'. Today only the builder UI calls these (with
+// version: 'viewing'). See docs/guides/BUILDER_V2_RUNTIME_PLAN.md.
+app.use('/api/agents', require('./builder/routes/runtimeRoute'));
+
+// ========== MODELS REGISTRY ==========
+// Single source of truth for the LLM models the platform supports.
+// Server-hardcoded today (services/models.service.js); the client
+// fetches this list on app load and every model picker reads it.
+app.get('/api/models', (_req, res) => {
+  try {
+    res.json(require('./services/models.service').listForApi());
+  } catch (err) {
+    console.error('❌ /api/models failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== KNOWLEDGE BASE ENDPOINTS (for debug panel) ==========
 
 // Get all available KBs for an agent (used by debug panel for KB override)
@@ -3295,19 +3318,28 @@ app.post('/api/admin/optimization-jobs', async (req, res) => {
 // ========== LLM USAGE ENDPOINTS ==========
 
 // GET /api/admin/usage — paginated usage rows with filters
+// `agent` matches the display name (legacy rows). `slug` matches the
+// agent's URL slug (V2 builder rows). When both are present a row
+// matches if its agent_name equals EITHER value — lets the dashboard
+// surface old + new rows together without a schema change.
 app.get('/api/admin/usage', async (req, res) => {
   try {
     const drizzle = db.getDrizzle();
-    const { from, to, agent, process: proc, model, limit: lim = '100', offset: off = '0' } = req.query;
+    const { from, to, agent, slug, process: proc, model, limit: lim = '100', offset: off = '0' } = req.query;
     const { llmUsage } = require('./db/schema');
     const { desc, and, gte, lte, eq, inArray, sql } = require('drizzle-orm');
 
     const conditions = [];
     if (from) conditions.push(gte(llmUsage.createdAt, new Date(from)));
     if (to) conditions.push(lte(llmUsage.createdAt, new Date(to)));
-    if (agent) {
-      const agents = Array.isArray(agent) ? agent : [agent];
-      conditions.push(agents.length === 1 ? eq(llmUsage.agentName, agents[0]) : inArray(llmUsage.agentName, agents));
+    const agentValues = [
+      ...(agent ? (Array.isArray(agent) ? agent : [agent]) : []),
+      ...(slug ? (Array.isArray(slug) ? slug : [slug]) : []),
+    ].filter(Boolean);
+    if (agentValues.length === 1) {
+      conditions.push(eq(llmUsage.agentName, agentValues[0]));
+    } else if (agentValues.length > 1) {
+      conditions.push(inArray(llmUsage.agentName, agentValues));
     }
     if (proc) conditions.push(eq(llmUsage.process, proc));
     if (model) conditions.push(eq(llmUsage.model, model));
@@ -3329,20 +3361,26 @@ app.get('/api/admin/usage', async (req, res) => {
   }
 });
 
-// GET /api/admin/usage/summary — aggregated totals
+// GET /api/admin/usage/summary — aggregated totals.
+// Same `agent` + `slug` semantics as /api/admin/usage above.
 app.get('/api/admin/usage/summary', async (req, res) => {
   try {
     const drizzle = db.getDrizzle();
-    const { from, to, agent } = req.query;
+    const { from, to, agent, slug } = req.query;
     const { llmUsage } = require('./db/schema');
     const { and, gte, lte, eq, inArray, sql } = require('drizzle-orm');
 
     const conditions = [];
     if (from) conditions.push(gte(llmUsage.createdAt, new Date(from)));
     if (to) conditions.push(lte(llmUsage.createdAt, new Date(to)));
-    if (agent) {
-      const agents = Array.isArray(agent) ? agent : [agent];
-      conditions.push(agents.length === 1 ? eq(llmUsage.agentName, agents[0]) : inArray(llmUsage.agentName, agents));
+    const agentValues = [
+      ...(agent ? (Array.isArray(agent) ? agent : [agent]) : []),
+      ...(slug ? (Array.isArray(slug) ? slug : [slug]) : []),
+    ].filter(Boolean);
+    if (agentValues.length === 1) {
+      conditions.push(eq(llmUsage.agentName, agentValues[0]));
+    } else if (agentValues.length > 1) {
+      conditions.push(inArray(llmUsage.agentName, agentValues));
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 

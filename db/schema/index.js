@@ -418,6 +418,10 @@ const libraryFiles = pgTable('library_files', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// V2 builder tables (the JSON-based plugin builder; coexists with
+// the legacy `agents` / `crewMembers` above which power v1 chats).
+const builderSchema = require('./builder');
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -446,4 +450,10 @@ module.exports = {
   testRuns,
   llmUsage,
   libraryFiles,
+  // V2 builder
+  builderProjects:        builderSchema.builderProjects,
+  builderAgents:          builderSchema.builderAgents,
+  builderAgentVersions:   builderSchema.builderAgentVersions,
+  builderCrews:           builderSchema.builderCrews,
+  builderCrewVersions:    builderSchema.builderCrewVersions,
 };

@@ -3,6 +3,7 @@ const claudeService = require('./llm.claude');
 const googleService = require('./llm.google');
 const functionRegistry = require('./function-registry');
 const { logUsage } = require('./usageLogger');
+const modelsService = require('./models.service');
 
 /**
  * Main LLM service that routes requests to specific providers
@@ -93,36 +94,45 @@ class LLMService {
   }
 
   /**
-   * Determine which provider to use based on model name
-   * @param {string} model - Model name (e.g., 'gpt-4o', 'claude-sonnet-4-5-20250929', 'gemini-2.0-flash')
-   * @param {string} context - Context for logging (e.g., 'crew', 'field-extractor', 'one-shot')
-   * @returns {Object} - Provider service (openaiService, claudeService, or googleService)
+   * Determine which provider to use for a model.
+   *
+   * Reads from the central models registry (services/models.service.js)
+   * — the single source of truth. Unknown models log a warning and
+   * fall back to OpenAI rather than throwing, so a typo in a config
+   * doesn't crash a live conversation; the fallback will likely 404
+   * loudly enough that the bad config is obvious.
+   *
+   * @param {string} model — model id (e.g. 'gpt-4o', 'claude-sonnet-4-6')
+   * @param {string} context — for logging (e.g. 'crew', 'one-shot')
+   * @returns {Object} provider service
    * @private
    */
   _getProviderForModel(model, context = 'one-shot') {
     const contextLabel = context ? `[${context}] ` : '';
 
     if (!model) {
-      return this.provider; // Default to OpenAI
+      console.log(`🤖 ${contextLabel}No model specified — defaulting to OpenAI`);
+      return this.provider;
     }
 
-    const modelLower = model.toLowerCase();
-
-    // Claude models start with "claude-"
-    if (modelLower.startsWith('claude-')) {
-      console.log(`🤖 ${contextLabel}Using Claude provider for model: ${model}`);
-      return this.claude;
+    const providerId = modelsService.tryProviderOf(model);
+    if (!providerId) {
+      console.warn(`⚠️ ${contextLabel}Unknown model "${model}" — defaulting to OpenAI. Register it in services/models.service.js.`);
+      return this.provider;
     }
 
-    // Google Gemini models start with "gemini-"
-    if (modelLower.startsWith('gemini-')) {
-      console.log(`🤖 ${contextLabel}Using Google provider for model: ${model}`);
-      return this.google;
+    switch (providerId) {
+      case 'anthropic':
+        console.log(`🤖 ${contextLabel}Using Claude provider for model: ${model}`);
+        return this.claude;
+      case 'google':
+        console.log(`🤖 ${contextLabel}Using Google provider for model: ${model}`);
+        return this.google;
+      case 'openai':
+      default:
+        console.log(`🤖 ${contextLabel}Using OpenAI provider for model: ${model}`);
+        return this.provider;
     }
-
-    // Otherwise use OpenAI (for gpt-*, o1-*, o3-*, o4-*, etc.)
-    console.log(`🤖 ${contextLabel}Using OpenAI provider for model: ${model}`);
-    return this.provider;
   }
 
   /**
@@ -145,6 +155,7 @@ class LLMService {
     // Providers return { text, usage } — log usage and return just text for backward compat
     if (result && typeof result === 'object' && 'text' in result) {
       if (result.usage) {
+        console.log(`📊 [llm.sendOneShot] usage: ${options.context || 'one-shot'} (${options.model || 'unknown'}) in=${result.usage.inputTokens} out=${result.usage.outputTokens} agent="${options.agentName || ''}"`);
         logUsage({
           process: options.context || 'one-shot',
           model: options.model || 'unknown',
@@ -156,6 +167,8 @@ class LLMService {
           conversationId: options.conversationId,
           userId: options.userId,
         });
+      } else {
+        console.warn(`⚠️ [llm.sendOneShot] no usage returned by provider for ${options.context || 'one-shot'} (${options.model || 'unknown'})`);
       }
       return result.text;
     }
