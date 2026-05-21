@@ -20,3 +20,4 @@
 
 require('./talker/addon.talker');
 require('./fieldExtractor/addon.fieldExtractor');
+require('./transitionRouter/addon.transitionRouter');

@@ -521,6 +521,130 @@ Three phases. Each ends with something testable.
   prompt / output / memory breakdown that was shown live is
   reconstructed from `addon_runs`.
 
+### P3.5 — Prerequisites for transitions
+
+Two small slices that need to land before P4 makes sense to use:
+
+1. **Delete-crew UI**. `removeCrew` already exists in BuilderContext +
+   server. Add a hover-trash + confirm in the Sidebar's crew row.
+   Block deleting the agent's `defaultCrewId`.
+2. **Drag-and-drop addon reordering** in the Cortex canvas. Persists
+   into `crewBody.addons` order on save. Without this, you can't put
+   a Transition Router after the Field Extractor or change its
+   position later — and position is what makes transitions work.
+
+### P4 — Crew transitions
+
+**Mechanism** — a Transition Router is just a plugin instance you
+drop into the chain. Position dictates timing (after extractor =
+route on fresh fields, after talker = post-turn). The plugin's
+`run()` adds two optional return fields:
+
+```js
+{
+  ...usual addon shape,
+  transition: { to: ID, reason: string },   // present when conditions matched
+  breakChain: boolean,                       // skip remaining addons this turn
+}
+```
+
+**Scope:**
+- New plugin `transition-router` on both sides
+  (`aspect-react-client/src/builder/plugins/transitionRouter/addon.transitionRouter.ts`
+  + `aspect-agent-server/builder/plugins/transitionRouter/addon.transitionRouter.js`).
+- Per-instance config (one router = one decision point):
+  ```ts
+  {
+    conditions: TransitionCondition[],   // AND-ed
+    target: ID,
+    reason?: string,
+    onMatch: 'continue' | 'break',
+  }
+  ```
+- Condition types: `fields-collected`, `field-equals`, `field-in`,
+  `always`. **No `llm-decide`** — composable via an extractor +
+  field-equals chain.
+- Engine in `BuilderRunner.runOnce`:
+  - After `plugin.run()`, if `result.transition` set → update
+    `conversations.metadata.currentCrewId`. If `result.breakChain`
+    → stop iterating the chain.
+  - `addon_runs.runData` includes `{ matched, transitionTo, broke }`.
+- `resolveRunnable` reads `conversation.metadata.currentCrewId`
+  first; falls back to agent's `defaultCrewId` if absent or if the
+  target crew is missing (deleted). Logs a warning on fallback.
+- UI: config component with conditions list, target crew picker,
+  reason text, `onMatch` radio.
+- AddonRunCard renders the routing decision (matched? which target?
+  break or continue?).
+
+**Out of scope:**
+- Mid-turn switching (re-running the engine with the new crew's
+  chain in the same turn). Would need a re-entry mechanism + makes
+  the SSE / `addon_runs` story messy.
+- Transition system prompts injected on crew entry. Use the new
+  crew's persona / spec for now.
+- Field clearing on entry. Build later if a real use case shows up.
+
+**Done when:**
+- A two-crew agent: Intake (Field Extractor + TransitionRouter with
+  `fields-collected:[name,email]` + Talker) → Profiler. Once both
+  fields are captured, the next user message lands on Profiler and
+  the Profiler talker uses the captured memory.
+- A different two-crew agent with the TransitionRouter set to
+  `onMatch:'break'` — the moment fields are captured, no talker
+  response that turn; next message is in the new crew.
+
+### P5 — Alfred (Builder Helper)
+
+#### P5.1 — Brainstorm only
+
+**Scope:**
+- New proxy endpoint `POST /api/builder/alfred/chat` — SSE-stream of
+  Claude Sonnet 4.6 tokens. Hardcoded model (`BUILDER_HELPER_MODEL`).
+- Server gathers context per turn: the full `ProjectDoc` for the
+  agent the user is editing, the current spec snapshot file (if any),
+  the user's message + short chat history.
+- Client `BuilderChat.tsx` wired to the endpoint; renders the
+  streaming response in its bubble area. Tab already exists.
+
+**Done when:**
+- User types a question in the Builder Chat tab; Alfred responds
+  with awareness of every crew + addon + field in the current agent.
+
+#### P5.2 — Propose-apply edits
+
+**Scope:**
+- Add a tool/function-calling shape Alfred can emit:
+  `proposeChange({ op, path, value })` — RFC 6902-style.
+- Client renders each proposal as a diff card inline in the chat
+  with an **Apply** button.
+- Apply commits via the existing `/api/builder/*` endpoints; client
+  refetches (or applies optimistically + reconciles).
+- Reject button silently dismisses.
+
+**Done when:**
+- User asks "add a 'income' field to the Intake crew"; Alfred
+  proposes the patch; Apply commits it; the fields panel reflects
+  the new field instantly.
+
+#### P5.3 — Spec snapshots
+
+**Scope:**
+- New folder `aspect-agent-server/agent-specs/<slug>.md` (git-tracked,
+  no DB).
+- Generator: server `services/agentSpecSnapshot.js`. Renders the
+  AgentBody + crew bodies into a markdown spec with marker-delimited
+  auto-block + preserved free-form-block.
+- Hook into save endpoints (`PUT /agents/:agentId/versions/:versionId`
+  and crew equivalents): regenerate the auto-block.
+- Alfred gets `readAgentSpec()` and `appendAgentNote(text)` tools so
+  it can read for context and write to the free-form block.
+
+**Done when:**
+- Save any change → the agent's `agent-specs/<slug>.md` updates with
+  fresh content (auto-block) while user-or-Alfred notes below the
+  marker survive untouched.
+
 ---
 
 ## Migration strategy

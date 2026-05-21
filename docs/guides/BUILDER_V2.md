@@ -532,6 +532,255 @@ decisions, no merge conflicts.
 
 ---
 
+## Crew Transitions  (planned — design locked, not yet built)
+
+A **Transition Router** is just another plugin in the Cortex chain.
+Where you drop it decides when it evaluates. Multiple routers can
+live in one chain; each is independent.
+
+### Why not crew-level rules?
+
+We considered putting `transitions[]` on the crew. Plugin-on-chain
+wins for three reasons:
+1. **Position is the timing**. After the Field Extractor → route on
+   freshly-captured fields. After the Talker → post-turn routing.
+   Both at once → check at both points with different rules.
+2. **No engine special-casing**. Just a new return field on a
+   plugin's `run()` result; the engine acts on it.
+3. **Shows up in the addon timeline** like everything else — same
+   debugging surface, same persistence in `addon_runs`.
+
+### Plugin shape
+
+One instance = one router = one decision point. The instance config:
+
+```ts
+interface TransitionRouterConfig {
+  /**
+   * AND-ed conditions. ALL must match for the router to fire.
+   * For OR semantics, drop a second Transition Router with the
+   * other condition. Each router targets one crew.
+   */
+  conditions: TransitionCondition[];
+
+  /** Crew to transition to when conditions match. */
+  target: ID;
+
+  /** Optional human-readable note shown in the AddonRunCard. */
+  reason?: string;
+
+  /**
+   * What to do with the rest of THIS turn's chain after a match:
+   * - 'continue' (default): remaining addons run as usual.
+   *   The Talker (if downstream) speaks one last time from the
+   *   current crew. The next user turn lands on `target`.
+   * - 'break': remaining addons are skipped. Turn ends here. No
+   *   talker response this turn. Next user turn lands on `target`.
+   *
+   * Mid-turn switching (run target's chain THIS turn) is NOT
+   * supported — would require re-entering the engine and complicates
+   * the addon_runs / SSE contracts. Defer until concretely needed.
+   */
+  onMatch: 'continue' | 'break';
+}
+
+type TransitionCondition =
+  | { type: 'fields-collected'; fields: string[] }
+  | { type: 'field-equals'; field: string; value: unknown }
+  | { type: 'field-in'; field: string; values: unknown[] }
+  | { type: 'always' };
+```
+
+(An earlier draft had an `llm-decide` condition. **Cut from v1.** For
+LLM-driven routing the user adds a Field Extractor upstream that
+extracts a specific routing field — e.g., `intent` — then chains a
+Transition Router with a `field-equals` rule on it. Composable, no
+new primitive needed, and the routing decision becomes inspectable
+in the addon timeline.)
+
+### Engine wiring
+
+The plugin's `run()` returns the usual addon shape plus two new
+optional fields:
+
+```js
+return {
+  rawOutput, parsedOutput, memoryWrites, durationMs, tokens,
+  transition: matched ? { to: target, reason } : undefined,
+  breakChain: matched && onMatch === 'break',
+};
+```
+
+After `plugin.run()`, the engine checks `result.transition`:
+- If set: write `conversations.metadata.currentCrewId = transition.to`.
+- If `result.breakChain`: stop iterating the chain for this turn.
+
+`resolveRunnable` already reads the agent's `defaultCrewId`; it gets
+a small change to prefer `conversation.metadata.currentCrewId` when
+present. The crew row must still exist — if the target's been
+deleted, fall back to `defaultCrewId` and log a warning.
+
+### State storage
+
+`conversations.metadata.currentCrewId` — string FK to
+`builder_crews.id`. The `metadata` jsonb column already exists,
+no migration needed.
+
+### Multiple routers per chain
+
+Sequenced like any chain. Examples:
+
+- **Field-extractor → Router(break) → Talker**: extractor fills
+  fields; if the routing rule is now satisfied, jump to the new
+  crew and skip this turn's talker. The new crew speaks next turn.
+- **Field-extractor → Talker → Router(continue)**: talker always
+  speaks for the current crew; AFTER that, router decides the next
+  turn's crew.
+- **Two routers in a row** with different conditions / targets:
+  evaluated in order; first match that says `break` stops; otherwise
+  later matches overwrite the target.
+
+If two routers in the same turn both match with `continue`, the
+last write to `currentCrewId` wins.
+
+### What it does NOT do
+
+- **Mid-turn switching** — see config note above.
+- **Transition system prompts** — v1 injected "system message on
+  crew entry" so the talker could acknowledge the hand-off. Punt;
+  put it in the new crew's persona / spec for now.
+- **Field clearing on entry** — punt.
+- **Cycle detection** — A→B→A is allowed; user's job to avoid loops.
+
+### Chain reordering — prerequisite
+
+The current Cortex canvas adds addons in append order with no UI to
+move them. Transitions make ordering meaningful, so we need
+**drag-and-drop reordering of addons within a lane** before this
+ships. Tracked as its own task (decision 38).
+
+### UI
+
+Transition Router config component:
+- "Conditions (all must match)" list. Add/remove rows; type selector
+  per row; per-type fields (field picker, value input).
+- "Target crew" dropdown (lists the agent's crews — current one
+  excluded).
+- "Reason" optional text.
+- "After a match" radio: continue / break.
+- AddonRunCard surfaces "matched: yes / no", which conditions passed,
+  the chosen target, and whether the chain was broken.
+
+**Current-crew display in UserChat header.** Transitions silently
+swap the active crew between turns; the user needs to see what
+they're talking to right now. The crew badge in the chat header
+(today shows the viewing-crew name) becomes the runtime current-crew
+chip once a conversation is active. The full customer-facing v1 will
+likely surface the whole chain; for the builder, current-crew is
+enough.
+
+### Multiple addons of any plugin type — already supported
+
+The chain is just an ordered `addons: AddonInstance[]` array. Two
+Field Extractors with different scopes, two Talkers, two Transition
+Routers — all fine, each with its own `instanceId`. The plugin
+registry doesn't enforce one-per-crew.
+
+---
+
+## Alfred — the Builder Helper  (planned)
+
+The second chat tab. Talks with the user *about* the agent under
+construction: brainstorms, proposes JSON edits, maintains a live
+agent-spec markdown file.
+
+### Capabilities (planned)
+
+1. **Brainstorm with full context.** Alfred sees the entire
+   `ProjectDoc` plus the current agent's spec markdown on every
+   turn. No tools needed — just LLM-in-context.
+
+2. **Propose JSON edits.** Alfred outputs structured proposals
+   (RFC 6902 JSON Patch or a simple verb+path+value shape). Client
+   renders each proposal as a diff card with an **Apply** button.
+   Clicking Apply hits the existing `/api/builder/*` endpoints; the
+   client refetches and re-renders.
+
+3. **Maintain a spec snapshot.** Each agent has an auto-generated
+   markdown spec file at
+   `aspect-agent-server/agent-specs/<slug>.md`. The server
+   regenerates the auto-block on every save. Alfred can read it for
+   context and append free-form notes (decisions / rationale / TODOs)
+   to a clearly-marked section that the regen leaves alone.
+
+### Phasing
+
+- **Alfred P1 — Brainstorm only.** Real LLM (Claude Sonnet 4.6),
+  full project context, read-only. No tools. Just conversation.
+- **Alfred P2 — Propose-Apply.** Structured edit proposals + Apply
+  button + diff UI. No spec snapshots yet.
+- **Alfred P3 — Spec snapshots.** Auto-gen markdown spec on every
+  save; Alfred can read and append notes.
+
+### Snapshot file structure
+
+```markdown
+# Agent: <name>
+
+_Auto-generated below this line on every save. Edits outside the
+FREE-FORM section are overwritten._
+
+## Persona
+<text>
+
+## Spec
+<text>
+
+## Crews
+### <crew name>
+- Description: <desc>
+- Addons: …
+- Fields: …
+
+<!-- FREE-FORM-START -->
+## Notes (preserved across regens)
+…
+<!-- FREE-FORM-END -->
+```
+
+A marker-based split preserves the free-form section across regens.
+Git-friendly. No DB column needed.
+
+### Why advisory, not autonomous
+
+Alfred never mutates state silently. Every proposed change goes
+through a diff card with an explicit Apply click. Two reasons:
+
+1. Predictable mental model — chat = brainstorm, clicks = actions.
+2. Avoids "AI changed my config without me realising", which is much
+   worse for a builder tool than for, say, code-completion.
+
+### Change log (every Apply is journalled)
+
+When the user clicks Apply on an Alfred proposal, we log:
+
+- the timestamp,
+- the JSON patch applied,
+- the **reason** (Alfred's own brief, sourced from the chat context
+  that produced the proposal — surfaced editably in the Apply
+  confirmation so the user can refine),
+- which Alfred turn it came from (so you can read back the
+  conversation).
+
+The log doubles as an audit trail and as evolving documentation of
+*why* the agent looks the way it does. Probably a single `agent_log`
+table (or a column on the spec snapshot — TBD when we build it).
+Manual edits (made by the user without Alfred) get logged too with
+`reason: 'manual edit'` (or a free-text the user supplies if they
+want).
+
+---
+
 ## UI structure
 
 ### Three-panel layout
@@ -740,30 +989,40 @@ Migrations are idempotent and forward-only:
 
 ## What's next
 
-1. **Agent versioning** — same pattern as crew (working copy + versions
-   + active pointer). Sidebar shows agent version pill too.
-2. **Wire LLM calls + runtime prompt assembly** — assemble the
-   `## Field schema` / `## Already collected` / `## Memory` /
-   `## Persona` / `## Conversation` / `## Latest user message`
-   sections per the template above. Needs a thin server proxy for
-   the Builder Chat (Claude Sonnet 4.6) and a preview endpoint for
-   the User Chat.
-3. **Wire the User Chat** to actually run the in-progress agent.
-   Likely via existing `/api/finance-assistant/stream` with an
-   `overrideCrewMember` derived from the JSON, or a new preview endpoint.
-4. **Live addon-activity** in the User Chat — replace the `idle`
-   placeholders with real per-turn events (what the extractor pulled,
-   which fields fired, etc.). Uses each plugin's `DebugComponent`.
-5. **Server-side persistence** — once the JSON shape stabilises, add
-   `projects`, `agents`, `crews` tables (or document collections);
-   each row holds the JSON document. Drafts in `localStorage` move
-   to "unsaved server state".
-6. **More plugins** — Strategic / Thinker, Vibe Extractor, Summarizer,
-   Transitioner, Formatter (from the mockup). Each is a new directory
-   under `plugins/` + a `registerPlugin` call.
-7. **Activate Background + Offline lanes** (currently reserved /
-   add-disabled). UI is already there; just flip the `enabled` flag
-   in `ChainCanvas` once a plugin needs them.
+Most of the earlier "what's next" is now built. Current priorities:
+
+1. **Delete-crew UI** — small. Surface `removeCrew` from BuilderContext
+   in the Sidebar with a hover-trash + confirm. Block deletion of
+   the agent's `defaultCrewId` until the user picks a new default.
+   (Decision 33.)
+
+2. **Crew Transitions** — Transition Router plugin + the engine
+   wiring to honour its `'transition'` output. See the "Crew
+   Transitions" section above and decisions 34–35. Phasing:
+   - 2a — schema: `conversations.metadata.currentCrewId`, no
+     migration; engine reads it in `resolveRunnable`.
+   - 2b — plugin descriptor (client + server) for `transition-router`,
+     supporting `fields-collected`, `field-equals`, `field-in`,
+     `always`, `llm-decide`.
+   - 2c — UI: config component with rule list + crew picker;
+     AddonRunCard renders the "rule fired" reason.
+
+3. **Alfred — P1 brainstorm only**. Real LLM (Claude Sonnet 4.6),
+   full project context, read-only. The chat already exists as a UI
+   shell; wire it to the LLM via a thin proxy endpoint. Decision 36.
+
+4. **Alfred — P2 propose-apply** with diff-card UI. Decision 36.
+
+5. **Spec snapshots** — auto-generate `agent-specs/<slug>.md` on
+   every save; Alfred can read and append. Decision 37.
+
+6. **More plugins** — Strategic / Thinker, Vibe Extractor, Summarizer.
+   Each is a new directory under `plugins/<id>/` + a `registerPlugin`
+   call on both sides. See [BUILDER_V2_ADDONS.md](BUILDER_V2_ADDONS.md).
+
+7. **Background + Offline lanes** — UI is reserved (add-disabled);
+   flip when a plugin actually needs them (Summarizer is the obvious
+   candidate).
 
 ---
 
@@ -1148,6 +1407,88 @@ got generalised. They now take an `EntityVersionState` props blob
 produced by either `useCrewVersion(agentId, crewId)` or
 `useAgentVersion(agentId)`. Same UI, two entity types, no duplicated
 component code.
+
+### 33. Delete-crew UI affordance
+Server endpoint + `removeCrew` in BuilderContext already exist; the
+UI just hasn't surfaced them. Add a trash icon in the Sidebar's
+crew row (hover-reveal like the rename pencil in HistoryPanel),
+gated by the custom Confirm modal. Guard rail: don't allow deleting
+the agent's `defaultCrewId` without first picking a different
+default — would leave the agent rudderless at runtime.
+
+### 34. Transitions as a plugin, not engine special-casing
+Crew transitions could be hardcoded onto `crew.transitions[]`, but
+doing them as a plugin (Transition Router) costs the engine nothing
+— just a new output type `'transition'` it acts on. Any future
+routing logic (LLM-based, tool-call-based) ships as a new plugin
+without engine changes. Decisions stay in the addon timeline for
+transparency, like everything else.
+
+### 35. Transition timing is the chain position; not a global setting
+Where you drop the Transition Router in the chain decides when it
+fires. After the Field Extractor = route on freshly-captured fields.
+After the Talker = post-turn routing. Both at once = check at both
+points with different rules. Combined with the per-router `onMatch:
+'continue' | 'break'` knob (skip the rest of THIS turn vs. just
+mark next-turn's crew), this covers v1's `pre`/`postMessageTransfer`
+without engine special-casing. Mid-turn switching (run the new
+crew's chain in the SAME turn) is deferred — would require re-
+entering the engine and complicates the `addon_runs` / SSE contracts.
+
+### 36. Alfred as advisory, not autonomous
+Alfred never mutates state silently. Every proposed change goes
+through a diff card with an explicit Apply click. (1) Predictable
+mental model — chat is brainstorm, clicks are actions; (2) avoids
+the "AI changed my config without me realising" failure mode,
+which is much worse for a builder than for, say, code-completion.
+
+### 37. Spec snapshot lives in the DB, deferred
+Per-agent spec doc — user-editable, persisted in production, evolves
+over time as a living artifact. **DB-backed, not on disk** (changed
+from earlier draft): users edit it via the builder UI in prod, no
+git involvement. Open: one big markdown blob vs. multiple files /
+sections — TBD when we actually build it. Whole thing deferred
+until Alfred work starts; no need to lock the shape now.
+
+### 38. Drag-and-drop chain reordering (main lane only)
+The Cortex canvas currently appends addons in insertion order; no
+way to move them. Transitions make ordering meaningful (router after
+the extractor vs. after the talker is a different behavior), so
+reordering is a prerequisite for the transition slice. Plain HTML5
+drag-and-drop on the addon cards within the main lane; persists into
+`crewBody.addons` order on save. **Within-lane only for v1**;
+cross-lane drag waits until background / offline lanes actually do
+anything.
+
+### 39. No `llm-decide` condition; compose an extractor + field-equals
+Earlier draft had `llm-decide` as a Transition Router condition. Cut.
+Same outcome via two existing pieces: a Field Extractor that pulls
+a routing field (e.g., `intent: 'complaint' | 'sales' | 'support'`)
+from the conversation, then a Transition Router with a `field-equals`
+rule on `intent`. Three wins: (1) no new primitive; (2) the routing
+decision is captured in memory and inspectable in the addon timeline;
+(3) the LLM call is logged in `llm_usage` like every other addon
+call, not hidden inside the router.
+
+### 40. Current-crew chip in UserChat header
+Transitions silently swap the active crew between turns; the chat
+needs to surface which crew is talking *right now*. The existing
+crew badge (which shows the viewing-crew name) becomes the runtime
+current-crew indicator once a conversation is active — pulled from
+`conversation.metadata.currentCrewId`, falling back to the agent's
+`defaultCrewId` until a transition fires. The full customer-facing
+chat (v1) will likely surface the whole chain trail; for the builder,
+current-crew is enough.
+
+### 41. Alfred change log — every Apply gets a reason + journalled
+Brainstorm is free; mutation is logged. When the user clicks Apply
+on an Alfred proposal, we journal `{ timestamp, patch, reason,
+sourceAlfredTurn }`. Reason defaults to Alfred's brief from the
+chat context but is editable in the Apply confirmation, so the
+user owns the "why". Manual edits (no Alfred involved) get logged
+too with `reason: 'manual edit'` or whatever the user types.
+Doubles as audit trail + living documentation of design choices.
+TBD: single `agent_log` table vs. a column on the spec snapshot.
 
 ---
 

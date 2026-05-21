@@ -378,7 +378,17 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       console.warn('[builder] auto-name failed:', err.message);
     }
 
-    emit('conversation', { conversationId: Number(convId), messageId: userMsg.id });
+    // Emit the conversation event with the active crew pointer so
+    // the client header can show "you're talking to crew X right now"
+    // before any addons fire this turn. Falls back to null →
+    // client resolves to the agent's default crew.
+    const [convForEvent] = await d.select().from(conversations)
+      .where(eq(conversations.id, Number(convId))).limit(1);
+    emit('conversation', {
+      conversationId: Number(convId),
+      messageId: userMsg.id,
+      currentCrewId: (convForEvent?.metadata && convForEvent.metadata.currentCrewId) || null,
+    });
 
     // Reserve the assistant message row up front (empty content) so
     // BuilderRunner can attach addon_runs to its id. We update the

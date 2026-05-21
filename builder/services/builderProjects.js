@@ -319,7 +319,7 @@ async function deleteCrew({ crewId }) {
  * 'active'), return the addons to execute and metadata needed for
  * logging. Used by BuilderRunner.
  */
-async function resolveRunnable({ agentSlug, ownerUserId, mode = 'viewing' }) {
+async function resolveRunnable({ agentSlug, ownerUserId, mode = 'viewing', overrideCrewId = null }) {
   const d = drizzle();
 
   const agentRow = await d.select()
@@ -347,18 +347,33 @@ async function resolveRunnable({ agentSlug, ownerUserId, mode = 'viewing' }) {
 
   const agentBody = agentVersion.body;
   const defaultCrewId = agentBody?.defaultCrewId;
-  if (!defaultCrewId) {
+  if (!defaultCrewId && !overrideCrewId) {
     throw new Error('Agent has no defaultCrewId; nothing to run');
   }
 
-  const [crew] = await d.select()
+  // `overrideCrewId` is set when a prior Transition Router fired and
+  // wrote to `conversation.metadata.currentCrewId`. Prefer it; fall
+  // back to `defaultCrewId` if it points at a crew that's been
+  // deleted (logs a warning so the misconfiguration is visible).
+  const preferredCrewId = overrideCrewId || defaultCrewId;
+  let [crew] = await d.select()
     .from(builderCrews)
     .where(and(
-      eq(builderCrews.id, defaultCrewId),
+      eq(builderCrews.id, preferredCrewId),
       eq(builderCrews.agentId, agent.id),
     ))
     .limit(1);
-  if (!crew) throw new Error(`Default crew ${defaultCrewId} not found`);
+  if (!crew && overrideCrewId && defaultCrewId && defaultCrewId !== overrideCrewId) {
+    console.warn(`[builder] currentCrewId "${overrideCrewId}" not found; falling back to defaultCrewId "${defaultCrewId}"`);
+    [crew] = await d.select()
+      .from(builderCrews)
+      .where(and(
+        eq(builderCrews.id, defaultCrewId),
+        eq(builderCrews.agentId, agent.id),
+      ))
+      .limit(1);
+  }
+  if (!crew) throw new Error(`Crew ${preferredCrewId} not found`);
 
   const crewVersionId = mode === 'active' ? crew.activeVersionId : crew.viewingVersionId;
   if (!crewVersionId) throw new Error('Crew has no version pointer');
