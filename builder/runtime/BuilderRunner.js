@@ -1,43 +1,45 @@
 /**
- * Builder V2 — BuilderRunner.
+ * Builder V2 — BuilderRunner (engine).
  *
- * One run per HTTP request. Resolves the viewing (or active) crew
- * from the persisted project doc, loops blocking-lane addons in
- * order, calls llm.js for each, parses output, emits SSE events.
+ * Plugin-agnostic. One run per HTTP request. Loops the crew's
+ * blocking-lane addons in order, looks each plugin up in the
+ * registry, and delegates the LLM-shape concerns (streaming vs
+ * one-shot, output parsing, memory write extraction) to the plugin
+ * descriptor's `run()`.
  *
- * Routing is config-driven, NOT plugin-id based:
- *   - `outputType === 'text-to-user'`    → streaming call; tokens
- *     flow back as addon.token events. We log the trailing
- *     `{ type: 'usage' }` event to llm_usage ourselves (the stream
- *     yields raw; only the one-shot path is auto-logged by llm.js).
- *   - `outputType === 'json-to-memory'`  → one-shot with
- *     `jsonOutput: true` (provider-specific structured output mode);
- *     parsed via outputParser into per-field writes.
+ * The engine owns:
+ *   - resolving the addons list for the requested version
+ *   - loading the conversation memory blob (builderMemory)
+ *   - fetching message history per addon's context.history config
+ *   - assembling the prompt (promptAssembler)
+ *   - emitting SSE events (addon.start / .prompt / .output / .error)
+ *   - merging memory writes back into the blob and persisting it
+ *   - persisting an addon_runs row per execution (P2)
  *
- * Memory: per-conversation `## Memory` / `## Already collected`
- * blobs are loaded from context_data (namespace `builder_memory`)
- * at the start of each run, threaded into the prompt assembler as
- * `fieldValueOf` + `memoryValuesByDomain` callbacks, and merged +
- * persisted back after each extractor produces writes.
+ * Plugins own:
+ *   - the LLM call shape (which provider method, streaming vs not)
+ *   - usage logging when the call streams (one-shot is auto-logged by llm.js)
+ *   - output parsing
+ *   - memoryWrites extraction from the parsed output
  *
- * P1 scope:
- *   - Blocking lane only (skip background + offline for now).
- *   - History reads are NOT yet wired (that's P2). For now we send
- *     no history; the LLM sees the prompt and the latest message
- *     only.
- *   - addon_runs persistence is P2.
+ * See docs/guides/BUILDER_V2_ADDONS.md for the full plugin contract.
  *
- * SSE events emitted (per the contract):
- *   conversation, addon.start, addon.prompt, addon.token,
+ * SSE events emitted by the engine (per turn):
+ *   conversation, addon.start, addon.prompt, addon.token (from plugin),
  *   addon.output, addon.error, assistant.message, done
  */
 
 const llmService = require('../../services/llm');
 const { assemblePrompt } = require('./promptAssembler');
-const { parseOutput } = require('./outputParser');
 const { resolveRunnable } = require('../services/builderProjects');
 const { logUsage } = require('../../services/usageLogger');
+const { getPlugin } = require('./pluginRegistry');
 const builderMemory = require('./builderMemory');
+const addonRunsStore = require('./addonRunsStore');
+const historyService = require('./historyService');
+
+// Side-effect: ensure built-in plugins are registered.
+require('../plugins');
 
 /**
  * Run one turn end-to-end.
@@ -46,47 +48,44 @@ const builderMemory = require('./builderMemory');
  * @param {string} args.agentSlug
  * @param {string} args.ownerUserId
  * @param {number} args.userId — internal DB user id; required for memory persistence
- * @param {string} args.conversationId — internal (DB) conversation id; required for usage logs
+ * @param {number} args.conversationId — internal (DB) conversation id; required for usage logs
+ * @param {number} args.assistantMessageId — DB id of the (pending) assistant message; addon_runs FK
  * @param {string} args.userMessage
  * @param {'viewing'|'active'} args.version
  * @param {function} args.emit — (eventType, payload) → void; writes an SSE event
  * @returns {Promise<{ assistantText: string }>}
  */
-async function runOnce({ agentSlug, ownerUserId, userId, conversationId, userMessage, version, emit }) {
+async function runOnce({
+  agentSlug,
+  ownerUserId,
+  userId,
+  conversationId,
+  assistantMessageId,
+  userMessage,
+  version,
+  emit,
+}) {
   const totalStart = Date.now();
 
-  // 1. Resolve which crew + addons to run.
+  // ── 1. Resolve runnable: which crew + addons for this version. ──
   const runnable = await resolveRunnable({
     agentSlug,
     ownerUserId,
     mode: version === 'active' ? 'active' : 'viewing',
   });
 
-  const agentPersona = runnable.agent.body?.persona || '';
-  // Use the agent's body name for llm_usage / log attribution so it
-  // matches what the dashboard filters by (e.g. 'Aspect', 'Freeda 2.0').
-  // Falls back to the slug if the body has no name.
+  const agentPersona     = runnable.agent.body?.persona || '';
   const agentNameForLogs = runnable.agent.body?.name || agentSlug;
-  const allAddons = Array.isArray(runnable.crew.body?.addons) ? runnable.crew.body.addons : [];
-  const blockingAddons = allAddons
-    .filter(a => a.lane === 'main' && a.enabled !== false);
+  const crewLabel        = runnable.crew.body?.name || 'crew';
+  const allAddons        = Array.isArray(runnable.crew.body?.addons) ? runnable.crew.body.addons : [];
+  const blockingAddons   = allAddons.filter(a => a.lane === 'main' && a.enabled !== false);
 
-  // 2. Iterate blocking addons in order.
-  let assistantText = '';
-
-  // Load the conversation's accumulated memory blob (created by prior
-  // turns' extractors). The blob shape is documented in builderMemory.js.
-  // We mutate it in place across the run, then persist after each
-  // extractor that produces writes.
+  // ── 2. Load accumulated memory + memory accessors for the prompt. ──
   const memory = await builderMemory.loadMemory(userId, conversationId);
-
-  console.log(`🏃 [BuilderRunner] runOnce slug=${agentSlug} version=${version} agentName="${agentNameForLogs}" agentVersionId=${runnable.agent.versionId} crewVersionId=${runnable.crew.versionId} userId=${userId} convId=${conversationId}`);
-  console.log(`🏃 [BuilderRunner] agentPersona length=${agentPersona.length}${agentPersona ? ` first40="${agentPersona.slice(0,40).replace(/\n/g,' ')}"` : ' (empty)'}`);
-  console.log(`🏃 [BuilderRunner] loaded memory:`, JSON.stringify(memory));
-  console.log(`🏃 [BuilderRunner] addons: ${blockingAddons.map(a => `${a.pluginId}(persona=${!!a.context?.persona}, memReads=${JSON.stringify(a.context?.memoryReads || [])}, outputType=${a.outputType})`).join(', ')}`);
-
-  const fieldValueOf = (name) => builderMemory.findFieldValue(memory, name);
+  const fieldValueOf         = (name)   => builderMemory.findFieldValue(memory, name);
   const memoryValuesByDomain = (domain) => builderMemory.valuesForDomain(memory, domain);
+
+  let assistantText = '';
 
   for (const instance of blockingAddons) {
     const addonStart = Date.now();
@@ -97,9 +96,24 @@ async function runOnce({ agentSlug, ownerUserId, userId, conversationId, userMes
       label:      instance.config?.name || instance.pluginId,
       model:      instance.config?.model || null,
     };
-
     emit('addon.start', meta);
 
+    // 3. Resolve the plugin descriptor. Surface unknown ids loudly —
+    // means the crew body references a plugin not loaded.
+    let plugin;
+    try {
+      plugin = getPlugin(instance.pluginId);
+    } catch (err) {
+      emit('addon.error', {
+        instanceId: instance.instanceId,
+        error: { code: 'unknown_plugin', message: err.message },
+      });
+      continue;
+    }
+
+    // 4. Assemble the prompt. Memory readers close over the current
+    //    memory blob, which mutates across iterations as upstream
+    //    extractors produce writes.
     let prompt = '';
     try {
       prompt = assemblePrompt({
@@ -116,21 +130,27 @@ async function runOnce({ agentSlug, ownerUserId, userId, conversationId, userMes
       continue;
     }
 
-    console.log(`📜 [BuilderRunner] ${instance.pluginId} assembled prompt (${prompt.length} chars):\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
+    // 5. Fetch history per the instance's history config. Empty when
+    //    `mode === 'none'`. Passed as a separate LLM parameter — NOT
+    //    interpolated into the prompt string.
+    const historyMessages = await historyService.loadHistory({
+      conversationId,
+      historyMode: instance.context?.history,
+      // Exclude the just-inserted user message; it'll be the "current"
+      // message the LLM call uses separately.
+      excludeAfterMessageId: null,
+    });
 
     emit('addon.prompt', {
       instanceId:   instance.instanceId,
       prompt,
-      historyCount: 0,            // P2 will wire this
+      historyCount: historyMessages.length,
     });
 
+    // 6. Resolve the model string. Configs carry { providerId, modelId };
+    //    llm.js routes by modelId via the central models registry.
     const model = instance.config?.model || {};
-    // llm.js expects a flat model string ('gpt-4o', 'claude-...', 'gemini-...').
-    // Our config carries { providerId, modelId } — flatten.
-    const modelString = typeof model === 'string'
-      ? model
-      : (model.modelId || null);
-
+    const modelString = typeof model === 'string' ? model : (model.modelId || null);
     if (!modelString) {
       emit('addon.error', {
         instanceId: instance.instanceId,
@@ -139,160 +159,100 @@ async function runOnce({ agentSlug, ownerUserId, userId, conversationId, userMes
       continue;
     }
 
-    // 3. Call the LLM. Routing is config-driven (NOT plugin-id based):
-    //   outputType === 'text-to-user'    → stream tokens to the user
-    //   outputType === 'json-to-memory'  → one-shot with jsonOutput=true
-    // Any future output type would slot in here without touching the
-    // plugin identity. The plugin enforces which outputTypes it
-    // supports via its descriptor; the user's chosen value flows
-    // through `instance.outputType`.
-    const outputType  = instance.outputType || 'text-to-user';
-    const isStreaming = outputType === 'text-to-user';
-    const wantsJson   = outputType === 'json-to-memory';
-
-    // For llm_usage:
-    //   process    = the addon's pluginId verbatim (talker, field-extractor) — no prefix
-    //   crewMember = the crew's name (displayed under the "CREW" column)
-    // Addons themselves are distinguished by the process column,
-    // which keeps the CREW column meaningful (= the crew this call
-    // belongs to) rather than an opaque instanceId.
-    const usageProcess = instance.pluginId;
-    const usageCrew    = runnable.crew.body?.name || 'crew';
-
-    if (isStreaming) {
-      // Stream tokens through addon.token events. Capture the trailing
-      // `{ type: 'usage' }` event from the provider and log it to
-      // llm_usage (the one-shot path is logged automatically by
-      // llm.sendOneShot, but streaming yields raw and the consumer is
-      // responsible).
-      let collected = '';
-      let usageData = null;
-      try {
-        const streamStart = Date.now();
-        const stream = llmService.sendMessageStreamWithPrompt(userMessage, conversationId, {
-          prompt,
-          model: modelString,
-          context: usageProcess,
-          agentName: agentNameForLogs,
-          crewMember: usageCrew,
-          userId: ownerUserId,
-        });
-        for await (const chunk of stream) {
-          if (typeof chunk === 'string') {
-            collected += chunk;
-            emit('addon.token', { instanceId: instance.instanceId, token: chunk });
-          } else if (chunk && chunk.type === 'text' && typeof chunk.text === 'string') {
-            collected += chunk.text;
-            emit('addon.token', { instanceId: instance.instanceId, token: chunk.text });
-          } else if (chunk && chunk.type === 'usage') {
-            usageData = {
-              inputTokens:  chunk.inputTokens  || 0,
-              outputTokens: chunk.outputTokens || 0,
-              durationMs:   chunk.durationMs   || (Date.now() - streamStart),
-            };
-          }
-          // Other chunk types (function calls, etc.) are ignored in P1.
-        }
-      } catch (err) {
-        emit('addon.error', {
-          instanceId: instance.instanceId,
-          error: { code: 'llm_failed', message: err.message },
-        });
-        continue;
-      }
-
-      if (usageData) {
-        console.log(`📊 [BuilderRunner] usage: ${instance.pluginId} (${modelString}) in=${usageData.inputTokens} out=${usageData.outputTokens}`);
-        logUsage({
-          process:       usageProcess,
-          model:         modelString,
-          inputTokens:   usageData.inputTokens,
-          outputTokens:  usageData.outputTokens,
-          durationMs:    usageData.durationMs,
-          agentName:     agentNameForLogs,
-          crewMember:    usageCrew,
-          conversationId: String(conversationId),
-          userId:        ownerUserId,
-        });
-      } else {
-        console.warn(`⚠️ [BuilderRunner] no usage chunk for streaming ${instance.pluginId} (${modelString})`);
-      }
-
-      assistantText = collected;
-      emit('addon.output', {
-        instanceId:   instance.instanceId,
-        rawOutput:    collected,
-        parsedOutput: null,
-        memoryWrites: [],
-        tokens:       usageData
-          ? { input: usageData.inputTokens, output: usageData.outputTokens, total: usageData.inputTokens + usageData.outputTokens }
-          : { input: 0, output: 0, total: 0 },
-        durationMs:   Date.now() - addonStart,
+    // 7. Validate the chosen outputType is allowed for this plugin.
+    if (
+      Array.isArray(plugin.allowedOutputTypes) &&
+      plugin.allowedOutputTypes.length > 0 &&
+      instance.outputType &&
+      !plugin.allowedOutputTypes.includes(instance.outputType)
+    ) {
+      emit('addon.error', {
+        instanceId: instance.instanceId,
+        error: {
+          code: 'bad_output_type',
+          message: `Plugin "${plugin.id}" does not support outputType="${instance.outputType}". Allowed: ${plugin.allowedOutputTypes.join(', ')}`,
+        },
       });
-    } else {
-      // One-shot for json-producing addons. `jsonOutput` flips on the
-      // provider's structured-output mode (OpenAI json_object,
-      // Google responseMimeType, Claude prompt suffix). Driven by the
-      // addon's outputType — no plugin-id branching.
-      let raw = '';
-      try {
-        const result = await llmService.sendOneShot(prompt, userMessage, {
-          model: modelString,
-          jsonOutput: wantsJson,
-          context: usageProcess,
-          agentName: agentNameForLogs,
-          crewMember: usageCrew,
-          conversationId: String(conversationId),
-          userId: ownerUserId,
-        });
-        raw = typeof result === 'string' ? result : (result?.text || '');
-      } catch (err) {
-        emit('addon.error', {
-          instanceId: instance.instanceId,
-          error: { code: 'llm_failed', message: err.message },
-        });
-        continue;
-      }
+      continue;
+    }
 
-      const { parsed, error } = parseOutput(instance.outputType || 'json-to-memory', raw);
-
-      // Build memoryWrites from parsed_output ∩ extractor's field
-      // definitions. Merge them into the conversation memory blob
-      // so downstream addons (this turn) and future turns see them.
-      const memoryWrites = [];
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const fields = Array.isArray(instance.config?.fields) ? instance.config.fields : [];
-        for (const f of fields) {
-          if (Object.prototype.hasOwnProperty.call(parsed, f.name)) {
-            const value = parsed[f.name];
-            if (value !== null && value !== undefined) {
-              memoryWrites.push({ domain: f.domain || null, field: f.name, value });
-            }
-          }
-        }
-      }
-
-      if (memoryWrites.length > 0) {
-        builderMemory.applyWrites(memory, memoryWrites);
-        console.log(`💾 [BuilderRunner] memory writes from ${instance.pluginId}:`, JSON.stringify(memoryWrites), 'merged memory:', JSON.stringify(memory));
-        try {
-          await builderMemory.saveMemory(userId, conversationId, memory);
-        } catch (err) {
-          console.error('[BuilderRunner] memory save failed:', err.message);
-        }
-      } else {
-        console.log(`💾 [BuilderRunner] no memory writes from ${instance.pluginId} (parsed=${JSON.stringify(parsed)})`);
-      }
-
-      emit('addon.output', {
-        instanceId:   instance.instanceId,
-        rawOutput:    raw,
-        parsedOutput: parsed,
-        memoryWrites,
-        tokens:       { input: 0, output: 0, total: 0 },
-        durationMs:   Date.now() - addonStart,
-        ...(error ? { parseError: error } : {}),
+    // 8. Call the plugin. The plugin owns LLM-call shape + parsing.
+    const usageProcess = instance.pluginId; // process column on llm_usage
+    const usageCrew    = crewLabel;          // crew column on llm_usage
+    let result;
+    try {
+      result = await plugin.run({
+        instance,
+        prompt,
+        modelString,
+        userMessage,
+        conversationId,
+        agentSlug,
+        agentNameForLogs,
+        ownerUserId,
+        userId,
+        memory,
+        historyMessages,
+        emit,
+        llm: llmService,
+        logUsage,
+        usageProcess,
+        usageCrew,
       });
+    } catch (err) {
+      emit('addon.error', {
+        instanceId: instance.instanceId,
+        error: { code: 'plugin_run_failed', message: err.message },
+      });
+      continue;
+    }
+
+    // 9. Merge memory writes from the plugin into the conversation
+    //    memory blob + persist. Writes are visible to downstream
+    //    addons this same turn (memoryValuesByDomain closes over `memory`).
+    const memoryWrites = Array.isArray(result.memoryWrites) ? result.memoryWrites : [];
+    if (memoryWrites.length > 0) {
+      builderMemory.applyWrites(memory, memoryWrites);
+      try {
+        await builderMemory.saveMemory(userId, conversationId, memory);
+      } catch (err) {
+        console.error('[BuilderRunner] memory save failed:', err.message);
+      }
+    }
+
+    // 10. Accumulate assistantText if the plugin produced any.
+    if (typeof result.assistantText === 'string' && result.assistantText) {
+      assistantText = result.assistantText;
+    }
+
+    // 11. Emit addon.output. Same shape live and historical (P3
+    //     uses the persisted addon_runs.run_data verbatim).
+    const outputPayload = {
+      instanceId:   instance.instanceId,
+      rawOutput:    result.rawOutput ?? '',
+      parsedOutput: result.parsedOutput ?? null,
+      memoryWrites,
+      tokens:       result.tokens || { input: 0, output: 0, total: 0 },
+      durationMs:   result.durationMs ?? (Date.now() - addonStart),
+      ...(result.parseError ? { parseError: result.parseError } : {}),
+    };
+    emit('addon.output', outputPayload);
+
+    // 12. Persist the addon_run row (P2). Best-effort — a DB hiccup
+    //     here shouldn't break the conversation.
+    try {
+      await addonRunsStore.insertRun({
+        conversationId,
+        messageId: assistantMessageId, // may be null until the engine has it
+        instance,
+        status: 'success',
+        startedAt: new Date(addonStart),
+        endedAt: new Date(),
+        durationMs: outputPayload.durationMs,
+        runData: outputPayload,
+      });
+    } catch (err) {
+      console.error('[BuilderRunner] addon_run insert failed:', err.message);
     }
   }
 

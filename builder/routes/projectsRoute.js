@@ -87,7 +87,6 @@ router.put('/agents/:agentId/versions/:versionId', async (req, res) => {
     const { agentId, versionId } = req.params;
     const { body } = req.body || {};
     if (!body) return res.status(400).json({ error: 'Missing body' });
-    console.log(`[builder] PUT agent version agentId=${agentId} versionId=${versionId} body.persona.len=${(body.persona || '').length} body.name="${body.name}" body keys=`, Object.keys(body));
     await projects.saveAgentVersion({ agentId, versionId, body });
     res.json({ ok: true });
   } catch (err) {

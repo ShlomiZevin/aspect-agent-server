@@ -30,6 +30,7 @@ How-to guides for building and understanding the platform. Covers agent building
 
 - **BUILDER_V2.md** — Plugin-based agent builder at `/<agent>/builder`. Current architecture, JSON document model, Cortex (chain of addons), Fields panel, versioning, Addon Repository, and a decisions journal. Read this before touching anything under `aspect-react-client/src/builder/`.
 - **BUILDER_V2_RUNTIME_PLAN.md** — Plan for wiring the V2 builder to a real LLM runtime. Server-side persistence, `/api/builder/run` SSE endpoint, per-addon execution + logging (`addon_runs` table), live + historical views. Phased (P1–P4). Read alongside `BUILDER_V2.md` before starting the runtime work.
+- **BUILDER_V2_ADDONS.md** — How to author a new addon end-to-end. Plugin descriptor contract (client + server), the engine's `run()` context, prompt-template byte-equality contract, worked example. Read this before adding a plugin.
 - **CREW_CHAIN_ARCHITECTURE.md** — Runtime architecture: dispatcher, `CrewMember` base, personas, triggered context, thinker/talker pattern. Describes what the V2 builder ultimately configures.
 
 ### `docs/features/`

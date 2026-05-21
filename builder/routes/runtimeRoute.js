@@ -169,12 +169,13 @@ router.get('/:slug/conversations/:convId/memory', async (req, res) => {
 
 /**
  * DELETE /api/agents/:slug/conversations/:convId
- *   Cascade: delete messages, then the conversation. (addon_runs
- *   cleanup is added in P2 alongside the table.)
+ *   Cascade: addon_runs, messages, conversation.
  */
 router.delete('/:slug/conversations/:convId', async (req, res) => {
   try {
     const { convId } = req.params;
+    const addonRunsStore = require('../runtime/addonRunsStore');
+    await addonRunsStore.deleteForConversation(Number(convId));
     const d = drizzle();
     await d.transaction(async tx => {
       await tx.delete(messages).where(eq(messages.conversationId, Number(convId)));
@@ -183,6 +184,79 @@ router.delete('/:slug/conversations/:convId', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('[builder] DELETE conversation failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/agents/:slug/messages/:messageId/runs
+ *   Returns persisted addon_runs for an assistant message. The
+ *   payloads mirror the live SSE addon.output shape, so the
+ *   historical view can rehydrate AddonRunCards identically.
+ */
+router.get('/:slug/messages/:messageId/runs', async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const addonRunsStore = require('../runtime/addonRunsStore');
+    const rows = await addonRunsStore.runsForMessage(Number(messageId));
+    res.json({
+      runs: rows.map(r => ({
+        id:         r.id,
+        instanceId: r.instanceId,
+        pluginId:   r.pluginId,
+        status:     r.status,
+        durationMs: r.durationMs,
+        runData:    r.runData,
+        startedAt:  r.startedAt,
+        endedAt:    r.endedAt,
+      })),
+    });
+  } catch (err) {
+    console.error('[builder] GET runs failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * DELETE /api/agents/:slug/conversations/:convId/messages/:messageId
+ *   Body: { fromHereDown?: boolean }
+ *   When `fromHereDown` is true, also deletes every message inserted
+ *   after this one (and their addon_runs). Otherwise just this one.
+ */
+router.delete('/:slug/conversations/:convId/messages/:messageId', async (req, res) => {
+  try {
+    const { convId, messageId } = req.params;
+    const fromHereDown = !!(req.body && req.body.fromHereDown);
+    const addonRunsStore = require('../runtime/addonRunsStore');
+    const d = drizzle();
+
+    // Look up the cutoff message (its createdAt) for from-here-down.
+    const [pivot] = await d.select().from(messages)
+      .where(and(eq(messages.id, Number(messageId)), eq(messages.conversationId, Number(convId))))
+      .limit(1);
+    if (!pivot) return res.status(404).json({ error: 'Message not found' });
+
+    if (fromHereDown) {
+      // All messages with createdAt >= pivot.createdAt for this conv.
+      const { gte } = require('drizzle-orm');
+      const victims = await d.select({ id: messages.id }).from(messages)
+        .where(and(
+          eq(messages.conversationId, Number(convId)),
+          gte(messages.createdAt, pivot.createdAt),
+        ));
+      for (const v of victims) await addonRunsStore.deleteForMessage(v.id);
+      await d.delete(messages)
+        .where(and(
+          eq(messages.conversationId, Number(convId)),
+          gte(messages.createdAt, pivot.createdAt),
+        ));
+    } else {
+      await addonRunsStore.deleteForMessage(Number(messageId));
+      await d.delete(messages).where(eq(messages.id, Number(messageId)));
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[builder] DELETE message failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -230,25 +304,39 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
 
     emit('conversation', { conversationId: Number(convId), messageId: userMsg.id });
 
+    // Reserve the assistant message row up front (empty content) so
+    // BuilderRunner can attach addon_runs to its id. We update the
+    // content at the end of the turn with the accumulated stream.
+    const [asstMsgPlaceholder] = await d.insert(messages).values({
+      conversationId: Number(convId),
+      role: 'assistant',
+      content: '',
+    }).returning();
+
     // Run the chain.
     const { assistantText } = await runOnce({
       agentSlug: slug,
       ownerUserId,
       userId,
       conversationId: Number(convId),
+      assistantMessageId: asstMsgPlaceholder.id,
       userMessage,
       version,
       emit,
     });
 
-    // Persist the assistant message.
+    // Fill in the assistant message content. If the talker produced
+    // nothing (extractor-only crew, error, etc.), drop the placeholder.
     if (assistantText) {
-      const [asstMsg] = await d.insert(messages).values({
-        conversationId: Number(convId),
-        role: 'assistant',
-        content: assistantText,
-      }).returning();
-      emit('assistant.message', { messageId: asstMsg.id, text: assistantText });
+      await d.update(messages)
+        .set({ content: assistantText })
+        .where(eq(messages.id, asstMsgPlaceholder.id));
+      emit('assistant.message', {
+        messageId: asstMsgPlaceholder.id,
+        text:      assistantText,
+      });
+    } else {
+      await d.delete(messages).where(eq(messages.id, asstMsgPlaceholder.id));
     }
 
     emit('done', { totalMs: 0 });

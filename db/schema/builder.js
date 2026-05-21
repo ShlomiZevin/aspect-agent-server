@@ -93,10 +93,33 @@ const builderCrewVersions = pgTable('builder_crew_versions', {
   crewIdx:          index('builder_crew_versions_crew_idx').on(t.crewId),
 }));
 
+// addon_runs — one row per addon execution. Stores the same payload
+// shape as the live SSE `addon.output` event so the historical view
+// can rehydrate cards identically. FK kept loose (varchar to legacy
+// conversations id, plain message id) to avoid cross-table coupling
+// during early iteration.
+const addonRuns = pgTable('addon_runs', {
+  id:               varchar('id', { length: 64 }).primaryKey(),
+  conversationId:   integer('conversation_id').notNull(),
+  messageId:        integer('message_id'), // assistant message this run belongs to
+  instanceId:       varchar('instance_id', { length: 64 }).notNull(),
+  pluginId:         varchar('plugin_id', { length: 100 }).notNull(),
+  status:           varchar('status', { length: 20 }).notNull(),  // running | success | error
+  startedAt:        timestamp('started_at').notNull(),
+  endedAt:          timestamp('ended_at'),
+  durationMs:       integer('duration_ms'),
+  runData:          jsonb('run_data').notNull(), // mirrors the SSE addon.output payload
+  createdAt:        timestamp('created_at').defaultNow().notNull(),
+}, t => ({
+  conversationIdx: index('addon_runs_conversation_idx').on(t.conversationId),
+  messageIdx:      index('addon_runs_message_idx').on(t.messageId),
+}));
+
 module.exports = {
   builderProjects,
   builderAgents,
   builderAgentVersions,
   builderCrews,
   builderCrewVersions,
+  addonRuns,
 };

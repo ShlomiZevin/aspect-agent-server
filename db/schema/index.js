@@ -457,4 +457,5 @@ module.exports = {
   builderAgentVersions:   builderSchema.builderAgentVersions,
   builderCrews:           builderSchema.builderCrews,
   builderCrewVersions:    builderSchema.builderCrewVersions,
+  addonRuns:              builderSchema.addonRuns,
 };

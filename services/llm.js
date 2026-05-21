@@ -155,7 +155,6 @@ class LLMService {
     // Providers return { text, usage } — log usage and return just text for backward compat
     if (result && typeof result === 'object' && 'text' in result) {
       if (result.usage) {
-        console.log(`📊 [llm.sendOneShot] usage: ${options.context || 'one-shot'} (${options.model || 'unknown'}) in=${result.usage.inputTokens} out=${result.usage.outputTokens} agent="${options.agentName || ''}"`);
         logUsage({
           process: options.context || 'one-shot',
           model: options.model || 'unknown',
@@ -167,8 +166,6 @@ class LLMService {
           conversationId: options.conversationId,
           userId: options.userId,
         });
-      } else {
-        console.warn(`⚠️ [llm.sendOneShot] no usage returned by provider for ${options.context || 'one-shot'} (${options.model || 'unknown'})`);
       }
       return result.text;
     }
