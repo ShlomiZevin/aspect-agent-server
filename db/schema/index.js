@@ -278,6 +278,7 @@ const tasks = pgTable('tasks', {
   opener: varchar('opener', { length: 100 }), // Human-readable name of who opened the task ("who you are" identity)
   deployedAt: timestamp('deployed_at'), // When this task was deployed to production
   deployedReviewedBy: jsonb('deployed_reviewed_by').default([]), // Names of users who dismissed from "What's New"
+  deployedEmailSentTo: jsonb('deployed_email_sent_to').default([]), // Names of recipients who already got this task in a What's New digest email
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

@@ -79,6 +79,8 @@ if (process.env.NODE_ENV === 'development') {
         'https://boostmind-b052c.web.app',
         'https://freeda-2b4af.web.app',
         'https://freeda-2b4af.firebaseapp.com',
+        'https://lybi-prod.web.app',
+        'https://lybi-prod.firebaseapp.com',
         'https://lybi.ai',
         'https://app.freeda.ai'
       ];
