@@ -93,12 +93,46 @@ function valuesForDomain(blob, domain) {
   return blob[k] || {};
 }
 
+/**
+ * Remove every occurrence of a field across all domains in the blob,
+ * in place. Returns true if anything was removed.
+ */
+function clearField(blob, fieldName) {
+  let removed = false;
+  for (const k of Object.keys(blob)) {
+    const bucket = blob[k];
+    if (bucket && Object.prototype.hasOwnProperty.call(bucket, fieldName)) {
+      delete bucket[fieldName];
+      removed = true;
+      // Drop empty buckets so the JSON stays tidy.
+      if (Object.keys(bucket).length === 0) delete blob[k];
+    }
+  }
+  return removed;
+}
+
+/**
+ * Set a field's value, in place. The optional `domain` (or null →
+ * `_general`) decides which bucket it lands in. Also clears the same
+ * field from any OTHER buckets so a field doesn't end up duplicated
+ * across domains if it gets re-tagged.
+ */
+function setField(blob, fieldName, value, domain) {
+  clearField(blob, fieldName);
+  const k = domainKey(domain);
+  if (!blob[k]) blob[k] = {};
+  blob[k][fieldName] = value;
+  return blob;
+}
+
 module.exports = {
   loadMemory,
   saveMemory,
   applyWrites,
   findFieldValue,
   valuesForDomain,
+  clearField,
+  setField,
   NAMESPACE,
   GENERAL_KEY,
 };

@@ -93,7 +93,9 @@ router.post('/:slug/conversations', async (req, res) => {
 
 /**
  * GET /api/agents/:slug/conversations?ownerUserId=:uid
- *   List builder-preview conversations for this slug + owner.
+ *   List builder-preview conversations for this slug + owner. Each
+ *   row includes a `name` derived from `metadata.name` (custom or
+ *   auto-generated from the first user message).
  */
 router.get('/:slug/conversations', async (req, res) => {
   try {
@@ -116,12 +118,39 @@ router.get('/:slug/conversations', async (req, res) => {
       .limit(50);
     res.json({ conversations: list.map(c => ({
       id: c.id,
+      name: (c.metadata && c.metadata.name) || null,
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
       metadata: c.metadata,
     })) });
   } catch (err) {
     console.error('[builder] GET conversations failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PATCH /api/agents/:slug/conversations/:convId
+ *   Body: { name }
+ *   Renames a conversation by writing `metadata.name`.
+ */
+router.patch('/:slug/conversations/:convId', async (req, res) => {
+  try {
+    const { convId } = req.params;
+    const { name } = req.body || {};
+    if (typeof name !== 'string') return res.status(400).json({ error: 'Missing name' });
+    const d = drizzle();
+    const [conv] = await d.select().from(conversations)
+      .where(eq(conversations.id, Number(convId))).limit(1);
+    if (!conv) return res.status(404).json({ error: 'Not found' });
+    const trimmed = name.trim();
+    const nextMeta = { ...(conv.metadata || {}), name: trimmed };
+    await d.update(conversations)
+      .set({ metadata: nextMeta, updatedAt: new Date() })
+      .where(eq(conversations.id, Number(convId)));
+    res.json({ ok: true, name: trimmed });
+  } catch (err) {
+    console.error('[builder] PATCH conversation failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -163,6 +192,35 @@ router.get('/:slug/conversations/:convId/memory', async (req, res) => {
     res.json({ memory });
   } catch (err) {
     console.error('[builder] GET memory failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PATCH /api/agents/:slug/conversations/:convId/memory
+ *   Body: { ownerUserId, field, value?, domain?, clear?: boolean }
+ *   - clear=true → removes the field from every bucket.
+ *   - otherwise → sets it under `domain` (or `_general` if null/missing).
+ *   Returns the updated memory blob.
+ */
+router.patch('/:slug/conversations/:convId/memory', async (req, res) => {
+  try {
+    const { convId } = req.params;
+    const { ownerUserId, field, value, domain, clear } = req.body || {};
+    if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
+    if (!field) return res.status(400).json({ error: 'Missing field' });
+    const userId = await resolveUserId(String(ownerUserId));
+    const builderMemory = require('../runtime/builderMemory');
+    const memory = await builderMemory.loadMemory(userId, Number(convId));
+    if (clear) {
+      builderMemory.clearField(memory, field);
+    } else {
+      builderMemory.setField(memory, field, value, domain ?? null);
+    }
+    await builderMemory.saveMemory(userId, Number(convId), memory);
+    res.json({ memory });
+  } catch (err) {
+    console.error('[builder] PATCH memory failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -301,6 +359,24 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       role: 'user',
       content: userMessage,
     }).returning();
+
+    // Auto-name the conversation on its first user message. Truncated
+    // first message reads better than "Chat #1667" in the history
+    // panel; user can still rename via the pencil affordance.
+    try {
+      const [conv] = await d.select().from(conversations)
+        .where(eq(conversations.id, Number(convId))).limit(1);
+      if (conv && !(conv.metadata && conv.metadata.name)) {
+        const auto = userMessage.replace(/\s+/g, ' ').trim().slice(0, 60);
+        if (auto) {
+          await d.update(conversations)
+            .set({ metadata: { ...(conv.metadata || {}), name: auto } })
+            .where(eq(conversations.id, Number(convId)));
+        }
+      }
+    } catch (err) {
+      console.warn('[builder] auto-name failed:', err.message);
+    }
 
     emit('conversation', { conversationId: Number(convId), messageId: userMsg.id });
 
