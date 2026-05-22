@@ -25,6 +25,11 @@ async function run(ctx) {
     llm,
     usageProcess,
     usageCrew,
+    // Resolved field defs this extractor extracts — passed by the
+    // engine, looked up from agent.fields ∪ owning crew.fields
+    // against `instance.config.extractsFields`. Field defs no
+    // longer live inside the extractor's config.
+    extractorFields,
   } = ctx;
 
   const start = Date.now();
@@ -46,12 +51,13 @@ async function run(ctx) {
 
   const { parsed, error } = parseOutput(instance.outputType || 'json-to-memory', raw);
 
-  // Memory writes: every parsed key that matches a configured field
-  // and has a non-null value. Domain (or null) on the field def
-  // routes the value into the appropriate bucket.
+  // Memory writes: every parsed key that matches a resolved field
+  // def (engine-supplied from agent/crew bodies) and has a non-null
+  // value. Domain on the field def routes the value into the right
+  // memory bucket.
   const memoryWrites = [];
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    const fields = Array.isArray(instance.config?.fields) ? instance.config.fields : [];
+    const fields = Array.isArray(extractorFields) ? extractorFields : [];
     for (const f of fields) {
       if (Object.prototype.hasOwnProperty.call(parsed, f.name)) {
         const value = parsed[f.name];

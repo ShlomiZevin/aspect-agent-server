@@ -118,17 +118,21 @@ function buildFieldsCurrentBlock(fields, valueOf) {
  * @param {string} args.agentPersona — agent's persona text (only used if context.persona)
  * @param {function} args.memoryValuesByDomain — (domain) → map of values for that domain
  * @param {function} args.fieldValueOf — (fieldName) → captured value or undefined
+ * @param {Array} [args.extractorFields] — field defs this extractor extracts
+ *        (already resolved by the caller from agent.fields ∪ crew.fields
+ *        against instance.config.extractsFields). Empty for non-extractor
+ *        plugins.
  * @returns {string} the assembled prompt
  */
-function assemblePrompt({ instance, agentPersona, memoryValuesByDomain, fieldValueOf }) {
+function assemblePrompt({ instance, agentPersona, memoryValuesByDomain, fieldValueOf, extractorFields }) {
   const template = instance.promptTemplate || '';
   const cfg = instance.config || {};
-  const fields = Array.isArray(cfg.fields) ? cfg.fields : [];
+  const fields = Array.isArray(extractorFields) ? extractorFields : [];
 
-  // We don't have direct access to the plugin descriptor on the
-  // server. Approximate: if the instance has `config.fields`, treat
-  // it as an extractor for schema/current substitution. (Talker has
-  // no `fields` key in its config.)
+  // Treat as extractor if either: caller supplied field defs OR the
+  // template references the extractor placeholders. Keeps the
+  // template-driven nature intact while letting non-extractor
+  // plugins (Talker, etc.) skip the schema/current blocks.
   const isExtractor = fields.length > 0 || /\{\{fields_(schema|current)\}\}/.test(template);
 
   return substitute(template, {

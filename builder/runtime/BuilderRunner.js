@@ -123,7 +123,22 @@ async function runOnce({
       continue;
     }
 
-    // 4. Assemble the prompt. Memory readers close over the current
+    // 4. Resolve this addon's extracted fields (if any). Field defs
+    //    live on `agent.fields` (agent-scoped) and on each crew's
+    //    `crew.fields` (crew-scoped). The Field Extractor stores
+    //    `extractsFields: ID[]` referencing them. We intersect with
+    //    the current crew's available pool (agent fields + this
+    //    crew's crew fields).
+    const cfg = instance.config || {};
+    const extractsIds = Array.isArray(cfg.extractsFields) ? cfg.extractsFields : [];
+    const agentFields = Array.isArray(runnable.agent.body?.fields) ? runnable.agent.body.fields : [];
+    const crewFields  = Array.isArray(runnable.crew.body?.fields)  ? runnable.crew.body.fields  : [];
+    const fieldPool   = [...agentFields, ...crewFields];
+    const extractorFields = extractsIds
+      .map(id => fieldPool.find(f => f.id === id))
+      .filter(Boolean);
+
+    // 5. Assemble the prompt. Memory readers close over the current
     //    memory blob, which mutates across iterations as upstream
     //    extractors produce writes.
     let prompt = '';
@@ -133,6 +148,7 @@ async function runOnce({
         agentPersona,
         memoryValuesByDomain,
         fieldValueOf,
+        extractorFields,
       });
     } catch (err) {
       emit('addon.error', {
@@ -213,6 +229,10 @@ async function runOnce({
         logUsage,
         usageProcess,
         usageCrew,
+        // Resolved field defs this addon extracts (agent + crew
+        // pool intersected with `instance.config.extractsFields`).
+        // Empty for non-extractor plugins.
+        extractorFields,
       });
     } catch (err) {
       emit('addon.error', {
@@ -271,6 +291,10 @@ async function runOnce({
       memoryWrites,
       tokens:       result.tokens || { input: 0, output: 0, total: 0 },
       durationMs:   result.durationMs ?? (Date.now() - addonStart),
+      // firstTokenMs is set by streaming plugins (Talker) — it's the
+      // time until the FIRST visible token, which is what the user
+      // actually perceives. durationMs is the full stream end time.
+      ...(typeof result.firstTokenMs === 'number' ? { firstTokenMs: result.firstTokenMs } : {}),
       ...(result.parseError ? { parseError: result.parseError } : {}),
       ...(didTransition ? { transition: { to: result.transition.to, reason: result.transition.reason } } : {}),
       ...(result.breakChain ? { broke: true } : {}),

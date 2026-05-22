@@ -116,6 +116,7 @@ ProjectDoc {
 AgentDoc {
   id, slug, name, spec, persona,
   defaultCrewId?,
+  fields: FieldDef[],       // agent-scoped field definitions (visible everywhere)
   crews: CrewDoc[],         // outside the version body — each crew has its own history
   versions: AgentVersion[],
   activeVersionId,
@@ -124,7 +125,7 @@ AgentDoc {
 
 AgentVersion {
   id, number, description?, createdAt,
-  body: AgentBody           // name, slug, spec, persona, defaultCrewId — NOT crews
+  body: AgentBody           // name, slug, spec, persona, defaultCrewId, fields — NOT crews
 }
 
 CrewDoc {
@@ -132,6 +133,7 @@ CrewDoc {
   // ── working copy (what the UI edits — tracks the viewing version) ──
   name, description?, spec, persona?,
   addons: AddonInstance[],
+  fields: FieldDef[],     // crew-scoped field definitions (visible only here)
   // ── versioning ──
   versions: CrewVersion[],
   activeVersionId,        // the version the runtime uses
@@ -170,7 +172,11 @@ FieldDef {
 }
 
 // Plugin-specific configs:
-FieldExtractorConfig { prompt, model, fields: FieldDef[] }
+FieldExtractorConfig {
+  prompt, model,
+  name?,                     // user-editable instance name (e.g. "Date Extractor")
+  extractsFields: ID[]       // refs into agent.fields ∪ owning crew.fields
+}
 TalkerConfig         { prompt, model }
 ```
 
@@ -233,43 +239,99 @@ Hardwired constants:
 
 ## Fields system
 
-Fields are **owned by Field Extractor addons** (live inside the
-plugin's config). But on the UI they're surfaced at the **crew
-level** because they're consumed by many downstream steps later
-(memory, talker, transitioner, …).
+Fields are **definitions** and **extraction references** — two separate
+concerns living in two separate places:
 
-- **Crew Fields panel** (vertical column right of the Cortex)
-  aggregates fields across every Field Extractor in the crew and
-  **groups them by domain**. Named domains first; **`(no domain)`**
-  collapsible group at the bottom.
-- Each row shows: name · type pill · source pill · extractor chip · description.
-- **Add field** is available from both:
-  - the Crew Fields panel (with an explicit "Extracted by" picker — always shown, even with one option, so the relationship is visible),
-  - the Field Extractor's own config (locked to that extractor).
-- **Edit field** opens a modal and lets you re-parent to a different extractor. If the new owner doesn't allow the field's current source (e.g. moving from Field Extractor to Vibe Extractor), the source is coerced to the new owner's default and a note explains why.
+- **Definitions** live on `agent.fields[]` (when agent-scoped) or
+  `crew.fields[]` (when crew-scoped). The location IS the scope —
+  there's no `scope` tag on the `FieldDef` itself, the array it lives
+  in tells you everything.
+- **Extraction** is per-extractor. Each Field Extractor instance has
+  an `extractsFields: ID[]` list — which field defs (referenced by id
+  into `agent.fields ∪ owning crew.fields`) it pulls out of the
+  conversation. The same field id can appear in multiple extractors'
+  lists; memory writes are keyed by name, last write per turn wins.
 
-### Fields are universal
+### Scope drives visibility
 
-Same `FieldDef` shape regardless of which extractor produces them
+- **Agent-scoped** field (lives on `agent.fields`): visible from
+  every crew's Memory panel and from the Agent view's Memory panel.
+  Captured values are shared across the whole conversation.
+- **Crew-scoped** field (lives on `crew.fields`): visible only when
+  viewing that crew. Useful for crew-internal scratch state.
+
+The Memory panel filters by scope automatically:
+- AgentView panel → agent-scoped fields only.
+- CrewView panel → agent-scoped + this crew's crew-scoped fields.
+
+### What each row shows
+
+Type pill · source pill · **location chips** ("Crew → Extractor",
+one per extractor that pulls this field). When the same field is
+extracted by more than one extractor, you see multiple location
+chips on the same row. When no extractor references it, an amber
+`⚠ no extractor` chip appears so you can spot config gaps.
+
+### `FieldDef` shape
+
+Same shape regardless of which kind of extractor produces them
 (Field Extractor today, Vibe Extractor / Thinker later):
 
-- `name` — unique within the crew. A field name is its identity.
+- `id` — stable identifier. Extractors reference fields by id.
+- `name` — canonical memory key. Last extractor to write per turn
+  wins for that key.
 - `type` — `string` · `int` · `enum` · `boolean`.
 - `source` — `explicit` (user literally said it) or `inferred`
   (concluded from patterns). Plugin descriptors declare
-  `allowedFieldSources`; the Source dropdown filters by it. Vibe
-  Extractor allows only `inferred`.
-- `howToExtract` — free-text intent. **Do not list enum allowed
-  values here** — they're auto-injected (see prompt template below).
-- `enumValues` — required for `type: 'enum'`. **System-injected** as
-  part of the field schema in the runtime prompt.
-- `domain` — optional grouping tag. Blank = "(no domain)" → field
-  is captured to a `general` bucket at runtime, still readable,
-  just not in any named group.
+  `allowedFieldSources`.
+- `howToExtract` — free-text guidance for the LLM.
+- `enumValues` — required for `type: 'enum'`. System-injected into
+  the field schema in the runtime prompt.
+- `domain` — optional grouping tag. Memory uses domain buckets
+  internally (`_general` for blank/null), but the panel groups by
+  domain for human readability too.
 
-When the crew has zero extractors and the user adds a field, the
-modal auto-creates a Field Extractor with the field inside. Done in
-one mutation so there's no batched-state race.
+### `FieldExtractorConfig` shape
+
+```ts
+{
+  prompt:          string;
+  model:           ModelRef;
+  name?:           string;     // user-editable, e.g. "Date Extractor"
+  extractsFields:  ID[];       // field def ids this extractor pulls
+}
+```
+
+The `name` field lets users distinguish "Date Extractor" from
+"Intent Extractor" in the chain canvas. Empty → falls back to
+"Field Extractor [#N]".
+
+### Adding a field
+
+The Add Field modal asks: name / type / source / **scope** (agent or
+crew) / domain / how-to-extract / **which extractors extract this
+one** (multi-select, grouped by crew). The field def is written to
+`agent.fields` or `crew.fields` based on scope, and its id is
+appended to each ticked extractor's `extractsFields[]`. At least one
+extractor must be ticked; if the agent has no extractors anywhere
+yet, the modal auto-creates one in the current crew on submit.
+
+### Editing / removing a field
+
+- The editor modal can change scope (move the def between
+  `agent.fields` and `crew.fields`), edit any metadata, toggle the
+  extractor membership multi-select.
+- Removing a field deletes the def AND scrubs its id from every
+  extractor's `extractsFields[]` — no orphan references.
+
+### Cross-entity save
+
+Adding an agent-scoped field from a crew view mutates **both** the
+agent body (def added to `agent.fields[]`) and the crew body (id
+added to the extractor's `extractsFields[]`). The Save button in
+each VersionMenu detects this and, when both are dirty, morphs to
+`Save + agent` (on the crew menu) or `Save + N crews` (on the agent
+menu). One click persists both versions.
 
 ---
 
@@ -1489,6 +1551,103 @@ user owns the "why". Manual edits (no Alfred involved) get logged
 too with `reason: 'manual edit'` or whatever the user types.
 Doubles as audit trail + living documentation of design choices.
 TBD: single `agent_log` table vs. a column on the spec snapshot.
+
+### 42. Fields stored on agent / crew bodies; extractors reference by id
+Previously fields lived inside `FieldExtractorConfig.fields[]`. That
+meant agent-scoped fields had no natural home — they'd be tagged
+inside *some* crew's extractor, which is structurally wrong and made
+"same field extracted by multiple extractors" awkward. New shape:
+- `AgentBody.fields: FieldDef[]` — agent-scoped definitions.
+- `CrewBody.fields: FieldDef[]` — crew-scoped definitions.
+- `FieldExtractorConfig.extractsFields: ID[]` — which definitions
+  this extractor pulls. Same id can sit in multiple extractors'
+  lists; memory writes are keyed by name, last write per turn wins.
+
+Scope is determined by *location* (which array the def lives in),
+not by a `scope` tag on the FieldDef itself. So the def can't drift
+out of sync with its visibility.
+
+### 43. Field Extractor instance has a user-editable name
+The chain canvas used to label every Field Extractor "Field Extractor"
+(or "Field Extractor #2"). Real agents want "Date Extractor", "Intent
+Extractor", etc. Added `FieldExtractorConfig.name?: string`, surfaced
+in the addon config modal as a top-of-form text input. Chain card
+uses it when non-empty, falls back to the disambiguated default.
+Same name shows in the FieldsPanel "Crew → Extractor" location chip
+and in the Add Field / Field Editor modals' multi-select.
+
+### 44. Multi-extractor "Extracted by" multi-select
+The Field Editor's "Extracted by" affordance is a multi-select of
+every Field Extractor across the entire agent (grouped by crew).
+Tick to add to the set, untick to remove. No single "primary"
+extractor — a field is either extracted by an extractor or it
+isn't. Required: at least one tick before Save is enabled. Empty
+selection is flagged with an amber "⚠ no extractor" chip on the
+FieldsPanel row.
+
+### 45. Cross-entity save (`Save + agent` / `Save + N crews`)
+Adding an agent-scoped field from a crew view mutates both the
+agent body (def appended to `agent.fields`) and the crew body (id
+appended to the extractor's `extractsFields`). The Save button in
+the VersionMenu morphs label when both sides are dirty:
+- On the crew menu: `Save + agent` — one click persists both.
+- On the agent menu: `Save + N crews` — one click persists agent +
+  every dirty crew.
+The `EntityVersionState` exposes a `crossDirtyLabel` so any future
+surface that wants to show the cross-save scope can read it.
+
+Implementation note: each save function (`saveCrewVersion`,
+`saveAgentVersion`, and their `*As` variants) now updates
+`docRef.current = next` immediately after `setDoc(next)`, so a
+chained save in the same tick reads the just-committed state. Without
+this, the second save's `next` was computed from the pre-first-save
+state and clobbered the first save's changes.
+
+### 46. AgentView and CrewView share the same two-column layout
+The AgentView used to stack Persona + Memory vertically while
+CrewView put Memory as a sticky sidebar. Switching between Agent
+and a Crew reshuffled the page. Now AgentView uses the same
+`crewGrid` / `crewMain` / `crewSide` CSS classes — Persona card in
+the main column, Memory panel in the sticky side column. Switching
+keeps everything in the same place. Class names are slightly stale
+(crew-prefixed) — rename to `canvasGrid` etc. when convenient.
+
+### 47. Auto-scroll in UserChat with grace period after history load
+After loading a past conversation, the addon timelines lazy-fetch
+their `addon_runs` and render later, pushing the scroll position
+above the bottom. A simple "scroll to bottom on every turns change"
+would have respected `wasAtBottom` and not corrected. Solution: when
+`conversationId` changes, enter a 3-second grace window during which
+scroll-to-bottom fires unconditionally on every turns update. After
+the window, the normal "only if user is near bottom" rule applies.
+Covers the lazy timelines without yanking the user back if they
+scroll up later to read.
+
+### 48. Time-to-first-token for streaming addons
+Talker's `durationMs` showed full stream end time — confusing
+because perceptually the user "got" the response when the first
+token landed, several seconds before. Plugin now also returns
+`firstTokenMs`; engine puts both in the `addon.output` payload.
+AddonRunCard shows `1234ms · 4532ms` for streaming addons — TTFT
+in full color (perceived latency), TTLT muted (full compute cost).
+Non-streaming addons (Field Extractor, Transition Router) keep a
+single duration number. Both numbers are persisted in `addon_runs`
+so historical cards match the live display.
+
+### 49. Optimistic live memory merge on `addon.output`
+Extractor fires → its `addon.output` event carries `memoryWrites[]`.
+Client `UserChat` now merges those writes into local
+`conversationMemory` immediately (`applyLocalMemoryWrites`) instead
+of waiting for the post-turn `refreshConversationMemory`. The
+FieldsPanel's green value chips appear the instant the extractor
+finishes — typically seconds before the Talker even starts. The
+end-of-turn refresh stays as a reconciliation step.
+
+### 50. ModelPicker notes render as a caption, not in the option label
+Putting model notes inline in `<option>` text was getting truncated
+mid-sentence by browser select rendering. Notes now render as a
+small italic caption *below* the picker row, showing the selected
+model's notes. The dropdown itself contains just the model name.
 
 ---
 

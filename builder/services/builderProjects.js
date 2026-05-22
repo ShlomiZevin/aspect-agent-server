@@ -89,6 +89,7 @@ async function hydrateProject({ agentSlug, ownerUserId }) {
       spec:         crewBody.spec         || '',
       persona:      crewBody.persona,
       addons:       Array.isArray(crewBody.addons) ? crewBody.addons : [],
+      fields:       Array.isArray(crewBody.fields) ? crewBody.fields : [],
       // Version metadata (client format).
       versions: crewVersions.map(v => ({
         id:           v.id,
@@ -115,6 +116,7 @@ async function hydrateProject({ agentSlug, ownerUserId }) {
       spec:           agentBody.spec           || '',
       persona:        agentBody.persona        || '',
       defaultCrewId:  agentBody.defaultCrewId,
+      fields:         Array.isArray(agentBody.fields) ? agentBody.fields : [],
       crews,
       versions: agentVersions.map(v => ({
         id:           v.id,

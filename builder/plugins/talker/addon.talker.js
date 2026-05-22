@@ -33,6 +33,11 @@ async function run(ctx) {
   const start = Date.now();
   let collected = '';
   let usageData = null;
+  // Time-to-first-token — perceived latency, the moment text starts
+  // appearing in the chat. Distinct from total stream duration
+  // (durationMs below), which includes the trailing usage event.
+  // Both are surfaced so the UI can show "starts 1.2s · full 4.5s".
+  let firstTokenMs = null;
 
   const stream = llm.sendMessageStreamWithPrompt(userMessage, conversationId, {
     prompt,
@@ -46,9 +51,11 @@ async function run(ctx) {
 
   for await (const chunk of stream) {
     if (typeof chunk === 'string') {
+      if (firstTokenMs === null && chunk.length > 0) firstTokenMs = Date.now() - start;
       collected += chunk;
       emit('addon.token', { instanceId: instance.instanceId, token: chunk });
     } else if (chunk && chunk.type === 'text' && typeof chunk.text === 'string') {
+      if (firstTokenMs === null && chunk.text.length > 0) firstTokenMs = Date.now() - start;
       collected += chunk.text;
       emit('addon.token', { instanceId: instance.instanceId, token: chunk.text });
     } else if (chunk && chunk.type === 'usage') {
@@ -90,7 +97,8 @@ async function run(ctx) {
           total:  usageData.inputTokens + usageData.outputTokens,
         }
       : { input: 0, output: 0, total: 0 },
-    durationMs: Date.now() - start,
+    durationMs:   Date.now() - start,
+    firstTokenMs,
   };
 }
 
