@@ -15,6 +15,26 @@ const projects = require('../services/builderProjects');
 const router = express.Router();
 
 /**
+ * GET /api/builder/projects/list?ownerUserId=:uid
+ *   Returns a flat list of the user's projects (one row per agent)
+ *   for the BuilderHomePage. Names — not ids — for everything the
+ *   UI displays.
+ */
+router.get('/projects/list', async (req, res) => {
+  try {
+    const { ownerUserId } = req.query;
+    if (!ownerUserId) {
+      return res.status(400).json({ error: 'Missing ownerUserId' });
+    }
+    const list = await projects.listProjects({ ownerUserId });
+    res.json({ projects: list });
+  } catch (err) {
+    console.error('[builder] GET projects/list failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/builder/projects?agentSlug=:slug&ownerUserId=:uid
  *   Returns the full nested ProjectDoc, or 404 if not bootstrapped.
  */

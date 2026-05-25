@@ -82,6 +82,7 @@ router.post('/:slug/conversations', async (req, res) => {
       agentId,
       channel: 'web',
       status: 'active',
+      kind: 'user',
       metadata: { kind: 'builder-preview', agentSlug: slug },
     }).returning();
     res.json({ conversationId: conv.id });
@@ -113,6 +114,7 @@ router.get('/:slug/conversations', async (req, res) => {
       .where(and(
         eq(conversations.agentId, agentRow.id),
         eq(conversations.userId, userRow[0].id),
+        eq(conversations.kind, 'user'),
       ))
       .orderBy(desc(conversations.updatedAt))
       .limit(50);

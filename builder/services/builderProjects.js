@@ -131,6 +131,45 @@ async function hydrateProject({ agentSlug, ownerUserId }) {
   };
 }
 
+/**
+ * List all projects owned by a user. Returns a flat array sorted by
+ * recency (most-recently-touched agent first). Each row carries the
+ * human-readable agent name (from the active version body), the slug
+ * (used by the URL), and the project name.
+ *
+ * Used by the BuilderHomePage to render the "Your agents" list.
+ */
+async function listProjects({ ownerUserId }) {
+  const d = drizzle();
+  const rows = await d.select({
+    projectId:   builderProjects.id,
+    projectName: builderProjects.name,
+    agentId:     builderAgents.id,
+    agentSlug:   builderAgents.slug,
+    agentBody:   builderAgentVersions.body,
+    updatedAt:   builderAgents.updatedAt,
+  })
+    .from(builderProjects)
+    .innerJoin(builderAgents, eq(builderAgents.projectId, builderProjects.id))
+    .leftJoin(
+      builderAgentVersions,
+      eq(builderAgentVersions.id, builderAgents.activeVersionId),
+    )
+    .where(eq(builderProjects.ownerUserId, ownerUserId))
+    .orderBy(desc(builderAgents.updatedAt));
+
+  return rows.map(r => ({
+    projectId:   r.projectId,
+    projectName: r.projectName,
+    agentSlug:   r.agentSlug,
+    // Active version body holds the canonical agent name. Fall back
+    // to the slug when the agent has no versions yet (shouldn't happen
+    // in practice — bootstrap creates v1 — but cheap defensive default).
+    agentName:   (r.agentBody && r.agentBody.name) || r.agentSlug,
+    updatedAt:   r.updatedAt.toISOString(),
+  }));
+}
+
 // ─── Bootstrap a new project ──────────────────────────────────────
 
 async function createProject({
@@ -403,6 +442,7 @@ async function resolveRunnable({ agentSlug, ownerUserId, mode = 'viewing', overr
 
 module.exports = {
   hydrateProject,
+  listProjects,
   createProject,
   saveAgentVersion,
   saveAgentVersionAs,

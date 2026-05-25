@@ -106,6 +106,10 @@ app.get('/health', async (req, res) => {
 });
 
 // ─── V2 Builder routes ─────────────────────────────────────────────
+// Alfred — in-builder AI helper (Builder Chat tab). Mounted first so
+// its more-specific prefix beats /api/builder/* below if the catch-all
+// projectsRoute ever grows an /alfred handler.
+app.use('/api/builder/alfred', require('./alfred/routes/alfredRoute'));
 // Builder doc CRUD (creating projects/agents/crews, saving versions,
 // setting active/viewing pointers). All under /api/builder/*.
 app.use('/api/builder', require('./builder/routes/projectsRoute'));

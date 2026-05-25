@@ -40,6 +40,25 @@ const { getPlugin } = require('./pluginRegistry');
 const builderMemory = require('./builderMemory');
 const addonRunsStore = require('./addonRunsStore');
 const historyService = require('./historyService');
+const modelsService = require('../../services/models.service');
+
+// Provider-id → display label, pre-indexed so the per-addon resolve
+// is O(1). Source of truth is services/models.service.js; mirror in
+// the addon-run payload so the chat UI can show "OpenAI · GPT-4o mini"
+// without a separate lookup.
+const PROVIDER_LABELS_BY_ID = Object.fromEntries(
+  modelsService.PROVIDERS.map(p => [p.id, p.label]),
+);
+
+function resolveModelLabel(modelRef) {
+  if (!modelRef || !modelRef.modelId) return null;
+  const m = modelsService.getModel(modelRef.modelId);
+  if (!m) return null;
+  return {
+    providerName: PROVIDER_LABELS_BY_ID[m.providerId] || m.providerId,
+    modelName:    m.name,
+  };
+}
 
 // Side-effect: ensure built-in plugins are registered.
 require('../plugins');
@@ -101,12 +120,14 @@ async function runOnce({
 
   for (const instance of blockingAddons) {
     const addonStart = Date.now();
+    const modelLabel = resolveModelLabel(instance.config?.model);
     const meta = {
       instanceId: instance.instanceId,
       pluginId:   instance.pluginId,
       lane:       instance.lane,
       label:      instance.config?.name || instance.pluginId,
       model:      instance.config?.model || null,
+      modelLabel,
     };
     emit('addon.start', meta);
 
@@ -284,8 +305,17 @@ async function runOnce({
 
     // 11. Emit addon.output. Same shape live and historical (P3
     //     uses the persisted addon_runs.run_data verbatim).
+    //     `prompt` is the FULL assembled string after every
+    //     placeholder substitution ({{memory}}, {{fields_current}},
+    //     {{persona}}, etc.) — i.e. exactly what we sent to the LLM.
+    //     The live view picks it up from the earlier addon.prompt
+    //     event; mirroring it here means a reloaded conversation
+    //     can show the same prompt without hitting the live path.
     const outputPayload = {
       instanceId:   instance.instanceId,
+      label:        meta.label,
+      modelLabel,
+      prompt,
       rawOutput:    result.rawOutput ?? '',
       parsedOutput: result.parsedOutput ?? null,
       memoryWrites,

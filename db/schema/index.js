@@ -56,6 +56,7 @@ const conversations = pgTable('conversations', {
   currentCrewMember: varchar('current_crew_member', { length: 100 }), // Current crew member handling this conversation
   channel: varchar('channel', { length: 20 }).default('web').notNull(), // web, whatsapp
   status: varchar('status', { length: 50 }).default('active').notNull(), // active, archived, deleted
+  kind: varchar('kind', { length: 20 }).default('user').notNull(), // 'user' | 'alfred' — Alfred chats live in same table, filtered by this
   metadata: jsonb('metadata'), // Additional conversation data (includes crew transition history)
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
