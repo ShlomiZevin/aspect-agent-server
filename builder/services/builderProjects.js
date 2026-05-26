@@ -276,6 +276,66 @@ async function setAgentViewing({ agentId, versionId }) {
     .where(eq(builderAgents.id, agentId));
 }
 
+/**
+ * Delete a single agent version. Refuses to delete:
+ *   - the last remaining version (every entity must have ≥1)
+ *   - the version currently flagged as active
+ *   - the version currently flagged as viewing
+ * The caller (UI) should force the user to switch viewing/active
+ * first, then retry. Throws a labelled Error so the route can surface
+ * the reason. Returns true on success.
+ */
+async function deleteAgentVersion({ agentId, versionId }) {
+  const d = drizzle();
+  await d.transaction(async tx => {
+    const agentRows = await tx.select()
+      .from(builderAgents)
+      .where(eq(builderAgents.id, agentId))
+      .limit(1);
+    if (agentRows.length === 0) {
+      const e = new Error('Agent not found');
+      e.code = 'not_found';
+      throw e;
+    }
+    const agent = agentRows[0];
+
+    if (agent.activeVersionId === versionId) {
+      const e = new Error('Cannot delete the active version. Set another version as active first.');
+      e.code = 'is_active';
+      throw e;
+    }
+    if (agent.viewingVersionId === versionId) {
+      const e = new Error('Cannot delete the version you are viewing. Switch to another version first.');
+      e.code = 'is_viewing';
+      throw e;
+    }
+
+    const remaining = await tx.select({ id: builderAgentVersions.id })
+      .from(builderAgentVersions)
+      .where(eq(builderAgentVersions.agentId, agentId));
+    if (remaining.length <= 1) {
+      const e = new Error('Cannot delete the last remaining version.');
+      e.code = 'last_version';
+      throw e;
+    }
+    if (!remaining.some(r => r.id === versionId)) {
+      const e = new Error('Version not found for this agent');
+      e.code = 'not_found';
+      throw e;
+    }
+
+    await tx.delete(builderAgentVersions)
+      .where(and(
+        eq(builderAgentVersions.id, versionId),
+        eq(builderAgentVersions.agentId, agentId),
+      ));
+    await tx.update(builderAgents)
+      .set({ updatedAt: new Date() })
+      .where(eq(builderAgents.id, agentId));
+  });
+  return true;
+}
+
 // ─── Crew version actions ─────────────────────────────────────────
 
 async function saveCrewVersion({ crewId, versionId, body }) {
@@ -322,6 +382,62 @@ async function setCrewViewing({ crewId, versionId }) {
     .update(builderCrews)
     .set({ viewingVersionId: versionId, updatedAt: new Date() })
     .where(eq(builderCrews.id, crewId));
+}
+
+/**
+ * Delete a single crew version. Same guard rules as the agent-side:
+ * refuses the last remaining version, the active version, or the
+ * version currently being viewed. Force the user to switch first.
+ */
+async function deleteCrewVersion({ crewId, versionId }) {
+  const d = drizzle();
+  await d.transaction(async tx => {
+    const crewRows = await tx.select()
+      .from(builderCrews)
+      .where(eq(builderCrews.id, crewId))
+      .limit(1);
+    if (crewRows.length === 0) {
+      const e = new Error('Crew not found');
+      e.code = 'not_found';
+      throw e;
+    }
+    const crew = crewRows[0];
+
+    if (crew.activeVersionId === versionId) {
+      const e = new Error('Cannot delete the active version. Set another version as active first.');
+      e.code = 'is_active';
+      throw e;
+    }
+    if (crew.viewingVersionId === versionId) {
+      const e = new Error('Cannot delete the version you are viewing. Switch to another version first.');
+      e.code = 'is_viewing';
+      throw e;
+    }
+
+    const remaining = await tx.select({ id: builderCrewVersions.id })
+      .from(builderCrewVersions)
+      .where(eq(builderCrewVersions.crewId, crewId));
+    if (remaining.length <= 1) {
+      const e = new Error('Cannot delete the last remaining version.');
+      e.code = 'last_version';
+      throw e;
+    }
+    if (!remaining.some(r => r.id === versionId)) {
+      const e = new Error('Version not found for this crew');
+      e.code = 'not_found';
+      throw e;
+    }
+
+    await tx.delete(builderCrewVersions)
+      .where(and(
+        eq(builderCrewVersions.id, versionId),
+        eq(builderCrewVersions.crewId, crewId),
+      ));
+    await tx.update(builderCrews)
+      .set({ updatedAt: new Date() })
+      .where(eq(builderCrews.id, crewId));
+  });
+  return true;
 }
 
 async function createCrew({ agentId, crewId, versionId, body }) {
@@ -444,6 +560,8 @@ module.exports = {
   hydrateProject,
   listProjects,
   createProject,
+  deleteAgentVersion,
+  deleteCrewVersion,
   saveAgentVersion,
   saveAgentVersionAs,
   setAgentActive,

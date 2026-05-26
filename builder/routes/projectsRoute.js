@@ -145,6 +145,25 @@ router.put('/agents/:agentId/viewing', async (req, res) => {
   }
 });
 
+/**
+ * DELETE /api/builder/agents/:agentId/versions/:versionId
+ *   Refuses to delete the last/active/viewing version — service
+ *   throws a labelled error and we return 409 with the reason so
+ *   the UI can show "switch viewing/active first".
+ */
+router.delete('/agents/:agentId/versions/:versionId', async (req, res) => {
+  try {
+    const { agentId, versionId } = req.params;
+    await projects.deleteAgentVersion({ agentId, versionId });
+    res.json({ ok: true });
+  } catch (err) {
+    const guard = ['is_active', 'is_viewing', 'last_version'].includes(err.code);
+    const status = err.code === 'not_found' ? 404 : guard ? 409 : 500;
+    if (status === 500) console.error('[builder] DELETE agent version failed:', err);
+    res.status(status).json({ error: err.message, code: err.code });
+  }
+});
+
 // ─── Crew lifecycle ───────────────────────────────────────────────
 
 /**
@@ -231,6 +250,24 @@ router.put('/crews/:crewId/viewing', async (req, res) => {
   } catch (err) {
     console.error('[builder] PUT crew viewing failed:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * DELETE /api/builder/crews/:crewId/versions/:versionId
+ *   Same guard semantics as the agent variant — 409 with code when
+ *   the version is last/active/viewing so the UI can react.
+ */
+router.delete('/crews/:crewId/versions/:versionId', async (req, res) => {
+  try {
+    const { crewId, versionId } = req.params;
+    await projects.deleteCrewVersion({ crewId, versionId });
+    res.json({ ok: true });
+  } catch (err) {
+    const guard = ['is_active', 'is_viewing', 'last_version'].includes(err.code);
+    const status = err.code === 'not_found' ? 404 : guard ? 409 : 500;
+    if (status === 500) console.error('[builder] DELETE crew version failed:', err);
+    res.status(status).json({ error: err.message, code: err.code });
   }
 });
 
