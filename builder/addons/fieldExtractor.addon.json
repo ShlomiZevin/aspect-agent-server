@@ -2,6 +2,7 @@
   "pluginId":          "field-extractor",
   "displayName":       "Field Extractor",
   "description":       "Extract structured fields from the conversation — explicit or inferred.",
+  "purpose":           "Captures structured field values from the conversation and writes them to memory. Reach for this whenever the user provides something worth remembering — a name, an age, an intent classification, an emotional state, a routing tag. Set a field's `source` to `explicit` for values the user literally stated (\"my name is X\") and `inferred` for values the model concludes from context (\"they seem frustrated\"). Place it BEFORE the Talker in the chain so the Talker can read the freshly-captured values via `context.memoryReads` and react in the same turn. If you only need a single classification (intent, language), one extractor is enough; for unrelated kinds of data, spin up separate extractors so each has a focused prompt.",
   "icon":              "📥",
   "color":             "#f59e0b",
 

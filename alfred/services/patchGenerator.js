@@ -83,9 +83,18 @@ function renderAddonTemplatesSection() {
       outputType:     d.defaultOutputType,
       promptTemplate: d.defaultPromptTemplate,
     };
-    return [
+    const lines = [
       `### ${d.pluginId}  (${d.displayName})`,
       d.description,
+    ];
+    // `purpose` is the long-form "when to use / when not to" guidance.
+    // Optional on the descriptor for back-compat; when present it goes
+    // right under the short description so the model has the context
+    // it needs to choose between plugins correctly.
+    if (d.purpose) {
+      lines.push('', `**Purpose.** ${d.purpose}`);
+    }
+    lines.push(
       '',
       `Allowed output types: ${JSON.stringify(d.allowedOutputTypes)}`,
       '',
@@ -96,7 +105,8 @@ function renderAddonTemplatesSection() {
       '```json',
       JSON.stringify(freshInstance, null, 2),
       '```',
-    ].join('\n');
+    );
+    return lines.join('\n');
   });
   return blocks.join('\n\n');
 }

@@ -2,6 +2,7 @@
   "pluginId":          "talker",
   "displayName":       "Talker",
   "description":       "Speaks to the user. Owns the response prompt.",
+  "purpose":           "Produces the actual chat message the user sees. Every crew that should respond to the user needs at least one Talker. Place it at the END of the main lane (after extractors, routers, and any other addons) so it has the full picture of what this turn's processing produced — including memory writes from upstream extractors. Without a Talker the crew is silent — useful for intake-only steps like classify-then-route, but rare. Set `context.persona: true` when the Talker should speak in the agent's voice; use `context.memoryReads` to pull in fields from other domains so the response can reference them.",
   "icon":              "💬",
   "color":             "#8b5cf6",
 

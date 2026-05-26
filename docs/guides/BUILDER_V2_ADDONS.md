@@ -27,6 +27,7 @@ Shape — every field is data, no functions:
   "pluginId":          "my-addon",            // stable id; matches the filename root
   "displayName":       "My Addon",
   "description":       "Short tagline for the picker.",
+  "purpose":           "3-5 sentences describing when to reach for this addon, when NOT to, typical chain placement, common mistakes. Read by Alfred's patch generator when deciding which plugin fits a user's request, and surfaced in the UI as a 'more info' blurb. Be concrete — assume the reader knows the builder vocabulary but not your specific addon.",
   "icon":              "🛠️",
   "color":             "#0ea5e9",
 
@@ -55,6 +56,17 @@ Shape — every field is data, no functions:
 Optional fields used by some plugins:
 - `allowedFieldSources: ['explicit' | 'inferred']` — only for `fieldMode: 'extractor'`.
 - `hideStandardSections: { context, output, promptTemplate, repository }` — booleans that suppress those sections in the addon-config modal when they don't apply (e.g. Transition Router has no LLM call).
+
+### `description` vs `purpose`
+
+Two text fields that serve different consumers:
+
+| Field | Length | Used by |
+|-------|--------|---------|
+| `description` | One line, ~10 words | Picker chip in the Add Step modal; banner subtitles; anywhere the addon is referenced compactly. |
+| `purpose` | 3–5 sentences | Alfred's patch generator (embedded in the system prompt so the consolidator picks the right plugin for a user's request); future expanded UI in the Add Step picker / addon-config modal. |
+
+The `description` is a tagline. The `purpose` is "when do I reach for this and when do I reach for something else?" — write it as guidance you'd give a teammate explaining the addon for the first time. Examples in the existing three descriptors are the reference shape.
 
 ---
 

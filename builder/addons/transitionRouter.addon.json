@@ -2,6 +2,7 @@
   "pluginId":          "transition-router",
   "displayName":       "Transition Router",
   "description":       "Sends the next turn to a different crew when conditions match.",
+  "purpose":           "Routes the conversation to a different crew when its AND-list of conditions matches the current memory state. Doesn't call an LLM — it pattern-matches against memory only. Place it AFTER any extractors so it routes on fresh values from THIS turn, not stale ones. Set `onMatch: 'break'` to skip the rest of the chain (including the Talker) for an immediate handoff; set `'continue'` to let the Talker speak one last time before next turn's crew takes over. Common pairing: a Field Extractor pulls an `intent` field, then a Transition Router with a `field-equals` rule routes complaints to one crew and sales questions to another. Don't stack two routers in a row unless you genuinely need OR semantics — each router is AND-only across its own conditions.",
   "icon":              "🔀",
   "color":             "#0ea5e9",
 
