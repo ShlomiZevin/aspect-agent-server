@@ -11,7 +11,35 @@
  *   { ok: false, errors: string[] }
  */
 
-const KNOWN_PLUGINS  = new Set(['talker', 'field-extractor', 'transition-router']);
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * Source of truth for the set of known plugin ids: the descriptor
+ * JSON files in `builder/addons/`. Same scan the patch generator and
+ * brainstorm Alfred do — guarantees the validator stays in sync as
+ * new addons are added. Server restart picks them up.
+ */
+function loadKnownPlugins() {
+  const dir = path.join(__dirname, '..', '..', 'builder', 'addons');
+  try {
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.addon.json'));
+    const ids = files.map(f => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).pluginId;
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+    return new Set(ids);
+  } catch (err) {
+    console.warn('[bodyValidator] failed to load addon descriptors:', err.message);
+    // Fall back to the original built-in set so validation still works
+    // even if the addons folder is unreadable.
+    return new Set(['talker', 'field-extractor', 'transition-router']);
+  }
+}
+const KNOWN_PLUGINS  = loadKnownPlugins();
 const VALID_LANES    = new Set(['main', 'background', 'offline']);
 const VALID_OUTPUTS  = new Set(['text-to-user', 'json-to-memory', 'transition']);
 const VALID_FIELD_TYPES   = new Set(['string', 'int', 'enum', 'boolean']);

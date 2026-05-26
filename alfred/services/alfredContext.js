@@ -12,9 +12,74 @@
  * see the raw JSON. This file is brainstorm-only.
  */
 
+const fs = require('fs');
+const path = require('path');
 const { hydrateProject } = require('../../builder/services/builderProjects');
 
-const SYSTEM_PROMPT = [
+/**
+ * Load every addon descriptor at module init. Same scan the patch
+ * generator does — keeps brainstorm in sync with what's actually
+ * installable so Alfred can answer "which addon should I use?" from
+ * the real catalogue, not from training-data memory of the codebase.
+ *
+ * New addon? Drop a JSON file in builder/addons/, restart the server,
+ * brainstorm Alfred sees it on the next chat turn. No prompt edits.
+ */
+function loadAddonDescriptors() {
+  const dir = path.join(__dirname, '..', '..', 'builder', 'addons');
+  try {
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.addon.json'));
+    return files.map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+  } catch (err) {
+    console.warn('[alfred] failed to load addon descriptors:', err.message);
+    return [];
+  }
+}
+const ADDON_DESCRIPTORS = loadAddonDescriptors();
+
+/**
+ * Render the descriptors as plain markdown — NO raw JSON (decision 58:
+ * brainstorm Alfred never sees or writes JSON). Goes into the system
+ * prompt so the model can match "I want to track customer mood" →
+ * Field Extractor (`source: 'inferred'`) without guessing.
+ */
+function renderAddonCatalogue() {
+  if (ADDON_DESCRIPTORS.length === 0) return '';
+
+  const blocks = ADDON_DESCRIPTORS.map(d => {
+    const lines = [
+      `### ${d.displayName} — \`${d.pluginId}\``,
+      d.description,
+    ];
+    if (d.purpose) {
+      lines.push('', `**When to use:** ${d.purpose}`);
+    }
+    const facts = [];
+    if (d.defaultLane)         facts.push(`Default lane: ${d.defaultLane}`);
+    if (typeof d.speaks === 'boolean') facts.push(`Speaks to the user: ${d.speaks ? 'yes' : 'no'}`);
+    if (Array.isArray(d.allowedOutputTypes)) {
+      facts.push(`Output: ${d.allowedOutputTypes.join(' / ')}`);
+    }
+    if (facts.length > 0) {
+      lines.push('', `*${facts.join(' · ')}*`);
+    }
+    return lines.join('\n');
+  });
+
+  return [
+    '# Available addon types',
+    '',
+    'This is the full catalogue of addons the builder supports. When the user',
+    'asks what an addon does, or which to use for a goal, refer to this list.',
+    'The manual UI and Alfred Apply both support every entry here — when you',
+    'suggest using one, you can promise it will work.',
+    '',
+    blocks.join('\n\n'),
+  ].join('\n');
+}
+const ADDON_CATALOGUE = renderAddonCatalogue();
+
+const STATIC_SYSTEM_PROMPT = [
   'You are Alfred — an AI helper that sits inside the Aspect agent builder.',
   '',
   'You help the user design and refine the agent they\'re building: brainstorm',
@@ -91,6 +156,16 @@ const SYSTEM_PROMPT = [
   '> ```',
   '```',
 ].join('\n');
+
+/**
+ * The exported system prompt is the static rules + the descriptor
+ * catalogue assembled at module load. Catalogue trails the rules so
+ * formatting / language rules anchor the model's behaviour first; the
+ * catalogue is reference material it pulls from when asked.
+ */
+const SYSTEM_PROMPT = ADDON_CATALOGUE
+  ? `${STATIC_SYSTEM_PROMPT}\n\n${ADDON_CATALOGUE}`
+  : STATIC_SYSTEM_PROMPT;
 
 function fmtField(f) {
   const bits = [f.type];
