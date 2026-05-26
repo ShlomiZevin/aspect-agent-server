@@ -124,12 +124,27 @@ function fmtAddon(a, crewFieldsById, agentFieldsById) {
   return pluginLabel;
 }
 
+/**
+ * Render a multi-line block of free-text (a spec or persona) under a
+ * heading with consistent indentation. No truncation — the user wrote
+ * this and Alfred should see it verbatim.
+ */
+function fmtBlock(heading, text, indent) {
+  const lines = [`${indent}${heading}:`];
+  const body = String(text).split(/\r?\n/);
+  for (const line of body) {
+    lines.push(`${indent}  ${line}`);
+  }
+  return lines.join('\n');
+}
+
 function fmtCrew(crew, agent) {
   const lines = [];
   const isDefault = agent.defaultCrewId === crew.id;
   lines.push(`  ${crew.name || '(unnamed crew)'}${isDefault ? '  (default)' : ''}`);
   if (crew.description) lines.push(`    Description: ${crew.description}`);
-  if (crew.spec)        lines.push(`    Spec: ${crew.spec.replace(/\n+/g, ' ').slice(0, 200)}`);
+  if (crew.spec)        lines.push(fmtBlock('Spec', crew.spec, '    '));
+  if (crew.persona)     lines.push(fmtBlock('Persona', crew.persona, '    '));
 
   const crewFieldsById  = Object.fromEntries((crew.fields  || []).map(f => [f.id, f]));
   const agentFieldsById = Object.fromEntries((agent.fields || []).map(f => [f.id, f]));
@@ -154,8 +169,8 @@ function fmtCrew(crew, agent) {
 function fmtAgent(agent) {
   const lines = [];
   lines.push(`Agent: ${agent.name || agent.slug}  (slug: ${agent.slug})`);
-  if (agent.persona) lines.push(`  Persona: ${agent.persona.replace(/\n+/g, ' ').slice(0, 300)}`);
-  if (agent.spec)    lines.push(`  Spec: ${agent.spec.replace(/\n+/g, ' ').slice(0, 300)}`);
+  if (agent.persona) lines.push(fmtBlock('Persona', agent.persona, '  '));
+  if (agent.spec)    lines.push(fmtBlock('Spec', agent.spec, '  '));
 
   if ((agent.fields || []).length > 0) {
     lines.push('');
@@ -177,7 +192,7 @@ function fmtAgent(agent) {
 function fmtProject(project) {
   const lines = [];
   lines.push(`Project: ${project.name || '(unnamed)'}`);
-  if (project.spec) lines.push(`  Spec: ${project.spec.replace(/\n+/g, ' ').slice(0, 400)}`);
+  if (project.spec) lines.push(fmtBlock('Spec', project.spec, '  '));
   lines.push('');
   (project.agents || []).forEach(a => lines.push(fmtAgent(a)));
   return lines.join('\n');

@@ -48,6 +48,14 @@ class ClaudeService {
       jsonOutput = false,
       knowledgeBase,
       historyMessages,
+      /**
+       * Optional tool-use mode. When `tools` is provided, the response
+       * is expected to be a tool_use block (often forced via toolChoice).
+       * Return shape switches to `{ toolUse: { name, input }, usage }`.
+       * Callers without `tools` see the unchanged `{ text, usage }` shape.
+       */
+      tools,
+      toolChoice,
     } = options;
 
     try {
@@ -102,6 +110,14 @@ class ClaudeService {
         messages
       };
 
+      // Tool-use mode — when the caller provides a tool definition
+      // (and typically a tool_choice forcing it), the response is a
+      // structured tool_use block rather than free text.
+      if (Array.isArray(tools) && tools.length > 0) {
+        requestParams.tools = tools;
+        if (toolChoice) requestParams.tool_choice = toolChoice;
+      }
+
       // Use beta API when document blocks are present (requires Files API beta)
       const useFilesApi = anthropicFileIds.length > 0;
       if (useFilesApi) {
@@ -111,13 +127,27 @@ class ClaudeService {
 
       const response = await messagesApi.create(requestParams);
 
-      // Extract text from response
-      const textContent = response.content.find(c => c.type === 'text');
-      const text = textContent?.text || '';
       const usage = response.usage ? {
         inputTokens: response.usage.input_tokens || 0,
         outputTokens: response.usage.output_tokens || 0,
       } : null;
+
+      // Tool-use response: pull the (first) tool_use block out and
+      // return its parsed input. The text path is bypassed.
+      if (Array.isArray(tools) && tools.length > 0) {
+        const toolBlock = response.content.find(c => c.type === 'tool_use');
+        if (!toolBlock) {
+          throw new Error('Tool-use call returned no tool_use block.');
+        }
+        return {
+          toolUse: { name: toolBlock.name, input: toolBlock.input },
+          usage,
+        };
+      }
+
+      // Default: text response.
+      const textContent = response.content.find(c => c.type === 'text');
+      const text = textContent?.text || '';
       return { text, usage };
     } catch (error) {
       console.error('❌ Claude OneShot Error:', error.message);

@@ -424,6 +424,27 @@ const libraryFiles = pgTable('library_files', {
 // the legacy `agents` / `crewMembers` above which power v1 chats).
 const builderSchema = require('./builder');
 
+// Agent change log — journal of body mutations (Alfred applies +
+// manual Validate & Log entries). See migrations/030_add_agent_log.sql.
+const agentLog = pgTable('agent_log', {
+  id:             serial('id').primaryKey(),
+  agentId:        varchar('agent_id', { length: 64 }).notNull(),
+  agentName:      varchar('agent_name', { length: 200 }).notNull(),
+  actor:          varchar('actor', { length: 20 }).notNull(), // 'alfred' | 'manual'
+  reason:         text('reason').notNull(),
+  whatChanged:    text('what_changed').default('').notNull(),
+  bodyBefore:     jsonb('body_before').notNull(),
+  bodyAfter:      jsonb('body_after').notNull(),
+  entity:         varchar('entity', { length: 20 }).notNull(), // 'agent' | 'crew'
+  entityId:       varchar('entity_id', { length: 64 }).notNull(),
+  entityName:     varchar('entity_name', { length: 200 }).default('').notNull(),
+  sourceChatId:   integer('source_chat_id'),
+  sourceMsgId:    integer('source_msg_id'),
+  applyGroupId:   varchar('apply_group_id', { length: 64 }),
+  appliedAt:      timestamp('applied_at').defaultNow().notNull(),
+  appliedBy:      varchar('applied_by', { length: 64 }).notNull(),
+});
+
 // Export all tables
 module.exports = {
   connectionTest,
@@ -459,4 +480,5 @@ module.exports = {
   builderCrews:           builderSchema.builderCrews,
   builderCrewVersions:    builderSchema.builderCrewVersions,
   addonRuns:              builderSchema.addonRuns,
+  agentLog,
 };
