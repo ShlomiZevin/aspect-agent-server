@@ -1,0 +1,27 @@
+{
+  "pluginId":          "talker",
+  "displayName":       "Talker",
+  "description":       "Speaks to the user. Owns the response prompt.",
+  "icon":              "💬",
+  "color":             "#8b5cf6",
+
+  "defaultLane":       "main",
+  "fieldMode":         "none",
+  "speaks":            true,
+
+  "allowedOutputTypes": ["text-to-user"],
+  "defaultOutputType":  "text-to-user",
+
+  "defaultContext": {
+    "history":      { "mode": "last_n", "n": 5 },
+    "persona":      false,
+    "memoryReads":  []
+  },
+
+  "defaultPromptTemplate": "{{persona}}\n\n{{prompt}}\n\n{{memory}}",
+
+  "defaultConfig": {
+    "prompt": "",
+    "model":  { "providerId": "google", "modelId": "gemini-2.5-flash" }
+  }
+}

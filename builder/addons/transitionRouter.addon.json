@@ -1,0 +1,36 @@
+{
+  "pluginId":          "transition-router",
+  "displayName":       "Transition Router",
+  "description":       "Sends the next turn to a different crew when conditions match.",
+  "icon":              "🔀",
+  "color":             "#0ea5e9",
+
+  "defaultLane":       "main",
+  "fieldMode":         "none",
+  "speaks":            false,
+
+  "allowedOutputTypes": ["transition"],
+  "defaultOutputType":  "transition",
+
+  "defaultContext": {
+    "history":      { "mode": "none" },
+    "persona":      false,
+    "memoryReads":  []
+  },
+
+  "defaultPromptTemplate": "",
+
+  "defaultConfig": {
+    "conditions": [],
+    "target":     "",
+    "reason":     "",
+    "onMatch":    "continue"
+  },
+
+  "hideStandardSections": {
+    "context":        true,
+    "output":         true,
+    "promptTemplate": true,
+    "repository":     true
+  }
+}

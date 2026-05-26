@@ -1,0 +1,30 @@
+{
+  "pluginId":          "field-extractor",
+  "displayName":       "Field Extractor",
+  "description":       "Extract structured fields from the conversation — explicit or inferred.",
+  "icon":              "📥",
+  "color":             "#f59e0b",
+
+  "defaultLane":       "main",
+  "fieldMode":         "extractor",
+  "allowedFieldSources": ["explicit", "inferred"],
+  "speaks":            false,
+
+  "allowedOutputTypes": ["json-to-memory"],
+  "defaultOutputType":  "json-to-memory",
+
+  "defaultContext": {
+    "history":      { "mode": "last_n", "n": 3 },
+    "persona":      false,
+    "memoryReads":  []
+  },
+
+  "defaultPromptTemplate": "{{prompt}}\n\n## Field schema\n{{fields_schema}}\n\n## Already collected\n{{fields_current}}\n\n{{memory}}",
+
+  "defaultConfig": {
+    "prompt": "Extract field values from the user's latest message and recent context.\nBe precise — only extract what is clearly supported by the conversation.\nFor 'explicit' fields, capture only what the user literally said.\nFor 'inferred' fields, you may conclude based on patterns.\n\nOUTPUT RULES:\n- ONLY include a key for a field if you actually extracted a value for it this turn.\n- If you didn't extract a field, OMIT IT — do not include the key at all.\n- Never return null. Never return empty strings. Never return placeholder values like \"unknown\", \"N/A\", or \"none\".\n- It is correct and expected to return {} when nothing was extracted.",
+    "model":  { "providerId": "openai", "modelId": "gpt-4o-mini" },
+    "name":   "",
+    "extractsFields": []
+  }
+}

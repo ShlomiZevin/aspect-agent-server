@@ -43,6 +43,65 @@ const TYPES_SOURCE = fs.readFileSync(
   'utf8',
 );
 
+/**
+ * Load every addon descriptor at module init. These are the canonical
+ * defaults the client and server share — see builder/addons/*.addon.json.
+ * Embedded into the system prompt as fresh-addon templates: when the
+ * patch generator creates a new AddonInstance, it copies the matching
+ * descriptor's defaults and changes only what was explicitly requested.
+ */
+function loadAddonDescriptors() {
+  const dir = path.join(__dirname, '..', '..', 'builder', 'addons');
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.addon.json'));
+  return files.map(f => {
+    const raw = fs.readFileSync(path.join(dir, f), 'utf8');
+    return JSON.parse(raw);
+  });
+}
+const ADDON_DESCRIPTORS = loadAddonDescriptors();
+
+/**
+ * Render the descriptors as a string section the LLM can consume.
+ * Each descriptor becomes a heading + JSON block. The instructions
+ * tell the model to use these as starting points for new addons.
+ */
+function renderAddonTemplatesSection() {
+  const blocks = ADDON_DESCRIPTORS.map(d => {
+    // A "fresh AddonInstance" the LLM should produce when adding one
+    // of these — it's the descriptor's defaults assembled into the
+    // shape that lives inside a CrewBody.addons array. The model
+    // generates `instanceId` per the id-format rule above; everything
+    // else is verbatim from the descriptor unless the user asks
+    // otherwise.
+    const freshInstance = {
+      instanceId:     '<generate: addon_xxxxxxxx>',
+      pluginId:       d.pluginId,
+      lane:           d.defaultLane,
+      enabled:        true,
+      config:         d.defaultConfig,
+      context:        d.defaultContext,
+      outputType:     d.defaultOutputType,
+      promptTemplate: d.defaultPromptTemplate,
+    };
+    return [
+      `### ${d.pluginId}  (${d.displayName})`,
+      d.description,
+      '',
+      `Allowed output types: ${JSON.stringify(d.allowedOutputTypes)}`,
+      '',
+      'Fresh AddonInstance template — copy this and change ONLY what the user',
+      'explicitly asked for. Keep `lane`, `enabled`, `outputType`, `context`,',
+      'and `promptTemplate` at the defaults unless told otherwise.',
+      '',
+      '```json',
+      JSON.stringify(freshInstance, null, 2),
+      '```',
+    ].join('\n');
+  });
+  return blocks.join('\n\n');
+}
+const ADDON_TEMPLATES = renderAddonTemplatesSection();
+
 const SYSTEM_PROMPT = [
   'You are the patch-generator for the Aspect agent builder.',
   '',
@@ -96,6 +155,17 @@ const SYSTEM_PROMPT = [
   '```typescript',
   TYPES_SOURCE,
   '```',
+  '',
+  '# Addon defaults — START FROM THESE when creating a new addon',
+  '',
+  'The descriptors below live in `aspect-agent-server/builder/addons/` and',
+  'are the shared source of truth for both the React UI and you. When the',
+  'user asks for a new addon, copy the matching fresh-template JSON and',
+  'change ONLY the fields the user explicitly mentioned. Everything else',
+  '(lane, enabled, outputType, context, promptTemplate, the defaults inside',
+  'config) stays exactly as shown.',
+  '',
+  ADDON_TEMPLATES,
 ].join('\n');
 
 /**

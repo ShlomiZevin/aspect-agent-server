@@ -450,22 +450,39 @@ class OpenAIService {
         tools.push(...crewTools);
       }
 
-      // Fetch conversation history from our DB (not OpenAI)
-      // Drop the last message if it's from the user — it's the current turn,
-      // which is appended separately as currentUserMessage
+      // Conversation history.
+      //
+      // V2 (builder) path: the caller pre-loads history per the addon's
+      //   context.history config (none / last_n / full) and passes it
+      //   in `config.historyMessages` as [{ role, content }]. Trust
+      //   that shape — re-fetching would override the V2 history mode
+      //   (and would fail anyway, because conversation.service looks
+      //   up by externalId, while V2 passes a numeric id).
+      //
+      // V1 path: no historyMessages provided → keep the legacy
+      //   "fetch the last 50 messages" behavior.
       let historyMessages = [];
-      try {
-        const history = await conversationService.getConversationHistory(conversationId, 50);
-        if (history.length > 0 && history[history.length - 1].role === 'user') {
-          history.pop();
-        }
-        historyMessages = history.map(m => ({
+      if (Array.isArray(config.historyMessages)) {
+        historyMessages = config.historyMessages.map(m => ({
           role: m.role,
-          // user and developer roles use input_text, assistant uses output_text
-          content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.role === 'assistant' ? conversationService.stripUIMarkup(m.content) : m.content }]
+          content: [{
+            type: m.role === 'assistant' ? 'output_text' : 'input_text',
+            text: m.role === 'assistant' ? conversationService.stripUIMarkup(m.content) : m.content,
+          }],
         }));
-      } catch (err) {
-        console.warn('⚠️ Could not load conversation history from DB:', err.message);
+      } else {
+        try {
+          const history = await conversationService.getConversationHistory(conversationId, 50);
+          if (history.length > 0 && history[history.length - 1].role === 'user') {
+            history.pop();
+          }
+          historyMessages = history.map(m => ({
+            role: m.role,
+            content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.role === 'assistant' ? conversationService.stripUIMarkup(m.content) : m.content }]
+          }));
+        } catch (err) {
+          console.warn('⚠️ Could not load conversation history from DB:', err.message);
+        }
       }
 
       // Build input: history + current message

@@ -15,8 +15,9 @@
 
 const { registerPlugin } = require('../../runtime/pluginRegistry');
 const builderMemory = require('../../runtime/builderMemory');
+const descriptor = require('../../addons/transitionRouter.addon.json');
 
-const TRANSITION_ROUTER_PLUGIN_ID = 'transition-router';
+const TRANSITION_ROUTER_PLUGIN_ID = descriptor.pluginId;
 
 /**
  * @param {object} blob
@@ -152,8 +153,8 @@ async function run(ctx) {
 }
 
 registerPlugin({
-  id: TRANSITION_ROUTER_PLUGIN_ID,
-  allowedOutputTypes: ['transition'],
+  id:                 descriptor.pluginId,
+  allowedOutputTypes: descriptor.allowedOutputTypes,
   // This plugin doesn't call the LLM — it only evaluates rules
   // against the in-memory conversation memory blob. The engine
   // checks this flag to skip its "no model configured" check for

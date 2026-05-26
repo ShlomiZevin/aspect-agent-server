@@ -336,22 +336,38 @@ class GoogleService {
       // Ensure message is a string
       const messageText = typeof message === 'string' ? message : String(message);
 
-      // Fetch conversation history from DB
-      // Drop the last message if it's from the user — it's the current turn,
-      // which will be sent separately via sendMessageStream()
+      // Conversation history.
+      //
+      // V2 (builder) path: the caller pre-loads history per the addon's
+      //   context.history config (none / last_n / full) and passes it
+      //   in `config.historyMessages` as [{ role, content }]. Use that
+      //   directly — re-fetching would override the V2 history mode
+      //   (and would fail anyway, because conversation.service looks
+      //   up by externalId, while V2 passes a numeric id).
+      //
+      // V1 path: no historyMessages provided → keep the legacy
+      //   "fetch the last 50 messages" behavior.
       const conversationService = require('./conversation.service');
       let historyMessages = [];
-      try {
-        const history = await conversationService.getConversationHistory(conversationId, 50);
-        if (history.length > 0 && history[history.length - 1].role === 'user') {
-          history.pop();
+      if (Array.isArray(config.historyMessages)) {
+        const cleaned = config.historyMessages.map(m => ({
+          role: m.role,
+          content: m.role === 'assistant' ? conversationService.stripUIMarkup(m.content) : m.content,
+        }));
+        historyMessages = this._convertHistoryToGemini(cleaned);
+      } else {
+        try {
+          const history = await conversationService.getConversationHistory(conversationId, 50);
+          if (history.length > 0 && history[history.length - 1].role === 'user') {
+            history.pop();
+          }
+          for (const m of history) {
+            if (m.role === 'assistant') m.content = conversationService.stripUIMarkup(m.content);
+          }
+          historyMessages = this._convertHistoryToGemini(history);
+        } catch (err) {
+          console.warn('⚠️ Could not load conversation history from DB:', err.message);
         }
-        for (const m of history) {
-          if (m.role === 'assistant') m.content = conversationService.stripUIMarkup(m.content);
-        }
-        historyMessages = this._convertHistoryToGemini(history);
-      } catch (err) {
-        console.warn('⚠️ Could not load conversation history from DB:', err.message);
       }
 
       const funcDeclCount = geminiTools.reduce((n, t) => n + (t.functionDeclarations?.length || 0), 0);

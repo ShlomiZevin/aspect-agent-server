@@ -9,8 +9,9 @@
  */
 
 const { registerPlugin } = require('../../runtime/pluginRegistry');
+const descriptor = require('../../addons/talker.addon.json');
 
-const TALKER_PLUGIN_ID = 'talker';
+const TALKER_PLUGIN_ID = descriptor.pluginId;
 
 async function run(ctx) {
   const {
@@ -103,8 +104,8 @@ async function run(ctx) {
 }
 
 registerPlugin({
-  id: TALKER_PLUGIN_ID,
-  allowedOutputTypes: ['text-to-user'],
+  id:                 descriptor.pluginId,
+  allowedOutputTypes: descriptor.allowedOutputTypes,
   run,
 });
 

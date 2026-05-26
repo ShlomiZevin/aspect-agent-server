@@ -9,8 +9,9 @@
 
 const { registerPlugin } = require('../../runtime/pluginRegistry');
 const { parseOutput } = require('../../runtime/outputParser');
+const descriptor = require('../../addons/fieldExtractor.addon.json');
 
-const FIELD_EXTRACTOR_PLUGIN_ID = 'field-extractor';
+const FIELD_EXTRACTOR_PLUGIN_ID = descriptor.pluginId;
 
 async function run(ctx) {
   const {
@@ -52,9 +53,11 @@ async function run(ctx) {
   const { parsed, error } = parseOutput(instance.outputType || 'json-to-memory', raw);
 
   // Memory writes: every parsed key that matches a resolved field
-  // def (engine-supplied from agent/crew bodies) and has a non-null
-  // value. Domain on the field def routes the value into the right
-  // memory bucket.
+  // def (engine-supplied from agent/crew bodies) and is non-null.
+  // We intentionally do NOT filter empty strings, [], {}, etc. on top
+  // of what the LLM returned — that hides the real source of bad
+  // values (prompt or model) and makes the chain harder to debug.
+  // Fix bad outputs by tightening the prompt or switching models.
   const memoryWrites = [];
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     const fields = Array.isArray(extractorFields) ? extractorFields : [];
@@ -81,8 +84,8 @@ async function run(ctx) {
 }
 
 registerPlugin({
-  id: FIELD_EXTRACTOR_PLUGIN_ID,
-  allowedOutputTypes: ['json-to-memory'],
+  id:                 descriptor.pluginId,
+  allowedOutputTypes: descriptor.allowedOutputTypes,
   run,
 });
 

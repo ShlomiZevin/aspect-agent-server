@@ -206,22 +206,37 @@ class ClaudeService {
       // Ensure system prompt is a string
       const systemText = typeof systemPrompt === 'string' ? systemPrompt : String(systemPrompt);
 
-      // Fetch conversation history from DB
-      // Drop the last message if it's from the user — it's the current turn,
-      // which is appended separately in the messages array
+      // Conversation history.
+      //
+      // V2 (builder) path: the caller pre-loads history per the addon's
+      //   context.history config (none / last_n / full) and passes it
+      //   in `config.historyMessages` as [{ role, content }]. Use that
+      //   directly — re-fetching would override the V2 history mode
+      //   (and would fail anyway, because conversation.service looks
+      //   up by externalId, while V2 passes a numeric id).
+      //
+      // V1 path: no historyMessages provided → keep the legacy
+      //   "fetch the last 100 messages" behavior.
       const conversationService = require('./conversation.service');
       let historyMessages = [];
-      try {
-        const history = await conversationService.getConversationHistory(conversationId, 100);
-        if (history.length > 0 && history[history.length - 1].role === 'user') {
-          history.pop();
-        }
-        historyMessages = history.map(m => ({
+      if (Array.isArray(config.historyMessages)) {
+        historyMessages = config.historyMessages.map(m => ({
           role: m.role,
-          content: m.role === 'assistant' ? conversationService.stripUIMarkup(m.content) : m.content
+          content: m.role === 'assistant' ? conversationService.stripUIMarkup(m.content) : m.content,
         }));
-      } catch (err) {
-        console.warn('⚠️ Could not load conversation history from DB:', err.message);
+      } else {
+        try {
+          const history = await conversationService.getConversationHistory(conversationId, 100);
+          if (history.length > 0 && history[history.length - 1].role === 'user') {
+            history.pop();
+          }
+          historyMessages = history.map(m => ({
+            role: m.role,
+            content: m.role === 'assistant' ? conversationService.stripUIMarkup(m.content) : m.content
+          }));
+        } catch (err) {
+          console.warn('⚠️ Could not load conversation history from DB:', err.message);
+        }
       }
 
       // Clean history for Claude (only user/assistant roles)
