@@ -1,0 +1,31 @@
+{
+  "pluginId":          "vibe-extractor",
+  "displayName":       "Vibe Extractor",
+  "description":       "Read soft signals — tone, mood, energy, sufferings.",
+  "purpose":           "Captures soft, fuzzy signals from the conversation — emotional state, communication style, what the user is feeling but not saying. Reach for this when the Talker needs to react to HOW someone is talking, not WHAT they're saying: a stubborn customer, a confused tone, a frustrated escalation, a hopeful turn. Use Field Extractor instead for hard facts (age, name, intent class, employment). Vibe fields are usually `source: inferred` (read between the lines) but `explicit` is allowed too — same field shape as Field Extractor, just a different mental mode and richer defaults. Defaults to a bigger model and a longer history window because reading vibe needs context. Place upstream of Talker so the response can adapt to the vibe; multiple Vibe Extractors can coexist if you want different dimensions read by different prompts.",
+  "icon":              "🧐",
+  "color":             "#ec4899",
+
+  "defaultLane":       "main",
+  "fieldMode":         "extractor",
+  "allowedFieldSources": ["inferred", "explicit"],
+  "speaks":            false,
+
+  "allowedOutputTypes": ["json-to-memory"],
+  "defaultOutputType":  "json-to-memory",
+
+  "defaultContext": {
+    "history":      { "mode": "last_n", "n": 8 },
+    "persona":      false,
+    "memoryReads":  []
+  },
+
+  "defaultPromptTemplate": "{{prompt}}\n\n## Vibe schema\n{{fields_schema}}\n\n## Currently read\n{{fields_current}}\n\n{{memory}}",
+
+  "defaultConfig": {
+    "prompt": "Read between the lines of the conversation. Capture the user's vibe — tone, mood, communication style, emotional state — based on patterns, not single statements.\n\nGuidance:\n- Look at HOW the user writes: word choice, pacing, hedging, urgency, sarcasm.\n- Trust patterns over single utterances. One frustrated message doesn't mean an angry user; consistent terseness does.\n- Stay tentative when signals are mixed. Better to leave a field empty than to misread it.\n\nOUTPUT RULES:\n- ONLY include a key for a field if you actually have a confident read this turn.\n- If you couldn't read a vibe, OMIT the key — do not include it.\n- Never return null. Never return empty strings. Never return \"unknown\" or \"unclear\".\n- It is correct and expected to return {} when nothing was clear enough to capture.",
+    "model":  { "providerId": "anthropic", "modelId": "claude-sonnet-4-6" },
+    "name":   "",
+    "extractsFields": []
+  }
+}

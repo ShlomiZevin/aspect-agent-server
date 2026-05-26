@@ -43,9 +43,13 @@ function buildPersonaBlock(personaText, enabled) {
 
 /**
  * `## Memory` block. Runtime contract: include only fields with
- * VALUES, never nulls. Mirrors the client preview.
+ * VALUES, never nulls. Mirrors the client preview byte-for-byte —
+ * see buildPromptPreview.ts.
  *
- * @param {Array<string|null>} selectedDomains — null = "(ungrouped)"
+ * @param {Array<string|null>} selectedDomains — null = the no-domain
+ *        bucket, rendered under the `### general` subheader to match
+ *        the server-side memory storage key (`_general` in
+ *        builderMemory.js). Avoids the older "(ungrouped)" label.
  * @param {(domain: string|null) => Record<string, unknown>} valuesByDomain
  *        — given a domain name (or null), return a key→value map of
  *          fields that have values in that domain. Empty map → empty
@@ -54,7 +58,7 @@ function buildPersonaBlock(personaText, enabled) {
 function buildMemoryBlock(selectedDomains, valuesByDomain) {
   if (!selectedDomains || selectedDomains.length === 0) return '';
   const sections = selectedDomains.map(d => {
-    const label = d === null ? '(ungrouped)' : d;
+    const label = d === null ? 'general' : d;
     const map = valuesByDomain(d) || {};
     return `### ${label}\n${JSON.stringify(map, null, 2)}`;
   });

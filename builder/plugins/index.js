@@ -20,4 +20,5 @@
 
 require('./talker/addon.talker');
 require('./fieldExtractor/addon.fieldExtractor');
+require('./vibeExtractor/addon.vibeExtractor');
 require('./transitionRouter/addon.transitionRouter');
