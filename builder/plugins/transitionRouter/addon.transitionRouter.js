@@ -14,79 +14,10 @@
  */
 
 const { registerPlugin } = require('../../runtime/pluginRegistry');
-const builderMemory = require('../../runtime/builderMemory');
+const { evaluateConditions } = require('../../runtime/conditionMatcher');
 const descriptor = require('../../addons/transitionRouter.addon.json');
 
 const TRANSITION_ROUTER_PLUGIN_ID = descriptor.pluginId;
-
-/**
- * @param {object} blob
- * @param {object} condition
- * @returns {{ ok: boolean, why: string }}
- */
-/**
- * Apply a binary operator. Both sides coerced as needed:
- *   - string ops (contains / starts-with / ends-with) → String() both
- *   - numeric ops (gt / gte / lt / lte) → Number() both, NaN → not-ok
- *   - equality (equals / not-equals) → String() both
- */
-function applyOp(op, actual, expected) {
-  if (op === 'equals')      return String(actual) === String(expected);
-  if (op === 'not-equals')  return String(actual) !== String(expected);
-  if (op === 'contains')    return String(actual).includes(String(expected));
-  if (op === 'starts-with') return String(actual).startsWith(String(expected));
-  if (op === 'ends-with')   return String(actual).endsWith(String(expected));
-  if (op === 'gt' || op === 'gte' || op === 'lt' || op === 'lte') {
-    const a = Number(actual);
-    const b = Number(expected);
-    if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
-    if (op === 'gt')  return a >  b;
-    if (op === 'gte') return a >= b;
-    if (op === 'lt')  return a <  b;
-    if (op === 'lte') return a <= b;
-  }
-  return false;
-}
-
-function evaluateCondition(blob, condition) {
-  switch (condition.type) {
-    case 'fields-collected': {
-      const fields = Array.isArray(condition.fields) ? condition.fields : [];
-      if (fields.length === 0) return { ok: false, why: 'no fields configured' };
-      const missing = fields.filter(name => {
-        const v = builderMemory.findFieldValue(blob, name);
-        return v === undefined || v === null || v === '';
-      });
-      return missing.length === 0
-        ? { ok: true,  why: `all ${fields.length} fields populated` }
-        : { ok: false, why: `missing: ${missing.join(', ')}` };
-    }
-    case 'field': {
-      const v = builderMemory.findFieldValue(blob, condition.field);
-      const op = condition.op;
-      // `in` / `not-in` use the `values` array; everything else uses
-      // the scalar `value`. Mirrors the client's TransitionCondition.
-      if (op === 'in' || op === 'not-in') {
-        const values = Array.isArray(condition.values) ? condition.values : [];
-        const inSet = v !== undefined && values.some(x => String(x) === String(v));
-        const ok = op === 'in' ? inSet : !inSet;
-        return {
-          ok,
-          why: `${condition.field}=${JSON.stringify(v)} ${op} [${values.join(', ')}]`,
-        };
-      }
-      const ok = v !== undefined && applyOp(op, v, condition.value);
-      return {
-        ok,
-        why: ok
-          ? `${condition.field} ${op} ${JSON.stringify(condition.value)} (actual: ${JSON.stringify(v)})`
-          : `${condition.field}=${JSON.stringify(v)} fails ${op} ${JSON.stringify(condition.value)}`,
-      };
-    }
-    default:
-      return { ok: false, why: `unknown condition type "${condition.type}"` };
-  }
-}
 
 async function run(ctx) {
   const { instance, memory } = ctx;
@@ -109,17 +40,10 @@ async function run(ctx) {
     };
   }
 
-  // ALL conditions must pass. Short-circuit on first miss.
-  const evaluations = [];
-  let allOk = true;
-  for (const c of conditions) {
-    const res = evaluateCondition(memory, c);
-    evaluations.push({ type: c.type, ok: res.ok, why: res.why });
-    if (!res.ok) {
-      allOk = false;
-      break;
-    }
-  }
+  // ALL conditions must pass — shared matcher short-circuits on first
+  // miss and returns the partial evaluations array so we can show
+  // exactly which condition failed in the addon run card.
+  const { ok: allOk, evaluations } = evaluateConditions(memory, conditions);
 
   if (!allOk) {
     return {

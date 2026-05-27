@@ -8,7 +8,7 @@
  *   2) merge in new writes after each addon runs.
  *
  * Storage shape (namespace `builder_memory`, conversation-scoped row
- * in `context_data`) — two parallel sections:
+ * in `context_data`) — three parallel sections:
  *
  *   {
  *     "memory": {
@@ -19,23 +19,34 @@
  *     "thinking": {
  *       "strategy":          { advice: "Focus on price objections" },
  *       ...
+ *     },
+ *     "triggered": {
+ *       "scripts":           { handling_guide: "## Complaint Handling..." },
+ *       ...
  *     }
  *   }
  *
- * The two sections live side-by-side rather than mingled because they
- * represent different brain functions: Memory is recalled facts (what
- * we KNOW), Thinking is current reasoning (what we PLAN). Storage is
- * unified — both go in the same row, same shape — but the top-level
- * split keeps the prompt assembler / UI / read picker honest about
- * which is which.
+ * The three sections live side-by-side rather than mingled because
+ * they represent different brain functions:
+ *   - Memory:    recalled facts (what we KNOW).
+ *   - Thinking:  current reasoning (what we PLAN — the Thinker writes here).
+ *   - Triggered: pre-scripted guidance fired by rules (the Triggered
+ *                Context addon writes here — basal ganglia / procedural
+ *                memory in the brain metaphor).
+ *
+ * Storage is unified — they all go in the same row, same shape — but
+ * the top-level split keeps the prompt assembler / UI / read picker
+ * honest about which is which.
  *
  * `_general` is the no-domain bucket inside each section. It keeps
  * the storage shape uniform without inventing user-facing labels.
  *
- * Backward compat: a previously-stored blob WITHOUT the
- * memory/thinking split is treated as legacy memory only. The first
- * save after the upgrade re-writes it in the new shape — no DB
- * migration required.
+ * Backward compat: a previously-stored blob WITHOUT any section keys
+ * is treated as legacy memory only. A blob that has `memory` and
+ * `thinking` but no `triggered` (i.e. anything stored after the
+ * Thinking ship but before Triggered) just defaults `triggered` to
+ * `{}`. The first save after the upgrade re-writes it in the new
+ * shape — no DB migration required.
  */
 
 const contextService = require('../../services/context.service');
@@ -44,36 +55,41 @@ const NAMESPACE = 'builder_memory';
 const GENERAL_KEY = '_general';
 const SECTION_MEMORY = 'memory';
 const SECTION_THINKING = 'thinking';
-const SECTIONS = [SECTION_MEMORY, SECTION_THINKING];
+const SECTION_TRIGGERED = 'triggered';
+const SECTIONS = [SECTION_MEMORY, SECTION_THINKING, SECTION_TRIGGERED];
 
 function domainKey(domain) {
   return domain && String(domain).trim() ? String(domain) : GENERAL_KEY;
 }
 
 function sectionKey(kind) {
-  return kind === SECTION_THINKING ? SECTION_THINKING : SECTION_MEMORY;
+  if (kind === SECTION_THINKING)  return SECTION_THINKING;
+  if (kind === SECTION_TRIGGERED) return SECTION_TRIGGERED;
+  return SECTION_MEMORY;
 }
 
 /**
  * Normalize a raw stored blob (possibly legacy-shaped) into the
- * { memory, thinking } shape every other helper expects. Mutates
- * nothing — returns a fresh object.
+ * { memory, thinking, triggered } shape every other helper expects.
+ * Mutates nothing — returns a fresh object.
  */
 function normalizeBlob(raw) {
   if (!raw || typeof raw !== 'object') {
-    return { [SECTION_MEMORY]: {}, [SECTION_THINKING]: {} };
+    return { [SECTION_MEMORY]: {}, [SECTION_THINKING]: {}, [SECTION_TRIGGERED]: {} };
   }
   // New shape — has at least one of the section keys at top level.
-  if (Object.prototype.hasOwnProperty.call(raw, SECTION_MEMORY) ||
-      Object.prototype.hasOwnProperty.call(raw, SECTION_THINKING)) {
+  if (Object.prototype.hasOwnProperty.call(raw, SECTION_MEMORY)    ||
+      Object.prototype.hasOwnProperty.call(raw, SECTION_THINKING)  ||
+      Object.prototype.hasOwnProperty.call(raw, SECTION_TRIGGERED)) {
     return {
-      [SECTION_MEMORY]:   raw[SECTION_MEMORY]   && typeof raw[SECTION_MEMORY]   === 'object' ? raw[SECTION_MEMORY]   : {},
-      [SECTION_THINKING]: raw[SECTION_THINKING] && typeof raw[SECTION_THINKING] === 'object' ? raw[SECTION_THINKING] : {},
+      [SECTION_MEMORY]:    raw[SECTION_MEMORY]    && typeof raw[SECTION_MEMORY]    === 'object' ? raw[SECTION_MEMORY]    : {},
+      [SECTION_THINKING]:  raw[SECTION_THINKING]  && typeof raw[SECTION_THINKING]  === 'object' ? raw[SECTION_THINKING]  : {},
+      [SECTION_TRIGGERED]: raw[SECTION_TRIGGERED] && typeof raw[SECTION_TRIGGERED] === 'object' ? raw[SECTION_TRIGGERED] : {},
     };
   }
   // Legacy shape: domains at the root → treat as memory only. Next
   // save normalizes this on disk, so the migration is invisible.
-  return { [SECTION_MEMORY]: raw, [SECTION_THINKING]: {} };
+  return { [SECTION_MEMORY]: raw, [SECTION_THINKING]: {}, [SECTION_TRIGGERED]: {} };
 }
 
 /**
@@ -81,7 +97,9 @@ function normalizeBlob(raw) {
  * `{ memory: {}, thinking: {} }` when nothing is stored yet.
  */
 async function loadMemory(userId, conversationId) {
-  if (!userId || !conversationId) return { [SECTION_MEMORY]: {}, [SECTION_THINKING]: {} };
+  if (!userId || !conversationId) {
+    return { [SECTION_MEMORY]: {}, [SECTION_THINKING]: {}, [SECTION_TRIGGERED]: {} };
+  }
   const raw = await contextService.getContext(userId, NAMESPACE, conversationId);
   return normalizeBlob(raw);
 }
@@ -205,5 +223,6 @@ module.exports = {
   GENERAL_KEY,
   SECTION_MEMORY,
   SECTION_THINKING,
+  SECTION_TRIGGERED,
   SECTIONS,
 };

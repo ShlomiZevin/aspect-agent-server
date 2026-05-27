@@ -20,7 +20,7 @@
     "thinkingReads": []
   },
 
-  "defaultPromptTemplate": "{{persona}}\n\n{{prompt}}\n\n{{memory}}",
+  "defaultPromptTemplate": "{{persona}}\n\n{{prompt}}\n\n{{memory}}\n\n{{triggered}}",
 
   "defaultConfig": {
     "prompt": "You are the strategist for this conversation. Read what's happened so far and produce concrete guidance for the talker that comes next.\n\nReturn a JSON object. Suggested keys (use what fits the situation — skip or add as needed):\n- main_plan: short paragraph on the overall approach this turn.\n- empathy_tone: one-line guidance on how to acknowledge the user's emotional state.\n- open_question: an optional follow-up that keeps the conversation moving.\n\nGuidelines:\n- Be concrete. \"Acknowledge frustration, then redirect to value\" beats \"be empathetic\".\n- Lean on the memory and any vibe signals you can see.\n- Stay terse. Each value can be a sentence or two — long paragraphs are fine when warranted, but don't pad.\n- It is fine to return only a subset of keys when others don't apply.\n\nOutput JSON only — no preamble, no markdown fences.",

@@ -1,0 +1,38 @@
+{
+  "pluginId":          "triggered-context",
+  "displayName":       "Triggered Context",
+  "description":       "Inject deterministic guidance when conditions match.",
+  "purpose":           "Loads pre-scripted guidance into the brain's `triggered` section based on hard-coded rules over field values. Reach for this when you know exactly what the talker / thinker should be told under a specific condition — e.g. 'when intent equals complaint, follow this de-escalation script'. The hard alternative to KB: KB is similarity-search guessing, this is deterministic if-this-then-that. Place upstream of the Thinker / Talker (or whichever addon consumes its output). Each rule has conditions (AND-of-clauses, same vocabulary as Transition Router) and a `contextText`. Matched rules write their text to `triggered.<domain>.<field>` — downstream addons read via `triggeredReads`, mirroring how they read memory / thinking. No LLM call. Multiple Triggered Context loaders can coexist with different domains for orthogonal rule sets.",
+  "icon":              "🎯",
+  "color":             "#06b6d4",
+
+  "defaultLane":       "main",
+  "fieldMode":         "none",
+  "speaks":            false,
+
+  "allowedOutputTypes": ["json-to-memory"],
+  "defaultOutputType":  "json-to-memory",
+
+  "defaultContext": {
+    "history":       { "mode": "none" },
+    "persona":       false,
+    "memoryReads":   [],
+    "thinkingReads": [],
+    "triggeredReads": []
+  },
+
+  "defaultPromptTemplate": "",
+
+  "defaultConfig": {
+    "name":   "",
+    "domain": "triggered",
+    "rules":  []
+  },
+
+  "hideStandardSections": {
+    "context":         true,
+    "output":          true,
+    "promptTemplate":  true,
+    "repository":      true
+  }
+}

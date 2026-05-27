@@ -178,14 +178,16 @@ router.get('/:slug/conversations/:convId/messages', async (req, res) => {
 
 /**
  * GET /api/agents/:slug/conversations/:convId/memory
- *   Returns the per-conversation brain blob — two parallel sections:
+ *   Returns the per-conversation brain blob — three parallel sections:
  *     {
- *       memory:   { "<domain>": { fieldName: value, ... }, ... },
- *       thinking: { "<domain>": { fieldName: value, ... }, ... }
+ *       memory:    { "<domain>": { fieldName: value, ... }, ... },
+ *       thinking:  { "<domain>": { fieldName: value, ... }, ... },
+ *       triggered: { "<domain>": { fieldName: value, ... }, ... }
  *     }
  *   `memory` holds facts (Field/Vibe Extractor writes); `thinking`
- *   holds the current plan (Thinker writes). The `_general` bucket
- *   inside each section holds domain-less fields.
+ *   holds the current plan (Thinker writes); `triggered` holds the
+ *   pre-scripted guidance the Triggered Context addon loaded this turn.
+ *   The `_general` bucket inside each section holds domain-less fields.
  */
 router.get('/:slug/conversations/:convId/memory', async (req, res) => {
   try {
@@ -195,7 +197,11 @@ router.get('/:slug/conversations/:convId/memory', async (req, res) => {
     const userId = await resolveUserId(String(ownerUserId));
     const builderMemory = require('../runtime/builderMemory');
     const blob = await builderMemory.loadMemory(userId, Number(convId));
-    res.json({ memory: blob.memory, thinking: blob.thinking });
+    res.json({
+      memory:    blob.memory,
+      thinking:  blob.thinking,
+      triggered: blob.triggered,
+    });
   } catch (err) {
     console.error('[builder] GET memory failed:', err);
     res.status(500).json({ error: err.message });
@@ -204,11 +210,11 @@ router.get('/:slug/conversations/:convId/memory', async (req, res) => {
 
 /**
  * PATCH /api/agents/:slug/conversations/:convId/memory
- *   Body: { ownerUserId, field, value?, domain?, kind?: 'memory'|'thinking', clear?: boolean }
+ *   Body: { ownerUserId, field, value?, domain?, kind?: 'memory'|'thinking'|'triggered', clear?: boolean }
  *   - clear=true → removes the field from every bucket of the section.
  *   - otherwise → sets it under `domain` (or `_general` if null/missing)
  *     in the requested section. Defaults to `kind: 'memory'`.
- *   Returns the updated brain blob ({ memory, thinking }).
+ *   Returns the updated brain blob ({ memory, thinking, triggered }).
  */
 router.patch('/:slug/conversations/:convId/memory', async (req, res) => {
   try {
@@ -218,7 +224,10 @@ router.patch('/:slug/conversations/:convId/memory', async (req, res) => {
     if (!field) return res.status(400).json({ error: 'Missing field' });
     const userId = await resolveUserId(String(ownerUserId));
     const builderMemory = require('../runtime/builderMemory');
-    const section = kind === 'thinking' ? 'thinking' : 'memory';
+    const section =
+      kind === 'thinking'  ? 'thinking'  :
+      kind === 'triggered' ? 'triggered' :
+      'memory';
     const blob = await builderMemory.loadMemory(userId, Number(convId));
     if (clear) {
       builderMemory.clearField(blob, field, section);
@@ -226,7 +235,11 @@ router.patch('/:slug/conversations/:convId/memory', async (req, res) => {
       builderMemory.setField(blob, field, value, domain ?? null, section);
     }
     await builderMemory.saveMemory(userId, Number(convId), blob);
-    res.json({ memory: blob.memory, thinking: blob.thinking });
+    res.json({
+      memory:    blob.memory,
+      thinking:  blob.thinking,
+      triggered: blob.triggered,
+    });
   } catch (err) {
     console.error('[builder] PATCH memory failed:', err);
     res.status(500).json({ error: err.message });

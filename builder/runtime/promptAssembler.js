@@ -7,7 +7,7 @@
  * given the same inputs. Drift = silent prompt divergence.
  *
  * Substitutes placeholders from `KNOWN_PROMPT_PLACEHOLDERS`:
- *   {{prompt}}, {{persona}}, {{memory}}, {{thinking}},
+ *   {{prompt}}, {{persona}}, {{memory}}, {{thinking}}, {{triggered}},
  *   {{fields_schema}}, {{fields_current}}
  *
  * History is NOT a placeholder — it's a separate parameter to the
@@ -85,6 +85,22 @@ function buildThinkingBlock(selectedDomains, valuesByDomain) {
 }
 
 /**
+ * `## Triggered` block. Same shape as `## Memory` and `## Thinking`
+ * but pulls from the brain's `triggered` section — where the
+ * Triggered Context addon's matched-rule texts land. Byte-equal to
+ * the client preview.
+ */
+function buildTriggeredBlock(selectedDomains, valuesByDomain) {
+  if (!selectedDomains || selectedDomains.length === 0) return '';
+  const sections = selectedDomains.map(d => {
+    const label = d === null ? 'general' : d;
+    const map = valuesByDomain(d) || {};
+    return `### ${label}\n${JSON.stringify(map, null, 2)}`;
+  });
+  return `## Triggered\n${sections.join('\n\n')}`;
+}
+
+/**
  * `## Field schema` block — one line per field.
  *
  * Format uses explicit `key=value` props inside the parens so the
@@ -139,8 +155,9 @@ function buildFieldsCurrentBlock(fields, valueOf) {
  * @param {object} args
  * @param {object} args.instance       — AddonInstance (has promptTemplate, context, config)
  * @param {string} args.agentPersona   — agent's persona text (only used if context.persona)
- * @param {function} args.memoryValuesByDomain   — (domain) → memory values map
- * @param {function} args.thinkingValuesByDomain — (domain) → thinking values map
+ * @param {function} args.memoryValuesByDomain    — (domain) → memory values map
+ * @param {function} args.thinkingValuesByDomain  — (domain) → thinking values map
+ * @param {function} args.triggeredValuesByDomain — (domain) → triggered values map
  * @param {function} args.fieldValueOf — (fieldName) → captured value or undefined
  * @param {Array} [args.extractorFields] — field defs this extractor extracts
  *        (already resolved by the caller from agent.fields ∪ crew.fields
@@ -148,7 +165,15 @@ function buildFieldsCurrentBlock(fields, valueOf) {
  *        plugins.
  * @returns {string} the assembled prompt
  */
-function assemblePrompt({ instance, agentPersona, memoryValuesByDomain, thinkingValuesByDomain, fieldValueOf, extractorFields }) {
+function assemblePrompt({
+  instance,
+  agentPersona,
+  memoryValuesByDomain,
+  thinkingValuesByDomain,
+  triggeredValuesByDomain,
+  fieldValueOf,
+  extractorFields,
+}) {
   const template = instance.promptTemplate || '';
   const cfg = instance.config || {};
   const fields = Array.isArray(extractorFields) ? extractorFields : [];
@@ -162,8 +187,9 @@ function assemblePrompt({ instance, agentPersona, memoryValuesByDomain, thinking
   return substitute(template, {
     prompt:         cfg.prompt || '',
     persona:        buildPersonaBlock(agentPersona, !!instance.context?.persona),
-    memory:         buildMemoryBlock(instance.context?.memoryReads || [], memoryValuesByDomain),
-    thinking:       buildThinkingBlock(instance.context?.thinkingReads || [], thinkingValuesByDomain || (() => ({}))),
+    memory:         buildMemoryBlock(instance.context?.memoryReads    || [], memoryValuesByDomain),
+    thinking:       buildThinkingBlock(instance.context?.thinkingReads || [], thinkingValuesByDomain  || (() => ({}))),
+    triggered:      buildTriggeredBlock(instance.context?.triggeredReads || [], triggeredValuesByDomain || (() => ({}))),
     fields_schema:  isExtractor ? buildFieldsSchemaBlock(fields) : '',
     fields_current: isExtractor ? buildFieldsCurrentBlock(fields, fieldValueOf) : '',
   });

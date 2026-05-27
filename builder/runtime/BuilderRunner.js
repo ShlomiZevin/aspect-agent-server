@@ -113,13 +113,15 @@ async function runOnce({
 
   // ── 2. Load accumulated brain state + accessors for the prompt. ──
   //
-  // The blob is normalized to `{ memory, thinking }` by loadMemory.
-  // Each plugin gets accessors for both sections — extractors mainly
-  // touch memory, Talker reads from both, Thinker writes to thinking.
+  // The blob is normalized to `{ memory, thinking, triggered }` by
+  // loadMemory. Each plugin gets accessors for all three sections —
+  // extractors mainly touch memory, Talker reads from all three,
+  // Thinker writes to thinking, Triggered Context writes to triggered.
   const memory = await builderMemory.loadMemory(userId, conversationId);
-  const fieldValueOf            = (name)   => builderMemory.findFieldValue(memory, name, 'memory');
-  const memoryValuesByDomain    = (domain) => builderMemory.valuesForDomain(memory, domain, 'memory');
-  const thinkingValuesByDomain  = (domain) => builderMemory.valuesForDomain(memory, domain, 'thinking');
+  const fieldValueOf              = (name)   => builderMemory.findFieldValue(memory, name, 'memory');
+  const memoryValuesByDomain      = (domain) => builderMemory.valuesForDomain(memory, domain, 'memory');
+  const thinkingValuesByDomain    = (domain) => builderMemory.valuesForDomain(memory, domain, 'thinking');
+  const triggeredValuesByDomain   = (domain) => builderMemory.valuesForDomain(memory, domain, 'triggered');
 
   let assistantText = '';
 
@@ -174,6 +176,7 @@ async function runOnce({
         agentPersona,
         memoryValuesByDomain,
         thinkingValuesByDomain,
+        triggeredValuesByDomain,
         fieldValueOf,
         extractorFields,
       });
