@@ -26,20 +26,16 @@ const MODEL    = 'claude-sonnet-4-6';
 const PROCESS  = 'alfred-apply-patch';
 const MAX_TOKENS = 8192;
 
-// Load the TypeScript types file at module load. This is the SAME
-// source of truth the client compiles against — using it directly
-// (instead of a hand-maintained markdown mirror) eliminates the
-// "did we remember to sync the schema doc?" failure mode.
+// Load the canonical TypeScript types file at module load. The
+// server owns this file (see aspect-agent-server/builder/types/
+// index.ts — same content the client builds against, kept in sync
+// via the client's sync-types script).
 //
-// Path crosses the server/client boundary: the client lives at
-// ../../../aspect-react-client/ relative to this file. We send the
-// file's contents verbatim into the system prompt; Claude reads
-// TypeScript fluently.
+// Living inside the server's own tree means it ships in the Docker
+// build context: no cross-folder read, no ENOENT in production. The
+// client mirrors at build time; it's the consumer, not the owner.
 const TYPES_SOURCE = fs.readFileSync(
-  path.join(
-    __dirname, '..', '..', '..',
-    'aspect-react-client', 'src', 'builder', 'types', 'index.ts',
-  ),
+  path.join(__dirname, '..', '..', 'builder', 'types', 'index.ts'),
   'utf8',
 );
 
