@@ -19,7 +19,7 @@
     "memoryReads":  []
   },
 
-  "defaultPromptTemplate": "{{persona}}\n\n{{prompt}}\n\n{{memory}}",
+  "defaultPromptTemplate": "{{persona}}\n\n{{prompt}}\n\n{{memory}}\n\n{{thinking}}",
 
   "defaultConfig": {
     "prompt": "",

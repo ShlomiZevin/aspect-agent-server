@@ -7,7 +7,7 @@
  * given the same inputs. Drift = silent prompt divergence.
  *
  * Substitutes placeholders from `KNOWN_PROMPT_PLACEHOLDERS`:
- *   {{prompt}}, {{persona}}, {{memory}},
+ *   {{prompt}}, {{persona}}, {{memory}}, {{thinking}},
  *   {{fields_schema}}, {{fields_current}}
  *
  * History is NOT a placeholder — it's a separate parameter to the
@@ -66,6 +66,25 @@ function buildMemoryBlock(selectedDomains, valuesByDomain) {
 }
 
 /**
+ * `## Thinking` block. Same shape as `## Memory` but pulls from the
+ * brain's thinking section instead — Thinker addon writes land here.
+ * Kept structurally identical to the memory block so the LLM treats
+ * both as "selected JSON state grouped by domain"; only the section
+ * header tells them apart.
+ *
+ * Mirrors the client preview byte-for-byte — see buildPromptPreview.ts.
+ */
+function buildThinkingBlock(selectedDomains, valuesByDomain) {
+  if (!selectedDomains || selectedDomains.length === 0) return '';
+  const sections = selectedDomains.map(d => {
+    const label = d === null ? 'general' : d;
+    const map = valuesByDomain(d) || {};
+    return `### ${label}\n${JSON.stringify(map, null, 2)}`;
+  });
+  return `## Thinking\n${sections.join('\n\n')}`;
+}
+
+/**
  * `## Field schema` block — one line per field.
  *
  * Format uses explicit `key=value` props inside the parens so the
@@ -118,9 +137,10 @@ function buildFieldsCurrentBlock(fields, valueOf) {
  * Assemble the prompt for an addon instance.
  *
  * @param {object} args
- * @param {object} args.instance     — AddonInstance (has promptTemplate, context, config)
- * @param {string} args.agentPersona — agent's persona text (only used if context.persona)
- * @param {function} args.memoryValuesByDomain — (domain) → map of values for that domain
+ * @param {object} args.instance       — AddonInstance (has promptTemplate, context, config)
+ * @param {string} args.agentPersona   — agent's persona text (only used if context.persona)
+ * @param {function} args.memoryValuesByDomain   — (domain) → memory values map
+ * @param {function} args.thinkingValuesByDomain — (domain) → thinking values map
  * @param {function} args.fieldValueOf — (fieldName) → captured value or undefined
  * @param {Array} [args.extractorFields] — field defs this extractor extracts
  *        (already resolved by the caller from agent.fields ∪ crew.fields
@@ -128,7 +148,7 @@ function buildFieldsCurrentBlock(fields, valueOf) {
  *        plugins.
  * @returns {string} the assembled prompt
  */
-function assemblePrompt({ instance, agentPersona, memoryValuesByDomain, fieldValueOf, extractorFields }) {
+function assemblePrompt({ instance, agentPersona, memoryValuesByDomain, thinkingValuesByDomain, fieldValueOf, extractorFields }) {
   const template = instance.promptTemplate || '';
   const cfg = instance.config || {};
   const fields = Array.isArray(extractorFields) ? extractorFields : [];
@@ -143,6 +163,7 @@ function assemblePrompt({ instance, agentPersona, memoryValuesByDomain, fieldVal
     prompt:         cfg.prompt || '',
     persona:        buildPersonaBlock(agentPersona, !!instance.context?.persona),
     memory:         buildMemoryBlock(instance.context?.memoryReads || [], memoryValuesByDomain),
+    thinking:       buildThinkingBlock(instance.context?.thinkingReads || [], thinkingValuesByDomain || (() => ({}))),
     fields_schema:  isExtractor ? buildFieldsSchemaBlock(fields) : '',
     fields_current: isExtractor ? buildFieldsCurrentBlock(fields, fieldValueOf) : '',
   });

@@ -111,10 +111,15 @@ async function runOnce({
   const allAddons        = Array.isArray(runnable.crew.body?.addons) ? runnable.crew.body.addons : [];
   const blockingAddons   = allAddons.filter(a => a.lane === 'main' && a.enabled !== false);
 
-  // ── 2. Load accumulated memory + memory accessors for the prompt. ──
+  // ── 2. Load accumulated brain state + accessors for the prompt. ──
+  //
+  // The blob is normalized to `{ memory, thinking }` by loadMemory.
+  // Each plugin gets accessors for both sections — extractors mainly
+  // touch memory, Talker reads from both, Thinker writes to thinking.
   const memory = await builderMemory.loadMemory(userId, conversationId);
-  const fieldValueOf         = (name)   => builderMemory.findFieldValue(memory, name);
-  const memoryValuesByDomain = (domain) => builderMemory.valuesForDomain(memory, domain);
+  const fieldValueOf            = (name)   => builderMemory.findFieldValue(memory, name, 'memory');
+  const memoryValuesByDomain    = (domain) => builderMemory.valuesForDomain(memory, domain, 'memory');
+  const thinkingValuesByDomain  = (domain) => builderMemory.valuesForDomain(memory, domain, 'thinking');
 
   let assistantText = '';
 
@@ -159,15 +164,16 @@ async function runOnce({
       .map(id => fieldPool.find(f => f.id === id))
       .filter(Boolean);
 
-    // 5. Assemble the prompt. Memory readers close over the current
-    //    memory blob, which mutates across iterations as upstream
-    //    extractors produce writes.
+    // 5. Assemble the prompt. Readers close over the current brain
+    //    blob, which mutates across iterations as upstream addons
+    //    produce writes.
     let prompt = '';
     try {
       prompt = assemblePrompt({
         instance,
         agentPersona,
         memoryValuesByDomain,
+        thinkingValuesByDomain,
         fieldValueOf,
         extractorFields,
       });

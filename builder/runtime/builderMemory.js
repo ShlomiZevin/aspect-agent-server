@@ -1,81 +1,143 @@
 /**
- * Builder V2 — per-conversation memory.
+ * Builder V2 — per-conversation brain state.
  *
- * Thin wrapper over context.service so BuilderRunner can:
- *   1) load the field values collected so far in this conversation
- *      (used to render `## Memory` and `## Already collected` blocks
- *      in subsequent turns), and
- *   2) merge in new memory writes after each extractor runs.
+ * Wraps `context.service` so the engine can:
+ *   1) load whatever the addons in this conversation have written so
+ *      far (used to render `## Memory` and `## Thinking` blocks in
+ *      subsequent turns), and
+ *   2) merge in new writes after each addon runs.
  *
- * Storage shape (under namespace `builder_memory`, conversation-
- * scoped row in `context_data`):
+ * Storage shape (namespace `builder_memory`, conversation-scoped row
+ * in `context_data`) — two parallel sections:
  *
  *   {
- *     "_general":          { fieldA: 2, fieldB: "yes" },
- *     "<domain-name>":     { fieldC: "manager" },
- *     ...
+ *     "memory": {
+ *       "_general":          { fieldA: 2, fieldB: "yes" },
+ *       "<domain-name>":     { fieldC: "manager" },
+ *       ...
+ *     },
+ *     "thinking": {
+ *       "strategy":          { advice: "Focus on price objections" },
+ *       ...
+ *     }
  *   }
  *
- * `_general` bucket holds fields whose `domain` is empty/null —
- * keeps the storage shape uniform without inventing user-facing
- * "(ungrouped)" labels.
+ * The two sections live side-by-side rather than mingled because they
+ * represent different brain functions: Memory is recalled facts (what
+ * we KNOW), Thinking is current reasoning (what we PLAN). Storage is
+ * unified — both go in the same row, same shape — but the top-level
+ * split keeps the prompt assembler / UI / read picker honest about
+ * which is which.
+ *
+ * `_general` is the no-domain bucket inside each section. It keeps
+ * the storage shape uniform without inventing user-facing labels.
+ *
+ * Backward compat: a previously-stored blob WITHOUT the
+ * memory/thinking split is treated as legacy memory only. The first
+ * save after the upgrade re-writes it in the new shape — no DB
+ * migration required.
  */
 
 const contextService = require('../../services/context.service');
 
 const NAMESPACE = 'builder_memory';
 const GENERAL_KEY = '_general';
+const SECTION_MEMORY = 'memory';
+const SECTION_THINKING = 'thinking';
+const SECTIONS = [SECTION_MEMORY, SECTION_THINKING];
 
 function domainKey(domain) {
   return domain && String(domain).trim() ? String(domain) : GENERAL_KEY;
 }
 
-/**
- * Load the conversation's memory blob, or {} if there's nothing yet.
- * @param {number} userId
- * @param {number} conversationId
- */
-async function loadMemory(userId, conversationId) {
-  if (!userId || !conversationId) return {};
-  const blob = await contextService.getContext(userId, NAMESPACE, conversationId);
-  return blob && typeof blob === 'object' ? blob : {};
+function sectionKey(kind) {
+  return kind === SECTION_THINKING ? SECTION_THINKING : SECTION_MEMORY;
 }
 
 /**
- * Persist a memory blob (replaces the row).
+ * Normalize a raw stored blob (possibly legacy-shaped) into the
+ * { memory, thinking } shape every other helper expects. Mutates
+ * nothing — returns a fresh object.
+ */
+function normalizeBlob(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return { [SECTION_MEMORY]: {}, [SECTION_THINKING]: {} };
+  }
+  // New shape — has at least one of the section keys at top level.
+  if (Object.prototype.hasOwnProperty.call(raw, SECTION_MEMORY) ||
+      Object.prototype.hasOwnProperty.call(raw, SECTION_THINKING)) {
+    return {
+      [SECTION_MEMORY]:   raw[SECTION_MEMORY]   && typeof raw[SECTION_MEMORY]   === 'object' ? raw[SECTION_MEMORY]   : {},
+      [SECTION_THINKING]: raw[SECTION_THINKING] && typeof raw[SECTION_THINKING] === 'object' ? raw[SECTION_THINKING] : {},
+    };
+  }
+  // Legacy shape: domains at the root → treat as memory only. Next
+  // save normalizes this on disk, so the migration is invisible.
+  return { [SECTION_MEMORY]: raw, [SECTION_THINKING]: {} };
+}
+
+/**
+ * Load the conversation's brain blob in the canonical shape. Returns
+ * `{ memory: {}, thinking: {} }` when nothing is stored yet.
+ */
+async function loadMemory(userId, conversationId) {
+  if (!userId || !conversationId) return { [SECTION_MEMORY]: {}, [SECTION_THINKING]: {} };
+  const raw = await contextService.getContext(userId, NAMESPACE, conversationId);
+  return normalizeBlob(raw);
+}
+
+/**
+ * Persist a brain blob (replaces the row). Always writes in the
+ * canonical shape — even if the caller hands us a partial blob, we
+ * normalize first.
  */
 async function saveMemory(userId, conversationId, blob) {
   if (!userId || !conversationId) return;
-  await contextService.saveContext(userId, NAMESPACE, blob, conversationId);
+  await contextService.saveContext(userId, NAMESPACE, normalizeBlob(blob), conversationId);
 }
 
 /**
- * Merge a list of writes into the existing blob, in place. Returns
- * the same blob ref so callers can chain. New non-null values
- * overwrite older ones for the same (domain, field) pair.
+ * Merge a list of writes into the brain blob, in place. Returns the
+ * same blob ref so callers can chain. Each write specifies which
+ * section it goes into via `kind`:
  *
- * @param {Object} blob       — the loaded memory shape
- * @param {Array<{domain: string|null, field: string, value: unknown}>} writes
+ *   - 'memory'   (default) — facts the brain remembers
+ *   - 'thinking' — the brain's current plan
+ *
+ * Routing is per-write so a single addon could theoretically write
+ * to both sections in one turn. In practice, Field/Vibe Extractors
+ * emit 'memory' writes and Thinker emits 'thinking' writes.
+ *
+ * @param {Object} blob       — the loaded brain shape (must already
+ *                              be normalized — call normalizeBlob first
+ *                              if you're unsure)
+ * @param {Array<{kind?: 'memory'|'thinking', domain: string|null, field: string, value: unknown}>} writes
  */
 function applyWrites(blob, writes) {
   for (const w of writes) {
     if (w.value === null || w.value === undefined) continue;
-    const k = domainKey(w.domain);
-    if (!blob[k]) blob[k] = {};
-    blob[k][w.field] = w.value;
+    const sec = sectionKey(w.kind);
+    if (!blob[sec]) blob[sec] = {};
+    const dk = domainKey(w.domain);
+    if (!blob[sec][dk]) blob[sec][dk] = {};
+    blob[sec][dk][w.field] = w.value;
   }
   return blob;
 }
 
 /**
- * Lookup a field value across all domains. First non-null hit wins.
- * Used to populate `## Already collected` for an extractor whose
- * fields may or may not have a configured domain — we don't ask the
- * caller to know which bucket the field lives in.
+ * Lookup a field value across all domains in a given section. First
+ * non-null hit wins. Used to populate `## Already collected` for an
+ * extractor whose fields may or may not have a configured domain —
+ * we don't ask the caller to know which bucket the field lives in.
+ *
+ * Section defaults to 'memory' — extractors read facts, not thoughts.
  */
-function findFieldValue(blob, fieldName) {
-  for (const domain of Object.keys(blob)) {
-    const bucket = blob[domain];
+function findFieldValue(blob, fieldName, section = SECTION_MEMORY) {
+  const sec = blob?.[sectionKey(section)];
+  if (!sec) return undefined;
+  for (const domain of Object.keys(sec)) {
+    const bucket = sec[domain];
     if (bucket && Object.prototype.hasOwnProperty.call(bucket, fieldName)) {
       const v = bucket[fieldName];
       if (v !== null && v !== undefined) return v;
@@ -85,43 +147,48 @@ function findFieldValue(blob, fieldName) {
 }
 
 /**
- * Get the value map for one domain. `null` resolves to `_general`.
- * Returns {} when there's nothing for that domain.
+ * Get the value map for one domain inside a given section.
+ * `null` domain resolves to `_general`. Returns {} when empty.
  */
-function valuesForDomain(blob, domain) {
+function valuesForDomain(blob, domain, section = SECTION_MEMORY) {
+  const sec = blob?.[sectionKey(section)];
+  if (!sec) return {};
   const k = domainKey(domain);
-  return blob[k] || {};
+  return sec[k] || {};
 }
 
 /**
- * Remove every occurrence of a field across all domains in the blob,
+ * Remove every occurrence of a field across all domains in a section,
  * in place. Returns true if anything was removed.
  */
-function clearField(blob, fieldName) {
+function clearField(blob, fieldName, section = SECTION_MEMORY) {
+  const sec = blob?.[sectionKey(section)];
+  if (!sec) return false;
   let removed = false;
-  for (const k of Object.keys(blob)) {
-    const bucket = blob[k];
+  for (const k of Object.keys(sec)) {
+    const bucket = sec[k];
     if (bucket && Object.prototype.hasOwnProperty.call(bucket, fieldName)) {
       delete bucket[fieldName];
       removed = true;
       // Drop empty buckets so the JSON stays tidy.
-      if (Object.keys(bucket).length === 0) delete blob[k];
+      if (Object.keys(bucket).length === 0) delete sec[k];
     }
   }
   return removed;
 }
 
 /**
- * Set a field's value, in place. The optional `domain` (or null →
- * `_general`) decides which bucket it lands in. Also clears the same
- * field from any OTHER buckets so a field doesn't end up duplicated
- * across domains if it gets re-tagged.
+ * Set a field's value in the given section, in place. Clears the
+ * same field from any OTHER domains in the same section so it can't
+ * end up duplicated when re-tagged. Other sections are untouched.
  */
-function setField(blob, fieldName, value, domain) {
-  clearField(blob, fieldName);
+function setField(blob, fieldName, value, domain, section = SECTION_MEMORY) {
+  const sec = sectionKey(section);
+  if (!blob[sec]) blob[sec] = {};
+  clearField(blob, fieldName, sec);
   const k = domainKey(domain);
-  if (!blob[k]) blob[k] = {};
-  blob[k][fieldName] = value;
+  if (!blob[sec][k]) blob[sec][k] = {};
+  blob[sec][k][fieldName] = value;
   return blob;
 }
 
@@ -133,6 +200,10 @@ module.exports = {
   valuesForDomain,
   clearField,
   setField,
+  normalizeBlob,
   NAMESPACE,
   GENERAL_KEY,
+  SECTION_MEMORY,
+  SECTION_THINKING,
+  SECTIONS,
 };

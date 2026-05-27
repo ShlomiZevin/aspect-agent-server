@@ -178,10 +178,14 @@ router.get('/:slug/conversations/:convId/messages', async (req, res) => {
 
 /**
  * GET /api/agents/:slug/conversations/:convId/memory
- *   Returns the per-conversation builder_memory blob built up by
- *   extractor addons. Shape mirrors what BuilderRunner reads:
- *     { "<domain>": { fieldName: value, … }, ... }
- *   _general bucket holds domain-less fields.
+ *   Returns the per-conversation brain blob — two parallel sections:
+ *     {
+ *       memory:   { "<domain>": { fieldName: value, ... }, ... },
+ *       thinking: { "<domain>": { fieldName: value, ... }, ... }
+ *     }
+ *   `memory` holds facts (Field/Vibe Extractor writes); `thinking`
+ *   holds the current plan (Thinker writes). The `_general` bucket
+ *   inside each section holds domain-less fields.
  */
 router.get('/:slug/conversations/:convId/memory', async (req, res) => {
   try {
@@ -190,8 +194,8 @@ router.get('/:slug/conversations/:convId/memory', async (req, res) => {
     if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
     const userId = await resolveUserId(String(ownerUserId));
     const builderMemory = require('../runtime/builderMemory');
-    const memory = await builderMemory.loadMemory(userId, Number(convId));
-    res.json({ memory });
+    const blob = await builderMemory.loadMemory(userId, Number(convId));
+    res.json({ memory: blob.memory, thinking: blob.thinking });
   } catch (err) {
     console.error('[builder] GET memory failed:', err);
     res.status(500).json({ error: err.message });
@@ -200,27 +204,29 @@ router.get('/:slug/conversations/:convId/memory', async (req, res) => {
 
 /**
  * PATCH /api/agents/:slug/conversations/:convId/memory
- *   Body: { ownerUserId, field, value?, domain?, clear?: boolean }
- *   - clear=true → removes the field from every bucket.
- *   - otherwise → sets it under `domain` (or `_general` if null/missing).
- *   Returns the updated memory blob.
+ *   Body: { ownerUserId, field, value?, domain?, kind?: 'memory'|'thinking', clear?: boolean }
+ *   - clear=true → removes the field from every bucket of the section.
+ *   - otherwise → sets it under `domain` (or `_general` if null/missing)
+ *     in the requested section. Defaults to `kind: 'memory'`.
+ *   Returns the updated brain blob ({ memory, thinking }).
  */
 router.patch('/:slug/conversations/:convId/memory', async (req, res) => {
   try {
     const { convId } = req.params;
-    const { ownerUserId, field, value, domain, clear } = req.body || {};
+    const { ownerUserId, field, value, domain, kind, clear } = req.body || {};
     if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
     if (!field) return res.status(400).json({ error: 'Missing field' });
     const userId = await resolveUserId(String(ownerUserId));
     const builderMemory = require('../runtime/builderMemory');
-    const memory = await builderMemory.loadMemory(userId, Number(convId));
+    const section = kind === 'thinking' ? 'thinking' : 'memory';
+    const blob = await builderMemory.loadMemory(userId, Number(convId));
     if (clear) {
-      builderMemory.clearField(memory, field);
+      builderMemory.clearField(blob, field, section);
     } else {
-      builderMemory.setField(memory, field, value, domain ?? null);
+      builderMemory.setField(blob, field, value, domain ?? null, section);
     }
-    await builderMemory.saveMemory(userId, Number(convId), memory);
-    res.json({ memory });
+    await builderMemory.saveMemory(userId, Number(convId), blob);
+    res.json({ memory: blob.memory, thinking: blob.thinking });
   } catch (err) {
     console.error('[builder] PATCH memory failed:', err);
     res.status(500).json({ error: err.message });
