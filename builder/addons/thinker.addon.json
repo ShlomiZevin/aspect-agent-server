@@ -4,7 +4,7 @@
   "description":       "Strategize before speaking. Produces guidance the Talker reads.",
   "purpose":           "Acts as the brain's prefrontal cortex — analyzes the conversation and current memory, decides on a strategy, and writes structured guidance for the Talker to consume. Reach for this when the Talker's response should follow a deliberate plan rather than just react to the latest message. Place it AFTER any Field/Vibe Extractors (so it can read freshly-captured signals) and BEFORE the Talker (so the Talker reads its output via `context.thinkingReads`). Output is free-form JSON — the prompt tells the LLM which keys to emit (e.g. `main_plan`, `empathy_tone`, `open_question`); the server writes whatever lands under the configured `domain` inside the brain's `thinking` section. Multiple Thinkers can coexist with different domains (e.g. `strategy`, `tone`) for orthogonal facets. No declared field schema by design — the prompt IS the schema, which keeps Thinkers flexible and avoids polluting the FieldsPanel.",
   "icon":              "💭",
-  "color":             "#7c3aed",
+  "color":             "#14b8a6",
 
   "defaultLane":       "main",
   "fieldMode":         "none",
