@@ -40,17 +40,17 @@ function drizzle() {
  * (ownerUserId, agentSlug) pair as one nested ProjectDoc.
  * Returns null if the project doesn't exist yet.
  */
-async function hydrateProject({ agentSlug, ownerUserId }) {
+async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
   const d = drizzle();
 
-  // Find the agent by (owner, slug). One agent per owner per slug.
+  // Find the agent by slug. Shared workspace: every owner sees every
+  // agent during build phase, so we don't filter by owner here.
+  // `_ownerUserId` is accepted for backward compat with callers that
+  // still pass it; it's intentionally ignored.
   const agentRow = await d.select()
     .from(builderAgents)
     .innerJoin(builderProjects, eq(builderAgents.projectId, builderProjects.id))
-    .where(and(
-      eq(builderAgents.slug, agentSlug),
-      eq(builderProjects.ownerUserId, ownerUserId),
-    ))
+    .where(eq(builderAgents.slug, agentSlug))
     .limit(1);
 
   if (agentRow.length === 0) return null;
@@ -139,7 +139,11 @@ async function hydrateProject({ agentSlug, ownerUserId }) {
  *
  * Used by the BuilderHomePage to render the "Your agents" list.
  */
-async function listProjects({ ownerUserId }) {
+async function listProjects({ ownerUserId: _ownerUserId } = {}) {
+  // Shared workspace during build phase — every agent is visible to
+  // every browser. `_ownerUserId` is accepted for backward compat with
+  // existing callers; intentionally ignored. Order: most-recently-edited
+  // first so active work surfaces at the top of the list.
   const d = drizzle();
   const rows = await d.select({
     projectId:   builderProjects.id,
@@ -155,7 +159,6 @@ async function listProjects({ ownerUserId }) {
       builderAgentVersions,
       eq(builderAgentVersions.id, builderAgents.activeVersionId),
     )
-    .where(eq(builderProjects.ownerUserId, ownerUserId))
     .orderBy(desc(builderAgents.updatedAt));
 
   return rows.map(r => ({
@@ -476,16 +479,16 @@ async function deleteCrew({ crewId }) {
  * 'active'), return the addons to execute and metadata needed for
  * logging. Used by BuilderRunner.
  */
-async function resolveRunnable({ agentSlug, ownerUserId, mode = 'viewing', overrideCrewId = null }) {
+async function resolveRunnable({ agentSlug, ownerUserId: _ownerUserId, mode = 'viewing', overrideCrewId = null }) {
   const d = drizzle();
 
+  // Shared workspace — look up by slug only. `_ownerUserId` accepted
+  // for backward compat; ignored. Same rule as hydrateProject /
+  // listProjects so all three lookups agree on what's visible.
   const agentRow = await d.select()
     .from(builderAgents)
     .innerJoin(builderProjects, eq(builderAgents.projectId, builderProjects.id))
-    .where(and(
-      eq(builderAgents.slug, agentSlug),
-      eq(builderProjects.ownerUserId, ownerUserId),
-    ))
+    .where(eq(builderAgents.slug, agentSlug))
     .limit(1);
 
   if (agentRow.length === 0) {
