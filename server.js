@@ -4612,7 +4612,7 @@ app.post('/api/demo-mockups/upload-logo', upload.single('logo'), async (req, res
 });
 
 // Lybi contact form
-const { sendLybiContactEmail, sendAgentErrorEmail } = require('./services/email.service');
+const { sendLybiContactEmail, sendAspectContactEmail, sendAgentErrorEmail } = require('./services/email.service');
 
 app.post('/api/lybi/contact', async (req, res) => {
   const { name, email, company, message } = req.body;
@@ -4625,6 +4625,21 @@ app.post('/api/lybi/contact', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error('❌ Error sending Lybi contact email:', err.message);
+    res.status(500).json({ error: 'Failed to send email' });
+  }
+});
+
+app.post('/api/aspect/contact', async (req, res) => {
+  const { name, email, company, message } = req.body;
+  if (!name || !email) {
+    return res.status(400).json({ error: 'Name and email are required' });
+  }
+  try {
+    await sendAspectContactEmail({ name, email, company, message });
+    console.log(`✅ Aspect contact email sent from ${name} <${email}>`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error sending Aspect contact email:', err.message);
     res.status(500).json({ error: 'Failed to send email' });
   }
 });

@@ -28,6 +28,26 @@ async function sendLybiContactEmail({ name, email, company, message }) {
   });
 }
 
+async function sendAspectContactEmail({ name, email, company, message }) {
+  const recipients = 'shlomi@boostart.io';
+
+  const text = [
+    `New contact form submission from Aspect landing page`,
+    ``,
+    `Name:    ${name}`,
+    `Email:   ${email}`,
+    `Company: ${company || '—'}`,
+    `Message: ${message || '—'}`,
+  ].join('\n');
+
+  await transporter.sendMail({
+    from: `"Aspect Contact" <${process.env.GMAIL_USER}>`,
+    to: recipients,
+    subject: `New Aspect contact: ${name}`,
+    text,
+  });
+}
+
 // Friendly labels for notification types
 const NOTIFICATION_TYPE_LABELS = {
   mention: 'You were mentioned',
@@ -351,4 +371,4 @@ async function sendDeployedDigestEmail({ recipientEmail, recipientName, tasks })
   });
 }
 
-module.exports = { sendLybiContactEmail, sendTaskAttentionEmail, sendAgentErrorEmail, sendDeployedDigestEmail };
+module.exports = { sendLybiContactEmail, sendAspectContactEmail, sendTaskAttentionEmail, sendAgentErrorEmail, sendDeployedDigestEmail };
