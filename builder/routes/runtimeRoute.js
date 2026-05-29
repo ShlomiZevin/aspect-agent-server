@@ -347,7 +347,12 @@ router.delete('/:slug/conversations/:convId/messages/:messageId', async (req, re
  */
 router.post('/:slug/conversations/:convId/messages', async (req, res) => {
   const { slug, convId } = req.params;
-  const { ownerUserId, userMessage, version = 'viewing' } = req.body || {};
+  const {
+    ownerUserId,
+    userMessage,
+    version = 'viewing',
+    overrideCrewId = null,
+  } = req.body || {};
 
   if (!ownerUserId || !userMessage) {
     return res.status(400).json({ error: 'Missing ownerUserId or userMessage' });
@@ -399,6 +404,24 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       console.warn('[builder] auto-name failed:', err.message);
     }
 
+    // Apply the override BEFORE emitting `conversation` so the event
+    // reflects the post-override DB state (avoids a header flicker
+    // where the chip briefly snaps to the pre-pick value).
+    if (overrideCrewId) {
+      try {
+        const [conv] = await d.select().from(conversations)
+          .where(eq(conversations.id, Number(convId))).limit(1);
+        const meta = conv?.metadata || {};
+        if (meta.currentCrewId !== overrideCrewId) {
+          await d.update(conversations)
+            .set({ metadata: { ...meta, currentCrewId: overrideCrewId }, updatedAt: new Date() })
+            .where(eq(conversations.id, Number(convId)));
+        }
+      } catch (err) {
+        console.warn('[builder] pre-run override persist failed:', err.message);
+      }
+    }
+
     // Emit the conversation event with the active crew pointer so
     // the client header can show "you're talking to crew X right now"
     // before any addons fire this turn. Falls back to null →
@@ -429,6 +452,7 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       assistantMessageId: asstMsgPlaceholder.id,
       userMessage,
       version,
+      overrideCrewId,
       emit,
     });
 

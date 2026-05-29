@@ -31,7 +31,7 @@ const MODELS = [
   { id: 'claude-haiku-4-5',  providerId: 'anthropic', name: 'Claude Haiku 4.5',  notes: 'Cheap & fast' },
 
   // ── OpenAI ──
-  { id: 'gpt-5',         providerId: 'openai', name: 'GPT-5',         notes: 'Powerful, expensive' },
+  { id: 'gpt-5-chat-latest', providerId: 'openai', name: 'GPT-5',         notes: 'Powerful, expensive' },
   { id: 'gpt-4o',        providerId: 'openai', name: 'GPT-4o',        notes: 'Balanced — broad capability' },
   { id: 'gpt-4o-mini',   providerId: 'openai', name: 'GPT-4o mini',   notes: 'Cheap model for fast runs (default extractor)' },
 

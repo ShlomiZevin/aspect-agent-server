@@ -74,6 +74,10 @@ require('../plugins');
  * @param {number} args.assistantMessageId — DB id of the (pending) assistant message; addon_runs FK
  * @param {string} args.userMessage
  * @param {'viewing'|'active'} args.version
+ * @param {string|null} [args.overrideCrewId] — explicit override (e.g. the user
+ *   picked a different crew from the chat header dropdown). When provided, takes
+ *   precedence over `conversation.metadata.currentCrewId` and is persisted as the
+ *   new pointer so subsequent turns default to it.
  * @param {function} args.emit — (eventType, payload) → void; writes an SSE event
  * @returns {Promise<{ assistantText: string }>}
  */
@@ -85,17 +89,37 @@ async function runOnce({
   assistantMessageId,
   userMessage,
   version,
+  overrideCrewId = null,
   emit,
 }) {
   const totalStart = Date.now();
 
-  // Read the conversation's current-crew pointer (set by a prior
-  // Transition Router firing). Empty/missing on first turn → resolver
-  // falls back to the agent's defaultCrewId.
+  // Resolve the current-crew pointer. Priority:
+  //   1. explicit per-turn override from the request (user-picked crew)
+  //   2. conversation.metadata.currentCrewId (set by a prior Transition Router firing)
+  //   3. null → resolver falls back to the agent's defaultCrewId
   const drizzle = db.getDrizzle();
   const [convRow] = await drizzle.select().from(conversations)
     .where(eq(conversations.id, Number(conversationId))).limit(1);
-  const currentCrewId = (convRow?.metadata && convRow.metadata.currentCrewId) || null;
+  const metaCrewId = (convRow?.metadata && convRow.metadata.currentCrewId) || null;
+  const currentCrewId = overrideCrewId || metaCrewId;
+
+  // Persist the override into metadata so subsequent turns default to it.
+  // (The route handler also pre-persists before emitting `conversation`
+  // so the SSE event already reflects this — kept here as a defensive
+  // idempotent retry in case that pre-persist failed.)
+  if (overrideCrewId && overrideCrewId !== metaCrewId) {
+    try {
+      const currentMeta = convRow?.metadata || {};
+      const nextMeta = { ...currentMeta, currentCrewId: overrideCrewId };
+      await drizzle.update(conversations)
+        .set({ metadata: nextMeta, updatedAt: new Date() })
+        .where(eq(conversations.id, Number(conversationId)));
+      if (convRow) convRow.metadata = nextMeta;
+    } catch (err) {
+      console.error('[BuilderRunner] override crew persist failed:', err.message);
+    }
+  }
 
   // ── 1. Resolve runnable: which crew + addons for this version. ──
   const runnable = await resolveRunnable({
