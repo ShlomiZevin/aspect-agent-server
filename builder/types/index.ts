@@ -69,6 +69,31 @@ export interface FieldDef {
   domain?: string;
 }
 
+// ─── Parameters (static agent-wide values) ────────────────────────
+
+/**
+ * A static, agent-scoped value the user declares once and references
+ * from any prompt-based addon. Parameters are the static counterpart
+ * to fields: fields come from the conversation (extracted/inferred per
+ * turn), parameters come from configuration and never change at runtime.
+ *
+ * Examples: the bank's display name, a support phone number, a
+ * regulatory disclaimer string.
+ *
+ * Picker UX: rendered alongside fields in the `#` mention menu so users
+ * can mix them into prompts the same way (`#bankName`).
+ */
+export interface ParameterDef {
+  id: ID;
+  /** Canonical key — lowerCamelCase, used as the `#` mention token. */
+  name: string;
+  /** The configured value substituted into prompts at runtime. Plain
+   *  string today; extend to typed values later if a real need shows up. */
+  value: string;
+  /** Optional one-line description shown in the picker. */
+  description?: string;
+}
+
 // ─── Addons (plugins inside a crew) ────────────────────────────────
 
 /**
@@ -472,7 +497,8 @@ export interface CrewDoc {
  */
 export type AgentBody = Pick<
   AgentDoc,
-  'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId' | 'fields'
+  'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
+  | 'fields' | 'domains' | 'parameters'
 >;
 
 export interface AgentVersion {
@@ -502,6 +528,26 @@ export interface AgentDoc {
    * Crew-private fields live on `CrewDoc.fields` instead.
    */
   fields: FieldDef[];
+  /**
+   * Declared memory domains for this agent. Lets the builder UI show
+   * a domain in the picker before any field is attached to it (so the
+   * user can pre-shape their schema). At runtime, a field's `domain`
+   * still wins — declared domains are a UX hint, not a constraint.
+   *
+   * Optional for back-compat with agents stored before this field
+   * shipped; readers should treat absence as `[]`. New agents start
+   * with `[]`.
+   */
+  domains?: string[];
+  /**
+   * Agent-wide static parameters — values that don't change per
+   * conversation (e.g. the bank's display name). Reference from any
+   * prompt template via `#paramName`. See {@link ParameterDef}.
+   *
+   * Optional for back-compat; readers should treat absence as `[]`.
+   * New agents start with `[]`.
+   */
+  parameters?: ParameterDef[];
   /**
    * The crews that belong to this agent. NOT part of the agent
    * version body — crews are their own versioned entities and live
