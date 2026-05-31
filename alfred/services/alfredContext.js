@@ -38,6 +38,23 @@ function loadAddonDescriptors() {
 const ADDON_DESCRIPTORS = loadAddonDescriptors();
 
 /**
+ * Load the prompt-placeholder spec at module init. Same JSON file the
+ * server's prompt assembler reads — keeping Alfred's knowledge in sync
+ * with what the runtime actually recognises. New tokens? Drop them in
+ * `builder/promptPlaceholders.json`, restart, Alfred picks them up.
+ */
+function loadPlaceholderSpec() {
+  const file = path.join(__dirname, '..', '..', 'builder', 'promptPlaceholders.json');
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    console.warn('[alfred] failed to load promptPlaceholders.json:', err.message);
+    return null;
+  }
+}
+const PLACEHOLDER_SPEC = loadPlaceholderSpec();
+
+/**
  * Render the descriptors as plain markdown — NO raw JSON (decision 58:
  * brainstorm Alfred never sees or writes JSON). Goes into the system
  * prompt so the model can match "I want to track customer mood" →
@@ -78,6 +95,67 @@ function renderAddonCatalogue() {
   ].join('\n');
 }
 const ADDON_CATALOGUE = renderAddonCatalogue();
+
+/**
+ * Render the placeholder spec as a compact markdown reference Alfred
+ * can read to advise the user on writing prompts. Each addon's
+ * `promptTemplate` is a plain string with `{{...}}` tokens; these are
+ * the tokens the server substitutes at run time.
+ *
+ * Format: one section per category (whole sections / domain blocks /
+ * single values / extractor-only) with the token, what it renders to,
+ * and a short example. Idioms at the end show typical combinations.
+ */
+function renderPlaceholderReference() {
+  if (!PLACEHOLDER_SPEC) return '';
+  const lines = [];
+  lines.push('# Prompt-template placeholders');
+  lines.push('');
+  lines.push(
+    'Every prompt-based addon has a `promptTemplate` string. The runtime',
+    'substitutes the tokens below before sending the prompt to the LLM.',
+    'When the user asks how to reference a field, a parameter, or a memory',
+    'domain inside a prompt — point them at the right token. The mention',
+    'picker in the builder UI uses the same vocabulary:',
+    '',
+    ...Object.entries(PLACEHOLDER_SPEC.trigger_prefixes || {}).map(
+      ([prefix, desc]) => `- \`${prefix}\` ${desc}`,
+    ),
+    '',
+  );
+
+  const block = (title, items) => {
+    if (!Array.isArray(items) || items.length === 0) return;
+    lines.push(`## ${title}`);
+    lines.push('');
+    for (const i of items) {
+      lines.push(`- \`${i.token}\` — ${i.render}`);
+      if (i.example) lines.push(`  Example: \`${i.example}\``);
+    }
+    lines.push('');
+  };
+
+  block('Whole sections',  PLACEHOLDER_SPEC.sections);
+  block('Single domain',   PLACEHOLDER_SPEC.domains);
+  block('Single value',    PLACEHOLDER_SPEC.values);
+  block('Extractor-only',  PLACEHOLDER_SPEC.extractor_only);
+
+  if (Array.isArray(PLACEHOLDER_SPEC.idioms) && PLACEHOLDER_SPEC.idioms.length > 0) {
+    lines.push('## Idioms');
+    lines.push('');
+    for (const i of PLACEHOLDER_SPEC.idioms) {
+      lines.push(`### ${i.name}`);
+      lines.push(`${i.use_when}`);
+      lines.push('```text');
+      lines.push(i.snippet);
+      lines.push('```');
+      lines.push('');
+    }
+  }
+
+  return lines.join('\n').trim();
+}
+const PLACEHOLDER_REFERENCE = renderPlaceholderReference();
 
 const STATIC_SYSTEM_PROMPT = [
   'You are Alfred — an AI helper that sits inside the Aspect agent builder.',
@@ -163,9 +241,11 @@ const STATIC_SYSTEM_PROMPT = [
  * formatting / language rules anchor the model's behaviour first; the
  * catalogue is reference material it pulls from when asked.
  */
-const SYSTEM_PROMPT = ADDON_CATALOGUE
-  ? `${STATIC_SYSTEM_PROMPT}\n\n${ADDON_CATALOGUE}`
-  : STATIC_SYSTEM_PROMPT;
+const SYSTEM_PROMPT = [
+  STATIC_SYSTEM_PROMPT,
+  ADDON_CATALOGUE,
+  PLACEHOLDER_REFERENCE,
+].filter(Boolean).join('\n\n');
 
 function fmtField(f) {
   const bits = [f.type];

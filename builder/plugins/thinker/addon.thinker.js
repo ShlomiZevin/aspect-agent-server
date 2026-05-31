@@ -7,8 +7,8 @@
  *
  * Every parsed key becomes a memoryWrite with `kind: 'thinking'` and
  * `domain: instance.config.domain` (default `'strategy'`). The engine
- * routes those into the brain's `thinking` section so the Talker can
- * read them via `context.thinkingReads`.
+ * routes those into the brain's `thinking` section so downstream
+ * addons can read them via `{{thinking}}` or `{{thinking:DOMAIN}}`.
  *
  * Output: json-to-memory.
  */

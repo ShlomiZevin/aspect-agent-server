@@ -89,10 +89,11 @@ function checkAddonInstance(addon, path, errors, knownFieldIds) {
   else {
     if (!isObject(addon.context.history) || !VALID_HISTORY_MODES.has(addon.context.history.mode))
       pushErr(errors, `${path}.context.history.mode`, `must be one of ${[...VALID_HISTORY_MODES].join(', ')}`);
-    if (typeof addon.context.persona !== 'boolean')
-      pushErr(errors, `${path}.context.persona`, 'required boolean');
-    if (!Array.isArray(addon.context.memoryReads))
-      pushErr(errors, `${path}.context.memoryReads`, 'required array');
+    // Phase B: persona / memoryReads / thinkingReads were dropped — the
+    // promptTemplate now owns placement. Only `history` (runtime data,
+    // not template text) and optional `triggeredReads` remain.
+    if ('triggeredReads' in addon.context && !Array.isArray(addon.context.triggeredReads))
+      pushErr(errors, `${path}.context.triggeredReads`, 'when present must be an array');
   }
   if (!VALID_OUTPUTS.has(addon.outputType))
     pushErr(errors, `${path}.outputType`, `must be one of ${[...VALID_OUTPUTS].join(', ')}`);

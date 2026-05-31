@@ -81,6 +81,14 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       .orderBy(desc(builderCrewVersions.number));
     const crewViewing = crewVersions.find(v => v.id === c.viewingVersionId);
     const crewBody = crewViewing ? crewViewing.body : {};
+    // Phase B: migrate the addon shapes on read so the client always
+    // sees the new template-owns-placement form. Source data may still
+    // be in the old structured-context shape; the migration is
+    // idempotent and a no-op for already-migrated instances.
+    const { migrateAddonInstance } = require('../runtime/migrateAddonContext');
+    const rawAddons = Array.isArray(crewBody.addons) ? crewBody.addons : [];
+    const migratedAddons = rawAddons.map(migrateAddonInstance);
+
     crews.push({
       id: c.id,
       // Working-copy fields come from the viewing version body.
@@ -88,7 +96,7 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       description:  crewBody.description  || '',
       spec:         crewBody.spec         || '',
       persona:      crewBody.persona,
-      addons:       Array.isArray(crewBody.addons) ? crewBody.addons : [],
+      addons:       migratedAddons,
       fields:       Array.isArray(crewBody.fields) ? crewBody.fields : [],
       // Version metadata (client format).
       versions: crewVersions.map(v => ({
@@ -546,6 +554,11 @@ async function resolveRunnable({ agentSlug, ownerUserId: _ownerUserId, mode = 'v
     .limit(1);
   if (!crewVersion) throw new Error('Crew version row missing');
 
+  // Phase B: migrate the runtime crew body so the assembler sees
+  // template-owns-placement form. Idempotent.
+  const { migrateCrewBody } = require('../runtime/migrateAddonContext');
+  const migratedCrewBody = migrateCrewBody(crewVersion.body);
+
   return {
     agent: {
       id:              agent.id,
@@ -556,7 +569,7 @@ async function resolveRunnable({ agentSlug, ownerUserId: _ownerUserId, mode = 'v
     crew: {
       id:              crew.id,
       versionId:       crewVersion.id,
-      body:            crewVersion.body,    // { name, description?, spec, persona?, addons[] }
+      body:            migratedCrewBody,    // { name, description?, spec, persona?, addons[] }
     },
   };
 }

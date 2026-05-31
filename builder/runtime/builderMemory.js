@@ -176,6 +176,27 @@ function valuesForDomain(blob, domain, section = SECTION_MEMORY) {
 }
 
 /**
+ * List the names of every domain in a section that holds at least one
+ * value. Used by the prompt assembler when rendering `{{memory}}` /
+ * `{{thinking}}` — they enumerate domains with content rather than
+ * relying on a structured per-addon list. The `_general` storage key
+ * is mapped back to `null` (the API convention for "no domain").
+ *
+ * Returns an empty array when the section has no values at all.
+ */
+function listDomainsWithValues(blob, section = SECTION_MEMORY) {
+  const sec = blob?.[sectionKey(section)];
+  if (!sec) return [];
+  const out = [];
+  for (const key of Object.keys(sec)) {
+    const bucket = sec[key];
+    if (!bucket || Object.keys(bucket).length === 0) continue;
+    out.push(key === '_general' ? null : key);
+  }
+  return out;
+}
+
+/**
  * Remove every occurrence of a field across all domains in a section,
  * in place. Returns true if anything was removed.
  */
@@ -216,6 +237,7 @@ module.exports = {
   applyWrites,
   findFieldValue,
   valuesForDomain,
+  listDomainsWithValues,
   clearField,
   setField,
   normalizeBlob,

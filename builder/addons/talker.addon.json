@@ -2,7 +2,7 @@
   "pluginId":          "talker",
   "displayName":       "Talker",
   "description":       "Speaks to the user. Owns the response prompt.",
-  "purpose":           "Produces the actual chat message the user sees. Every crew that should respond to the user needs at least one Talker. Place it at the END of the main lane (after extractors, routers, and any other addons) so it has the full picture of what this turn's processing produced — including memory writes from upstream extractors. Without a Talker the crew is silent — useful for intake-only steps like classify-then-route, but rare. Set `context.persona: true` when the Talker should speak in the agent's voice; use `context.memoryReads` to pull in fields from other domains so the response can reference them.",
+  "purpose":           "Produces the actual chat message the user sees. Every crew that should respond to the user needs at least one Talker. Place it at the END of the main lane (after extractors, routers, and any other addons) so it has the full picture of what this turn's processing produced — including memory writes from upstream extractors. Without a Talker the crew is silent — useful for intake-only steps like classify-then-route, but rare. Phase B: the Talker's prompt is one mention-aware string. Use {{persona}} to pull in the agent persona, {{memory}} or {{memory:domain}} for memory, {{thinking}} or {{thinking:domain}} for the Thinker's plan, {{field:name}} for a single inline value, and {{param:name}} for static agent parameters.",
   "icon":              "💬",
   "color":             "#8b5cf6",
 
@@ -14,15 +14,13 @@
   "defaultOutputType":  "text-to-user",
 
   "defaultContext": {
-    "history":      { "mode": "last_n", "n": 5 },
-    "persona":      false,
-    "memoryReads":  []
+    "history":      { "mode": "last_n", "n": 5 }
   },
 
-  "defaultPromptTemplate": "{{persona}}\n\n{{prompt}}\n\n{{memory}}\n\n{{thinking}}\n\n{{triggered}}",
+  "defaultPromptTemplate": "{{prompt}}",
 
   "defaultConfig": {
-    "prompt": "",
+    "prompt": "{{persona}}\n\nYou are speaking with the user in this phase. Reply in their language.\n\n{{memory}}\n\n{{thinking}}\n\n{{triggered}}",
     "model":  { "providerId": "google", "modelId": "gemini-2.5-flash" }
   }
 }

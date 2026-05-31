@@ -57,6 +57,24 @@ function loadAddonDescriptors() {
 const ADDON_DESCRIPTORS = loadAddonDescriptors();
 
 /**
+ * Load the prompt-placeholder spec at module init. Single source of
+ * truth shared with the server's prompt assembler and the brainstorm
+ * Alfred. Embedded raw into the system prompt so the patch generator
+ * uses the same `{{...}}` tokens the runtime actually substitutes.
+ */
+const PLACEHOLDER_SPEC_RAW = (() => {
+  try {
+    return fs.readFileSync(
+      path.join(__dirname, '..', '..', 'builder', 'promptPlaceholders.json'),
+      'utf8',
+    );
+  } catch (err) {
+    console.warn('[alfred] failed to load promptPlaceholders.json:', err.message);
+    return '';
+  }
+})();
+
+/**
  * Render the descriptors as a string section the LLM can consume.
  * Each descriptor becomes a heading + JSON block. The instructions
  * tell the model to use these as starting points for new addons.
@@ -160,6 +178,19 @@ const SYSTEM_PROMPT = [
   '',
   '```typescript',
   TYPES_SOURCE,
+  '```',
+  '',
+  '# Prompt-template placeholders',
+  '',
+  'Every prompt-based addon\'s `promptTemplate` is a string that may',
+  'contain the `{{...}}` tokens listed in the JSON spec below. The',
+  'runtime substitutes them at execution time. Use these tokens when',
+  'writing or editing a promptTemplate. The same JSON is the source of',
+  'truth for the server\'s assembler and for the builder UI\'s mention',
+  'picker, so anything outside this list will NOT be substituted.',
+  '',
+  '```json',
+  PLACEHOLDER_SPEC_RAW || '{}',
   '```',
   '',
   '# Addon defaults — START FROM THESE when creating a new addon',

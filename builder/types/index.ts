@@ -121,34 +121,25 @@ export interface HistoryMode {
 
 /**
  * Universal reading knobs every addon has, regardless of plugin.
- * Persona default OFF (user opts in). Memory reads default empty
- * (user opts in). History default = `last_n: 5`.
+ *
+ * Phase B collapsed the per-section toggles (`persona`, `memoryReads`,
+ * `thinkingReads`) into the `promptTemplate` itself: the user controls
+ * placement of `{{memory}}` / `{{memory:domain}}` / `{{persona}}` /
+ * `{{thinking}}` / `{{field:X}}` / `{{param:X}}` inline. Two universal
+ * knobs survive:
+ *  - `history`: runtime conversation history is a separate LLM
+ *    parameter, not template text, so it can't be folded into
+ *    promptTemplate.
+ *  - `triggeredReads`: the Triggered Context addon ships independently
+ *    and still uses the structured list.
  */
 export interface AddonContext {
   history: HistoryMode;
-  /** Inject the agent persona into the prompt. Default off. */
-  persona: boolean;
-  /**
-   * List of memory domains to inject. `null` denotes "(no domain)".
-   * Empty list = no `## Memory` section in the prompt.
-   */
-  memoryReads: Array<string | null>;
-  /**
-   * List of *thinking* domains to inject — the brain's current plan
-   * (Thinker writes). Parallel to `memoryReads` but reads from the
-   * thinking section of the brain blob instead of the memory section.
-   * `null` denotes "(no domain)". Empty list = no `## Thinking` block
-   * in the prompt. Optional for backward compat with existing
-   * instances stored before this feature; treated as `[]` when missing.
-   */
-  thinkingReads?: Array<string | null>;
   /**
    * List of *triggered* domains to inject — pre-scripted guidance the
    * Triggered Context addon loaded this turn (basal ganglia / procedural
-   * memory in the brain metaphor). Parallel to memoryReads/thinkingReads
-   * but reads from the `triggered` section of the brain blob.
-   * `null` denotes "(no domain)". Empty = no `## Triggered` block.
-   * Optional — treated as `[]` when missing.
+   * memory in the brain metaphor). `null` denotes "(no domain)".
+   * Empty = no `## Triggered` block. Optional — treated as `[]` when missing.
    */
   triggeredReads?: Array<string | null>;
 }
@@ -197,40 +188,27 @@ export interface AddonInstance<TConfig = unknown> {
 }
 
 /**
- * Placeholders the runtime substitutes when assembling a step's
- * prompt. Only things that go INTO the prompt belong here.
- * Conversation history and the latest user message are runtime
- * concerns sent to the LLM as separate parameters, not interpolated.
+ * Reference: full token vocabulary lives in
+ * `aspect-agent-server/builder/promptPlaceholders.json` — read by the
+ * server prompt assembler, by Alfred, and by the client MentionTextarea.
+ * The constants below are the flat (no-parameter) tokens only; tokens
+ * with a `:name` segment (e.g. `{{memory:customer}}`) are matched by
+ * pattern in the assembler.
  */
 export const KNOWN_PROMPT_PLACEHOLDERS = {
   /** The user-written prompt (`config.prompt`). */
   prompt: '{{prompt}}',
-  /** Agent persona text. Empty string when `context.persona` is false. */
+  /** Agent persona text block (empty if persona is blank). */
   persona: '{{persona}}',
-  /** `## Memory` block built from `context.memoryReads`. Empty if none. */
+  /** Full `## Memory` dump — every domain with values. */
   memory: '{{memory}}',
-  /**
-   * `## Thinking` block built from `context.thinkingReads`. Same shape
-   * as `## Memory` but pulls from the brain's thinking section — where
-   * the Thinker addon's writes land. Empty if no reads selected.
-   */
+  /** Full `## Thinking` dump. */
   thinking: '{{thinking}}',
-  /**
-   * `## Triggered` block built from `context.triggeredReads`. Same
-   * shape as `## Memory` but pulls from the brain's triggered section
-   * — where the Triggered Context addon's matched-rule texts land.
-   * Empty if no reads selected.
-   */
+  /** Full `## Triggered` dump (Triggered Context addon). */
   triggered: '{{triggered}}',
-  /**
-   * `## Field schema` block — fields with name, type, allowed enum
-   * values, source, and description. Extractor plugins only.
-   */
+  /** Schema block for an extractor's fields. Extractor plugins only. */
   fields_schema: '{{fields_schema}}',
-  /**
-   * `## Already collected` block — JSON map of current field values
-   * (nulls included). Extractor plugins only.
-   */
+  /** Currently-collected values for an extractor's fields. Extractor plugins only. */
   fields_current: '{{fields_current}}',
 } as const;
 

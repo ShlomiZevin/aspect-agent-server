@@ -130,6 +130,7 @@ async function runOnce({
   });
 
   const agentPersona     = runnable.agent.body?.persona || '';
+  const agentParameters  = Array.isArray(runnable.agent.body?.parameters) ? runnable.agent.body.parameters : [];
   const agentNameForLogs = runnable.agent.body?.name || agentSlug;
   const crewLabel        = runnable.crew.body?.name || 'crew';
   const allAddons        = Array.isArray(runnable.crew.body?.addons) ? runnable.crew.body.addons : [];
@@ -146,6 +147,8 @@ async function runOnce({
   const memoryValuesByDomain      = (domain) => builderMemory.valuesForDomain(memory, domain, 'memory');
   const thinkingValuesByDomain    = (domain) => builderMemory.valuesForDomain(memory, domain, 'thinking');
   const triggeredValuesByDomain   = (domain) => builderMemory.valuesForDomain(memory, domain, 'triggered');
+  const memoryDomainList          = ()       => builderMemory.listDomainsWithValues(memory, 'memory');
+  const thinkingDomainList        = ()       => builderMemory.listDomainsWithValues(memory, 'thinking');
 
   let assistantText = '';
 
@@ -199,10 +202,13 @@ async function runOnce({
         instance,
         agentPersona,
         memoryValuesByDomain,
+        memoryDomainList,
         thinkingValuesByDomain,
+        thinkingDomainList,
         triggeredValuesByDomain,
         fieldValueOf,
         extractorFields,
+        parameters: agentParameters,
       });
     } catch (err) {
       emit('addon.error', {

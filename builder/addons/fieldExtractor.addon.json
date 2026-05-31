@@ -2,7 +2,7 @@
   "pluginId":          "field-extractor",
   "displayName":       "Field Extractor",
   "description":       "Extract structured fields from the conversation — explicit or inferred.",
-  "purpose":           "Captures structured field values from the conversation and writes them to memory. Reach for this whenever the user provides something worth remembering — a name, an age, an intent classification, an emotional state, a routing tag. Set a field's `source` to `explicit` for values the user literally stated (\"my name is X\") and `inferred` for values the model concludes from context (\"they seem frustrated\"). Place it BEFORE the Talker in the chain so the Talker can read the freshly-captured values via `context.memoryReads` and react in the same turn. If you only need a single classification (intent, language), one extractor is enough; for unrelated kinds of data, spin up separate extractors so each has a focused prompt.",
+  "purpose":           "Captures structured field values from the conversation and writes them to memory. Reach for this whenever the user provides something worth remembering — a name, an age, an intent classification, an emotional state, a routing tag. Set a field's `source` to `explicit` for values the user literally stated (\"my name is X\") and `inferred` for values the model concludes from context (\"they seem frustrated\"). Place it BEFORE the Talker in the chain so the Talker can read the freshly-captured values inline via {{field:X}} or as part of {{memory}}. Phase B: the whole prompt is one mention-aware string. {{fields_schema}} and {{fields_current}} are auto-injected from the wired field set; place them where the schema reference reads best.",
   "icon":              "📥",
   "color":             "#f59e0b",
 
@@ -15,15 +15,13 @@
   "defaultOutputType":  "json-to-memory",
 
   "defaultContext": {
-    "history":      { "mode": "last_n", "n": 3 },
-    "persona":      false,
-    "memoryReads":  []
+    "history":      { "mode": "last_n", "n": 3 }
   },
 
-  "defaultPromptTemplate": "{{prompt}}\n\n## Field schema\n{{fields_schema}}\n\n## Already collected\n{{fields_current}}\n\n{{memory}}",
+  "defaultPromptTemplate": "{{prompt}}",
 
   "defaultConfig": {
-    "prompt": "Extract field values from the user's latest message and recent context.\nBe precise — only extract what is clearly supported by the conversation.\nFor 'explicit' fields, capture only what the user literally said.\nFor 'inferred' fields, you may conclude based on patterns.\n\nOUTPUT RULES:\n- ONLY include a key for a field if you actually extracted a value for it this turn.\n- If you didn't extract a field, OMIT IT — do not include the key at all.\n- Never return empty values: no `null`, no empty strings (\"\"), no placeholders like \"unknown\", \"N/A\", \"none\". If you don't have a value, just omit the key.\n- If a field already has a value but the user just provided a NEW or corrected value, include the field with the new value — overwrite the old one. Don't skip an update because the field is \"already filled\".\n- It is correct and expected to return {} when nothing was extracted.",
+    "prompt": "Extract field values from the user's latest message and recent context.\nBe precise — only extract what is clearly supported by the conversation.\nFor 'explicit' fields, capture only what the user literally said.\nFor 'inferred' fields, you may conclude based on patterns.\n\n## Field schema\n{{fields_schema}}\n\n## Already collected\n{{fields_current}}\n\nOUTPUT RULES:\n- ONLY include a key for a field if you actually extracted a value for it this turn.\n- If you didn't extract a field, OMIT IT — do not include the key at all.\n- Never return empty values: no `null`, no empty strings (\"\"), no placeholders like \"unknown\", \"N/A\", \"none\". If you don't have a value, just omit the key.\n- If a field already has a value but the user just provided a NEW or corrected value, include the field with the new value — overwrite the old one. Don't skip an update because the field is \"already filled\".\n- It is correct and expected to return {} when nothing was extracted.",
     "model":  { "providerId": "openai", "modelId": "gpt-4o-mini" },
     "name":   "",
     "extractsFields": []

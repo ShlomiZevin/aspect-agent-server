@@ -14,9 +14,7 @@
   "defaultOutputType":  "transition",
 
   "defaultContext": {
-    "history":      { "mode": "none" },
-    "persona":      false,
-    "memoryReads":  []
+    "history":      { "mode": "none" }
   },
 
   "defaultPromptTemplate": "",

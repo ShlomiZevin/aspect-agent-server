@@ -14,10 +14,7 @@
   "defaultOutputType":  "json-to-memory",
 
   "defaultContext": {
-    "history":       { "mode": "none" },
-    "persona":       false,
-    "memoryReads":   [],
-    "thinkingReads": [],
+    "history":        { "mode": "none" },
     "triggeredReads": []
   },
 
