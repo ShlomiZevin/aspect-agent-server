@@ -489,7 +489,14 @@ async function deleteCrew({ crewId }) {
  * 'active'), return the addons to execute and metadata needed for
  * logging. Used by BuilderRunner.
  */
-async function resolveRunnable({ agentSlug, ownerUserId: _ownerUserId, mode = 'viewing', overrideCrewId = null }) {
+async function resolveRunnable({
+  agentSlug,
+  ownerUserId: _ownerUserId,
+  mode = 'viewing',
+  overrideCrewId    = null,
+  overrideAgentBody = null,
+  overrideCrewBody  = null,
+}) {
   const d = drizzle();
 
   // Shared workspace — look up by slug only. `_ownerUserId` accepted
@@ -515,7 +522,13 @@ async function resolveRunnable({ agentSlug, ownerUserId: _ownerUserId, mode = 'v
     .limit(1);
   if (!agentVersion) throw new Error('Agent version row missing');
 
-  const agentBody = agentVersion.body;
+  // Builder preview path: the client may have sent the working-copy
+  // body so the chat reflects unsaved edits. Prefer it when present;
+  // fall back to the saved version otherwise.
+  const agentBody = overrideAgentBody && typeof overrideAgentBody === 'object'
+    ? overrideAgentBody
+    : agentVersion.body;
+
   const defaultCrewId = agentBody?.defaultCrewId;
   if (!defaultCrewId && !overrideCrewId) {
     throw new Error('Agent has no defaultCrewId; nothing to run');
@@ -554,17 +567,26 @@ async function resolveRunnable({ agentSlug, ownerUserId: _ownerUserId, mode = 'v
     .limit(1);
   if (!crewVersion) throw new Error('Crew version row missing');
 
+  // Builder preview path: the client may have sent the working-copy
+  // crew body. We still load the version row (for `versionId` in logs
+  // and to confirm the crew is wired up) but run against the override
+  // when present. The body is scoped to the routed crew already —
+  // the client computes the same `targetCrewId` we resolve here.
+  const baseCrewBody = overrideCrewBody && typeof overrideCrewBody === 'object'
+    ? overrideCrewBody
+    : crewVersion.body;
+
   // Phase B: migrate the runtime crew body so the assembler sees
   // template-owns-placement form. Idempotent.
   const { migrateCrewBody } = require('../runtime/migrateAddonContext');
-  const migratedCrewBody = migrateCrewBody(crewVersion.body);
+  const migratedCrewBody = migrateCrewBody(baseCrewBody);
 
   return {
     agent: {
       id:              agent.id,
       slug:            agent.slug,
       versionId:       agentVersion.id,
-      body:            agentBody,           // { name, slug, spec, persona, defaultCrewId }
+      body:            agentBody,           // { name, slug, spec, persona, defaultCrewId, ... }
     },
     crew: {
       id:              crew.id,

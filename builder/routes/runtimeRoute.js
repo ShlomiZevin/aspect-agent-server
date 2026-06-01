@@ -352,6 +352,12 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
     userMessage,
     version = 'viewing',
     overrideCrewId = null,
+    // Working-copy bodies sent by the builder UI so unsaved edits run
+    // against the actual draft state instead of the saved viewing
+    // version. Both are optional — when missing the runtime falls back
+    // to the DB version (the original behaviour).
+    overrideAgentBody = null,
+    overrideCrewBody  = null,
   } = req.body || {};
 
   if (!ownerUserId || !userMessage) {
@@ -453,6 +459,8 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       userMessage,
       version,
       overrideCrewId,
+      overrideAgentBody,
+      overrideCrewBody,
       emit,
     });
 

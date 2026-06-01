@@ -98,9 +98,14 @@ const ADDON_CATALOGUE = renderAddonCatalogue();
 
 /**
  * Render the placeholder spec as a compact markdown reference Alfred
- * can read to advise the user on writing prompts. Each addon's
- * `promptTemplate` is a plain string with `{{...}}` tokens; these are
- * the tokens the server substitutes at run time.
+ * can read to advise the user on writing prompts.
+ *
+ * Phase B contract: every prompt-bearing addon has one editable string —
+ * `config.prompt` — that the user composes in a mention-aware textarea.
+ * The `promptTemplate` field is always the literal `"{{prompt}}"` (the
+ * assembler's entry point); template content + placement of memory,
+ * persona, thinking, fields all live inside `config.prompt` via the
+ * `{{...}}` tokens listed below.
  *
  * Format: one section per category (whole sections / domain blocks /
  * single values / extractor-only) with the token, what it renders to,
@@ -112,11 +117,20 @@ function renderPlaceholderReference() {
   lines.push('# Prompt-template placeholders');
   lines.push('');
   lines.push(
-    'Every prompt-based addon has a `promptTemplate` string. The runtime',
-    'substitutes the tokens below before sending the prompt to the LLM.',
-    'When the user asks how to reference a field, a parameter, or a memory',
-    'domain inside a prompt — point them at the right token. The mention',
-    'picker in the builder UI uses the same vocabulary:',
+    'Every prompt-bearing addon (Talker, Field Extractor, Vibe Extractor,',
+    'Thinker, …) has one editable string: `config.prompt`. The user writes',
+    'free prose in a mention-aware textarea and drops `{{...}}` tokens',
+    'wherever they want memory, persona, fields, etc. to render. The',
+    'runtime substitutes the tokens before sending the prompt to the LLM.',
+    '',
+    '> The `promptTemplate` field on each addon is ALWAYS `"{{prompt}}"`',
+    '> in Phase B. Don\'t advise editing it. Placement is done inside',
+    '> `config.prompt`, not in `promptTemplate`.',
+    '',
+    'When the user asks how to reference a field, parameter, memory domain,',
+    'persona, or the thinker\'s output inside a prompt — point them at the',
+    'right token below. The mention picker in the builder UI uses the same',
+    'vocabulary (trigger keys: type the prefix to open a filtered picker):',
     '',
     ...Object.entries(PLACEHOLDER_SPEC.trigger_prefixes || {}).map(
       ([prefix, desc]) => `- \`${prefix}\` ${desc}`,

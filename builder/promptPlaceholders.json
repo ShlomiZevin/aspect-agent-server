@@ -7,7 +7,8 @@
     "!": "thinking (whole section or single domain)",
     "#": "parameters (single static value)",
     "^": "persona (the agent persona block)",
-    "{{": "unified picker — every placeholder from every category in one list. Use when you don't remember which sigil opens what."
+    "{{": "unified picker — every placeholder from every category in one list. Use when you don't remember which sigil opens what.",
+    "/":  "alias for `{{` — same unified picker, single-keystroke trigger. Common pattern in command-bar UIs."
   },
   "sections": [
     {

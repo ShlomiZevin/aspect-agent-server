@@ -78,6 +78,11 @@ require('../plugins');
  *   picked a different crew from the chat header dropdown). When provided, takes
  *   precedence over `conversation.metadata.currentCrewId` and is persisted as the
  *   new pointer so subsequent turns default to it.
+ * @param {object|null} [args.overrideAgentBody] — working-copy agent body sent
+ *   by the builder UI so unsaved edits run against the draft state. Falls back
+ *   to the saved viewing version body when null/missing.
+ * @param {object|null} [args.overrideCrewBody] — working-copy crew body. Same
+ *   purpose as overrideAgentBody but scoped to the routed crew.
  * @param {function} args.emit — (eventType, payload) → void; writes an SSE event
  * @returns {Promise<{ assistantText: string }>}
  */
@@ -90,6 +95,8 @@ async function runOnce({
   userMessage,
   version,
   overrideCrewId = null,
+  overrideAgentBody = null,
+  overrideCrewBody  = null,
   emit,
 }) {
   const totalStart = Date.now();
@@ -127,6 +134,8 @@ async function runOnce({
     ownerUserId,
     mode: version === 'active' ? 'active' : 'viewing',
     overrideCrewId: currentCrewId,
+    overrideAgentBody,
+    overrideCrewBody,
   });
 
   const agentPersona     = runnable.agent.body?.persona || '';
