@@ -482,6 +482,38 @@ async function deleteCrew({ crewId }) {
   });
 }
 
+/**
+ * Delete an entire project tree: every agent under it, each agent's
+ * versions, each agent's crews, and each crew's versions. Wrapped in
+ * one transaction so a mid-cascade failure leaves nothing half-deleted.
+ *
+ * Conversations, messages and addon_runs live under the legacy `agents`
+ * table (not `builder_agents`) — those are left in place. Re-creating
+ * the same slug later will reuse the legacy row and any old
+ * conversation history reappears. Acceptable for the build phase; we
+ * can cascade-clean later if it becomes noisy.
+ */
+async function deleteProject({ projectId }) {
+  const d = drizzle();
+  await d.transaction(async tx => {
+    const agentRows = await tx.select({ id: builderAgents.id })
+      .from(builderAgents)
+      .where(eq(builderAgents.projectId, projectId));
+    for (const a of agentRows) {
+      const crewRows = await tx.select({ id: builderCrews.id })
+        .from(builderCrews)
+        .where(eq(builderCrews.agentId, a.id));
+      for (const c of crewRows) {
+        await tx.delete(builderCrewVersions).where(eq(builderCrewVersions.crewId, c.id));
+      }
+      await tx.delete(builderCrews).where(eq(builderCrews.agentId, a.id));
+      await tx.delete(builderAgentVersions).where(eq(builderAgentVersions.agentId, a.id));
+    }
+    await tx.delete(builderAgents).where(eq(builderAgents.projectId, projectId));
+    await tx.delete(builderProjects).where(eq(builderProjects.id, projectId));
+  });
+}
+
 // ─── Resolve the runtime's "what to run" given an agent slug ──────
 
 /**
@@ -612,5 +644,6 @@ module.exports = {
   setCrewViewing,
   createCrew,
   deleteCrew,
+  deleteProject,
   resolveRunnable,
 };

@@ -54,6 +54,23 @@ router.get('/projects', async (req, res) => {
 });
 
 /**
+ * DELETE /api/builder/projects/:projectId
+ *   Tears down a project: every agent under it, every agent version,
+ *   every crew, every crew version. Conversations / messages tied to
+ *   the legacy agents table are intentionally left in place.
+ */
+router.delete('/projects/:projectId', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    await projects.deleteProject({ projectId });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[builder] DELETE project failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /api/builder/projects
  *   Bootstrap a new project + agent + initial crew.
  *   Body: { ownerUserId, projectId, projectName,
