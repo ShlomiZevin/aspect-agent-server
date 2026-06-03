@@ -1,12 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": 1,
-  "description": "Tokens the Builder V2 prompt assembler recognises inside an addon's promptTemplate. Source of truth for: server promptAssembler.js, client MentionTextarea picker, Alfred (patchGenerator/bodyValidator/alfredRunner system prompts).",
+  "version": 2,
+  "description": "Tokens the Builder V2 prompt assembler recognises inside an addon's `config.prompt`. Source of truth for: server promptAssembler.js, client MentionTextarea picker, Alfred (patchGenerator/bodyValidator/alfredRunner system prompts).",
   "trigger_prefixes": {
-    "@": "memory (whole section, single domain, or single field)",
-    "!": "thinking (whole section or single domain)",
-    "#": "parameters (single static value)",
-    "^": "persona (the agent persona block)",
+    "@":  "memory (whole section, single domain, or single field)",
+    "!":  "thinking (whole section or single domain)",
+    "#":  "parameters (single static value)",
+    "^":  "persona (the agent persona block)",
+    "*":  "dynamic context (KB-by-value-hit — pick which field's switch to drop in)",
     "{{": "unified picker — every placeholder from every category in one list. Use when you don't remember which sigil opens what.",
     "/":  "alias for `{{` — same unified picker, single-keystroke trigger. Common pattern in command-bar UIs."
   },
@@ -14,9 +15,10 @@
     {
       "token": "{{memory}}",
       "category": "section",
+      "trigger": "@",
       "render": "Full ## Memory dump as markdown. Every domain whose fields have any non-null values, each rendered as a ### sub-block of JSON. Empty if no memory has been written this conversation.",
       "example": "{{memory}}",
-      "picker_label": "Memory (whole section)"
+      "picker_label": "All memory"
     },
     {
       "token": "{{persona}}",
@@ -29,9 +31,10 @@
     {
       "token": "{{thinking}}",
       "category": "section",
+      "trigger": "!",
       "render": "Full ## Thinking dump as markdown. Every thinking domain whose values exist, each as a ### sub-block.",
       "example": "{{thinking}}",
-      "picker_label": "Thinking (whole section)"
+      "picker_label": "All thinking"
     }
   ],
   "domains": [
@@ -41,7 +44,7 @@
       "trigger": "@",
       "render": "One memory domain as a ### DOMAIN block with its JSON. Used when you want a specific bucket without the whole ## Memory wrapper.",
       "example": "{{memory:customer}}",
-      "picker_group": "Domains"
+      "picker_group": "Memory domains"
     },
     {
       "token": "{{thinking:DOMAIN}}",
@@ -59,7 +62,7 @@
       "trigger": "@",
       "render": "The current memory value for a single field, inline. Bare value with no label or formatting. Empty string when the field has no value yet.",
       "example": "The customer is {{field:customer_age}} years old.",
-      "picker_group": "Fields"
+      "picker_group": "Memory fields"
     },
     {
       "token": "{{param:NAME}}",
@@ -68,6 +71,14 @@
       "render": "The configured value of an agent parameter. Static — never changes per conversation. Empty string when the parameter is undefined.",
       "example": "Welcome to {{param:bankName}}. Call {{param:supportPhone}} if you need help.",
       "picker_group": "Parameters"
+    },
+    {
+      "token": "{{dynamic:NAME}}",
+      "category": "value",
+      "trigger": "*",
+      "render": "Switches on the current memory value of the named field and renders the matching case's text from the agent's Dynamic Context for that field. Falls back to the DC's `fallback` (or empty) when no case matches. NAME is the field name. Renders as a block (multi-paragraph content is expected).",
+      "example": "{{dynamic:tier}}",
+      "picker_group": "Dynamic context"
     }
   ],
   "extractor_only": [
@@ -104,6 +115,11 @@
       "name": "Static config substitution",
       "use_when": "Bank name, support phone, regulatory string — anything fixed at agent config time.",
       "snippet": "You are a customer support agent for {{param:bankName}}."
+    },
+    {
+      "name": "Dynamic guidance by value",
+      "use_when": "Behaviour should swap based on a deterministically extracted field value — e.g. switching on intent, mood, plan tier. Authored as an agent-level Dynamic Context, consumed via a single token.",
+      "snippet": "Use this guidance for the current case:\n\n{{dynamic:intent}}"
     }
   ]
 }

@@ -20,7 +20,7 @@
   "defaultPromptTemplate": "{{prompt}}",
 
   "defaultConfig": {
-    "prompt": "{{persona}}\n\nYou are speaking with the user in this phase. Reply in their language.\n\n{{memory}}\n\n{{thinking}}\n\n{{triggered}}",
+    "prompt": "{{persona}}\n\nYou are speaking with the user in this phase. Reply in their language.\n\n{{memory}}\n\n{{thinking}}",
     "model":  { "providerId": "google", "modelId": "gemini-2.5-flash" }
   }
 }

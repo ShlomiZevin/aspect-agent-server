@@ -11,7 +11,7 @@
  *
  *   Whole sections (legacy structured behaviour, still supported until
  *   the Phase B template migration runs):
- *     {{prompt}}, {{persona}}, {{memory}}, {{thinking}}, {{triggered}}
+ *     {{prompt}}, {{persona}}, {{memory}}, {{thinking}}
  *
  *   Single-domain blocks (Phase B):
  *     {{memory:NAME}}, {{thinking:NAME}}
@@ -123,22 +123,6 @@ function buildThinkingBlock(domainList, valuesByDomain) {
 }
 
 /**
- * `## Triggered` block. Same shape as `## Memory` and `## Thinking`
- * but pulls from the brain's `triggered` section — where the
- * Triggered Context addon's matched-rule texts land. Byte-equal to
- * the client preview.
- */
-function buildTriggeredBlock(selectedDomains, valuesByDomain) {
-  if (!selectedDomains || selectedDomains.length === 0) return '';
-  const sections = selectedDomains.map(d => {
-    const label = d === null ? 'general' : d;
-    const map = valuesByDomain(d) || {};
-    return `### ${label}\n${JSON.stringify(map, null, 2)}`;
-  });
-  return `## Triggered\n${sections.join('\n\n')}`;
-}
-
-/**
  * Render ONE memory or thinking domain as a `### NAME` block of JSON.
  * Used by `{{memory:NAME}}` and `{{thinking:NAME}}`. Returns an empty
  * string when the domain has no values — the caller's substitute
@@ -233,15 +217,24 @@ function buildFieldsCurrentBlock(fields, valueOf) {
  * @param {object} args
  * @param {object} args.instance       — AddonInstance (has promptTemplate, context, config)
  * @param {string} args.agentPersona   — agent's persona text (used by {{persona}} and {{persona}}-bearing templates)
- * @param {function} args.memoryValuesByDomain    — (domain) → memory values map
- * @param {function} args.thinkingValuesByDomain  — (domain) → thinking values map
- * @param {function} args.triggeredValuesByDomain — (domain) → triggered values map
+ * @param {function} args.memoryValuesByDomain   — (domain) → memory values map
+ * @param {function} args.thinkingValuesByDomain — (domain) → thinking values map
  * @param {function} args.fieldValueOf — (fieldName) → captured value or undefined
  * @param {Array}    [args.extractorFields] — field defs this extractor extracts
  *        (already resolved by the caller from agent.fields ∪ crew.fields
  *        against instance.config.extractsFields). Empty for non-extractor
  *        plugins.
  * @param {Array}    [args.parameters] — agent.parameters used by `{{param:NAME}}` substitutions.
+ * @param {Array}    [args.dynamicContexts] — agent.dynamicContexts used by
+ *        `{{dynamic:NAME}}` substitutions. Each DC carries `fieldId` + `cases`
+ *        + optional `fallback`. The resolver matches the live memory value of
+ *        the referenced field against `cases[].value` and renders the matched
+ *        text (or fallback, or empty).
+ * @param {Array}    [args.fieldsForDynamic] — agent + crew field defs in scope
+ *        for resolving `{{dynamic:NAME}}` (we look up fieldId by name).
+ * @param {function} [args.onDynamicResolved] — callback `({ fieldName, matched,
+ *        text }) => void` fired each time a `{{dynamic:NAME}}` resolves. Used
+ *        by the runtime to emit SSE events for the live chat trail.
  * @returns {string} the assembled prompt
  */
 function assemblePrompt({
@@ -251,10 +244,12 @@ function assemblePrompt({
   memoryDomainList,
   thinkingValuesByDomain,
   thinkingDomainList,
-  triggeredValuesByDomain,
   fieldValueOf,
   extractorFields,
   parameters,
+  dynamicContexts,
+  fieldsForDynamic,
+  onDynamicResolved,
 }) {
   let template = instance.promptTemplate || '';
   const cfg = instance.config || {};
@@ -277,13 +272,12 @@ function assemblePrompt({
   // becomes visible to the resolvers below.
   template = template.split('{{prompt}}').join(cfg.prompt || '');
 
-  // Flat whole-section tokens — persona, memory, thinking, triggered,
-  // and the extractor-only schema/current blocks.
+  // Flat whole-section tokens — persona, memory, thinking, and the
+  // extractor-only schema/current blocks.
   template = substitute(template, {
     persona:        buildPersonaBlock(agentPersona),
     memory:         buildMemoryBlock(memoryDomainList   || (() => []), memoryReader),
     thinking:       buildThinkingBlock(thinkingDomainList || (() => []), thinkingReader),
-    triggered:      buildTriggeredBlock(instance.context?.triggeredReads || [], triggeredValuesByDomain || (() => ({}))),
     fields_schema:  isExtractor ? buildFieldsSchemaBlock(fields) : '',
     fields_current: isExtractor ? buildFieldsCurrentBlock(fields, fieldValueOf) : '',
   });
@@ -314,8 +308,65 @@ function assemblePrompt({
     name => resolveParamInline(name, parameters),
     /* inline */ true,
   );
+  template = substituteParameterised(
+    template,
+    'dynamic',
+    name => resolveDynamicInline(name, {
+      dynamicContexts:  dynamicContexts  || [],
+      fieldsForDynamic: fieldsForDynamic || [],
+      fieldValueOf,
+      onDynamicResolved,
+    }),
+    /* inline */ false, // dynamic content can be multi-paragraph — treat as a block
+  );
 
   return template.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * Resolve `{{dynamic:NAME}}` against the supplied dynamic-context list.
+ *
+ *   1. Look up the FieldDef whose `name === NAME` (agent + crew scope).
+ *      Missing → return null, which leaves the token literal in the
+ *      output so a typo is loud rather than silent.
+ *   2. Find a DC whose `fieldId === field.id`. Missing → return ''
+ *      (the field exists, just no DC attached — silent empty is fine).
+ *   3. Read the live memory value for that field via `fieldValueOf`.
+ *   4. Match against `cases[i].value` (string-compared). On hit, return
+ *      that text; otherwise return `dc.fallback ?? ''`.
+ *
+ * Side-effect: when an `onDynamicResolved` callback is supplied, fire
+ * it with `{ fieldName, matched, text }`. The runtime uses this to
+ * emit an SSE event so the chat UI can show what was loaded.
+ */
+function resolveDynamicInline(name, { dynamicContexts, fieldsForDynamic, fieldValueOf, onDynamicResolved }) {
+  const field = fieldsForDynamic.find(f => f && f.name === name);
+  if (!field) return null; // leave token literal — loud miss
+
+  const dc = dynamicContexts.find(d => d && d.fieldId === field.id);
+  if (!dc) {
+    if (onDynamicResolved) onDynamicResolved({ fieldName: name, matched: null, text: '' });
+    return '';
+  }
+
+  const live = fieldValueOf ? fieldValueOf(name) : undefined;
+  const liveStr = live === undefined || live === null ? null : String(live);
+
+  let matched = null;
+  let text = '';
+  if (liveStr !== null && Array.isArray(dc.cases)) {
+    const hit = dc.cases.find(c => c && String(c.value) === liveStr);
+    if (hit) {
+      matched = liveStr;
+      text = hit.text || '';
+    }
+  }
+  if (!matched && typeof dc.fallback === 'string') {
+    text = dc.fallback;
+  }
+
+  if (onDynamicResolved) onDynamicResolved({ fieldName: name, matched, text });
+  return text;
 }
 
 module.exports = { assemblePrompt };

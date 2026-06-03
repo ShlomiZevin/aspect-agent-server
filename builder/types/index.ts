@@ -125,23 +125,13 @@ export interface HistoryMode {
  * Phase B collapsed the per-section toggles (`persona`, `memoryReads`,
  * `thinkingReads`) into the `promptTemplate` itself: the user controls
  * placement of `{{memory}}` / `{{memory:domain}}` / `{{persona}}` /
- * `{{thinking}}` / `{{field:X}}` / `{{param:X}}` inline. Two universal
- * knobs survive:
- *  - `history`: runtime conversation history is a separate LLM
- *    parameter, not template text, so it can't be folded into
- *    promptTemplate.
- *  - `triggeredReads`: the Triggered Context addon ships independently
- *    and still uses the structured list.
+ * `{{thinking}}` / `{{field:X}}` / `{{param:X}}` / `{{dynamic:X}}`
+ * inline. The only universal knob left is `history`, which is runtime
+ * conversation data passed to the LLM as a separate parameter — not
+ * template text — so it can't be folded into promptTemplate.
  */
 export interface AddonContext {
   history: HistoryMode;
-  /**
-   * List of *triggered* domains to inject — pre-scripted guidance the
-   * Triggered Context addon loaded this turn (basal ganglia / procedural
-   * memory in the brain metaphor). `null` denotes "(no domain)".
-   * Empty = no `## Triggered` block. Optional — treated as `[]` when missing.
-   */
-  triggeredReads?: Array<string | null>;
 }
 
 /**
@@ -204,8 +194,6 @@ export const KNOWN_PROMPT_PLACEHOLDERS = {
   memory: '{{memory}}',
   /** Full `## Thinking` dump. */
   thinking: '{{thinking}}',
-  /** Full `## Triggered` dump (Triggered Context addon). */
-  triggered: '{{triggered}}',
   /** Schema block for an extractor's fields. Extractor plugins only. */
   fields_schema: '{{fields_schema}}',
   /** Currently-collected values for an extractor's fields. Extractor plugins only. */
@@ -263,80 +251,50 @@ export interface ThinkerConfig {
   domain: string;
 }
 
+// ─── Dynamic Context (KB-by-value-hit) ────────────────────────────
+
 /**
- * Triggered Context — the hard-rule alternative to KB.
+ * One case in a DynamicContextDef — the field-value → text mapping.
+ * The text can be many paragraphs of "how to handle this case" prose
+ * (it's a deterministic alternative to similarity-search KB, where
+ * KB goes by similarity and dynamic context goes by exact value hit).
  *
- * Two rule shapes covering the two use cases:
- *
- *  - `switch`: "switch on field X — text A for value A, text B for B,
- *    text C for C". The dominant pattern. The user picks the field
- *    ONCE; each case carries its own contextText.
- *
- *  - `match`: full AND-of-conditions over memory (same vocabulary as
- *    Transition Router). For combinations like `intent=complaint
- *    AND mood=stubborn`. One condition list, one contextText.
- *
- * Each rule has ONE identifier that doubles as the memory key inside
- * `triggered.<domain>`:
- *  - Switch → `field` (the source field name). Writes to
- *    `triggered.<domain>.<field>`.
- *  - Match  → `name` (free-form short identifier the user types).
- *    Writes to `triggered.<domain>.<name>`. Empty falls back to
- *    `rule_<short-id>` so the rule still fires.
- *
- * No separate "label" field — the identifier IS the name. Multiple
- * matching rules writing to the same key concatenate with `\n\n`.
- * Domain is set once per addon instance (default `'triggered'`).
- *
- * Discriminator: `kind: 'switch' | 'match'`. No legacy fallback —
- * build-phase, no data to migrate.
+ * `value` is stringly-typed because enum/string/int/boolean all
+ * compare cleanly as strings at runtime — the assembler does a
+ * `String(memoryValue) === String(case.value)` match.
  */
-export interface TriggeredSwitchCase {
-  /** The value `field` must equal for this case's text to fire.
-   *  Stored as the same scalar shape the field can hold (string for
-   *  enum/string, number-as-string for int, boolean for boolean). */
+export interface DynamicContextCase {
+  /** The field value this case fires on (e.g. an enum option name). */
   value: string;
-  /** Text injected when this case matches. */
-  contextText: string;
+  /** The text injected when the live field value matches `value`.
+   *  Can be arbitrarily long — multi-paragraph prose is expected. */
+  text: string;
 }
 
-export interface TriggeredSwitchRule {
+/**
+ * Dynamic Context — a switch on a single field's current value.
+ *
+ *  - Lives at agent level (`agent.dynamicContexts`), not inside any
+ *    crew or addon. Authored once, consumed everywhere via the
+ *    `{{dynamic:<fieldname>}}` token.
+ *  - Resolution is O(1) at prompt-assembly time — no LLM call, no
+ *    chain step, no addon to add. Pure deterministic lookup against
+ *    the live memory value of the referenced field.
+ *  - V1 is restricted to enum fields: each enum value gets a case.
+ *    The editor surfaces enumValues automatically. Other field types
+ *    can be added later if a real need shows up.
+ */
+export interface DynamicContextDef {
   id: ID;
-  kind: 'switch';
-  /** The field this switch reads from. Doubles as the memory key:
-   *  matched case texts land at `triggered.<domain>.<field>`. */
-  field: string;
-  /** Per-value cases. First match wins (a value should appear only
-   *  once per switch — the editor enforces this). */
-  cases: TriggeredSwitchCase[];
-}
-
-export interface TriggeredMatchRule {
-  id: ID;
-  kind: 'match';
-  /** Short, free-form identifier the user types. Doubles as the
-   *  memory key this rule writes to (`triggered.<domain>.<name>`).
-   *  No slugification — what's typed is what lands. Empty falls
-   *  back to `rule_<short-id>` server-side. */
-  name: string;
-  /** AND-of-conditions. ALL must match for the rule to fire. */
-  conditions: TransitionCondition[];
-  /** Text injected when the conditions all match. */
-  contextText: string;
-}
-
-export type TriggeredRule = TriggeredSwitchRule | TriggeredMatchRule;
-
-export interface TriggeredContextConfig {
-  /** User-editable instance name shown on the chain card. */
-  name?: string;
-  /**
-   * Where this loader writes its output in the brain's `triggered`
-   * section. Defaults to `'triggered'`. Multiple Triggered Context
-   * loaders in the same crew can write to different domains.
-   */
-  domain: string;
-  rules: TriggeredRule[];
+  /** The field this dynamic context switches on. References
+   *  `agent.fields[].id`. Renames cascade via the schema panel. */
+  fieldId: ID;
+  /** Per-value cases. For enum fields the editor pre-seeds one case
+   *  per `field.enumValues` entry; extra cases are dropped on save. */
+  cases: DynamicContextCase[];
+  /** Text rendered when the field is unset or no case matches. Empty
+   *  string when omitted — the token resolves to "" silently. */
+  fallback?: string;
 }
 
 // ─── Transition Router plugin ─────────────────────────────────────
@@ -476,7 +434,7 @@ export interface CrewDoc {
 export type AgentBody = Pick<
   AgentDoc,
   'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
-  | 'fields' | 'domains' | 'parameters'
+  | 'fields' | 'domains' | 'parameters' | 'dynamicContexts'
 >;
 
 export interface AgentVersion {
@@ -526,6 +484,16 @@ export interface AgentDoc {
    * New agents start with `[]`.
    */
   parameters?: ParameterDef[];
+  /**
+   * Agent-wide Dynamic Context definitions — `{{dynamic:<fieldname>}}`
+   * lookups that swap text based on a memory field's current value.
+   * Authored at the agent level (planned in advance, not in a crew
+   * chain) and consumed automatically by the assembler — no addon
+   * required. See {@link DynamicContextDef}.
+   *
+   * Optional for back-compat; readers should treat absence as `[]`.
+   */
+  dynamicContexts?: DynamicContextDef[];
   /**
    * The crews that belong to this agent. NOT part of the agent
    * version body — crews are their own versioned entities and live

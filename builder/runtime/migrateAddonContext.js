@@ -20,7 +20,7 @@
  *   - `context.thinkingReads` same as memoryReads
  *
  * Then we drop the dead fields. `context.history` and
- * `context.triggeredReads` stay alive — see the AddonContext docstring
+ * `context.history` stays alive — see the AddonContext docstring
  * in builder/types/index.ts for the rationale.
  *
  * Pure. Returns a new instance if anything changed; otherwise the
@@ -96,9 +96,10 @@ function migrateAddonInstance(addon) {
   }
   merged = merged.replace(/\n{3,}/g, '\n\n').trim();
 
-  // 3. Strip dead context fields. Triggered + history stay alive.
+  // 3. Strip dead context fields. Only `history` stays alive — Dynamic
+  // Context replaced the Triggered Context addon, so `triggeredReads`
+  // is no longer carried even when legacy bodies still mention it.
   const nextCtx = { history: ctx ? ctx.history : { mode: 'last_n', n: 5 } };
-  if (ctx && Array.isArray(ctx.triggeredReads)) nextCtx.triggeredReads = ctx.triggeredReads;
 
   // 4. The new template is the minimal `{{prompt}}` wrapper. The user
   // controls everything via `config.prompt` now.

@@ -139,7 +139,8 @@ async function runOnce({
   });
 
   const agentPersona     = runnable.agent.body?.persona || '';
-  const agentParameters  = Array.isArray(runnable.agent.body?.parameters) ? runnable.agent.body.parameters : [];
+  const agentParameters      = Array.isArray(runnable.agent.body?.parameters)      ? runnable.agent.body.parameters      : [];
+  const agentDynamicContexts = Array.isArray(runnable.agent.body?.dynamicContexts) ? runnable.agent.body.dynamicContexts : [];
   const agentNameForLogs = runnable.agent.body?.name || agentSlug;
   const crewLabel        = runnable.crew.body?.name || 'crew';
   const allAddons        = Array.isArray(runnable.crew.body?.addons) ? runnable.crew.body.addons : [];
@@ -147,17 +148,17 @@ async function runOnce({
 
   // ── 2. Load accumulated brain state + accessors for the prompt. ──
   //
-  // The blob is normalized to `{ memory, thinking, triggered }` by
-  // loadMemory. Each plugin gets accessors for all three sections —
-  // extractors mainly touch memory, Talker reads from all three,
-  // Thinker writes to thinking, Triggered Context writes to triggered.
+  // The blob is normalized to `{ memory, thinking }` by loadMemory.
+  // Extractors write to memory; Thinker writes to thinking; Talker /
+  // other prompt-bearing addons read from both. Dynamic Context is
+  // resolved against memory field values inside the assembler — no
+  // separate brain section.
   const memory = await builderMemory.loadMemory(userId, conversationId);
-  const fieldValueOf              = (name)   => builderMemory.findFieldValue(memory, name, 'memory');
-  const memoryValuesByDomain      = (domain) => builderMemory.valuesForDomain(memory, domain, 'memory');
-  const thinkingValuesByDomain    = (domain) => builderMemory.valuesForDomain(memory, domain, 'thinking');
-  const triggeredValuesByDomain   = (domain) => builderMemory.valuesForDomain(memory, domain, 'triggered');
-  const memoryDomainList          = ()       => builderMemory.listDomainsWithValues(memory, 'memory');
-  const thinkingDomainList        = ()       => builderMemory.listDomainsWithValues(memory, 'thinking');
+  const fieldValueOf           = (name)   => builderMemory.findFieldValue(memory, name, 'memory');
+  const memoryValuesByDomain   = (domain) => builderMemory.valuesForDomain(memory, domain, 'memory');
+  const thinkingValuesByDomain = (domain) => builderMemory.valuesForDomain(memory, domain, 'thinking');
+  const memoryDomainList       = ()       => builderMemory.listDomainsWithValues(memory, 'memory');
+  const thinkingDomainList     = ()       => builderMemory.listDomainsWithValues(memory, 'thinking');
 
   let assistantText = '';
 
@@ -214,10 +215,23 @@ async function runOnce({
         memoryDomainList,
         thinkingValuesByDomain,
         thinkingDomainList,
-        triggeredValuesByDomain,
         fieldValueOf,
         extractorFields,
-        parameters: agentParameters,
+        parameters:       agentParameters,
+        dynamicContexts:  agentDynamicContexts,
+        fieldsForDynamic: fieldPool,
+        onDynamicResolved: ({ fieldName, matched, text }) => {
+          // Emit one SSE event per resolved dynamic-context token so the
+          // chat UI can show a trail above the assistant message.
+          // De-dup is left to the client — same field may resolve once
+          // per occurrence in the template.
+          emit('dynamic.resolved', {
+            instanceId: instance.instanceId,
+            fieldName,
+            matched,
+            text,
+          });
+        },
       });
     } catch (err) {
       emit('addon.error', {
