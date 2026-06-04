@@ -227,6 +227,27 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSche
       }
     }
 
+    // 3b. Drop indexes for tables that don't exist in the TARGET schema.
+    // The reference (live) schema may still contain tables we now skip on import
+    // (e.g. linktable, shorot_kbla). Recreating their indexes on the shadow schema
+    // would fail, and ANALYZE on a missing table (step 5) is fatal (process.exit).
+    {
+      const existingRes = await pool.query(
+        `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
+        [schemaName]
+      );
+      const existingTables = new Set(existingRes.rows.map(r => r.table_name));
+      const skippedTables = new Set();
+      targetIndexes = targetIndexes.filter(idx => {
+        if (existingTables.has(idx.table)) return true;
+        skippedTables.add(idx.table);
+        return false;
+      });
+      if (skippedTables.size > 0) {
+        log(`Skipping indexes for ${skippedTables.size} table(s) not in target schema: ${[...skippedTables].join(', ')}`);
+      }
+    }
+
     // 4. Group indexes by table
     const tableGroups = new Map();
     for (const idx of targetIndexes) {
