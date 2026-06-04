@@ -3554,6 +3554,57 @@ app.get('/api/admin/data-loader/:schema/data-info', async (req, res) => {
   }
 });
 
+// GET /api/admin/data-loader/:schema/settings — import window (trailing months to load)
+app.get('/api/admin/data-loader/:schema/settings', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const dataReloadService = req.app.get('dataReloadService');
+    if (!dataReloadService?.reloaders[schema]) {
+      return res.status(404).json({ error: `Unknown schema: ${schema}` });
+    }
+    const info = await providerConfigService.describe(`${schema}_import_months`);
+    const importMonths = info.value != null ? (parseInt(info.value, 10) || 0) : 0;
+    // `supported` is false for schemas whose loader doesn't honor the date filter yet.
+    res.json({ supported: info.supported, importMonths, source: info.source });
+  } catch (err) {
+    console.error('❌ data-loader settings get error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/admin/data-loader/:schema/settings — set/clear the import window
+app.put('/api/admin/data-loader/:schema/settings', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const dataReloadService = req.app.get('dataReloadService');
+    if (!dataReloadService?.reloaders[schema]) {
+      return res.status(404).json({ error: `Unknown schema: ${schema}` });
+    }
+    const key = `${schema}_import_months`;
+    const raw = req.body?.importMonths;
+    const months = raw === '' || raw == null ? null : parseInt(raw, 10);
+    if (months !== null && (!Number.isFinite(months) || months < 0)) {
+      return res.status(400).json({ error: 'importMonths must be a non-negative integer' });
+    }
+    // null/empty → remove DB override (fall back to env). Otherwise store the value.
+    if (months === null) {
+      await providerConfigService.delete(key);
+    } else {
+      await providerConfigService.set(key, String(months));
+    }
+    const info = await providerConfigService.describe(key);
+    res.json({
+      supported: info.supported,
+      importMonths: info.value != null ? (parseInt(info.value, 10) || 0) : 0,
+      source: info.source,
+    });
+  } catch (err) {
+    console.error('❌ data-loader settings put error:', err.message);
+    const code = err.message?.includes('Unknown config key') ? 400 : 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
 // POST /api/admin/data-loader/:schema/load — Phase 1: import data only
 app.post('/api/admin/data-loader/:schema/load', async (req, res) => {
   try {

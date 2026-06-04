@@ -10,6 +10,7 @@
  */
 
 const gcsService = require('./gcs.service');
+const providerConfigService = require('./provider-config.service');
 
 class DataReloadService {
   constructor(db) {
@@ -432,7 +433,17 @@ class DataReloadService {
     };
 
     try {
-      const result = await reloader.loadFn(shadowSchema, emitLog);
+      // Resolve the import window (trailing months of fact data to load; 0 = all).
+      // DB override > env (ZER4U_IMPORT_MONTHS) > 0. The reloader decides how to apply it.
+      let importMonths = 0;
+      try {
+        const raw = await providerConfigService.get(`${schemaName}_import_months`);
+        importMonths = raw != null ? (parseInt(raw, 10) || 0) : 0;
+      } catch (e) {
+        console.warn(`[DataReloadService] Could not resolve import window for ${schemaName}: ${e.message}`);
+      }
+
+      const result = await reloader.loadFn(shadowSchema, emitLog, { importMonths });
 
       // Update in-memory stats
       if (this.currentRuns[schemaName]) {
