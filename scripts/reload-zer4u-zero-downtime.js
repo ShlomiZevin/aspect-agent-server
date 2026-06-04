@@ -20,6 +20,13 @@ const { buildColumnLookup } = require('./column-aliases');
 
 const GCS_FOLDER = 'zer4u/';
 
+// Tables present in the source export but never used by the agent — not in any
+// materialized view, index, column-aliases mapping, or generated query. Skipped
+// from import to save storage. These are the two largest unused tables:
+//   linktable   — Qlik bridge table (26.5M rows, ~1.7 GB; all keys, no measures)
+//   shorot_kbla — credit-card payment detail (7.7M rows, ~476 MB; out of scope)
+const SKIP_TABLES = new Set(['linktable', 'shorot_kbla']);
+
 // Hebrew → English table name mapping (same as scan-csv-files.js)
 const HEBREW_TABLE_NAMES = {
   'חנויות.csv': 'stores',
@@ -113,8 +120,13 @@ async function loadZer4u(targetSchema, emitLog, options = {}) {
   }
 
   emitLog('scanning', 'Listing CSV files from GCS...');
-  const gcsFiles = await gcsService.listCSVFiles(GCS_FOLDER);
-  emitLog('scanning', `Found ${gcsFiles.length} CSV files — reading headers...`);
+  const allFiles = await gcsService.listCSVFiles(GCS_FOLDER);
+  const gcsFiles = allFiles.filter(f => !SKIP_TABLES.has(sanitizeTableName(f.basename)));
+  const skippedCount = allFiles.length - gcsFiles.length;
+  if (skippedCount > 0) {
+    emitLog('scanning', `Skipping ${skippedCount} unused table(s): ${[...SKIP_TABLES].join(', ')}`);
+  }
+  emitLog('scanning', `Found ${allFiles.length} CSV files (${gcsFiles.length} to load) — reading headers...`);
   const schemas = await buildSchemasFromHeaders(gcsFiles, emitLog);
   totalFiles = schemas.length;
   const totalSize = schemas.reduce((sum, s) => sum + parseInt(s.fileSize || 0), 0);

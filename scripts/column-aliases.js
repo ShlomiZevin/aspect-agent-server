@@ -39,10 +39,6 @@ const ALIASES = {
   // ── min_inventory ──────────────────────────────────────────────────────────
   'min_inventory.key':       ['InventoryKey'],
   'min_inventory.min_stock': ['min_stock', 'MLI_MINIMOM'],
-  // ── linktable ──────────────────────────────────────────────────────────────
-  // Largest table; not queried by the agent. Typed only so the import-window
-  // date filter prunes it to the last N months (same as sales).
-  'linktable.date':          ['link_date', 'תאריך מקורי'],
 };
 
 /**
@@ -70,8 +66,6 @@ const COLUMN_SCHEMA = {
   'items.item_code':  { type: 'TEXT', dbName: 'item_code' },
   'items.item_name':  { type: 'TEXT', dbName: 'item_name' },
   'items.item_group': { type: 'TEXT', dbName: 'item_group' },
-  // linktable — only its date is typed (DATE) so the import window can prune it.
-  'linktable.date':   { type: 'DATE', dbName: 'link_date' },
 };
 
 /**
