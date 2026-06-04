@@ -146,12 +146,22 @@ function serializeCSVLine(fields) {
  * - Uses StringDecoder to handle multi-byte UTF-8 (Hebrew) correctly across
  *   chunk boundaries.
  *
- * If no columns need conversion, returns null (caller uses raw stream).
+ * If `dateCutoff` (ISO YYYY-MM-DD) is given, data rows whose DATE column is
+ * strictly older than the cutoff are dropped (not emitted to COPY). Rows with
+ * an empty/unparseable date are kept (conservative). getSkipped() reports the count.
+ *
+ * If no columns need conversion AND there's no date filter, returns null
+ * (caller uses raw stream).
  */
-function createTypeConvertTransform(schema) {
+function createTypeConvertTransform(schema, dateCutoff = null) {
   const typedPositions = schema.columns
     .map((col, idx) => ({ idx, type: col.type, name: col.name }))
     .filter(c => c.type !== 'TEXT');
+
+  // Date filtering only applies to DATE-typed columns (zer4u: sales.sale_date).
+  const datePositions = typedPositions.filter(c => c.type === 'DATE');
+  const filterActive = !!dateCutoff && datePositions.length > 0;
+  let rowsSkipped = 0;
 
   if (typedPositions.length === 0) return null;
 
@@ -180,18 +190,25 @@ function createTypeConvertTransform(schema) {
           continue;
         }
         if (line === '') { out += '\n'; continue; }
-        out += convertLine(line) + '\n';
+        const converted = convertLine(line);
+        if (converted === null) continue; // dropped by date filter
+        out += converted + '\n';
       }
       callback(null, Buffer.from(out, 'utf8'));
     },
     flush(callback) {
       const tail = decoder.end() + lineBuffer;
       if (!tail) { callback(); return; }
-      const converted = headerSkipped && tail.trim() ? convertLine(tail) : tail;
-      callback(null, Buffer.from(converted, 'utf8'));
+      if (headerSkipped && tail.trim()) {
+        const converted = convertLine(tail);
+        callback(null, converted === null ? Buffer.alloc(0) : Buffer.from(converted, 'utf8'));
+      } else {
+        callback(null, Buffer.from(tail, 'utf8'));
+      }
     },
   });
 
+  // Returns the serialized converted line, or null if the date filter dropped it.
   function convertLine(line) {
     const fields = parseCSVLine(line);
     for (const { idx, type, name } of typedPositions) {
@@ -208,6 +225,14 @@ function createTypeConvertTransform(schema) {
         fields[idx] = converted;
       }
     }
+    // Date filter: drop the row if any DATE column is a valid date older than cutoff.
+    // Converted DATE values are ISO YYYY-MM-DD, so lexical comparison is correct.
+    if (filterActive) {
+      for (const { idx } of datePositions) {
+        const v = fields[idx];
+        if (v && v < dateCutoff) { rowsSkipped++; return null; }
+      }
+    }
     return serializeCSVLine(fields);
   }
 
@@ -220,17 +245,88 @@ function createTypeConvertTransform(schema) {
     return issues;
   };
 
+  // Number of data rows dropped by the date filter.
+  transform.getSkipped = () => rowsSkipped;
+
   return transform;
+}
+
+// ── Date-window helpers ────────────────────────────────────────────────────────
+
+/**
+ * Compute the inclusive cutoff date for an N-month import window.
+ * Returns the first day of the month that is (months-1) months before maxISO,
+ * so the window covers exactly `months` whole calendar months up to maxISO.
+ * E.g. maxISO=2026-05-17, months=3 → '2026-03-01' (Mar+Apr+May).
+ * Returns null if maxISO is falsy or months <= 0.
+ */
+function monthCutoff(maxISO, months) {
+  if (!maxISO || !months || months <= 0) return null;
+  const [y, m] = maxISO.split('-').map(Number);
+  if (!y || !m) return null;
+  const d = new Date(Date.UTC(y, (m - 1) - (months - 1), 1));
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Stream a CSV file from GCS and return the maximum value of its DATE column
+ * as an ISO string (YYYY-MM-DD), or null if the file has no DATE column or no
+ * parseable dates. Reads the whole file but only parses the single date column.
+ */
+async function scanMaxDate(schema) {
+  const dateIdx = (schema.columns || []).findIndex(c => c.type === 'DATE');
+  if (dateIdx === -1) return null;
+
+  const gcsStream = gcsService.getFileStream(schema.filePath);
+  const decoder = new StringDecoder('utf8');
+  let lineBuffer = '';
+  let headerSkipped = false;
+  let maxISO = null;
+
+  const consider = (line) => {
+    if (!line) return;
+    const fields = parseCSVLine(line);
+    const iso = convertField(fields[dateIdx] ?? '', 'DATE');
+    if (iso && (maxISO === null || iso > maxISO)) maxISO = iso;
+  };
+
+  await new Promise((resolve, reject) => {
+    gcsStream.on('data', (chunk) => {
+      lineBuffer += decoder.write(chunk);
+      const { lines, remainder } = splitCSVLines(lineBuffer);
+      lineBuffer = remainder;
+      for (const line of lines) {
+        if (!headerSkipped) { headerSkipped = true; continue; }
+        if (line !== '') consider(line);
+      }
+    });
+    gcsStream.on('end', () => {
+      const tail = decoder.end() + lineBuffer;
+      if (headerSkipped && tail.trim()) consider(tail);
+      resolve();
+    });
+    gcsStream.on('error', reject);
+  });
+
+  return maxISO;
 }
 
 /**
  * @param {string} schemaName - target PostgreSQL schema name
  * @param {Function|null} onProgress - progress callback
  * @param {Array|null} schemas - pre-scanned schema definitions; if null, read from local JSON file (CLI use only)
+ * @param {object} [options]
+ * @param {number} [options.importMonths] - keep only the last N months of fact data (0 = all)
  */
-async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas = null) {
+async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas = null, options = {}) {
   const pool = getPool();
   const startTime = Date.now();
+
+  // Import window: 0 = load everything. CLI fallback reads the env var directly.
+  const importMonths = options.importMonths != null
+    ? options.importMonths
+    : (parseInt(process.env.ZER4U_IMPORT_MONTHS || '0', 10) || 0);
+  const skippedReport = {}; // fileName → rows dropped by the date filter
 
   try {
     // Load analysis
@@ -284,6 +380,23 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
         throw new Error(`${schema.fileName}: analysis error — ${schema.error}`);
       }
 
+      // Determine the date cutoff for this file (only files with a DATE column,
+      // and only when an import window is configured). One pre-scan pass over the
+      // file finds the latest date; the cutoff is N months back from it.
+      let dateCutoff = null;
+      const hasDateColumn = (schema.columns || []).some(c => c.type === 'DATE');
+      if (importMonths > 0 && hasDateColumn) {
+        console.log(`  📅 ${schema.fileName}: scanning for latest date (import window: ${importMonths} months)...`);
+        if (onProgress) onProgress({ type: 'file_scan', file: schema.fileName });
+        const maxISO = await scanMaxDate(schema);
+        dateCutoff = monthCutoff(maxISO, importMonths);
+        if (dateCutoff) {
+          console.log(`  📅 ${schema.fileName}: latest date ${maxISO} → keeping rows >= ${dateCutoff}`);
+        } else {
+          console.log(`  📅 ${schema.fileName}: no parseable dates found — loading all rows`);
+        }
+      }
+
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
           const attemptLabel = attempt > 1 ? ` (attempt ${attempt}/${MAX_RETRIES})` : '';
@@ -291,11 +404,13 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
           if (onProgress) onProgress({ type: 'file_start', file: schema.fileName, index: i, totalFiles: schemas.length });
 
           const tableStart = Date.now();
-          const { rowCount, qualityStats } = await loadCSVFile(schema, schemaName, pool, onProgress);
+          const { rowCount, qualityStats, rowsSkipped } = await loadCSVFile(schema, schemaName, pool, onProgress, dateCutoff);
+          if (rowsSkipped > 0) skippedReport[schema.fileName] = rowsSkipped;
           const tableTime = Date.now() - tableStart;
           tableTimes.push({ name: schema.tableName, time: tableTime, rows: rowCount });
           const speed = rowCount > 0 ? Math.round(rowCount / (tableTime / 1000)) : 0;
-          console.log(`  ✅ ${schema.fileName}: ${rowCount.toLocaleString()} rows in ${(tableTime / 1000).toFixed(1)}s (${speed.toLocaleString()} rows/s)`);
+          const skippedNote = rowsSkipped > 0 ? ` (${rowsSkipped.toLocaleString()} older rows skipped)` : '';
+          console.log(`  ✅ ${schema.fileName}: ${rowCount.toLocaleString()} rows in ${(tableTime / 1000).toFixed(1)}s (${speed.toLocaleString()} rows/s)${skippedNote}`);
           if (Object.keys(qualityStats).length > 0) {
             qualityReport[schema.tableName] = qualityStats;
             const nullifiedTotal = Object.values(qualityStats).reduce((s, c) => s + c.nullified, 0);
@@ -353,9 +468,14 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
         });
     }
 
+    const totalSkipped = Object.values(skippedReport).reduce((s, n) => s + n, 0);
+    if (totalSkipped > 0) {
+      console.log(`🗓️  Date filter skipped ${totalSkipped.toLocaleString()} rows older than the ${importMonths}-month window`);
+    }
+
     console.log('\n✅ Data loading complete!\n');
 
-    return { qualityReport };
+    return { qualityReport, skippedReport };
 
   } catch (error) {
     console.error('❌ Fatal error:', error);
@@ -366,7 +486,7 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
 /**
  * Load a single CSV file into its table using COPY
  */
-async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
+async function loadCSVFile(schema, schemaName, pool, onProgress = null, dateCutoff = null) {
   const client = await pool.connect();
 
   try {
@@ -396,9 +516,10 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
     // Get GCS stream
     const gcsStream = gcsService.getFileStream(filePath);
 
-    // Optional inline type-conversion transform (null if all columns are TEXT)
-    const typeTransform = createTypeConvertTransform(schema);
-    console.log(`${tag} typeTransform: ${typeTransform ? 'YES' : 'no (all TEXT)'}`);
+    // Optional inline type-conversion transform (null if all columns are TEXT).
+    // When dateCutoff is set, this also drops rows older than the import window.
+    const typeTransform = createTypeConvertTransform(schema, dateCutoff);
+    console.log(`${tag} typeTransform: ${typeTransform ? 'YES' : 'no (all TEXT)'}${dateCutoff ? ` | date filter >= ${dateCutoff}` : ''}`);
 
     // Create COPY stream
     const copyStream = client.query(copyFrom(copyQuery));
@@ -532,10 +653,13 @@ async function loadCSVFile(schema, schemaName, pool, onProgress = null) {
       progressTransform.on('error', abort);
     });
 
+    // totalRows is counted downstream of the type/filter transform, so it already
+    // reflects post-filter rows (the header passes through, hence the -1).
     const rowCount = Math.max(0, totalRows - 1); // Subtract header line
     const qualityStats = typeTransform ? typeTransform.getStats() : {};
+    const rowsSkipped = typeTransform && typeTransform.getSkipped ? typeTransform.getSkipped() : 0;
     client.release();
-    return { rowCount, qualityStats };
+    return { rowCount, qualityStats, rowsSkipped };
 
   } catch (err) {
     // Destroy the connection — a failed mid-stream COPY leaves the pg protocol

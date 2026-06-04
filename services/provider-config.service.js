@@ -29,6 +29,9 @@ const ENV_FALLBACKS = {
   gcp_billing_project_id:            'GCP_BILLING_PROJECT_ID',
   gcp_billing_dataset:               'GCP_BILLING_DATASET',
   gcp_billing_service_account_json:  'GCP_SERVICE_ACCOUNT_JSON',
+  // Data Loader — how many trailing months of fact data to import (0 = all).
+  // Not shown on the API Keys page; edited from the Data Loader page.
+  zer4u_import_months:               'ZER4U_IMPORT_MONTHS',
 };
 
 // All known config keys (in display order)
@@ -114,6 +117,26 @@ class ProviderConfigService {
       result[key] = await this.get(key);
     }
     return result;
+  }
+
+  /**
+   * Describe a single key: effective value + where it came from.
+   * Returns { supported, value, source } where source is 'db' | 'env' | 'default'.
+   * `supported` is false for keys not in the whitelist (set() would reject them).
+   */
+  async describe(key) {
+    if (!ALL_KEYS.includes(key)) {
+      return { supported: false, value: null, source: 'default' };
+    }
+    await this._ensureCache();
+    const dbValue = this._cache?.get(key) ?? null;
+    if (dbValue !== null && dbValue !== '') {
+      return { supported: true, value: dbValue, source: 'db' };
+    }
+    const envKey = ENV_FALLBACKS[key];
+    const envValue = envKey ? (process.env[envKey] || null) : null;
+    if (envValue) return { supported: true, value: envValue, source: 'env' };
+    return { supported: true, value: null, source: 'default' };
   }
 
   /**

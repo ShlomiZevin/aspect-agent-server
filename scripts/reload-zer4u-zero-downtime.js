@@ -20,6 +20,13 @@ const { buildColumnLookup } = require('./column-aliases');
 
 const GCS_FOLDER = 'zer4u/';
 
+// Tables present in the source export but never used by the agent — not in any
+// materialized view, index, column-aliases mapping, or generated query. Skipped
+// from import to save storage. These are the two largest unused tables:
+//   linktable   — Qlik bridge table (26.5M rows, ~1.7 GB; all keys, no measures)
+//   shorot_kbla — credit-card payment detail (7.7M rows, ~476 MB; out of scope)
+const SKIP_TABLES = new Set(['linktable', 'shorot_kbla']);
+
 // Hebrew → English table name mapping (same as scan-csv-files.js)
 const HEBREW_TABLE_NAMES = {
   'חנויות.csv': 'stores',
@@ -95,15 +102,31 @@ async function buildSchemasFromHeaders(gcsFiles, emitLog) {
 
 // ── Phase 1: Import ───────────────────────────────────────────────────────────
 
-async function loadZer4u(targetSchema, emitLog) {
+async function loadZer4u(targetSchema, emitLog, options = {}) {
   let totalFiles = 0;
   let filesLoaded = 0;
   let totalRows = 0;
   const fileResults = [];
 
+  // Import window: keep only the last N months of fact data (sales). 0 = load all.
+  // Comes from DataReloadService (DB/env); env fallback is for direct CLI runs.
+  const importMonths = options.importMonths != null
+    ? options.importMonths
+    : (parseInt(process.env.ZER4U_IMPORT_MONTHS || '0', 10) || 0);
+  if (importMonths > 0) {
+    emitLog('scanning', `Import window: keeping last ${importMonths} month(s) of sales (relative to latest sale date)`);
+  } else {
+    emitLog('scanning', 'Import window: loading all available data (no date filter)');
+  }
+
   emitLog('scanning', 'Listing CSV files from GCS...');
-  const gcsFiles = await gcsService.listCSVFiles(GCS_FOLDER);
-  emitLog('scanning', `Found ${gcsFiles.length} CSV files — reading headers...`);
+  const allFiles = await gcsService.listCSVFiles(GCS_FOLDER);
+  const gcsFiles = allFiles.filter(f => !SKIP_TABLES.has(sanitizeTableName(f.basename)));
+  const skippedCount = allFiles.length - gcsFiles.length;
+  if (skippedCount > 0) {
+    emitLog('scanning', `Skipping ${skippedCount} unused table(s): ${[...SKIP_TABLES].join(', ')}`);
+  }
+  emitLog('scanning', `Found ${allFiles.length} CSV files (${gcsFiles.length} to load) — reading headers...`);
   const schemas = await buildSchemasFromHeaders(gcsFiles, emitLog);
   totalFiles = schemas.length;
   const totalSize = schemas.reduce((sum, s) => sum + parseInt(s.fileSize || 0), 0);
@@ -116,7 +139,13 @@ async function loadZer4u(targetSchema, emitLog) {
   emitLog('loading_data', `Starting data load into ${targetSchema}...`);
 
   const onProgress = (event) => {
-    if (event.type === 'file_start') {
+    if (event.type === 'file_scan') {
+      emitLog('loading_data', `Scanning ${event.file} for latest date (import window)...`, {
+        file: event.file,
+        totalFiles,
+        filesCompleted: filesLoaded,
+      });
+    } else if (event.type === 'file_start') {
       emitLog('loading_data', `Loading ${event.file}...`, {
         file: event.file,
         totalFiles,
@@ -153,7 +182,18 @@ async function loadZer4u(targetSchema, emitLog) {
     }
   };
 
-  const { qualityReport } = await loadAllCSVFiles(targetSchema, onProgress, schemas) || {};
+  const { qualityReport, skippedReport } = await loadAllCSVFiles(targetSchema, onProgress, schemas, { importMonths }) || {};
+
+  if (importMonths > 0) {
+    const totalSkipped = Object.values(skippedReport || {}).reduce((s, n) => s + n, 0);
+    if (totalSkipped > 0) {
+      const detail = Object.entries(skippedReport)
+        .map(([file, n]) => `${file}: ${n.toLocaleString()}`).join(', ');
+      emitLog('loading_data', `Date filter: skipped ${totalSkipped.toLocaleString()} rows older than the ${importMonths}-month window (${detail})`);
+    } else {
+      emitLog('loading_data', `Date filter active (${importMonths} months) but no rows fell outside the window`);
+    }
+  }
 
   const tablesWithIssues = Object.keys(qualityReport || {}).length;
   if (tablesWithIssues > 0) {
