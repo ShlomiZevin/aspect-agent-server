@@ -62,26 +62,39 @@ class WelcomeCrew extends CrewMember {
 
   /**
    * Infer gender from user_name when extracted.
+   * Auto-set account_type=personal for under-18 users (≥16, since <16 is rejected at the gate).
    */
   async onFieldsExtracted(newFields, allFields) {
-    if (!newFields.user_name || allFields.gender) return {};
+    const derived = {};
 
-    try {
-      const result = await llmService.sendOneShot(
-        'You determine gender from Hebrew/English names. Respond with ONLY one word: male, female, or unknown. Nothing else.',
-        `Name: ${newFields.user_name}`,
-        { model: 'gpt-4o-mini', maxTokens: 16 }
-      );
-      const inferred = result.trim().toLowerCase();
-      if (inferred === 'male' || inferred === 'female') {
-        console.log(`   👤 Gender inferred from "${newFields.user_name}": ${inferred}`);
-        return { gender: inferred };
+    if (newFields.user_name && !allFields.gender) {
+      try {
+        const result = await llmService.sendOneShot(
+          'You determine gender from Hebrew/English names. Respond with ONLY one word: male, female, or unknown. Nothing else.',
+          `Name: ${newFields.user_name}`,
+          { model: 'gpt-4o-mini', maxTokens: 16 }
+        );
+        const inferred = result.trim().toLowerCase();
+        if (inferred === 'male' || inferred === 'female') {
+          console.log(`   👤 Gender inferred from "${newFields.user_name}": ${inferred}`);
+          derived.gender = inferred;
+        } else {
+          console.log(`   👤 Gender unknown for "${newFields.user_name}", will ask user`);
+        }
+      } catch (err) {
+        console.error(`   ❌ Gender inference failed:`, err.message);
       }
-      console.log(`   👤 Gender unknown for "${newFields.user_name}", will ask user`);
-    } catch (err) {
-      console.error(`   ❌ Gender inference failed:`, err.message);
     }
-    return {};
+
+    if (newFields.age && !allFields.account_type) {
+      const age = parseInt(newFields.age, 10);
+      if (!isNaN(age) && age >= 16 && age < 18) {
+        derived.account_type = 'personal';
+        console.log(`   🧒 User under 18 (age ${age}) — auto-setting account_type=personal`);
+      }
+    }
+
+    return derived;
   }
 
   /**

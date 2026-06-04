@@ -33,6 +33,48 @@ function drizzle() {
   return db.getDrizzle();
 }
 
+/**
+ * Lift legacy DC shape (`case.sections: [{name,text}]`) to the new
+ * shape (`dc.sections: [{name}]` + `case.sectionTexts: {name:text}`).
+ * Mutates in place. Idempotent — bodies already in the new shape pass
+ * through unchanged. Runs at hydrate time so client code can rely on
+ * a single canonical shape regardless of when the body was saved.
+ *
+ * The client's draftStorage.ts has the mirror migration for local
+ * drafts; keep both in lockstep when changing the rules here.
+ */
+function migrateDynamicContext(dc) {
+  if (!dc || !Array.isArray(dc.cases)) return;
+  const declared = new Set((Array.isArray(dc.sections) ? dc.sections : []).map(s => s && s.name));
+  const inOrder  = (Array.isArray(dc.sections) ? dc.sections : []).map(s => s && s.name).filter(Boolean);
+
+  for (const c of dc.cases) {
+    if (!c || !Array.isArray(c.sections)) continue;
+    const texts = Object.assign({}, c.sectionTexts || {});
+    for (const s of c.sections) {
+      if (!s || typeof s.name !== 'string') continue;
+      if (!declared.has(s.name)) {
+        declared.add(s.name);
+        inOrder.push(s.name);
+      }
+      if (!(s.name in texts) && typeof s.text === 'string') texts[s.name] = s.text;
+    }
+    c.sectionTexts = texts;
+    delete c.sections;
+  }
+
+  if (inOrder.length > 0) {
+    dc.sections = inOrder.map(name => ({ name }));
+  }
+}
+
+/** Apply DC migration to every DC on an agent body (working copy or
+ *  version snapshot). Tolerant of missing/non-array dynamicContexts. */
+function migrateAgentBodyDcs(body) {
+  if (!body || !Array.isArray(body.dynamicContexts)) return;
+  for (const dc of body.dynamicContexts) migrateDynamicContext(dc);
+}
+
 // ─── Hydration (denormalised "ProjectDoc" matching the client shape) ──
 
 /**
@@ -67,6 +109,13 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
   // Build the working-copy agent fields from the viewing version's body.
   const viewing = agentVersions.find(v => v.id === agent.viewingVersionId);
   const agentBody = viewing ? viewing.body : {};
+
+  // Lift legacy per-case sections → dc.sections + case.sectionTexts.
+  // Mutates each body in place so the rendered ProjectDoc — both the
+  // working copy AND each saved version's body — uses one canonical
+  // shape. Idempotent on already-migrated bodies.
+  migrateAgentBodyDcs(agentBody);
+  for (const v of agentVersions) migrateAgentBodyDcs(v.body);
 
   // All crews of this agent.
   const crewRows = await d.select()
@@ -120,13 +169,14 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       id:      agent.id,
       slug:    agent.slug,
       // Working-copy fields from viewing.
-      name:           agentBody.name           || agent.slug,
-      spec:           agentBody.spec           || '',
-      persona:        agentBody.persona        || '',
-      defaultCrewId:  agentBody.defaultCrewId,
-      fields:         Array.isArray(agentBody.fields)     ? agentBody.fields     : [],
-      domains:        Array.isArray(agentBody.domains)    ? agentBody.domains    : [],
-      parameters:     Array.isArray(agentBody.parameters) ? agentBody.parameters : [],
+      name:            agentBody.name           || agent.slug,
+      spec:            agentBody.spec           || '',
+      persona:         agentBody.persona        || '',
+      defaultCrewId:   agentBody.defaultCrewId,
+      fields:          Array.isArray(agentBody.fields)          ? agentBody.fields          : [],
+      domains:         Array.isArray(agentBody.domains)         ? agentBody.domains         : [],
+      parameters:      Array.isArray(agentBody.parameters)      ? agentBody.parameters      : [],
+      dynamicContexts: Array.isArray(agentBody.dynamicContexts) ? agentBody.dynamicContexts : [],
       crews,
       versions: agentVersions.map(v => ({
         id:           v.id,

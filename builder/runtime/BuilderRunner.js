@@ -220,14 +220,17 @@ async function runOnce({
         parameters:       agentParameters,
         dynamicContexts:  agentDynamicContexts,
         fieldsForDynamic: fieldPool,
-        onDynamicResolved: ({ fieldName, matched, text }) => {
+        onDynamicResolved: ({ fieldName, section, matched, text }) => {
           // Emit one SSE event per resolved dynamic-context token so the
           // chat UI can show a trail above the assistant message.
           // De-dup is left to the client — same field may resolve once
-          // per occurrence in the template.
+          // per occurrence in the template. `section` is null for the
+          // umbrella form, the section name for `{{dynamic:F:S}}`, or
+          // `'*'` for the all-sections join form.
           emit('dynamic.resolved', {
             instanceId: instance.instanceId,
             fieldName,
+            section,
             matched,
             text,
           });

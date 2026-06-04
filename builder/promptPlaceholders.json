@@ -76,8 +76,24 @@
       "token": "{{dynamic:NAME}}",
       "category": "value",
       "trigger": "*",
-      "render": "Switches on the current memory value of the named field and renders the matching case's text from the agent's Dynamic Context for that field. Falls back to the DC's `fallback` (or empty) when no case matches. NAME is the field name. Renders as a block (multi-paragraph content is expected).",
+      "render": "Switches on the current memory value of the named field and renders the matching case's umbrella prompt from the agent's Dynamic Context for that field. Falls back to the DC's `fallback` (or empty) when no case matches. NAME is the field name. Renders as a block (multi-paragraph content is expected).",
       "example": "{{dynamic:tier}}",
+      "picker_group": "Dynamic context"
+    },
+    {
+      "token": "{{dynamic:NAME:SECTION}}",
+      "category": "value",
+      "trigger": "*",
+      "render": "Renders one named SECTION under the matched case of the agent's Dynamic Context for FIELD. Empty when no case matches or the matched case has no such section. Sections share no fallback — the DC's `fallback` is umbrella-only.",
+      "example": "{{dynamic:mood:how_to_address}}",
+      "picker_group": "Dynamic context"
+    },
+    {
+      "token": "{{dynamic:NAME:*}}",
+      "category": "value",
+      "trigger": "*",
+      "render": "Joins every section under the matched case as `### name` blocks separated by blank lines. Convenience form for 'inject everything authored under the current value'.",
+      "example": "{{dynamic:mood:*}}",
       "picker_group": "Dynamic context"
     }
   ],
@@ -120,6 +136,16 @@
       "name": "Dynamic guidance by value",
       "use_when": "Behaviour should swap based on a deterministically extracted field value — e.g. switching on intent, mood, plan tier. Authored as an agent-level Dynamic Context, consumed via a single token.",
       "snippet": "Use this guidance for the current case:\n\n{{dynamic:intent}}"
+    },
+    {
+      "name": "Section-targeted dynamic guidance",
+      "use_when": "A single case (e.g. `mood == sad`) needs multiple discrete chunks of guidance for different consumers — opening line, what to avoid, how to address. Sections under the case let each prompt cherry-pick just the slice it needs.",
+      "snippet": "Address the user with this opener:\n{{dynamic:mood:opening_line}}\n\nAvoid these failure modes:\n{{dynamic:mood:what_to_avoid}}"
+    },
+    {
+      "name": "All sections under the current case",
+      "use_when": "You want every authored section under the matching case dropped in as headed blocks — the 'give me everything' form.",
+      "snippet": "Current-case briefing:\n{{dynamic:mood:*}}"
     }
   ]
 }

@@ -58,7 +58,7 @@ User Message
     │         └──→ can also extract fields
     │
     ├──→ Talker (sync, streams) ──→ speaks to user
-    │         reads: thinker advice + fields + triggered context + KB
+    │         reads: thinker advice + fields + dynamic context + KB
     │
     └──→ Profiler (async, background) ──→ writes deep profile
               doesn't block the response
@@ -110,35 +110,41 @@ Fields can be collected by **any chain step** — the extractor, the thinker, or
 
 ---
 
-## Triggered Context Injection — NEW
+## Dynamic Context Injection
 
-When a field is extracted with a specific value from a known list, **additional instructions are injected directly into the prompt**. No KB vector search — deterministic, in code.
+When an enum field has a specific value, **the matching case text is rendered in place of a `{{dynamic:FIELD}}` token**. No KB vector search — deterministic, in code. Authored agent-level, consumed by any addon's prompt.
+
+See [BUILDER_V2_DYNAMIC_CONTEXT.md](./BUILDER_V2_DYNAMIC_CONTEXT.md) for the full design.
 
 ### How it works
 
 ```
-Field: intent
-Values: [open_account, close_account, complaint, info_request]
+Field: intent  (enum: open_account | close_account | complaint | info_request)
 
-When intent = "open_account" → inject:
-  "Focus on eligibility. Ask about employment and income.
-   Don't discuss fees yet."
+Dynamic Context for `intent`:
+  open_account → "Focus on eligibility. Ask about employment and income.
+                  Don't discuss fees yet."
+  complaint    → "Acknowledge frustration first. Listen fully before
+                  offering solutions. Never be defensive."
 
-When intent = "complaint" → inject:
-  "Acknowledge frustration first. Listen fully before
-   offering solutions. Never be defensive."
+Talker prompt contains:
+  ...
+  {{dynamic:intent}}
+  ...
 ```
+
+At assemble time the token is replaced with the case text for the current value of `intent`.
 
 ### Why not KB?
 
-KB uses vector search — it guesses which document is relevant. Triggered context is **exact**: field has value X from a known list → inject instructions Y. Direct mapping. No guessing.
+KB uses vector search — it guesses which document is relevant. Dynamic Context is **exact**: field has value X from a known list → render case text Y. Direct mapping. No guessing.
 
 ### Use cases
 
 - **Intent routing**: Different instructions per customer intent
 - **User type adaptation**: Adjust tone/approach per personality (stubborn, confused, kid)
 - **Stage-specific guidance**: Different instructions based on journey stage
-- **Any enum field**: Any field with a list of known values can trigger specific context
+- **Any enum field**: Any field with a closed list of values can switch context
 
 ---
 

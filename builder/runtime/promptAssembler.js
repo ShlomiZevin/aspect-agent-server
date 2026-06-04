@@ -226,15 +226,18 @@ function buildFieldsCurrentBlock(fields, valueOf) {
  *        plugins.
  * @param {Array}    [args.parameters] — agent.parameters used by `{{param:NAME}}` substitutions.
  * @param {Array}    [args.dynamicContexts] — agent.dynamicContexts used by
- *        `{{dynamic:NAME}}` substitutions. Each DC carries `fieldId` + `cases`
- *        + optional `fallback`. The resolver matches the live memory value of
- *        the referenced field against `cases[].value` and renders the matched
- *        text (or fallback, or empty).
+ *        `{{dynamic:NAME}}` / `{{dynamic:NAME:SECTION}}` / `{{dynamic:NAME:*}}`
+ *        substitutions. Each DC carries `fieldId` + `cases` (each case has
+ *        an optional umbrella `text` and an optional ordered `sections`
+ *        list) + optional `fallback` (umbrella-only).
  * @param {Array}    [args.fieldsForDynamic] — agent + crew field defs in scope
- *        for resolving `{{dynamic:NAME}}` (we look up fieldId by name).
- * @param {function} [args.onDynamicResolved] — callback `({ fieldName, matched,
- *        text }) => void` fired each time a `{{dynamic:NAME}}` resolves. Used
- *        by the runtime to emit SSE events for the live chat trail.
+ *        for resolving dynamic tokens (we look up fieldId by name).
+ * @param {function} [args.onDynamicResolved] — callback
+ *        `({ fieldName, section, matched, text }) => void` fired each
+ *        time a dynamic token resolves. `section` is `null` for the
+ *        umbrella form, the section name for `{{dynamic:F:S}}`, or
+ *        `'*'` for the all-sections join. Used by the runtime to emit
+ *        SSE events for the live chat trail.
  * @returns {string} the assembled prompt
  */
 function assemblePrompt({
@@ -324,48 +327,102 @@ function assemblePrompt({
 }
 
 /**
- * Resolve `{{dynamic:NAME}}` against the supplied dynamic-context list.
+ * Resolve a `{{dynamic:…}}` token against the supplied DC list.
  *
- *   1. Look up the FieldDef whose `name === NAME` (agent + crew scope).
- *      Missing → return null, which leaves the token literal in the
- *      output so a typo is loud rather than silent.
+ * The token captured by `substituteParameterised` (regex `[^}\s]+`) is
+ * either `FIELD`, `FIELD:SECTION`, or `FIELD:*` — we split on the first
+ * `:` and dispatch accordingly.
+ *
+ * Common steps (every form):
+ *   1. Look up the FieldDef whose `name === FIELD` (agent + crew scope).
+ *      Missing → return null so the token stays literal — a typo
+ *      surfaces loudly rather than silently collapsing.
  *   2. Find a DC whose `fieldId === field.id`. Missing → return ''
- *      (the field exists, just no DC attached — silent empty is fine).
+ *      (the field exists, just no DC attached).
  *   3. Read the live memory value for that field via `fieldValueOf`.
- *   4. Match against `cases[i].value` (string-compared). On hit, return
- *      that text; otherwise return `dc.fallback ?? ''`.
+ *   4. Find the case whose `value === live`. Otherwise treat as a
+ *      no-match (uses `dc.fallback` only for the umbrella form).
+ *
+ * Form-specific:
+ *   • `FIELD`           → returns the matched case's `text` (umbrella).
+ *                          Falls back to `dc.fallback` if no case matched.
+ *   • `FIELD:SECTION`   → returns the matched case's `sections[SECTION].text`.
+ *                          Empty when section missing or no case matched
+ *                          (fallback is umbrella-only — sections don't
+ *                          share a fallback by design).
+ *   • `FIELD:*`         → joins every section in the matched case under
+ *                          `### name` headings. Empty when no sections
+ *                          or no case matched.
  *
  * Side-effect: when an `onDynamicResolved` callback is supplied, fire
- * it with `{ fieldName, matched, text }`. The runtime uses this to
- * emit an SSE event so the chat UI can show what was loaded.
+ * it with `{ fieldName, section, matched, text }`. The runtime uses
+ * this to emit an SSE event so the chat UI can show what was loaded.
+ * `section` is `null` for umbrella, the section name for `FIELD:SECTION`,
+ * or `'*'` for the all-sections form.
  */
-function resolveDynamicInline(name, { dynamicContexts, fieldsForDynamic, fieldValueOf, onDynamicResolved }) {
-  const field = fieldsForDynamic.find(f => f && f.name === name);
+function resolveDynamicInline(rawName, { dynamicContexts, fieldsForDynamic, fieldValueOf, onDynamicResolved }) {
+  // Split on the FIRST colon — section names can't contain ':' (the
+  // editor sanitises to snake_case) so this is unambiguous.
+  const colonIdx = rawName.indexOf(':');
+  const fieldName    = colonIdx === -1 ? rawName : rawName.slice(0, colonIdx);
+  const sectionPart  = colonIdx === -1 ? null    : rawName.slice(colonIdx + 1);
+
+  const field = fieldsForDynamic.find(f => f && f.name === fieldName);
   if (!field) return null; // leave token literal — loud miss
 
   const dc = dynamicContexts.find(d => d && d.fieldId === field.id);
   if (!dc) {
-    if (onDynamicResolved) onDynamicResolved({ fieldName: name, matched: null, text: '' });
+    if (onDynamicResolved) onDynamicResolved({ fieldName, section: sectionPart, matched: null, text: '' });
     return '';
   }
 
-  const live = fieldValueOf ? fieldValueOf(name) : undefined;
+  const live = fieldValueOf ? fieldValueOf(fieldName) : undefined;
   const liveStr = live === undefined || live === null ? null : String(live);
 
   let matched = null;
-  let text = '';
+  let matchedCase = null;
   if (liveStr !== null && Array.isArray(dc.cases)) {
     const hit = dc.cases.find(c => c && String(c.value) === liveStr);
     if (hit) {
       matched = liveStr;
-      text = hit.text || '';
+      matchedCase = hit;
     }
   }
-  if (!matched && typeof dc.fallback === 'string') {
-    text = dc.fallback;
+
+  let text = '';
+  if (sectionPart === null) {
+    // {{dynamic:FIELD}} — umbrella + dc.fallback semantics.
+    if (matchedCase) {
+      text = matchedCase.text || '';
+    } else if (typeof dc.fallback === 'string') {
+      text = dc.fallback;
+    }
+  } else if (sectionPart === '*') {
+    // {{dynamic:FIELD:*}} — every section declared on the DC, joined
+    // under `### name` headings. Section names live on `dc.sections`
+    // (shared across cases); each body comes from
+    // `matchedCase.sectionTexts[name]`. Sections with no authored body
+    // for the matched case are skipped to keep the prompt clean —
+    // empty `### name` blocks are noise the LLM doesn't need.
+    if (matchedCase && Array.isArray(dc.sections)) {
+      const texts = matchedCase.sectionTexts || {};
+      const parts = dc.sections
+        .filter(s => s && typeof s.name === 'string')
+        .map(s => ({ name: s.name, body: texts[s.name] || '' }))
+        .filter(p => p.body.length > 0)
+        .map(p => `### ${p.name}\n${p.body}`);
+      text = parts.join('\n\n');
+    }
+  } else {
+    // {{dynamic:FIELD:SECTION}} — exact section body for the matched
+    // case. Empty when the case has no body authored for it, or when
+    // no case matched.
+    if (matchedCase && matchedCase.sectionTexts && typeof matchedCase.sectionTexts[sectionPart] === 'string') {
+      text = matchedCase.sectionTexts[sectionPart];
+    }
   }
 
-  if (onDynamicResolved) onDynamicResolved({ fieldName: name, matched, text });
+  if (onDynamicResolved) onDynamicResolved({ fieldName, section: sectionPart, matched, text });
   return text;
 }
 

@@ -266,9 +266,34 @@ export interface ThinkerConfig {
 export interface DynamicContextCase {
   /** The field value this case fires on (e.g. an enum option name). */
   value: string;
-  /** The text injected when the live field value matches `value`.
-   *  Can be arbitrarily long — multi-paragraph prose is expected. */
-  text: string;
+  /** Umbrella prompt for this case — what `{{dynamic:FIELD}}` resolves to
+   *  when the live value matches. Optional: a case may declare only
+   *  section texts and leave the umbrella empty, in which case
+   *  `{{dynamic:FIELD}}` collapses to '' for that value. */
+  text?: string;
+  /** Per-case section bodies, keyed by the section name declared on
+   *  the parent DC. The address space (which sections exist) lives on
+   *  `DynamicContextDef.sections` — this map only holds the BODIES
+   *  authored for this specific case. Missing keys resolve to empty
+   *  at runtime. */
+  sectionTexts?: Record<string, string>;
+}
+
+/**
+ * Declaration of one section name on a Dynamic Context. The list lives
+ * on `DynamicContextDef.sections` and applies to every case — adding
+ * or removing a section is a field-shape change, not a per-case edit.
+ * Each case fills in the text under `case.sectionTexts[name]`.
+ *
+ * The `name` is the token key (`{{dynamic:FIELD:NAME}}`) and stays
+ * snake-case for token-safety; the editor auto-sanitises typed labels
+ * to that shape but leaves the result editable.
+ *
+ * Kept as an object (vs. a bare string) so we can extend later
+ * (description, default body, ordering hints) without another migration.
+ */
+export interface DynamicContextSection {
+  name: string;
 }
 
 /**
@@ -289,6 +314,12 @@ export interface DynamicContextDef {
   /** The field this dynamic context switches on. References
    *  `agent.fields[].id`. Renames cascade via the schema panel. */
   fieldId: ID;
+  /** Section NAMES declared on this DC — the address space for
+   *  `{{dynamic:FIELD:SECTION}}` tokens. Shared across every case:
+   *  adding a section makes it referenceable under every value, even
+   *  if some cases haven't authored a body for it yet. Each case fills
+   *  in its body via `case.sectionTexts[name]`. */
+  sections?: DynamicContextSection[];
   /** Per-value cases. For enum fields the editor pre-seeds one case
    *  per `field.enumValues` entry; extra cases are dropped on save. */
   cases: DynamicContextCase[];
