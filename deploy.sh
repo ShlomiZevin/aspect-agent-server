@@ -85,6 +85,7 @@ gcloud run deploy $SERVICE_NAME \
   --cpu 2 \
   --memory 2Gi \
   --timeout 3600 \
+  --no-cpu-throttling \
   --set-cloudsql-instances $CLOUD_SQL_INSTANCES \
   --env-vars-file "$ENV_YAML_FILE"
 
