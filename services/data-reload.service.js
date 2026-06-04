@@ -500,33 +500,53 @@ class DataReloadService {
         await reloader.indexFn(shadowSchema, emitLog, schemaName, options);
 
         // ── Atomic schema swap ──
+        // The rename needs to briefly lock the live schema. A concurrent agent
+        // query holding a lock on a zer4u table can block it indefinitely, so:
+        //   - lock_timeout makes the swap fail fast instead of hanging forever,
+        //   - we terminate ALL other backends on this (dedicated) DB right before
+        //     each attempt to release any held locks (the old query-ILIKE filter
+        //     missed idle-in-transaction connections),
+        //   - and we retry a few times.
         emitLog('swapping', `Swapping schemas: ${shadowSchema} → ${schemaName}...`);
         const swapPool = reloader.pool || this.db;
-        await swapPool.query(`
-          SELECT pg_terminate_backend(pid)
-          FROM pg_stat_activity
-          WHERE datname = current_database()
-            AND pid <> pg_backend_pid()
-            AND query ILIKE '%${schemaName}%'
-        `).catch(() => {});
-
         const swapClient = await swapPool.connect();
         try {
-          await swapClient.query('BEGIN');
-          await swapClient.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
-          await swapClient.query(`
-            DO $$ BEGIN
-              IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '${schemaName}') THEN
-                EXECUTE 'ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old';
-              END IF;
-            END $$
-          `);
-          await swapClient.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
-          await swapClient.query('COMMIT');
-          emitLog('swapping', `Schema swap complete: ${schemaName} is now live`);
-        } catch (swapErr) {
-          await swapClient.query('ROLLBACK').catch(() => {});
-          throw swapErr;
+          await swapClient.query('SET statement_timeout = 0');
+          await swapClient.query("SET lock_timeout = '45s'");
+
+          const MAX_SWAP_ATTEMPTS = 3;
+          for (let attempt = 1; attempt <= MAX_SWAP_ATTEMPTS; attempt++) {
+            try {
+              // Release blockers: kill every other backend on this DB. On the
+              // dedicated zer4u DB these are agent-query / pool connections that
+              // will simply reconnect on their next query.
+              await swapClient.query(`
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid()
+              `).catch(() => {});
+
+              await swapClient.query('BEGIN');
+              await swapClient.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
+              await swapClient.query(`
+                DO $$ BEGIN
+                  IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '${schemaName}') THEN
+                    EXECUTE 'ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old';
+                  END IF;
+                END $$
+              `);
+              await swapClient.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
+              await swapClient.query('COMMIT');
+              emitLog('swapping', `Schema swap complete: ${schemaName} is now live${attempt > 1 ? ` (attempt ${attempt})` : ''}`);
+              break;
+            } catch (swapErr) {
+              await swapClient.query('ROLLBACK').catch(() => {});
+              if (attempt === MAX_SWAP_ATTEMPTS) throw swapErr;
+              emitLog('swapping', `Swap attempt ${attempt}/${MAX_SWAP_ATTEMPTS} failed (${swapErr.message}); retrying...`);
+              await new Promise(r => setTimeout(r, 2000));
+            }
+          }
         } finally {
           swapClient.release();
         }
