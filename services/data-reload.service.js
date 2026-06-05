@@ -223,6 +223,13 @@ class DataReloadService {
    * Returns { action: 'started'|'skipped', reason?, runId? }
    */
   async ensureIndexed(schemaName) {
+    // Self-heal first: if a previous index run built the shadow but its worker
+    // died before swapping, just complete the swap (don't rebuild everything).
+    const healed = await this.ensureSwapped(schemaName);
+    if (healed.action === 'swapped') {
+      return { action: 'started', runId: healed.runId, selfHeal: true };
+    }
+
     const current = this.currentRuns[schemaName];
     if (current && current.status === 'running') {
       return { action: 'skipped', reason: `${current.phase} already running in memory` };
@@ -499,45 +506,9 @@ class DataReloadService {
         emitLog('creating_indexes', `Indexing shadow schema ${shadowSchema} (reference: ${schemaName})...`);
         await reloader.indexFn(shadowSchema, emitLog, schemaName, options);
 
-        // ── Atomic schema swap ──
-        emitLog('swapping', `Swapping schemas: ${shadowSchema} → ${schemaName}...`);
+        // ── Atomic schema swap (hardened; shared with self-heal) ──
         const swapPool = reloader.pool || this.db;
-        await swapPool.query(`
-          SELECT pg_terminate_backend(pid)
-          FROM pg_stat_activity
-          WHERE datname = current_database()
-            AND pid <> pg_backend_pid()
-            AND query ILIKE '%${schemaName}%'
-        `).catch(() => {});
-
-        const swapClient = await swapPool.connect();
-        try {
-          await swapClient.query('BEGIN');
-          await swapClient.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
-          await swapClient.query(`
-            DO $$ BEGIN
-              IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '${schemaName}') THEN
-                EXECUTE 'ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old';
-              END IF;
-            END $$
-          `);
-          await swapClient.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
-          await swapClient.query('COMMIT');
-          emitLog('swapping', `Schema swap complete: ${schemaName} is now live`);
-        } catch (swapErr) {
-          await swapClient.query('ROLLBACK').catch(() => {});
-          throw swapErr;
-        } finally {
-          swapClient.release();
-        }
-
-        await swapPool.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`).catch(() => {});
-
-        // Regenerate schema description cache in background — both read schema + store cache in zer4u DB
-        const schemaDescriptorService = require('./schema-descriptor.service');
-        schemaDescriptorService.getDescription(schemaName, true, swapPool, swapPool)
-          .then(() => emitLog('swapping', `Schema description cache updated`))
-          .catch(err => console.warn(`⚠️  Schema description regen failed: ${err.message}`));
+        await this._swapSchemas(schemaName, shadowSchema, swapPool, emitLog);
       } else {
         // Manual re-index: index live schema directly
         emitLog('creating_indexes', `Re-indexing live schema ${schemaName}...`);
@@ -550,6 +521,143 @@ class DataReloadService {
     } catch (err) {
       emitLog('failed', `Indexing failed: ${err.message}`);
       await this._finishRun(runId, schemaName, 'failed', null, err.message);
+    }
+  }
+
+  /**
+   * Complete the atomic schema swap: shadowSchema → schemaName, keeping the old
+   * as schemaName_old then dropping it. Hardened against lock blockers / hangs:
+   * statement_timeout=0 + lock_timeout, terminate other backends on the
+   * (dedicated) DB before each attempt, retry up to 3x. Shared by the index
+   * pipeline and by ensureSwapped (self-heal).
+   */
+  async _swapSchemas(schemaName, shadowSchema, swapPool, emitLog) {
+    emitLog('swapping', `Swapping schemas: ${shadowSchema} → ${schemaName}...`);
+    const swapClient = await swapPool.connect();
+    try {
+      await swapClient.query('SET statement_timeout = 0');
+      await swapClient.query("SET lock_timeout = '45s'");
+
+      const MAX_SWAP_ATTEMPTS = 3;
+      for (let attempt = 1; attempt <= MAX_SWAP_ATTEMPTS; attempt++) {
+        try {
+          // Release blockers: kill every other backend on this DB. On the
+          // dedicated zer4u DB these are agent-query / pool connections that
+          // will simply reconnect on their next query.
+          await swapClient.query(`
+            SELECT pg_terminate_backend(pid)
+            FROM pg_stat_activity
+            WHERE datname = current_database()
+              AND pid <> pg_backend_pid()
+          `).catch(() => {});
+
+          await swapClient.query('BEGIN');
+          await swapClient.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`);
+          await swapClient.query(`
+            DO $$ BEGIN
+              IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = '${schemaName}') THEN
+                EXECUTE 'ALTER SCHEMA ${schemaName} RENAME TO ${schemaName}_old';
+              END IF;
+            END $$
+          `);
+          await swapClient.query(`ALTER SCHEMA ${shadowSchema} RENAME TO ${schemaName}`);
+          await swapClient.query('COMMIT');
+          emitLog('swapping', `Schema swap complete: ${schemaName} is now live${attempt > 1 ? ` (attempt ${attempt})` : ''}`);
+          break;
+        } catch (swapErr) {
+          await swapClient.query('ROLLBACK').catch(() => {});
+          if (attempt === MAX_SWAP_ATTEMPTS) throw swapErr;
+          emitLog('swapping', `Swap attempt ${attempt}/${MAX_SWAP_ATTEMPTS} failed (${swapErr.message}); retrying...`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    } finally {
+      swapClient.release();
+    }
+
+    await swapPool.query(`DROP SCHEMA IF EXISTS ${schemaName}_old CASCADE`).catch(() => {});
+
+    // Regenerate schema description cache in background — read schema + store cache in zer4u DB
+    const schemaDescriptorService = require('./schema-descriptor.service');
+    schemaDescriptorService.getDescription(schemaName, true, swapPool, swapPool)
+      .then(() => emitLog('swapping', `Schema description cache updated`))
+      .catch(err => console.warn(`⚠️  Schema description regen failed: ${err.message}`));
+  }
+
+  /**
+   * Self-heal: if a fully-built shadow schema (indexed + materialized views)
+   * exists but was never swapped — e.g. the platform killed the background
+   * worker right at the swap step — complete the swap automatically.
+   *
+   * Safe for the periodic/cron path: it only acts once the shadow's marker MV
+   * (mv_sales_by_month) exists, which proves the index+MV phase finished and
+   * only the ~instant rename remains. Skips if a build is running on THIS
+   * instance. Returns { action: 'swapped'|'skipped'|'failed', ... }.
+   */
+  async ensureSwapped(schemaName) {
+    const reloader = this.reloaders[schemaName];
+    if (!reloader) return { action: 'skipped', reason: 'no reloader' };
+
+    const current = this.currentRuns[schemaName];
+    if (current && current.status === 'running') {
+      return { action: 'skipped', reason: `${current.phase || 'operation'} running on this instance` };
+    }
+
+    const pool = reloader.pool || this.db;
+    const shadow = `${schemaName}_new`;
+    let chk;
+    try {
+      chk = await pool.query(`
+        SELECT
+          EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1) AS has_shadow,
+          EXISTS(SELECT 1 FROM pg_matviews WHERE schemaname = $1 AND matviewname = 'mv_sales_by_month') AS built
+      `, [shadow]);
+    } catch (e) {
+      return { action: 'skipped', reason: `check failed: ${e.message}` };
+    }
+    if (!chk.rows[0].has_shadow) return { action: 'skipped', reason: 'no shadow schema' };
+    if (!chk.rows[0].built) return { action: 'skipped', reason: 'shadow not fully built yet' };
+
+    // The index run that built this shadow but stalled at the swap is the most
+    // recent 'running' run. Re-use its id and finish it as 'completed' — its work
+    // (index + MVs) really did succeed; only the ~instant rename was left. This
+    // keeps the history clean (one Completed run, not a Failed + a separate one).
+    const stalledRes = await this.db.query(
+      `SELECT id FROM public.data_reload_runs
+       WHERE schema_name = $1 AND status = 'running'
+       ORDER BY started_at DESC LIMIT 1`,
+      [schemaName]
+    );
+    const runId = stalledRes.rows[0]?.id ?? await this._createRunInDB(schemaName, 'self-heal-swap');
+
+    this.currentRuns[schemaName] = {
+      id: runId, status: 'running', phase: 'swapping', step: 'swapping',
+      triggeredBy: 'self-heal', startedAt: new Date().toISOString(),
+    };
+    this.logBuffers[schemaName] = [];
+    const emitLog = (step, message, data) => {
+      this._emitLog(schemaName, step, message, data);
+      if (this.currentRuns[schemaName]) this.currentRuns[schemaName].step = step;
+    };
+
+    try {
+      emitLog('swapping', `Self-heal: shadow ${shadow} is built but unswapped — finishing swap...`);
+      await this._swapSchemas(schemaName, shadow, pool, emitLog);
+      emitLog('completed', 'Indexing complete (swap finished by self-heal)');
+      await this._finishRun(runId, schemaName, 'completed', null);
+      // Clean up any other stale 'running' rows for this schema.
+      await this.db.query(
+        `UPDATE public.data_reload_runs
+         SET status = 'failed', completed_at = NOW(), error_message = 'Superseded by self-heal swap'
+         WHERE schema_name = $1 AND status = 'running' AND id <> $2`,
+        [schemaName, runId]
+      ).catch(() => {});
+      console.log(`[DataReloadService] self-heal: swapped ${shadow} → ${schemaName} (run #${runId})`);
+      return { action: 'swapped', runId };
+    } catch (err) {
+      emitLog('failed', `Self-heal swap failed: ${err.message}`);
+      await this._finishRun(runId, schemaName, 'failed', null, err.message);
+      return { action: 'failed', error: err.message };
     }
   }
 
