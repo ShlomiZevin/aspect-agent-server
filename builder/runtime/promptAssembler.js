@@ -21,7 +21,9 @@
  *     {{param:NAME}}    — static agent parameter value
  *
  *   Extractor-only:
- *     {{fields_schema}}, {{fields_current}}
+ *     {{fields_schema}}, {{fields_current}},
+ *     {{this_field}}    — literal NAME of the (first) extracted field
+ *     {{enum_values}}   — comma-separated `enumValues` of that field
  *
  * History is NOT a placeholder — it's a separate parameter to the
  * LLM. The runtime sends history as the message-history parameter,
@@ -284,6 +286,25 @@ function assemblePrompt({
     fields_schema:  isExtractor ? buildFieldsSchemaBlock(fields) : '',
     fields_current: isExtractor ? buildFieldsCurrentBlock(fields, fieldValueOf) : '',
   });
+
+  // Single-field INLINE tokens — the FIRST extractor field is "this
+  // field" for the purposes of {{this_field}} / {{enum_values}}. Field
+  // Reasoner is the primary consumer (UI constrains it to exactly one
+  // field); multi-field extractors that include these tokens will
+  // resolve to their first field, which is acceptable since the tokens
+  // are semantically tied to single-field reasoning.
+  //
+  // Substituted inline (plain string replace, no surrounding-whitespace
+  // collapse) because these are embedded in prose like
+  //   `inferring the value of {{this_field}}`
+  // rather than block boundaries.
+  const thisField = isExtractor && fields.length > 0 ? fields[0] : null;
+  const thisFieldName  = thisField ? thisField.name : '';
+  const enumValuesText = thisField && Array.isArray(thisField.enumValues)
+    ? thisField.enumValues.join(', ')
+    : '';
+  template = template.split('{{this_field}}').join(thisFieldName);
+  template = template.split('{{enum_values}}').join(enumValuesText);
 
   // Parameterised tokens last so anything introduced by the
   // {{prompt}} or section substitutions can still resolve.

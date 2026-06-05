@@ -109,6 +109,18 @@
       "category": "extractor",
       "render": "JSON map of the extractor's fields that currently hold non-null values. Only renders inside extractor plugins.",
       "example": "{{fields_current}}"
+    },
+    {
+      "token": "{{this_field}}",
+      "category": "extractor",
+      "render": "Literal NAME of the (first) field this extractor populates. Designed for single-field extractors (Field Reasoner): use it to tell the LLM what it's being asked to infer (`You are inferring the value of {{this_field}}`) and as the JSON key (`{ \"{{this_field}}\": <value> }`). Renders empty for non-extractor plugins or when the extractor has no fields.",
+      "example": "You are inferring the value of `{{this_field}}`."
+    },
+    {
+      "token": "{{enum_values}}",
+      "category": "extractor",
+      "render": "Comma-separated list of the (first) field's `enumValues`. The structured enum list on the FieldDef is the single source of truth; the prompt pulls it via this token so editing the values can't drift from the prompt copy. Renders empty when the field is non-enum or has no values declared.",
+      "example": "Allowed values: {{enum_values}}"
     }
   ],
   "idioms": [

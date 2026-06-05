@@ -1,0 +1,33 @@
+{
+  "pluginId":          "field-reasoner",
+  "displayName":       "Field Reasoner",
+  "description":       "Infer one field from many signals with a custom prompt.",
+  "purpose":           "Single-field, complex-reasoning extractor. Reach for this when ONE field needs careful cross-signal inference — typically the trigger field for a Dynamic Context. Pairs naturally with DC: Reasoner produces the value, DC switches on it. Use Field Extractor instead when you need to capture many fields cheaply in one pass; use Vibe Extractor for soft signals from raw chat. The fused modal declares the field AND authors the collection prompt in one place — saving creates both. Stronger default model (Claude Sonnet 4.6) because the point is to actually reason. The prompt is mention-aware; use @field/@memory/#param to weave other signals into your reasoning instructions, and {{this_field}} / {{enum_values}} to refer to the output field itself.",
+  "icon":              "🧠",
+  "color":             "#7c3aed",
+
+  "defaultLane":       "main",
+  "fieldMode":         "extractor",
+  "allowedFieldSources": ["inferred", "explicit"],
+  "speaks":            false,
+
+  "allowedOutputTypes": ["json-to-memory"],
+  "defaultOutputType":  "json-to-memory",
+
+  "defaultContext": {
+    "history":      { "mode": "last_n", "n": 8 }
+  },
+
+  "defaultPromptTemplate": "{{prompt}}",
+
+  "defaultConfig": {
+    "prompt": "{{persona}}\n\nYou are inferring the value of `{{this_field}}`.\n\nHow to decide:\n[YOUR INSTRUCTIONS — describe the reasoning. Reference other fields inline with @, e.g. \"if @intent is complaint and @tier is enterprise, lean toward...\". This is the heart of the addon.]\n\nAllowed values: {{enum_values}}\n\nOUTPUT RULES:\n- Output JSON only — no preamble, no markdown fences.\n- Shape: { \"{{this_field}}\": <value> }\n- If you can't confidently infer a value, omit the key entirely. Don't return null, empty strings, or placeholders like \"unknown\".",
+    "model":  { "providerId": "anthropic", "modelId": "claude-sonnet-4-6" },
+    "name":   "",
+    "extractsFields": []
+  },
+
+  "hideStandardSections": {
+    "repository": true
+  }
+}

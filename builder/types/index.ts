@@ -198,6 +198,14 @@ export const KNOWN_PROMPT_PLACEHOLDERS = {
   fields_schema: '{{fields_schema}}',
   /** Currently-collected values for an extractor's fields. Extractor plugins only. */
   fields_current: '{{fields_current}}',
+  /** Literal NAME of the (first) field this extractor populates. Designed
+   *  for single-field extractors (Field Reasoner). Empty for non-extractor
+   *  plugins or when the extractor has no fields. */
+  this_field: '{{this_field}}',
+  /** Comma-separated `enumValues` of the (first) extracted field. Source
+   *  of truth is the FieldDef on the schema; the prompt pulls it via this
+   *  token so editing the values can't drift from a prompt copy. */
+  enum_values: '{{enum_values}}',
 } as const;
 
 // ─── Plugin-specific config shapes ─────────────────────────────────
@@ -217,6 +225,29 @@ export interface FieldExtractorConfig {
    * field id can appear in multiple extractors' lists; memory writes
    * are keyed by name and the last write wins per turn.
    */
+  extractsFields: ID[];
+}
+
+/**
+ * Field Reasoner — single-field, complex-reasoning extractor.
+ *
+ * Storage shape is identical to FieldExtractorConfig (same
+ * `extractsFields: ID[]` array, same prompt/model/name slots) so the
+ * runtime reuses the existing extractor pipeline unchanged. The UI
+ * constrains `extractsFields` to exactly one entry — that field is
+ * "this field" for the {{this_field}} / {{enum_values}} tokens. The
+ * fused modal also drives a parallel FieldDef create/update on the
+ * agent or crew schema; that write is independent of the AddonInstance
+ * (the FieldDef lives where every other field lives — on
+ * agent.fields[] or crew.fields[]).
+ */
+export interface FieldReasonerConfig {
+  prompt: string;
+  model: ModelRef;
+  /** Instance display name. Empty → falls back to "Field Reasoner [#N]". */
+  name?: string;
+  /** Length-1 array referencing the FieldDef this Reasoner populates.
+   *  Same shape as FieldExtractor for runtime compatibility. */
   extractsFields: ID[];
 }
 
