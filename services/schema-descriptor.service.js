@@ -32,14 +32,28 @@ class SchemaDescriptorService {
       `, [schemaName]);
 
       const tables = tablesResult.rows.map(r => r.table_name);
-      console.log(`  Found ${tables.length} tables`);
 
-      // Step 2: Get detailed info for each table
+      // Step 1b: Get materialized views. Postgres does NOT list these in
+      // information_schema, so they must be read from pg_matviews — otherwise the
+      // generated description omits the MVs entirely and the SQL generator never
+      // learns their (differently-named) columns, e.g. mv_sales_by_store.store_number.
+      const mvResult = await client.query(`
+        SELECT matviewname
+        FROM pg_matviews
+        WHERE schemaname = $1
+        ORDER BY matviewname
+      `, [schemaName]);
+      const matviews = mvResult.rows.map(r => r.matviewname);
+      console.log(`  Found ${tables.length} tables, ${matviews.length} materialized views`);
+
+      // Step 2: Get detailed info for each table + materialized view
       const tableSchemas = [];
 
       for (const tableName of tables) {
-        const tableInfo = await this._getTableInfo(client, schemaName, tableName);
-        tableSchemas.push(tableInfo);
+        tableSchemas.push(await this._getTableInfo(client, schemaName, tableName));
+      }
+      for (const mvName of matviews) {
+        tableSchemas.push(await this._getMatviewInfo(client, schemaName, mvName));
       }
 
       // Step 3: Use Claude to generate a comprehensive description
@@ -53,6 +67,7 @@ Focus on:
 3. Relationships between tables (based on column name patterns)
 4. Data types and constraints
 5. Potential join paths
+6. Materialized views (entries marked "Materialized View"): these are pre-aggregated and MUCH faster. For each, state exactly which business questions it answers and list its EXACT column names. IMPORTANT: a materialized view may name a column differently from the base tables (e.g. a store key exposed as "store_number" even though base tables use "store_id"). Always document and instruct use of the view's OWN column names — never assume base-table column names apply to a view.
 
 Output a well-structured description that an AI can use to understand the schema and write accurate SQL queries.`;
 
@@ -137,6 +152,47 @@ Format the description in a clear, structured way.`;
   }
 
   /**
+   * Get detailed info about a materialized view. MVs are absent from
+   * information_schema, so columns come from pg_attribute/pg_class.
+   * @private
+   */
+  async _getMatviewInfo(client, schemaName, matviewName) {
+    const columnsResult = await client.query(`
+      SELECT a.attname AS column_name,
+             format_type(a.atttypid, a.atttypmod) AS data_type,
+             NOT a.attnotnull AS is_nullable
+      FROM pg_attribute a
+      JOIN pg_class c ON c.oid = a.attrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'm'
+        AND a.attnum > 0 AND NOT a.attisdropped
+      ORDER BY a.attnum
+    `, [schemaName, matviewName]);
+
+    const sampleResult = await client.query(
+      `SELECT * FROM ${schemaName}.${matviewName} LIMIT 3`
+    ).catch(() => ({ rows: [] }));
+
+    const countResult = await client.query(
+      `SELECT COUNT(*) as count FROM ${schemaName}.${matviewName}`
+    ).catch(() => ({ rows: [{ count: 0 }] }));
+
+    return {
+      tableName: matviewName,
+      isMatview: true,
+      rowCount: parseInt(countResult.rows[0].count),
+      columns: columnsResult.rows.map(col => ({
+        name: col.column_name,
+        type: col.data_type,
+        maxLength: null,
+        nullable: col.is_nullable,
+        default: null,
+      })),
+      sampleRows: sampleResult.rows,
+    };
+  }
+
+  /**
    * Format schema info for Claude
    * @private
    */
@@ -144,7 +200,9 @@ Format the description in a clear, structured way.`;
     let output = `## Schema: ${schemaName}\n\n`;
 
     for (const table of tableSchemas) {
-      output += `### Table: ${table.tableName}\n`;
+      output += table.isMatview
+        ? `### Materialized View: ${table.tableName}  (pre-aggregated — PREFER for the aggregate queries it covers; use its EXACT column names)\n`
+        : `### Table: ${table.tableName}\n`;
       output += `Rows: ${table.rowCount.toLocaleString()}\n\n`;
 
       output += `**Columns:**\n`;
