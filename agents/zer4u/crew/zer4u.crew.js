@@ -200,6 +200,28 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
    * when the data was last updated without a separate query.
    */
   async getAdditionalContext(params) {
+    // Derive "data through" from the SAME live source as the dashboard banner —
+    // the latest month in mv_sales_by_month — so the agent and the banner always
+    // agree. The cached agents.data_updated_at can drift (it failed to update on
+    // some reloads), which made the agent report a stale month vs the banner.
+    try {
+      const { getPool } = require('../../../services/db.zer4u');
+      const r = await getPool().query(
+        `SELECT MAX(year_month) AS m FROM zer4u.mv_sales_by_month`
+      );
+      const m = r.rows[0]?.m; // e.g. "2026-04"
+      if (m && /^\d{4}-\d{2}$/.test(m)) {
+        const [y, mo] = m.split('-').map(Number);
+        // Month granularity ("April 2026") — the data is monthly, so a specific
+        // day would be misleading.
+        const formatted = new Date(Date.UTC(y, mo - 1, 1))
+          .toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+        return { dataLastUpdated: formatted };
+      }
+    } catch {
+      // fall through to the cached value
+    }
+    // Fallback: cached agents.data_updated_at (main DB)
     try {
       const db = require('../../../services/db.pg');
       const result = await db.query(
