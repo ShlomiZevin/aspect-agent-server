@@ -497,6 +497,7 @@ export type AgentBody = Pick<
   AgentDoc,
   'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
   | 'fields' | 'domains' | 'parameters' | 'dynamicContexts'
+  | 'cortex'
 >;
 
 export interface AgentVersion {
@@ -556,6 +557,22 @@ export interface AgentDoc {
    * Optional for back-compat; readers should treat absence as `[]`.
    */
   dynamicContexts?: DynamicContextDef[];
+  /**
+   * Agent-level Cortex — a chain of addons that runs BEFORE the crew's
+   * cortex on every turn, regardless of which crew is current. Same
+   * `AddonInstance` shape as `CrewDoc.addons` so all plugins work
+   * unchanged. The runtime concatenates `agent.cortex` then
+   * `crew.addons` and walks the merged list per lane (today: blocking
+   * lane only). Crew addons can read whatever agent addons wrote to
+   * memory / thinking this turn.
+   *
+   * Restricted plugins at this scope:
+   *   - Talker (no crew context — you need a crew to speak).
+   *   - Transition Router (no crew transitions to route).
+   *
+   * Optional for back-compat; readers should treat absence as `[]`.
+   */
+  cortex?: AddonInstance[];
   /**
    * The crews that belong to this agent. NOT part of the agent
    * version body — crews are their own versioned entities and live

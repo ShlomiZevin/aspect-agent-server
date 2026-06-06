@@ -34,6 +34,7 @@ How-to guides for building and understanding the platform. Covers agent building
 - **BUILDER_V2_DYNAMIC_CONTEXT.md** — Agent-level switch-by-value mechanism that replaces the retired Triggered Context. Three-level hierarchy (field → value → sections), authored on a dedicated screen with URL routes, tree + columns view toggle. Tokens: `{{dynamic:FIELD}}`, `{{dynamic:FIELD:SECTION}}`, `{{dynamic:FIELD:*}}`.
 - **BUILDER_V2_FIELD_REASONER.md** — Planning doc for the Field Reasoner addon: single-field complex-reasoning extractor with a fused field-declaration + prompt modal. New extractor-only tokens `{{this_field}}` and `{{enum_values}}`. Pairs naturally with Dynamic Context.
 - **BUILDER_V2_SUMMARIZER.md** — Planning doc for the Summarizer addon: multi-level (agent + crew scopes), checkpoint triggers (after N msgs, after crew finishes), background lane, prompt-token consumption (`{{summary[:NAME]}}`), `%` sigil, third brain section.
+- **BUILDER_V2_EXAMPLE_CARDLY.md** — End-to-end worked example agent (Cardly, a credit-card sales rep). Single-crew agent that exercises every shipped V2 feature: agent cortex, Persona-as-card, Field Extractor / Vibe Extractor / Field Reasoner / Thinker / Talker, 4 Dynamic Contexts with sections, parameters, domains, every token form. Includes 5 test scenarios and a feature-validation checklist.
 - **CREW_CHAIN_ARCHITECTURE.md** — Runtime architecture: dispatcher, `CrewMember` base, personas, dynamic context, thinker/talker pattern. Describes what the V2 builder ultimately configures.
 
 ### `docs/features/`

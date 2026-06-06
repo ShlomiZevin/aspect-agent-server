@@ -143,8 +143,18 @@ async function runOnce({
   const agentDynamicContexts = Array.isArray(runnable.agent.body?.dynamicContexts) ? runnable.agent.body.dynamicContexts : [];
   const agentNameForLogs = runnable.agent.body?.name || agentSlug;
   const crewLabel        = runnable.crew.body?.name || 'crew';
-  const allAddons        = Array.isArray(runnable.crew.body?.addons) ? runnable.crew.body.addons : [];
-  const blockingAddons   = allAddons.filter(a => a.lane === 'main' && a.enabled !== false);
+  // Agent-level cortex runs BEFORE the crew's cortex on every turn.
+  // Sees the same memory / brain / history; outputs feed into the crew
+  // chain that follows. Restricted plugins (Talker, Transition Router)
+  // are filtered out at the picker level on the client, but a defensive
+  // filter here keeps a hand-edited body from spawning a forbidden one.
+  const RESTRICTED_AT_AGENT = new Set(['talker', 'transition-router']);
+  const agentCortex = Array.isArray(runnable.agent.body?.cortex) ? runnable.agent.body.cortex : [];
+  const allAddons   = [
+    ...agentCortex.filter(a => !RESTRICTED_AT_AGENT.has(a?.pluginId)),
+    ...(Array.isArray(runnable.crew.body?.addons) ? runnable.crew.body.addons : []),
+  ];
+  const blockingAddons = allAddons.filter(a => a.lane === 'main' && a.enabled !== false);
 
   // ── 2. Load accumulated brain state + accessors for the prompt. ──
   //
