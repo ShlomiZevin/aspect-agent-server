@@ -177,6 +177,7 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       domains:         Array.isArray(agentBody.domains)         ? agentBody.domains         : [],
       parameters:      Array.isArray(agentBody.parameters)      ? agentBody.parameters      : [],
       dynamicContexts: Array.isArray(agentBody.dynamicContexts) ? agentBody.dynamicContexts : [],
+      cortex:          Array.isArray(agentBody.cortex)          ? agentBody.cortex          : [],
       crews,
       versions: agentVersions.map(v => ({
         id:           v.id,
