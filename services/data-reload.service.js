@@ -502,9 +502,25 @@ class DataReloadService {
       )).rowCount > 0;
 
       if (shadowExists) {
-        // Post-import: index shadow, then swap
-        emitLog('creating_indexes', `Indexing shadow schema ${shadowSchema} (reference: ${schemaName})...`);
-        await reloader.indexFn(shadowSchema, emitLog, schemaName, options);
+        // If the shadow is ALREADY fully built (MVs present and all populated,
+        // which the index phase finishes right before the swap), a prior worker
+        // most likely died at the ~instant swap. Re-running indexFn would redo
+        // 15+ min of DROP+CREATE MV work AND risk the same mid-swap kill. So when
+        // already built, skip the rebuild and just complete the swap.
+        const built = (await dbForCheck.query(
+          `SELECT (
+             EXISTS(SELECT 1 FROM pg_matviews WHERE schemaname = $1)
+             AND NOT EXISTS(SELECT 1 FROM pg_matviews WHERE schemaname = $1 AND ispopulated = false)
+           ) AS built`, [shadowSchema]
+        )).rows[0].built;
+
+        if (built) {
+          emitLog('swapping', `Shadow ${shadowSchema} already built — skipping rebuild, completing swap only...`);
+        } else {
+          // Post-import: index shadow, then swap
+          emitLog('creating_indexes', `Indexing shadow schema ${shadowSchema} (reference: ${schemaName})...`);
+          await reloader.indexFn(shadowSchema, emitLog, schemaName, options);
+        }
 
         // ── Atomic schema swap (hardened; shared with self-heal) ──
         const swapPool = reloader.pool || this.db;
