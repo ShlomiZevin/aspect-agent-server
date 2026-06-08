@@ -751,7 +751,7 @@ ORDER BY month
 ### RULE 1 — facts is a WIDE table mixing 3 record kinds — ALWAYS filter by record_type
 - \`record_type = 'מכירות'\` (sales) — retail sale lines. Use for ALL sales/revenue/profit questions.
 - \`record_type = 'מלאי'\` (inventory) — stock snapshots: \`store_number\`, \`item_number\`, \`inventory_qty\`, \`min_inventory\`.
-- \`record_type = ''\` (empty string) — agent/branch wholesale sales: \`agent_sales_ex_vat\`, \`agent_sales_inc_vat\`, \`agent_sale_customer\`, \`agent\`.
+- \`record_type IS NULL\` (empty in the source) — agent/branch wholesale sales: \`agent_sales_ex_vat\`, \`agent_sales_inc_vat\`, \`agent_sale_customer\`, \`agent\`. **Use \`IS NULL\`, NOT \`= ''\`** — the empty Fact Type loaded as NULL.
 A bare \`SELECT COUNT(*) FROM zolstock.facts\` mixes all three and is misleading — always specify the record_type.
 
 ### RULE 2 — Revenue and profit are on the sale line (NO cost JOIN needed)
@@ -767,6 +767,11 @@ For top-N / revenue-by-period / by-store / by-item / by-seller, query the matchi
 - This month: \`WHERE record_type='מכירות' AND transaction_date >= date_trunc('month', CURRENT_DATE)\`
 - This year:  \`WHERE record_type='מכירות' AND transaction_date >= date_trunc('year', CURRENT_DATE)\`
 - On MVs the same \`transaction_date\` column is indexed — filter there too.
+
+### RULE 5 — expensive metrics: use the MV or narrow the scope (avoid timeouts)
+- **Discounts**: \`discount_amount\` is on raw facts only (no MV). \`SUM(discount_amount)\` over a full year times out — restrict to a NARROW window (default to the current month/quarter) with \`record_type='מכירות'\` and the transaction_date filter.
+- **Unique customers**: there is NO customer dimension. \`COUNT(DISTINCT customer_number)\` over a full year of facts times out. Only attempt it for a NARROW window (default to the current month) and add \`AND customer_number IS NOT NULL AND customer_number <> ''\`.
+- **Inventory below minimum**: \`record_type='מלאי'\` snapshots have no useful date filter for "current stock" — restrict to the LATEST snapshot date (see example) so it doesn't scan all snapshots.
 
 ### Reference examples
 
@@ -817,13 +822,34 @@ GROUP BY month
 ORDER BY month
 \`\`\`
 
-**Inventory: items below minimum stock (record_type='מלאי'):**
+**Total discount given this month (discounts are facts-only — keep the window narrow):**
 \`\`\`sql
-SELECT store_number, item_number, inventory_qty, min_inventory
+SELECT SUM(discount_amount) AS total_discount
 FROM zolstock.facts
-WHERE record_type = 'מלאי' AND inventory_qty < min_inventory
+WHERE record_type = 'מכירות'
+  AND transaction_date >= date_trunc('month', CURRENT_DATE)
+\`\`\`
+
+**Inventory: items below minimum stock (latest snapshot only — record_type='מלאי'):**
+\`\`\`sql
+WITH latest AS (
+  SELECT MAX(transaction_date) AS d FROM zolstock.facts WHERE record_type = 'מלאי'
+)
+SELECT store_number, item_number, inventory_qty, min_inventory
+FROM zolstock.facts, latest
+WHERE record_type = 'מלאי' AND transaction_date = latest.d
+  AND inventory_qty < min_inventory
 ORDER BY (min_inventory - inventory_qty) DESC
 LIMIT 50
+\`\`\`
+
+**Unique customers this month (customers are facts-only; keep the window narrow):**
+\`\`\`sql
+SELECT COUNT(DISTINCT customer_number) AS unique_customers
+FROM zolstock.facts
+WHERE record_type = 'מכירות'
+  AND transaction_date >= date_trunc('month', CURRENT_DATE)
+  AND customer_number IS NOT NULL AND customer_number <> ''
 \`\`\``;
     }
 

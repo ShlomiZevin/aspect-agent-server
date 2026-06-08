@@ -44,7 +44,7 @@ You have access to real business data in the \`zolstock\` schema.
 A WIDE table that mixes three record kinds — always filter by \`record_type\`:
 - \`record_type = 'מכירות'\` (sales, ~34.8M) — retail sale lines
 - \`record_type = 'מלאי'\` (inventory, ~2.8M) — stock snapshots (store + item + \`inventory_qty\`)
-- \`record_type = ''\` (empty, ~1.9M) — agent/branch wholesale sales (uses \`agent_sales_*\` columns)
+- \`record_type IS NULL\` (empty in source, ~1.9M) — agent/branch wholesale sales (uses \`agent_sales_*\` columns; filter with IS NULL, not = '')
 
 Key columns:
 - \`transaction_date\` (DATE), \`store_number\`, \`item_number\`, \`seller_id\`/\`seller\`, \`customer_number\`/\`customer_name\`, \`sale_id\`
