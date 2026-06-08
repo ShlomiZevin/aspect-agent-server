@@ -51,6 +51,10 @@ const COLUMN_MAP = {
     { csvName: 'עלות המכר',                    dbName: 'cogs',                     type: 'NUMERIC' },
     { csvName: 'כמות תנועת מלאי',              dbName: 'inventory_movement_qty',   type: 'NUMERIC' },
     { csvName: 'סך סכום לשורה כולל מעמ',       dbName: 'line_total_inc_vat',       type: 'NUMERIC' },
+    // The source CSV has a corrupted byte in this header: the `כ` of `סכום` arrives
+    // as invalid UTF-8 → two U+FFFD replacement chars. Alias the corrupted form so
+    // it still maps (kept alongside the clean key above in case of a clean re-export).
+    { csvName: 'סך ס��ום לשורה כולל מעמ', dbName: 'line_total_inc_vat',   type: 'NUMERIC' },
     { csvName: 'סך סכום לשורה',                dbName: 'line_total',               type: 'NUMERIC' },
     { csvName: 'מספר פריט',                    dbName: 'item_number',              type: 'TEXT'    },
     { csvName: 'מספר שורת מכירה',              dbName: 'sale_line_id',             type: 'TEXT'    },
