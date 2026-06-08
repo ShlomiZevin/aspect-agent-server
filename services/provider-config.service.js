@@ -31,7 +31,10 @@ const ENV_FALLBACKS = {
   gcp_billing_service_account_json:  'GCP_SERVICE_ACCOUNT_JSON',
   // Data Loader — how many trailing months of fact data to import (0 = all).
   // Not shown on the API Keys page; edited from the Data Loader page.
+  // Each agent whose reloader forwards options.importMonths needs its own key here
+  // so the per-schema settings endpoint reports `supported: true`.
   zer4u_import_months:               'ZER4U_IMPORT_MONTHS',
+  zolstock_import_months:            'ZOLSTOCK_IMPORT_MONTHS',
 };
 
 // All known config keys (in display order)
