@@ -19,14 +19,38 @@ const API_BASE = process.env.API_BASE || 'https://aspect-agent-server-1018338671
 const AGENT_NAME = 'ZolStock';
 
 const QUESTIONS = [
-  'How many sales transactions do we have this year?',
+  // ── core revenue / profit (MV-backed) ──
+  'What is total revenue and profit this year?',
   'מה ההכנסות והרווח השנה?',
-  'Top 10 items this year by revenue and profit',
-  'אילו 10 הסניפים המובילים במכירות השנה?',
-  'What is the overall profit margin this year?',
-  'Monthly revenue and profit trend this year',
-  'Top 10 sellers by total sales this year',
   'What was total revenue and profit last month?',
+  'מה היו ההכנסות בחודש שעבר?',
+  'Total revenue this month so far',
+  'What is the overall profit margin this year?',
+  'מה שולי הרווח הכוללים השנה?',
+  'Monthly revenue and profit trend this year',
+  'מגמת הכנסות לפי חודש השנה',
+  'Compare revenue between the first and second quarter this year',
+  'What was the best month for revenue this year?',
+  // ── top products / stores / sellers ──
+  'Top 10 items this year by revenue and profit',
+  'טופ 10 מוצרים השנה לפי כמות שנמכרה',
+  'Top 10 items by profit margin this year (min 1000 units sold)',
+  'Top 10 stores by revenue this year',
+  'אילו 10 הסניפים המובילים ברווח השנה?',
+  'Which store has the highest profit margin this year?',
+  'Top 10 sellers by total sales this year',
+  'טופ 10 מוכרנים לפי רווח השנה',
+  'Worst 5 stores by revenue this year',
+  // ── period / comparison ──
+  'How many units were sold this year in total?',
+  'מה ההכנסות והרווח ברבעון הראשון?',
+  'Revenue by month for store number 2 this year',
+  // ── harder / non-MV (stress: customers, inventory, agent, discounts) ──
+  'How many unique customers bought from us this year?',
+  'How many items are below their minimum stock level?',
+  'Total wholesale (agent) sales to branches this year',
+  'What is the total discount amount given this year?',
+  'Average transaction value this year',
 ];
 
 async function askUser(question) {
