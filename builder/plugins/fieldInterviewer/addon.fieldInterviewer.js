@@ -64,7 +64,9 @@ async function run(ctx) {
     const boundNames = new Set(fields.map(f => f.name));
     // Bound-field writes — exact same shape Field Reasoner produces so
     // downstream (memory persistence, Dynamic Context resolution, etc.)
-    // can't tell who wrote the value.
+    // can't tell who wrote the value. These are additive: the bound
+    // field lives in the `memory` section (not `thinking`) and may be
+    // shared with regular extractors, so we must NOT wipe its domain.
     for (const f of fields) {
       if (Object.prototype.hasOwnProperty.call(parsed, f.name)) {
         const value = parsed[f.name];
@@ -73,7 +75,12 @@ async function run(ctx) {
         }
       }
     }
-    // Everything else → thinking domain (Thinker shape).
+    // Everything else → thinking domain (Thinker shape). Same
+    // rolling-replace rule as plain Thinker: the LLM emits the CURRENT
+    // thinking, not an addition, so wipe the bucket first then apply.
+    // The clear targets only the `(thinking, this addon's domain)`
+    // bucket — bound-field memory writes above are untouched.
+    memoryWrites.push({ kind: 'thinking', domain, replace: true });
     for (const [field, value] of Object.entries(parsed)) {
       if (boundNames.has(field)) continue;
       if (value === null || value === undefined) continue;

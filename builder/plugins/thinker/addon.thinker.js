@@ -60,8 +60,18 @@ async function run(ctx) {
   // Field Extractor, the Thinker has no declared field list — the
   // prompt IS the schema. We trust whatever the LLM returned (subject
   // to the same null/undefined filter applied elsewhere).
+  //
+  // Rolling-replace semantics: the Thinker owns its `(thinking,
+  // domain)` bucket entirely. Each run's output IS the current
+  // thinking, not an addition to it. So we emit a domain-replace
+  // marker first to wipe whatever the previous run left there, then
+  // apply this run's writes. Without this, a key emitted last turn
+  // (e.g. `atr1`) would linger after a turn that only emits `atr2`.
+  // Only emit when parsing succeeded — a failed parse means we don't
+  // know what the LLM intended, so leave the previous state intact.
   const memoryWrites = [];
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    memoryWrites.push({ kind: 'thinking', domain, replace: true });
     for (const [field, value] of Object.entries(parsed)) {
       if (value === null || value === undefined) continue;
       memoryWrites.push({ kind: 'thinking', domain, field, value });

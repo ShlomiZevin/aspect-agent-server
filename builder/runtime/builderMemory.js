@@ -107,17 +107,35 @@ async function saveMemory(userId, conversationId, blob) {
  * to both sections in one turn. In practice, Field/Vibe Extractors
  * emit 'memory' writes and Thinker emits 'thinking' writes.
  *
+ * A write entry can also be a *domain replace marker* — shape
+ * `{ kind, domain, replace: true }` (no `field`/`value`). When the
+ * applier sees one, it wipes that (section, domain) bucket before
+ * proceeding. Use it to express rolling-replace semantics: a Thinker
+ * that emitted `{atr1: x}` last turn and `{atr2: y}` this turn should
+ * end up with ONLY `{atr2: y}` — not the field-by-field merge that's
+ * appropriate for additive Extractor writes. The marker is processed
+ * in order: emit it BEFORE the value writes for the same domain in
+ * the same array.
+ *
  * @param {Object} blob       — the loaded brain shape (must already
  *                              be normalized — call normalizeBlob first
  *                              if you're unsure)
- * @param {Array<{kind?: 'memory'|'thinking', domain: string|null, field: string, value: unknown}>} writes
+ * @param {Array<{kind?: 'memory'|'thinking', domain: string|null, field?: string, value?: unknown, replace?: boolean}>} writes
  */
 function applyWrites(blob, writes) {
   for (const w of writes) {
-    if (w.value === null || w.value === undefined) continue;
     const sec = sectionKey(w.kind);
     if (!blob[sec]) blob[sec] = {};
     const dk = domainKey(w.domain);
+    // Domain-replace marker: wipe the bucket then move on. Value/field
+    // are intentionally absent on these entries — the marker carries
+    // no payload of its own; subsequent writes in the array land into
+    // the freshly-cleared bucket.
+    if (w.replace === true) {
+      blob[sec][dk] = {};
+      continue;
+    }
+    if (w.value === null || w.value === undefined) continue;
     if (!blob[sec][dk]) blob[sec][dk] = {};
     blob[sec][dk][w.field] = w.value;
   }
