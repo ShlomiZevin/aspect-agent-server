@@ -251,6 +251,33 @@ export interface FieldReasonerConfig {
   extractsFields: ID[];
 }
 
+/**
+ * Field Interviewer — Thinker + bound field, in one LLM call.
+ *
+ * Use when the atomic decision is BOTH "what should the talker ask
+ * next to make progress toward filling this field" AND "if the user
+ * just gave me the answer, commit it". Splitting those into a Thinker
+ * + Field Reasoner forces two LLM runs that can disagree about the
+ * same exchange. Field Interviewer keeps them together.
+ *
+ * Storage shape: identical to FieldReasoner (single-id `extractsFields`)
+ * so the runtime reuses the extractor pipeline unchanged. Plus a
+ * `domain` like Thinker — every NON-bound-field key in the parsed
+ * JSON is treated as a thinking write under that domain (default
+ * `'interview'`).
+ */
+export interface FieldInterviewerConfig {
+  prompt: string;
+  model: ModelRef;
+  /** Instance display name. Empty → falls back to "Field Interviewer [#N]". */
+  name?: string;
+  /** Length-1 array referencing the FieldDef this Interviewer populates. */
+  extractsFields: ID[];
+  /** Thinking domain for the free-form keys (everything that isn't the
+   *  bound field). Defaults to `'interview'`. */
+  domain: string;
+}
+
 export interface TalkerConfig {
   /** The voice prompt — what the crew is supposed to say and how. */
   prompt: string;

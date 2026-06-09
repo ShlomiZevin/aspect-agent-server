@@ -1,0 +1,34 @@
+{
+  "pluginId":          "field-interviewer",
+  "displayName":       "Field Interviewer",
+  "description":       "Decide what to ask next AND capture the answer — for one bound field.",
+  "purpose":           "Hybrid of Thinker and Field Reasoner. The atomic case where 'what should the talker ask next' and 'extract the value if the user just gave it' are inseparable — splitting them into two LLM calls lets the calls disagree about the same exchange. Bind one field, write a prompt with {{this_field}} / {{enum_values}}, and the LLM returns JSON whose `{{this_field}}` key (when present) becomes a field write and whose OTHER keys land under the configured thinking domain for the Talker to read via {{thinking:DOMAIN}}. Use Field Reasoner when extraction is passive from existing context. Use Thinker when no field write is needed. Use this when the addon has to drive an interview-style exchange toward a specific field.",
+  "icon":              "🎤",
+  "color":             "#0ea5e9",
+
+  "defaultLane":       "main",
+  "fieldMode":         "extractor",
+  "allowedFieldSources": ["inferred", "explicit"],
+  "speaks":            false,
+
+  "allowedOutputTypes": ["json-to-memory"],
+  "defaultOutputType":  "json-to-memory",
+
+  "defaultContext": {
+    "history":      { "mode": "last_n", "n": 8 }
+  },
+
+  "defaultPromptTemplate": "{{prompt}}",
+
+  "defaultConfig": {
+    "prompt": "{{persona}}\n\nYou are interviewing the user to determine the value of `{{this_field}}`.\n\nAllowed values for `{{this_field}}`: {{enum_values}}\n\n{{memory}}\n\nDecide BOTH at once:\n  1. Can the user's most recent messages be summarized into a confident value for `{{this_field}}` yet?\n  2. If not — what should the talker say next to move the user toward giving you the answer (without being robotic about it)?\n\nReturn a JSON object. Suggested keys:\n- `{{this_field}}`: ONLY include this key when you can confidently determine the value. Omit otherwise — don't return null, empty strings, or placeholders like \"unknown\".\n- next_question: a sentence or two telling the talker what to ask, explore, or acknowledge next. Always provide this unless the field was just resolved with high confidence.\n- rationale: one short line explaining your call.\n\nOutput JSON only — no preamble, no markdown fences.",
+    "model":  { "providerId": "anthropic", "modelId": "claude-sonnet-4-6" },
+    "name":   "",
+    "extractsFields": [],
+    "domain": "interview"
+  },
+
+  "hideStandardSections": {
+    "repository": true
+  }
+}
