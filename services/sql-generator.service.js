@@ -736,6 +736,123 @@ ORDER BY month
 - \`${schemaName}.mv_sales_by_day\` — daily totals (last 90 days)`;
     }
 
+    if (schemaName === 'zolstock') {
+      return `
+## zolstock-Specific Rules (CRITICAL — follow exactly)
+
+**Tables**: facts (~39.5M rows, WIDE, mixes record types). No dimension tables yet (no products/customers/stores name tables) — group by the numeric/name keys on facts.
+
+**Materialized views (PREFER these for aggregations — pre-computed, fast):**
+- \`zolstock.mv_sales_daily\` — daily totals (revenue_ex_vat, revenue_inc_vat, total_cogs, profit_ex_vat, total_qty, line_count)
+- \`zolstock.mv_sales_daily_item\` — daily × item_number (use for top-products by period)
+- \`zolstock.mv_sales_daily_store\` — daily × store_number (use for top-stores by period)
+- \`zolstock.mv_sales_daily_seller\` — daily × seller_id/seller (use for top-sellers by period)
+
+### RULE 1 — facts is a WIDE table mixing 3 record kinds — ALWAYS filter by record_type
+- \`record_type = 'מכירות'\` (sales) — retail sale lines. Use for ALL sales/revenue/profit questions.
+- \`record_type = 'מלאי'\` (inventory) — stock snapshots: \`store_number\`, \`item_number\`, \`inventory_qty\`, \`min_inventory\`.
+- \`record_type IS NULL\` (empty in the source) — agent/branch wholesale sales: \`agent_sales_ex_vat\`, \`agent_sales_inc_vat\`, \`agent_sale_customer\`, \`agent\`. **Use \`IS NULL\`, NOT \`= ''\`** — the empty Fact Type loaded as NULL.
+A bare \`SELECT COUNT(*) FROM zolstock.facts\` mixes all three and is misleading — always specify the record_type.
+
+### RULE 2 — Revenue and profit are on the sale line (NO cost JOIN needed)
+- Revenue (ex-VAT) = \`SUM(line_total)\`; revenue incl VAT = \`SUM(line_total_inc_vat)\`.
+- Cost of goods = \`SUM(cogs)\` (ex-VAT). **Profit (ex-VAT) = \`SUM(line_total - cogs)\`.**
+- Profit margin % = \`SUM(line_total - cogs) / NULLIF(SUM(line_total),0) * 100\`.
+- Quantity sold = \`SUM(qty_sold)\`.
+
+### RULE 3 — Never COUNT(DISTINCT) on huge facts; avoid full GROUP BY over raw facts
+For top-N / revenue-by-period / by-store / by-item / by-seller, query the matching MV, not raw facts (raw GROUP BY over ~35M rows times out). Each MV row is already a daily aggregate — re-aggregate with SUM over the MV.
+
+### RULE 4 — Date filters use transaction_date (DATE), covered by the (record_type, transaction_date) index
+- This month: \`WHERE record_type='מכירות' AND transaction_date >= date_trunc('month', CURRENT_DATE)\`
+- This year:  \`WHERE record_type='מכירות' AND transaction_date >= date_trunc('year', CURRENT_DATE)\`
+- On MVs the same \`transaction_date\` column is indexed — filter there too.
+
+### RULE 5 — expensive metrics: use the MV or narrow the scope (avoid timeouts)
+- **Discounts**: \`discount_amount\` is on raw facts only (no MV). \`SUM(discount_amount)\` over a full year times out — restrict to a NARROW window (default to the current month/quarter) with \`record_type='מכירות'\` and the transaction_date filter.
+- **Unique customers**: there is NO customer dimension. \`COUNT(DISTINCT customer_number)\` over a full year of facts times out. Only attempt it for a NARROW window (default to the current month) and add \`AND customer_number IS NOT NULL AND customer_number <> ''\`.
+- **Inventory below minimum**: \`record_type='מלאי'\` snapshots have no useful date filter for "current stock" — restrict to the LATEST snapshot date (see example) so it doesn't scan all snapshots.
+
+### Reference examples
+
+**Revenue & profit this month (use the daily MV):**
+\`\`\`sql
+SELECT SUM(revenue_ex_vat) AS revenue, SUM(profit_ex_vat) AS profit, SUM(total_qty) AS qty
+FROM zolstock.mv_sales_daily
+WHERE transaction_date >= date_trunc('month', CURRENT_DATE)
+\`\`\`
+
+**Top 10 items this year by revenue (with profit):**
+\`\`\`sql
+SELECT item_number,
+       SUM(total_qty)      AS qty,
+       SUM(revenue_ex_vat) AS revenue,
+       SUM(profit_ex_vat)  AS profit
+FROM zolstock.mv_sales_daily_item
+WHERE transaction_date >= date_trunc('year', CURRENT_DATE)
+GROUP BY item_number
+ORDER BY revenue DESC
+LIMIT 10
+\`\`\`
+
+**Top stores this year:**
+\`\`\`sql
+SELECT store_number, SUM(revenue_ex_vat) AS revenue, SUM(profit_ex_vat) AS profit
+FROM zolstock.mv_sales_daily_store
+WHERE transaction_date >= date_trunc('year', CURRENT_DATE)
+GROUP BY store_number
+ORDER BY revenue DESC
+LIMIT 10
+\`\`\`
+
+**Overall profit margin this year:**
+\`\`\`sql
+SELECT ROUND(SUM(profit_ex_vat) / NULLIF(SUM(revenue_ex_vat),0) * 100, 2) AS margin_pct
+FROM zolstock.mv_sales_daily
+WHERE transaction_date >= date_trunc('year', CURRENT_DATE)
+\`\`\`
+
+**Monthly revenue trend (current year):**
+\`\`\`sql
+SELECT TO_CHAR(transaction_date, 'YYYY-MM') AS month,
+       SUM(revenue_ex_vat) AS revenue, SUM(profit_ex_vat) AS profit
+FROM zolstock.mv_sales_daily
+WHERE transaction_date >= date_trunc('year', CURRENT_DATE)
+GROUP BY month
+ORDER BY month
+\`\`\`
+
+**Total discount given this month (discounts are facts-only — keep the window narrow):**
+\`\`\`sql
+SELECT SUM(discount_amount) AS total_discount
+FROM zolstock.facts
+WHERE record_type = 'מכירות'
+  AND transaction_date >= date_trunc('month', CURRENT_DATE)
+\`\`\`
+
+**Inventory: items below minimum stock (latest snapshot only — record_type='מלאי'):**
+\`\`\`sql
+WITH latest AS (
+  SELECT MAX(transaction_date) AS d FROM zolstock.facts WHERE record_type = 'מלאי'
+)
+SELECT store_number, item_number, inventory_qty, min_inventory
+FROM zolstock.facts, latest
+WHERE record_type = 'מלאי' AND transaction_date = latest.d
+  AND inventory_qty < min_inventory
+ORDER BY (min_inventory - inventory_qty) DESC
+LIMIT 50
+\`\`\`
+
+**Unique customers this month (customers are facts-only; keep the window narrow):**
+\`\`\`sql
+SELECT COUNT(DISTINCT customer_number) AS unique_customers
+FROM zolstock.facts
+WHERE record_type = 'מכירות'
+  AND transaction_date >= date_trunc('month', CURRENT_DATE)
+  AND customer_number IS NOT NULL AND customer_number <> ''
+\`\`\``;
+    }
+
     return '';
   }
 
