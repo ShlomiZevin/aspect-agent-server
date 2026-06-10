@@ -49,6 +49,7 @@ const { getPlugin } = require('./pluginRegistry');
 const builderMemory = require('./builderMemory');
 const addonRunsStore = require('./addonRunsStore');
 const historyService = require('./historyService');
+const { evaluateConditions } = require('./conditionMatcher');
 
 /**
  * Execute one addon. See module doc for ctx shape.
@@ -97,6 +98,62 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
     modelLabel,
   };
   emit('addon.start', meta);
+
+  // ── Per-addon filter gate. Runs BEFORE prompt assembly so we don't ──
+  // waste an LLM call on an addon the author asked the engine to
+  // skip. Reuses the same vocabulary / matcher the Transition Router
+  // uses — one condition language across the system.
+  //
+  // Semantics:
+  //   - No filter / empty conditions → always runs (legacy behaviour).
+  //   - mode 'include' (default) → runs WHEN every condition matches.
+  //   - mode 'exclude'           → runs WHEN at least one condition
+  //                                fails (i.e., conditions do NOT all
+  //                                hold).
+  //
+  // When skipped we emit an `addon.skipped` SSE event with the
+  // evaluation trail so the run card shows the author exactly why,
+  // and persist an addon_runs row with status 'skipped' so the
+  // historical view stays consistent.
+  const filter = instance.context?.filter;
+  if (filter && Array.isArray(filter.conditions) && filter.conditions.length > 0) {
+    const evalResult = evaluateConditions(memory, filter.conditions);
+    const mode = filter.mode === 'exclude' ? 'exclude' : 'include';
+    const shouldRun = mode === 'include' ? evalResult.ok : !evalResult.ok;
+    if (!shouldRun) {
+      const skipPayload = {
+        instanceId:  instance.instanceId,
+        label:       meta.label,
+        modelLabel,
+        lane:        instance.lane,
+        filter: {
+          mode,
+          evaluations: evalResult.evaluations,
+        },
+        // Single-line summary the card can use as a tooltip / chip.
+        reason: mode === 'include'
+          ? `Filter (include) did not match: ${(evalResult.evaluations.find(e => !e.ok) || {}).why || 'no condition matched'}`
+          : `Filter (exclude) matched — addon suppressed: ${(evalResult.evaluations.find(e => e.ok) || {}).why || ''}`,
+        durationMs:  Date.now() - addonStart,
+      };
+      emit('addon.skipped', skipPayload);
+      try {
+        await addonRunsStore.insertRun({
+          conversationId,
+          messageId: assistantMessageId,
+          instance,
+          status: 'skipped',
+          startedAt: new Date(addonStart),
+          endedAt:   new Date(),
+          durationMs: skipPayload.durationMs,
+          runData:   skipPayload,
+        });
+      } catch (err) {
+        console.error('[addonRunner] skipped addon_run insert failed:', err.message);
+      }
+      return { result: null, didTransition: false, broke: false, skipped: true };
+    }
+  }
 
   // ── Resolve the plugin descriptor. Surface unknown ids loudly. ──
   let plugin;

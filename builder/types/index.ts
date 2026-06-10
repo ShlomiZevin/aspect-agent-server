@@ -166,6 +166,37 @@ export interface AddonContext {
    *  runtime ignores it on `main` / `background` lanes — those run
    *  once per turn unconditionally. */
   trigger?: OfflineTrigger;
+  /** Optional gate that decides whether THIS turn's run of this
+   *  addon happens at all. Evaluated by the engine against the brain
+   *  blob BEFORE prompt assembly / LLM call. When the addon is
+   *  skipped, the chain still runs (skip just means "this one
+   *  step"); the SSE timeline shows the skipped card with the
+   *  filter's evaluation so the author sees why. Absent / no
+   *  conditions → always runs (legacy behaviour). */
+  filter?: AddonFilter;
+}
+
+/**
+ * Per-addon run filter — the gate the engine evaluates before
+ * deciding whether to run this addon on the current turn.
+ *
+ * `conditions` is an AND-of-conditions, identical in shape to
+ * `TransitionRouterConfig.conditions`. Reuses the same `conditionMatcher`
+ * implementation so a single vocabulary covers both "should this
+ * router fire?" and "should this addon run at all?".
+ *
+ * `mode` flips the polarity:
+ *  - `'include'` (default) — addon runs ONLY when every condition
+ *    evaluates `ok`.
+ *  - `'exclude'` — addon runs ONLY when at least one condition
+ *    evaluates not-ok (i.e., when the conditions DON'T hold).
+ *
+ * Empty `conditions` → no gate (the engine treats it as "always
+ * run", same as omitting the filter property entirely).
+ */
+export interface AddonFilter {
+  conditions: TransitionCondition[];
+  mode: 'include' | 'exclude';
 }
 
 /**
