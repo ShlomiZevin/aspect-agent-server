@@ -21,7 +21,7 @@
   "defaultPromptTemplate": "{{prompt}}",
 
   "defaultConfig": {
-    "name":  "main",
+    "name":  "Summarizer",
     "model": { "providerId": "openai", "modelId": "gpt-4o-mini" },
     "prompt": "{{persona}}\n\nYou are summarising a conversation so that other parts of the system can work with a compact view of what's happened.\n\nWhat you know:\n{{memory}}\n\nStyle:\n- Bullet structure when the chat has multiple distinct threads; paragraph when it has one continuous arc.\n- Keep declared intents, decisions, named entities, and unresolved questions. Drop greetings, repetition, mid-stream corrections.\n- 6–12 lines target. Hard cap 25 lines.\n- Refer to the user as \"the user\". Refer to the assistant as \"the agent\".\n\nReturn a JSON object: { \"text\": \"<your synthesis>\" }\n\nOutput JSON only — no preamble, no markdown fences."
   },

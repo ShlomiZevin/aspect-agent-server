@@ -446,12 +446,16 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       content: '',
     }).returning();
 
-    // Run the chain.
+    // Run the chain. BuilderRunner now owns the assistant message
+    // update + `assistant.message` emit (between the blocking and
+    // offline phases) — the route handler only needs to clean up the
+    // placeholder when the turn produced no assistant text at all.
     const { assistantText } = await runOnce({
       agentSlug: slug,
       ownerUserId,
       userId,
-      conversationId: Number(convId),
+      conversationId:     Number(convId),
+      userMessageId:      userMsg.id,
       assistantMessageId: asstMsgPlaceholder.id,
       userMessage,
       version,
@@ -461,17 +465,10 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       emit,
     });
 
-    // Fill in the assistant message content. If the talker produced
-    // nothing (extractor-only crew, error, etc.), drop the placeholder.
-    if (assistantText) {
-      await d.update(messages)
-        .set({ content: assistantText })
-        .where(eq(messages.id, asstMsgPlaceholder.id));
-      emit('assistant.message', {
-        messageId: asstMsgPlaceholder.id,
-        text:      assistantText,
-      });
-    } else {
+    // Extractor-only crew, error before talker, etc. — drop the
+    // empty placeholder so the conversation history doesn't carry a
+    // ghost assistant row.
+    if (!assistantText) {
       await d.delete(messages).where(eq(messages.id, asstMsgPlaceholder.id));
     }
 

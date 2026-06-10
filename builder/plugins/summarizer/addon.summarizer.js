@@ -36,10 +36,11 @@ const SUMMARIZER_PLUGIN_ID = descriptor.pluginId;
  * to the LLM. The engine passes a chronological list of
  * `{ role, content }` rows but those don't carry the DB id, so we ask
  * the history service for the conversation's current highest message
- * id. That's correct under our v1 contract: offline addons run within
- * the SAME request that produced the latest user message, so the
- * "highest message id right now" is exactly the cutoff point we want
- * the next `since_summarizer` consumer to filter from.
+ * id, respecting the same `excludeFromMessageId` cap the regular
+ * history queries use. That way the watermark always equals the
+ * highest id the summarizer actually saw — not "highest in the DB
+ * right now," which would include any current-turn rows the cutoff
+ * was meant to hide.
  *
  * If the history mode was `none` we still record the current highest
  * id — the summarizer may have produced a memory-only / persona-only
@@ -47,9 +48,9 @@ const SUMMARIZER_PLUGIN_ID = descriptor.pluginId;
  * checkpoint" still want to skip the messages that existed at the
  * time the checkpoint was recorded.
  */
-async function computeWatermark(conversationId) {
+async function computeWatermark(conversationId, excludeFromMessageId) {
   try {
-    return await historyService.highestMessageId(conversationId);
+    return await historyService.highestMessageId(conversationId, excludeFromMessageId);
   } catch (err) {
     console.error('[summarizer] highestMessageId failed:', err.message);
     return 0;
@@ -66,6 +67,7 @@ async function run(ctx) {
     agentNameForLogs,
     ownerUserId,
     historyMessages,
+    historyExcludeFromMessageId,
     llm,
     usageProcess,
     usageCrew,
@@ -80,7 +82,7 @@ async function run(ctx) {
   // reflects "we looked, found nothing relevant") and write an empty
   // entry. Avoid burning an LLM call on no input.
   if (historyMessages.length === 0 && !userMessage) {
-    const watermark = await computeWatermark(conversationId);
+    const watermark = await computeWatermark(conversationId, historyExcludeFromMessageId);
     return {
       rawOutput:    '',
       parsedOutput: { text: '' },
@@ -118,7 +120,7 @@ async function run(ctx) {
     text = raw;
   }
 
-  const watermark = await computeWatermark(conversationId);
+  const watermark = await computeWatermark(conversationId, historyExcludeFromMessageId);
 
   return {
     rawOutput:    raw,

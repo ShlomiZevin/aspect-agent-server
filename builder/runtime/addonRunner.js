@@ -161,17 +161,38 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
   // ── Fetch history per the instance's history config. Empty when ──
   // `mode === 'none'`. Passed as a separate LLM parameter — NOT
   // interpolated into the prompt string. The brain blob is passed so
-  // the `since_summarizer` resolver can read watermarks.
-  const historyMessages = await historyService.loadHistory({
-    conversationId,
-    historyMode: instance.context?.history,
-    brain:       memory,
-  });
+  // the `since_summarizer` resolver can read watermarks. The
+  // resolution record carries the requested + effective mode and any
+  // fallback reason so the client can surface "why is this prompt so
+  // big?" without re-deriving runtime state.
+  //
+  // `ctx.historyExcludeFromMessageId` is the cutoff that scopes
+  // history to messages BEFORE the current turn started. Blocking-
+  // chain addons get the cutoff (so they don't see their own turn's
+  // user message + assistant placeholder). Offline-lane addons get
+  // no cutoff — they fire after the assistant text is persisted, so
+  // including the current turn is both correct and what we want.
+  const { messages: historyMessages, resolution: historyResolution } =
+    await historyService.loadHistory({
+      conversationId,
+      historyMode:           instance.context?.history,
+      brain:                 memory,
+      excludeFromMessageId:  ctx.historyExcludeFromMessageId,
+    });
+
+  // Blocking-phase addons receive the current user message OUTSIDE
+  // historyMessages (trailing user turn for the Talker; appended as
+  // `## Context` for sendOneShot plugins) — so bump the count by 1.
+  // Offline addons already have the current turn inside
+  // historyMessages (no cutoff), so we don't.
+  const visibleCount = historyMessages.length
+    + (ctx.historyExcludeFromMessageId !== undefined ? 1 : 0);
 
   emit('addon.prompt', {
-    instanceId:   instance.instanceId,
+    instanceId:    instance.instanceId,
     prompt,
-    historyCount: historyMessages.length,
+    historyCount:  visibleCount,
+    historyMode:   historyResolution,
   });
 
   // ── Resolve the model string. Configs carry { providerId, modelId }; ──
@@ -229,6 +250,10 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
       usageProcess,
       usageCrew,
       extractorFields,
+      // Mirror the cutoff into the plugin ctx so plugins that derive
+      // their own message-id watermark (Summarizer) compute it
+      // against the SAME slice the engine just handed them.
+      historyExcludeFromMessageId: ctx.historyExcludeFromMessageId,
     });
   } catch (err) {
     emit('addon.error', {
@@ -286,6 +311,13 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
     memoryWrites,
     tokens:       result.tokens || { input: 0, output: 0, total: 0 },
     durationMs:   result.durationMs ?? (Date.now() - addonStart),
+    // History resolution mirrors what we emitted on addon.prompt so a
+    // reloaded conversation can still show "history: last_n=5 → 5
+    // msgs" without replaying the per-event stream. `visibleCount`
+    // (computed above) bumps by 1 for blocking-phase addons since
+    // they see the current user message outside historyMessages.
+    historyMode:  historyResolution,
+    historyCount: visibleCount,
     ...(typeof result.firstTokenMs === 'number' ? { firstTokenMs: result.firstTokenMs } : {}),
     ...(result.parseError ? { parseError: result.parseError } : {}),
     ...(didTransition ? { transition: { to: result.transition.to, reason: result.transition.reason } } : {}),

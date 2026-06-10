@@ -14,7 +14,7 @@
   "defaultOutputType":  "text-to-user",
 
   "defaultContext": {
-    "history":      { "mode": "last_n", "n": 5 }
+    "history":      { "mode": "all" }
   },
 
   "defaultPromptTemplate": "{{prompt}}",

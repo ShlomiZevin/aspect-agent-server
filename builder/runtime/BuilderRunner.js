@@ -32,7 +32,7 @@
 const llmService = require('../../services/llm');
 const { eq } = require('drizzle-orm');
 const db = require('../../services/db.pg');
-const { conversations } = require('../../db/schema');
+const { conversations, messages } = require('../../db/schema');
 const { resolveRunnable } = require('../services/builderProjects');
 const { logUsage } = require('../../services/usageLogger');
 const builderMemory = require('./builderMemory');
@@ -69,6 +69,9 @@ require('../plugins');
  * @param {string} args.ownerUserId
  * @param {number} args.userId — internal DB user id; required for memory persistence
  * @param {number} args.conversationId — internal (DB) conversation id; required for usage logs
+ * @param {number} args.userMessageId — DB id of THIS turn's just-inserted user message.
+ *   Used to cap `historyService` queries so blocking addons don't see the current
+ *   turn's own rows.
  * @param {number} args.assistantMessageId — DB id of the (pending) assistant message; addon_runs FK
  * @param {string} args.userMessage
  * @param {'viewing'|'active'} args.version
@@ -89,6 +92,7 @@ async function runOnce({
   ownerUserId,
   userId,
   conversationId,
+  userMessageId,
   assistantMessageId,
   userMessage,
   version,
@@ -172,6 +176,18 @@ async function runOnce({
   // `addonRunner` and `offlineDispatcher` both consume this shape.
   // Anything stable across all addons in this turn lives here so the
   // per-addon callsites stay tiny.
+  //
+  // `historyExcludeFromMessageId` scopes `historyService` queries to
+  // messages strictly BEFORE the current turn's user message id. The
+  // route handler inserts BOTH the user message AND an empty
+  // assistant placeholder before this function is called (the
+  // placeholder is needed up-front so `addon_runs.message_id` has a
+  // valid FK target). Without the cutoff, any blocking addon's
+  // `history` would see both current-turn rows — the placeholder
+  // even arrives empty, which is worse than just being extra context.
+  // We FLIP the cutoff between phases below: blocking gets the cap,
+  // offline gets none (it runs after we persist the assistant text,
+  // so including the current turn is both correct and desired).
   const ctx = {
     runnable,
     agentSlug,
@@ -197,6 +213,11 @@ async function runOnce({
     llm: llmService,
     logUsage,
     resolveModelLabel,
+    // Blocking-phase cutoff. Flipped to `undefined` before the
+    // offline phase (see below).
+    historyExcludeFromMessageId: Number.isFinite(userMessageId) && userMessageId > 0
+      ? Number(userMessageId)
+      : undefined,
   };
 
   let assistantText = '';
@@ -215,14 +236,44 @@ async function runOnce({
     if (broke) break;
   }
 
-  // ── 5. Dispatch the OFFLINE lane after the blocking chain. ──
-  // Offline addons run AFTER the user-facing response streams (the
-  // Talker is in the blocking chain above) so the user already sees
-  // the reply. Each offline addon emits the same SSE event family as
-  // a blocking addon via `addonRunner`; only the `addon.start.lane`
-  // field distinguishes them on the client. Runs in parallel; awaited
-  // here so the request stays open until they finish — which is what
-  // lets the chat UI render their cards in the same timeline.
+  // ── 5. Persist the assistant text and announce the turn's reply. ──
+  // We do this BEFORE the offline phase so:
+  //   - the user sees the reply land in the chat right away (the
+  //     stream stays open until offline addons finish, but
+  //     `assistant.message` already happened)
+  //   - offline addons (Summarizer, …) see the FULL assistant message
+  //     when they query history, not the empty placeholder the route
+  //     handler reserved up-front
+  //
+  // Best-effort: a DB hiccup here shouldn't break the conversation —
+  // the route handler has a fallback cleanup path for an empty
+  // placeholder. Errors are logged; the offline phase still runs.
+  if (assistantText && Number.isFinite(assistantMessageId) && assistantMessageId > 0) {
+    try {
+      await drizzle.update(messages)
+        .set({ content: assistantText })
+        .where(eq(messages.id, Number(assistantMessageId)));
+      emit('assistant.message', {
+        messageId: Number(assistantMessageId),
+        text:      assistantText,
+      });
+    } catch (err) {
+      console.error('[BuilderRunner] assistant text persist failed:', err.message);
+    }
+  }
+
+  // ── 6. Dispatch the OFFLINE lane. ──
+  // Offline addons run AFTER the user-facing reply streams + lands in
+  // the DB. They see the full turn (current user message + filled
+  // assistant message) — that's the point of the offline phase. We
+  // flip the cutoff to `undefined` so `historyService` returns
+  // everything up to the present. Each offline addon emits the same
+  // SSE event family as a blocking addon via `addonRunner`; only the
+  // `addon.start.lane` field distinguishes them on the client. Runs
+  // in parallel; awaited here so the request stays open until they
+  // finish — which is what lets the chat UI render their cards in
+  // the same timeline.
+  ctx.historyExcludeFromMessageId = undefined;
   await dispatchOfflineAddons({ ctx, didTransition: anyTransition });
 
   return { assistantText, totalMs: Date.now() - totalStart };

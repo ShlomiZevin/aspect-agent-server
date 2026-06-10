@@ -14,7 +14,7 @@
   "defaultOutputType":  "json-to-memory",
 
   "defaultContext": {
-    "history":      { "mode": "last_n", "n": 8 }
+    "history":      { "mode": "all" }
   },
 
   "defaultPromptTemplate": "{{prompt}}",
