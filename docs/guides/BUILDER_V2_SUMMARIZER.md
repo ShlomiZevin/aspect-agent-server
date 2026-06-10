@@ -1,264 +1,243 @@
 # Builder V2 — Summarizer
 
-> Sister doc to [BUILDER_V2.md](./BUILDER_V2.md). Read that first. Read
-> [BUILDER_V2_ADDONS.md](./BUILDER_V2_ADDONS.md) for the addon contract,
+> Sister doc to [BUILDER_V2.md](./BUILDER_V2.md). Read that first.
+> Read [BUILDER_V2_ADDONS.md](./BUILDER_V2_ADDONS.md) for the addon contract,
 > [BUILDER_V2_SCHEMA.md](./BUILDER_V2_SCHEMA.md) for JSON shapes, and
 > [BUILDER_V2_DYNAMIC_CONTEXT.md](./BUILDER_V2_DYNAMIC_CONTEXT.md) for
-> the sibling agent-level mechanism that uses the same "consumed via a
-> token" pattern.
+> the sibling "consumed via a token" mechanism on the read side.
 >
-> **Status:** planning. No code yet.
+> **Status:** design locked. Ready to build (Phase 1 below). No code yet.
+>
+> **History:** this doc was rewritten on 2026-06-09 after a brainstorm
+> that significantly reshaped the design. The earlier plan put
+> Summarizers on a standalone `agent.summarizers[]` array with a
+> separate scheduler. The new plan unifies them as **offline-lane
+> addons** that share a generic "When" trigger contract with any
+> future event-driven addon. This rewrite reflects the new model;
+> the old text is gone — read git history for the prior version.
 
 ---
 
-## What this is
+## TL;DR
 
-A **Summarizer** is a configurable LLM step whose job is to read a
-window of chat history and produce a compact running synthesis — a
-"checkpoint" of what's happened. Other addons can then be configured to
-*see only the summary* instead of (or alongside) raw history.
+A **Summarizer** is a regular **addon** that lives on the *offline lane* of
+a crew (or the agent cortex). It fires on a configurable trigger
+(`every_n_messages`, `on_transition`, etc.) — **after** the user-facing
+response streams, never blocking it. Each run reads its own slice of
+chat history and writes:
 
-Why we need it:
+- a **synthesis** under `brain.summary[NAME]` — consumable from any
+  prompt via `{{summary:NAME}}`,
+- a **watermark** — the highest message index the summarizer
+  consumed, which enables a new `since_summarizer: NAME` history mode
+  for downstream addons.
 
-- **Cost & latency**: long conversations bloat every downstream addon's
-  prompt. A 50-turn chat that distills to 8 sentences cuts every
-  subsequent Thinker/Talker call dramatically.
-- **Signal density**: raw transcripts are noisy. A summary keeps the
-  *meaningful* state (decisions, declared intents, unresolved threads)
-  and drops greetings, repetition, mid-stream corrections.
-- **Cross-crew handoff**: when crew A finishes and crew B starts, B
-  often doesn't want A's full transcript — just *"here's where things
-  stand."* The summarizer is that handoff payload.
+This both compresses long conversations cheaply and gives authors a
+crisp way to express *"only the messages since the last checkpoint."*
 
 ---
 
-## The hard call: where does the summary go?
+## Why we need it
 
-The user explicitly raised this question: at the technical provider
-level (every provider takes `prompt + history messages`), does the
-summary land in the **prompt** or in the **history messages**?
-
-**Decision: in the prompt, via a `{{summary[:NAME]}}` token.**
-
-Reasoning:
-
-1. **It's authored content, not transcript.** The history messages
-   array is a record of what was actually said. Injecting a synthetic
-   assistant message that says *"summary: …"* lies about the
-   conversation's structure and confuses providers that distinguish
-   roles strictly (e.g. Anthropic's strict alternation rules).
-2. **Prompts are where context-by-token already lives.** `{{memory}}`,
-   `{{thinking}}`, `{{dynamic:X}}` are all synthesised values rendered
-   into the prompt at assemble time. `{{summary}}` is the same shape.
-   Same substituter, same rules, same audit trail.
-3. **It composes cleanly with history.** An addon that wants
-   *summary-only* sets `context.history.mode = 'none'` and writes
-   `{{summary:NAME}}` into its prompt. An addon that wants
-   *summary + last 5 messages* sets `history.mode = 'last_n', n: 5` and
-   adds the token to its prompt. Orthogonal knobs.
-4. **It avoids a new history mode.** Earlier sketches had a
-   `history.mode = 'summary'` option that would swap raw messages for a
-   summary inside `historyMessages`. That conflates two concepts —
-   prompt-authored context and chat transcript — and constrains the
-   author: you can have raw OR summary, never both. Token-based
-   consumption is strictly more flexible.
-
-So at runtime: `promptAssembler.assemblePrompt()` substitutes
-`{{summary[:NAME]}}` from the conversation's `brain.summary` blob, the
-same way it substitutes `{{memory}}`. No new history mode. No synthetic
-messages.
-
-> Forward-pointer comment already in `types/index.ts` on `HistoryMode`
-> hinted at a `summary` mode. **That comment will be removed** —
-> summary consumption is a prompt token, not a history mode.
+- **Cost & latency.** A 50-turn chat that distills to 8 sentences
+  shrinks every downstream Thinker/Talker prompt dramatically.
+- **Signal density.** Raw transcripts are noisy. A summary keeps
+  declared intents, decisions, named entities, unresolved threads;
+  it drops greetings, repetition, mid-stream corrections.
+- **Composable handoff.** When crew A wraps up and crew B starts, B
+  rarely wants A's full transcript — just *"here's where things
+  stand."* The summarizer's output IS that handoff payload.
+- **Bounded recency.** "Since the last checkpoint" becomes a
+  first-class history mode, so a Thinker can read exactly the new
+  messages without redoing context the summary already covers.
 
 ---
 
-## Brain blob — third section
+## Mental model
 
-Today `brain = { memory, thinking }`. The Summarizer adds a **third
-section**:
+Three things go together — internalise them and the rest of the doc
+falls out:
+
+### 1. The offline lane is for event-driven work
+
+The cortex chain has three lanes today:
+
+| Lane | When it runs | Blocks reply? |
+|---|---|---|
+| **Blocking** (`main`) | Every turn | Yes — Talker speaks at the end |
+| **Background** | Every turn | No — fire-and-forget per message |
+| **Offline** | On a trigger (every N messages, on transition, …) | No — fires *after* the reply |
+
+Today the offline lane is `enabled: false` in `ChainCanvas`. Building
+the Summarizer means turning it on. Future offline addons (telemetry
+roll-ups, async memory consolidation, …) ride the same scaffolding.
+
+### 2. Every offline addon has a "When"
+
+Just as a blocking addon picks `context.history` to choose what it
+reads, an offline addon picks a **trigger** to choose *when* it
+fires. The first two trigger kinds:
+
+- `every_n_messages: N` — fires after the N-th user-message-plus-reply
+  pair on the conversation.
+- `on_transition` — fires after a crew transition completes (optional
+  per-crew filter later).
+
+`when_field_equals` and `time_elapsed` are obvious next entries — the
+discriminated-union shape leaves room.
+
+### 3. A Summarizer is just an offline addon
+
+No separate config surface. No `agent.summarizers[]` array. Adding a
+Summarizer means dragging the "Summarizer" plugin into the offline
+lane like any other addon, and configuring its prompt + bound output
+name + history slice.
+
+---
+
+## Offline lane contract
+
+Shared by every offline addon. Lives on `AddonInstance.context.trigger`
+(new field — sibling of `context.history`).
+
+```ts
+type OfflineTrigger =
+  | { kind: 'every_n_messages'; n: number }
+  | { kind: 'on_transition' }                     // any transition
+  // Future:
+  // | { kind: 'when_field_equals'; field: string; value: string }
+  // | { kind: 'time_elapsed'; minutes: number };
+
+interface AddonContext {
+  history: HistoryMode;
+  trigger?: OfflineTrigger;   // required when the addon sits on the offline lane
+}
+```
+
+**Runtime semantics:**
+
+1. The user turn happens.
+2. The blocking lane runs; Talker streams the response.
+3. The `message.done` event is emitted.
+4. The engine evaluates each offline addon's trigger:
+   - Increments per-(conversation, addon) counter.
+   - If the trigger fires, schedules the addon's `run()`.
+5. All triggered offline addons in a given turn run **in parallel**.
+   Order between them is not specified — they share no read/write
+   ordering guarantees with each other.
+6. Each completion writes to the brain and emits an `addon.completed`
+   SSE event so any open UI panels can refresh.
+
+If a new user turn starts before an in-flight offline addon finishes,
+the in-flight call is allowed to complete; downstream addons consume
+*whatever was last written* — the staleness window is at most one
+turn.
+
+---
+
+## Summarizer addon spec
+
+### Descriptor
+
+`aspect-agent-server/builder/addons/summarizer.addon.json` — same
+shape as every other addon descriptor.
+
+```json
+{
+  "pluginId":          "summarizer",
+  "displayName":       "Summarizer",
+  "description":       "Distill chat history into a compact checkpoint. Other addons read it via {{summary:NAME}}.",
+  "purpose":           "Use when long conversations bloat downstream prompts, or when you need a clean handoff payload between crews. Pairs naturally with the `since_summarizer` history mode — a Thinker can read just the new messages since this checkpoint last fired.",
+  "icon":              "📝",
+  "color":             "#0891b2",
+
+  "defaultLane":       "offline",
+  "fieldMode":         "none",
+  "speaks":            false,
+
+  "allowedOutputTypes": ["json-to-memory"],
+  "defaultOutputType":  "json-to-memory",
+
+  "defaultContext": {
+    "history": { "mode": "last_n", "n": 25 },
+    "trigger": { "kind": "every_n_messages", "n": 8 }
+  },
+
+  "defaultPromptTemplate": "{{prompt}}",
+
+  "defaultConfig": {
+    "name":  "main",
+    "model": { "providerId": "openai", "modelId": "gpt-4o-mini" },
+    "prompt": "<starter prompt — see below>"
+  }
+}
+```
+
+### Config shape
+
+```ts
+interface SummarizerConfig {
+  /** Token name. Used in `{{summary:NAME}}` AND in `since_summarizer: NAME`
+   *  history mode. Free-form, lowercase + underscores by convention.
+   *  Unique per agent (validator enforces). */
+  name: string;
+  /** Synthesis prompt. Mention-aware; standard tokens available
+   *  (`@memory`, `!thinking`, `#parameters`, `^persona`, `*dynamic`,
+   *  `/summary` to reference other summarizers). */
+  prompt: string;
+  model: ModelRef;
+}
+```
+
+There's no `displayName` — the chain card uses `config.name` (the
+token name itself), since seeing the token at a glance is what the
+author needs.
+
+### Output shape
+
+Each run writes one slot in `brain.summary`:
 
 ```ts
 interface Brain {
   memory:   { [domain: string]: Record<string, any> };
   thinking: { [domain: string]: Record<string, any> };
-  summary:  { [name:   string]: string };   // NEW
-}
-```
-
-Each summarizer instance writes to its own `summary[name]` key. The
-`name` is configured on the instance and is the consumption key:
-
-```
-{{summary}}        → all summaries joined under a ## Summary heading,
-                     each as a ### NAME block.
-{{summary:NAME}}   → just that one summarizer's current output.
-```
-
-Tokens are added to `aspect-agent-server/builder/promptPlaceholders.json`
-under `sections` and `values`, with a new **sigil**.
-
-### Sigil
-
-`%` opens the Summary picker in MentionTextarea. Mnemonic: percentage /
-compression / digest. Listed in `SINGLE_TRIGGERS` alongside
-`@ ! # ^ *`. The unified `{{` and `/` pickers also surface summary
-entries.
-
----
-
-## Multi-level: agent and crew
-
-The user wants summarizers at **two scopes**:
-
-| Scope | Lives on | Reads | Persistence |
-|---|---|---|---|
-| **Agent-level** | `agent.summarizers[]` | All messages across all crews | User-level (carries across conversations, like agent memory). |
-| **Crew-level**  | `agent.summarizers[]` (with `crewId` set) | Only messages produced inside the targeted crew | Conversation-level (resets per conversation). |
-
-**Both live on the agent doc.** The user's instruction was *"summarizer
-you add it to the agent on the agent level"* — there is one editing
-surface for summarizers, on the agent. Each instance carries a `scope`
-that determines what it reads and where its output is persisted:
-
-```ts
-interface SummarizerDef {
-  id:           ID;
-  name:         string;        // canonical token key
-  displayName?: string;        // for the panel header
-  scope:        'agent' | 'crew';
-  crewId?:      ID;            // required when scope === 'crew'
-  triggers:     SummarizerTrigger[];
-  config:       {
-    prompt:        string;     // mention-aware
-    model:         ModelRef;
-    history:       HistoryMode;        // what THIS summarizer reads
-    promptTemplate?: string;
+  summary: {                                                    // NEW
+    [name: string]: {
+      text:      string;   // the synthesis (rolling = replace)
+      watermark: number;   // highest message index consumed this run
+      ranAt:     number;   // epoch ms — for the brain viewer
+    };
   };
 }
-
-type SummarizerTrigger =
-  | { kind: 'message_count'; everyN: number }
-  | { kind: 'crew_finished'; crewId?: ID };   // optional filter
 ```
 
-Triggers are configurable per the user's spec:
-- `message_count` — runs after every N messages (default 8).
-- `crew_finished` — runs after a crew transition; optionally scoped to
-  a specific crew. (Useful for crew-level summarizers: "summarize crew
-  A whenever A wraps up.")
+Writes are **rolling-replace**: each run overwrites the slot (same
+contract we just locked in for Thinker / Field Interviewer thinking
+domains).
 
-Both trigger kinds can be added to the same summarizer; the union
-fires.
+**Watermark = highest message index** the run included in its history
+slice. Examples:
 
-**Future trigger kinds** the schema accommodates:
-- `time_elapsed` (every N minutes of conversation).
-- `field_value` (when field X reaches value Y).
-- `addon_finished` (after a specific addon instance runs).
+| Conversation has | History mode | Watermark |
+|---|---|---|
+| 50 messages | `all` | 50 |
+| 50 messages | `last_n: 10` | 50 |
+| 50 messages, last transition at msg 30 | `since_transition` | 50 |
+| 50 messages, summarizer X last fired with watermark 30 | `since_summarizer: X` | 50 |
 
-The user said *"maybe more in the future"* — the discriminated-union
-shape leaves room without breaking existing data.
+The watermark is *always* the highest index in the slice the
+summarizer read, regardless of how the slice was defined.
 
-### Why not crew-owned crew-level summarizers?
-
-A crew-level summarizer *could* have lived on `CrewDoc.summarizers[]`.
-We don't put it there because:
-
-1. The user wants a single place to manage summarization across the
-   agent: "summarizer you add to the agent on the agent level."
-2. Forward-compat: when **agent-level cortex chains** ship (see
-   below), the agent will own a chain that includes summarizers.
-   Keeping summarizers on the agent now means we only have to lift
-   them into the chain, not migrate them across documents.
-
----
-
-## Forward compatibility — agent-level chains
-
-The user flagged: *"eventually we would have also agent-level chains —
-so when adding the summarizer take this into account; the agent-level
-summarizer will serve us more as a crew member when we have the chain
-reaction."*
-
-Translation: today, addons (Talker, Thinker, Field Extractor, …) live
-on `CrewDoc.addons[]`. A future iteration adds `AgentDoc.cortex` — an
-agent-scoped chain of addons that runs around / across crew chains.
-
-**Plan for the migration when agent-level chains arrive:**
-
-- The `Summarizer` becomes a regular plugin (`pluginId: 'summarizer'`)
-  in `aspect-agent-server/builder/addons/summarizer.addon.json`.
-- Agent-scope summarizers move from `agent.summarizers[]` to
-  `agent.cortex[]` as `AddonInstance` entries.
-- Crew-scope summarizers continue to live on the agent (still added
-  there) but project into the relevant crew's runtime sequence.
-
-To keep that path cheap, **we author the Summarizer's run logic as if it
-were a plugin already** — same `ctx` shape, same `run()` return shape,
-same memoryWrites contract. The only difference for now is the
-*scheduler*: instead of being invoked by the per-turn cortex loop, the
-engine invokes it by trigger.
-
-The migration becomes "switch the invoker, move the array." The
-descriptor JSON, the React `ConfigComponent`, the prompt template, the
-mention picker integration, the SSE event names — none of that changes.
-
----
-
-## Runtime placement — when does it fire?
-
-The user was explicit: *"runs only after. It's like a checkpoint."*
-
-So:
-
-1. The user turn happens.
-2. The cortex runs (main lane → background lane → offline lane).
-3. The Talker streams its response.
-4. **After the turn is fully written** (message persisted, SSE
-   `message.done` emitted), the engine evaluates every summarizer on the
-   agent in order:
-   - Increment per-summarizer message counter on the conversation.
-   - For each `message_count` trigger: if counter ≥ everyN, fire.
-   - For each `crew_finished` trigger: if a crew transition was emitted
-     this turn (and matches the trigger's `crewId` filter, if any), fire.
-5. Firing = schedule the summarizer's `run()` on the **background lane**.
-   It does **not** block the next user turn.
-6. When it finishes:
-   - Its output is the new summary text.
-   - Written to `brain.summary[name]` with persistence per `scope`
-     (user-level for agent scope, conversation-level for crew scope).
-   - An SSE event `summarizer.completed` is emitted so the UI can update
-     the "Summary" panel and any open prompt previews.
-
-Because step 5 is on the background lane, even slow summary models
-(e.g. a Claude/Opus call) never delay the user-facing response. If a
-new turn starts before the summary finishes, the in-flight summary is
-allowed to complete; downstream addons consume *whatever was last
-written* — the staleness window is at most one turn.
-
----
-
-## Default strategy: leave it to the user
-
-User: *"leave it to be configured."*
-
-The descriptor ships with a sensible **starter prompt** and a
-no-magic strategy:
+### Starter prompt
 
 ```
 {{persona}}
 
-You are summarizing a conversation so that other parts of the system can
-work with a compact view of what's happened.
+You are summarising a conversation so that other parts of the system
+can work with a compact view of what's happened.
 
 What you know:
 {{memory}}
-
-Produce a JSON object:
-{
-  "summary": "<your synthesis>"
-}
 
 Style:
 - Bullet structure when the chat has multiple distinct threads;
@@ -266,108 +245,134 @@ Style:
 - Keep declared intents, decisions, named entities, and unresolved
   questions. Drop greetings, repetition, mid-stream corrections.
 - 6–12 lines target. Hard cap 25 lines.
-- Refer to the user as "the user". Refer to the assistant as "the
-  agent".
+- Refer to the user as "the user". Refer to the assistant as "the agent".
+
+Return a JSON object: { "text": "<your synthesis>" }
 
 Output JSON only — no preamble, no markdown fences.
 ```
 
-Defaults:
-- `defaultLane: 'background'` (the only lane it ever runs in).
-- `history.mode: 'last_n'`, `n: 25` for the summarizer's *own* read of
-  history. The user can move to `full` for very accurate summaries at
-  cost, or `last_n` smaller for fast checkpoints of *recent* state.
-- `model: { providerId: 'openai', modelId: 'gpt-4o-mini' }` — cheap and
-  good enough for compression. Easy to swap.
+The server reads `parsed.text` and writes it to
+`brain.summary[name].text`. The watermark is computed by the runner
+from the message slice that was passed in — not from the LLM output.
 
-There is **no built-in strategy mode** (no "extractive vs abstractive"
-toggle, no schema of required keys). The prompt *is* the strategy.
+---
+
+## History modes (refactored — touches every addon)
+
+Today `AddonContext.history` is one of `{ mode: 'none' | 'last_n', n? }`.
+We extend it:
+
+```ts
+type HistoryMode =
+  | { mode: 'none' }
+  | { mode: 'all' }                                  // NEW — full conversation
+  | { mode: 'last_n'; n: number }                    // existing
+  | { mode: 'since_transition' }                     // NEW — since last crew change
+  | { mode: 'since_summarizer'; summarizerName: string };  // NEW — since watermark
+```
+
+All four modes apply to **every** addon, not just summarizers. A
+blocking Thinker can read `since_summarizer: main` to see only the
+new messages a checkpoint hasn't covered yet.
+
+**Resolution rules:**
+
+| Mode | Slice |
+|---|---|
+| `none` | `[]` |
+| `all` | every message in the conversation |
+| `last_n: N` | last N messages by index |
+| `since_transition` | messages with index > last crew-transition index; falls back to `all` if no transition yet |
+| `since_summarizer: NAME` | messages with index > `brain.summary[NAME].watermark`; falls back to `all` if the summarizer has never fired (or no longer exists) |
+
+The fallback rule for unknown / never-fired summarizers means
+authoring a `since_summarizer` reference doesn't crash the runtime
+when the referenced summarizer is missing — the addon just sees
+everything until the summarizer catches up.
+
+---
+
+## Picker integration
+
+`{{summary:NAME}}` lives in the same mention picker every other token
+uses. The author types `/` (or `{{`) and the picker exposes a
+"Summary" group:
+
+- One "All summaries" entry → `{{summary}}` (joins every summarizer's
+  text under `## Summary` with `### NAME` blocks per slot).
+- One entry per declared summarizer → `{{summary:NAME}}`. The
+  description shows `name`, the current trigger summary, and watermark.
+
+Sigil: TBD. The author cares about discoverability via `/`, which is
+already universal. A dedicated `%` sigil is nice-to-have but not load-
+bearing — if anything we can lump summaries under the `@` (memory)
+group as a subgroup, since semantically a summary IS a synthesised
+memory blob. Final call when we wire the picker.
+
+History-mode picker also needs to surface declared summarizers:
+the `since_summarizer: NAME` option in the history-mode dropdown of
+every addon lists each summarizer in the agent.
 
 ---
 
 ## UI
 
-### Where the user manages summarizers
+### Where you author summarizers
 
-A new **Summary** section on the **agent** page (alongside Persona,
-Schema, Crews). Single entry: a list of `SummarizerDef` rows, "+ Add
-summarizer" at the bottom.
+Like any other addon: drag the **Summarizer** plugin from the picker
+into the **Offline** lane of any crew (or the agent cortex), open the
+modal, set name + prompt + model + trigger + history.
 
-Each row shows:
-- Icon (`%`).
-- `displayName` (or `name`).
-- Scope chip: `agent` or `crew · CrewName`.
-- Trigger summary: `every 8 msgs · after crew A finishes`.
-- Row click → opens a modal.
+No separate "Summary" page on the agent. The offline lane is the
+home.
 
-### Summarizer modal
+### Where you see the output
 
-Reuses the standard addon modal frame (same component family as the
-Talker / Thinker modal). Sections:
+**Brain runtime viewer** — the existing panel that shows fields, DC
+hits, and thinking domains gains a **Summarizers** section. Each row:
 
-1. **Name + display name + scope** (with crew picker if scope is `crew`).
-2. **Triggers**: add/remove rows. Each row is a trigger kind + its
-   params. (`message_count` → number input. `crew_finished` → optional
-   crew dropdown.)
-3. **History** (what this summarizer reads): the standard `HistoryMode`
-   selector.
-4. **Prompt**: standard `MentionTextarea` with all sigils available —
-   you can reference `@memory`, `!thinking`, `#parameters`,
-   `^persona`, `*dynamic`. Self-reference via `%` IS allowed
-   (rolling summary: *"refine the prior summary"*).
-5. **Model**: standard model picker.
-6. **Prompt template**: advanced — only show if user expands.
+- Name + the current `every_n_messages: 8 · last fired at message 32`
+  trigger / watermark summary.
+- Collapsed text body; expand to read.
+- "Force run now" button (dev only) — manually triggers the addon
+  without waiting for the natural trigger.
 
-### Where the output shows up
+The brain viewer is where authors will look first; no need to mint a
+second surface.
 
-Summaries can be long. The user said: *"as it might be long you will
-see the 'level name' and you will be able to open it to see the
-summary."*
+### Chain card
 
-Two surfaces:
+The Offline lane card for a Summarizer shows:
 
-**A. Cortex run timeline (UserChat).**
-A `summarizer.start` / `summarizer.completed` event renders a collapsed
-card on the timeline, sized just like an addon card, captioned with the
-summarizer's displayName. Click to expand → shows the summary body in a
-read-only `MentionTextarea`.
-
-**B. A "Summary" panel** on the agent page (mirrors the Schema panel
-shape). Per-summarizer card, showing:
-  - Name & scope chip.
-  - "Last fired: X" timestamp.
-  - Collapsed body. Expand → full text.
-  - For dev: "Force run now" debug button.
-
-### MentionTextarea integration
-
-`%` is added to `SINGLE_TRIGGERS` and to the unified `{{` / `/`
-pickers. `useMentionOptions` returns one entry per declared summarizer
-(by `name`) plus the "All summaries" entry.
+- Icon (📝), name (the `config.name` token), trigger summary.
+- Like every other card — same drag, same modal-on-click semantics.
 
 ---
 
 ## Server runtime sketch
 
-> Not implementing in this PR — capturing so the next session can pick
-> it up without re-deriving.
-
-### Files (anticipated)
+### Files
 
 ```
 aspect-agent-server/
   builder/
     addons/
-      summarizer.addon.json              ← future, when it becomes an addon
+      summarizer.addon.json              ← descriptor
+    plugins/
+      summarizer/
+        addon.summarizer.js              ← plugin run() — reads history slice, calls LLM,
+                                            writes { text, watermark, ranAt } to brain.summary[name]
     runtime/
-      summarizers/
-        summarizerScheduler.js           ← evaluates triggers per turn
-        summarizerRunner.js              ← invokes the LLM, writes brain
-      builderMemory.js                   ← add SECTION_SUMMARY
-      promptAssembler.js                 ← {{summary}} + {{summary:NAME}}
-      BuilderRunner.js                   ← hook scheduler after message.done
-    promptPlaceholders.json              ← register the new sigil & tokens
-    types/index.ts                       ← Brain.summary, SummarizerDef
+      offlineScheduler.js                ← evaluates triggers per turn, dispatches
+      historyService.js                  ← extend with `all` / `since_transition` /
+                                            `since_summarizer` resolvers
+      builderMemory.js                   ← add SECTION_SUMMARY + applyWrites support for it
+      promptAssembler.js                 ← {{summary}} + {{summary:NAME}} substitution
+      BuilderRunner.js                   ← hook offlineScheduler after message.done
+    types/index.ts                       ← Brain.summary, SummarizerConfig,
+                                            extended HistoryMode + OfflineTrigger
+    promptPlaceholders.json              ← register the new tokens
 ```
 
 ### Brain blob changes
@@ -375,7 +380,9 @@ aspect-agent-server/
 ```js
 // builderMemory.js
 const SECTION_SUMMARY = 'summary';
-// normalizeBlob: tolerate missing/legacy summary key.
+// normalizeBlob: tolerate missing summary key, treat as {}.
+// applyWrites: writes with `kind: 'summary'` land in this section keyed by `name`
+//   (not domain — summary is a single-key-per-name structure, no domain layer).
 ```
 
 ### Assembler changes
@@ -383,164 +390,232 @@ const SECTION_SUMMARY = 'summary';
 ```js
 // promptAssembler.js — substitute order stays:
 //   {{prompt}} → sections → parameterised
-// New section token:
-out = out.replace('{{summary}}', renderAllSummaries(brain.summary));
-// New parameterised:
-out = out.replace(/\{\{summary:([\w-]+)\}\}/g,
-  (_, name) => brain.summary?.[name] ?? '');
+template = template.replace('{{summary}}', renderAllSummaries(brain.summary));
+template = template.replace(/\{\{summary:([\w-]+)\}\}/g,
+  (_, name) => brain.summary?.[name]?.text ?? '');
+```
+
+`renderAllSummaries` produces:
+
+```
+## Summary
+
+### main
+<text>
+
+### onboarding_checkpoint
+<text>
 ```
 
 ### Scheduler shape
 
 ```js
-// summarizerScheduler.js
-async function evaluateTriggers({ agentDoc, conversationId, turnInfo }) {
-  for (const s of agentDoc.summarizers ?? []) {
-    if (shouldFire(s, conversationId, turnInfo)) {
-      backgroundLane.schedule(() => runSummarizer(s, conversationId));
+// offlineScheduler.js
+async function evaluateAndDispatch({ agentDoc, conversationId, turnInfo, emit }) {
+  const offlineAddons = collectOfflineAddons(agentDoc);   // walks cortex + every crew
+  const triggered = [];
+  for (const { instance, owner } of offlineAddons) {
+    if (await shouldFire(instance, conversationId, turnInfo)) {
+      triggered.push({ instance, owner });
     }
   }
+  // Parallel — order between offline addons in the same turn is unspecified.
+  await Promise.all(triggered.map(t => runOfflineAddon(t, emit)));
 }
 ```
 
-Called by `BuilderRunner` right after the turn's
-`message.done` SSE event is emitted. Counter state lives in
-`context_data` (user or conversation level depending on `scope`).
+Counter state for `every_n_messages` lives in `context_data` at
+conversation scope, keyed by `(conversationId, instanceId)`.
+
+For `since_transition`: the historyService needs to know "what was
+the index of the last crew transition in this conversation." We
+already persist transitions in `messages` metadata — add a query.
+
+For `since_summarizer`: the historyService reads
+`brain.summary[name].watermark` and filters messages with `index >
+watermark`.
+
+### History mode resolvers
+
+Today `historyService.loadHistory` accepts `historyMode`. Extend it:
+
+```js
+switch (historyMode.mode) {
+  case 'none':              return [];
+  case 'all':               return allMessages(conversationId);
+  case 'last_n':            return lastN(conversationId, historyMode.n);
+  case 'since_transition':  return sinceLastTransition(conversationId);
+  case 'since_summarizer':  return sinceWatermark(conversationId,
+                              brain.summary?.[historyMode.summarizerName]?.watermark ?? 0);
+}
+```
 
 ### SSE events
 
+Reuse the standard addon events:
+
 ```
-summarizer.started      { summarizerId, name, scope }
-summarizer.completed    { summarizerId, name, scope, durationMs, tokens }
-summarizer.failed       { summarizerId, name, error }
+addon.start       { instanceId, pluginId, lane: 'offline' }
+addon.completed   { instanceId, pluginId, durationMs, tokens }
+addon.error       { instanceId, error }
 ```
+
+For the brain viewer's live updates, a `brain.updated` event already
+exists (used by fields / thinking). It fires when `summary` changes
+too — no new event type needed.
 
 ---
 
-## Consumption from other addons
+## Examples
 
-A Thinker that wants *summary-only* context:
+### Example 1 — single rolling summary on the main crew
 
-```jsonc
-{
-  "pluginId": "thinker",
-  "context":  { "history": { "mode": "none" } },
-  "config": {
-    "prompt": "{{persona}}\n\n## What's happened so far\n{{summary:main}}\n\nWhat should the talker do this turn?\n..."
-  }
-}
-```
+Crew "general" gets a Summarizer on its offline lane:
 
-A Talker that wants summary + recent messages:
+- `config.name`: `main`
+- `context.trigger`: `{ kind: 'every_n_messages', n: 8 }`
+- `context.history`: `{ mode: 'all' }`
+- Prompt: the starter prompt.
 
-```jsonc
-{
-  "pluginId": "talker",
-  "context":  { "history": { "mode": "last_n", "n": 5 } },
-  "config": {
-    "prompt": "...\n## Background\n{{summary:main}}\n## Persona\n{{persona}}\n..."
-  }
-}
-```
+Then the crew's Thinker is configured:
 
-Same orthogonal knobs the rest of the system already exposes — no new
-configuration concept introduced.
+- `context.history`: `{ mode: 'since_summarizer', summarizerName: 'main' }`
+- Prompt includes `{{summary:main}}` for the long-term context plus
+  the raw recent messages from `historyMessages`.
+
+Result: every 8 turns the summary refreshes; the Thinker always sees
+the summary + the handful of messages added since the last refresh.
+
+### Example 2 — handoff between crews
+
+Two crews: `onboarding` and `support`. A Summarizer sits on the
+agent cortex (not in either crew) so it runs across both:
+
+- `config.name`: `customer_state`
+- `context.trigger`: `{ kind: 'on_transition' }`
+- `context.history`: `{ mode: 'all' }`
+- Prompt asks the LLM to capture: stated needs, blockers, agreed
+  next steps.
+
+The `support` crew's Talker prompt references `{{summary:customer_state}}`
+near the top. When the user transitions from onboarding to support,
+the summarizer fires; the support crew's first response opens with
+full context without re-asking anything.
+
+### Example 3 — chained summaries
+
+`coarse` summarizer runs every 20 messages, reads `all`.
+`fine` summarizer runs every 5 messages, reads `since_summarizer: coarse`.
+
+The `fine` checkpoint captures recent state cheaply; the `coarse`
+checkpoint captures long-arc state at lower cadence. A Talker can
+reference both: `{{summary:coarse}}` for the arc, `{{summary:fine}}`
+for the immediate.
+
+No special chaining mechanism is required — `fine` just uses the
+history mode that points at `coarse`'s watermark.
 
 ---
 
-## Alfred awareness
+## Locked decisions
 
-Once Summarizer is implemented:
-
-- The descriptor JSON (when it ships) is auto-discovered by
-  `alfred/services/patchGenerator.js` like every other addon.
-- `bodyValidator.js` gets a `validateSummarizers(agentBody)` check
-  (name uniqueness, scope+crewId consistency, trigger validity).
-- The Alfred system prompt gets a paragraph: *"Summarizers live on the
-  agent body in `summarizers[]`. They are checkpoints — they only run
-  after a turn finishes. To make a Thinker/Talker see only the summary,
-  set its `history.mode = 'none'` and place `{{summary:NAME}}` in its
-  prompt."*
-
-For the planning phase, Alfred remains unaware. We can hand-edit the
-agent body to add summarizers and the runtime will pick them up.
-
----
-
-## Decisions locked in (review session 2026-06-04)
-
-1. **Counter does NOT reset on crew transitions.** Per-crew cadence is
-   what crew-scope summarizers exist for.
-2. **Everything is per conversation.** Both the trigger counter AND the
-   output persistence are per-conversation for now. Cross-conversation
-   accumulation is out of scope. (Earlier sketches had agent-scope
-   output persisting user-level; we walked that back to keep the model
-   one shape.)
-3. **Structured auto-derived names** instead of free-form. The `name`
-   field used in `{{summary:NAME}}` is derived from scope + trigger:
-   - agent-scope, `message_count: N` → `h-N-steps`
-   - crew-scope,  `message_count: N` → `h-crew-N-steps`
-                                       (or `h-crew-CREWNAME-N-steps` for
-                                        a specific crew)
-   - `crew_finished` (any)            → `h-crew`
-   - `crew_finished` of named crew    → `h-crew-CREWNAME`
-   `displayName` stays free-form for the panel header.
-4. **One trigger per summarizer.** Cleaner names, cleaner mental model.
-   If you want both "every 5 steps" and "after crew finishes", make two
-   summarizers.
-5. **Rolling = replace.** Each run overwrites
+1. **Summarizer is an offline-lane addon.** Not a standalone agent
+   config surface. Same authoring flow as every other addon.
+2. **Offline lane gets a generic `trigger` config.** Shared by every
+   offline addon today and in the future.
+3. **Offline addons run after the reply, in parallel.** Never block
+   the user-facing response. No ordering guarantees between offline
+   addons triggered in the same turn.
+4. **Per conversation.** Trigger counters AND output blobs are
+   per-conversation. Cross-conversation accumulation is out of scope.
+5. **Free-form `name`.** The author picks it; it's the token name AND
+   the history-mode reference. Validator enforces uniqueness per
+   agent.
+6. **One trigger per addon.** Want both "every 5 steps" and "after
+   transition"? Make two summarizers — they're cheap.
+7. **Rolling replace.** Each run overwrites
    `brain.summary[name]`. No append-only history log in v1.
-
-## Parked — composition with history
-
-Discussed but the user found the design space too confusing in one
-sitting. Park until basic Summarizer ships. Notes for the next round:
-
-- **The overlap problem.** When an addon consumes
-  `{{summary:NAME}}` in its prompt AND sets `history.mode = 'full'` (or
-  a `last_n` window that overlaps the summarized range), the same
-  content is in the prompt twice — once compressed, once raw.
-- **Possible mitigation: `since_last_summary` history mode.** Each
-  summarizer run records the index of the last message it consumed; a
-  new history mode reads messages strictly *after* that cutoff.
-  Composes cleanly with the prompt token.
-- **Also wanted: crew-scoped `last_n`.** Today `last_n: 10` walks back
-  across crew transitions. Needs a `crewScope: 'all' | 'current'`
-  flag to stop at the last transition. Independent of Summarizer —
-  useful on its own.
-- **Enforcement?** Don't enforce. Optional inline UI warning. Annotate
-  the rendered summary block with its window
-  (`## Summary (covers messages 1–10)`) so the LLM can dedupe on its
-  own.
-- **Goal for the next pass:** find a single simple knob that captures
-  the common "summary + recent" composition without exposing all four
-  history modes plus a summarizer-coupled mode. The current option
-  set is too many decisions for the prompt author.
+8. **Watermark = highest message index consumed in the run.**
+   Same regardless of which history mode the summarizer used.
+9. **Fallback when `since_summarizer` references a missing summarizer:**
+   read `all`. No crash, no error — graceful degradation.
+10. **Counter does NOT reset on crew transitions.** Per-crew cadence
+    is what placing the summarizer on a specific crew's offline lane
+    is for.
 
 ---
 
-## Implementation phases (proposed)
+## Implementation phases
 
-**Phase 1 — bare runtime (no UI).**
-- Add `SummarizerDef` to types and `brain.summary` to the blob.
-- Add `{{summary[:NAME]}}` tokens to the assembler and the placeholder
-  spec.
-- Stand up `summarizerScheduler` and `summarizerRunner`. Hand-edit
-  agent docs to test.
+### Phase 1 — bare runtime (no offline UI yet)
 
-**Phase 2 — UI.**
-- Summary section on the agent page.
-- Summarizer modal.
-- Timeline card in UserChat.
+Goal: prove the pipeline end-to-end via hand-edited agent bodies.
 
-**Phase 3 — mention integration.**
-- `%` sigil in MentionTextarea, unified picker entries.
+- [ ] Types: add `Brain.summary`, `SummarizerConfig`, extended
+      `HistoryMode`, `OfflineTrigger`.
+- [ ] `builderMemory.js`: `SECTION_SUMMARY` + `applyWrites` handles
+      `kind: 'summary'` writes.
+- [ ] `historyService.js`: implement `all`, `since_transition`,
+      `since_summarizer` resolvers.
+- [ ] `promptAssembler.js`: substitute `{{summary}}` and
+      `{{summary:NAME}}`.
+- [ ] `promptPlaceholders.json`: register the new tokens.
+- [ ] `summarizer.addon.json` descriptor.
+- [ ] `addon.summarizer.js` plugin runner — reads history slice,
+      calls LLM, writes brain, computes watermark.
+- [ ] `offlineScheduler.js` — evaluates triggers after
+      `message.done`, runs offline addons in parallel.
+- [ ] `BuilderRunner.js` — invoke the offline scheduler at the end
+      of each turn.
+- [ ] Hand-edit an agent body to add a Summarizer on a crew's
+      `offline` lane; verify it fires every N messages, brain
+      gains the summary, a downstream Thinker reading
+      `since_summarizer: NAME` sees the right messages.
 
-**Phase 4 — Alfred awareness.**
-- Validator + system-prompt copy.
+### Phase 2 — offline lane in the builder UI
 
-**Phase 5 — migration to agent-level chains (when those ship).**
-- Author `summarizer.addon.json` descriptor.
-- Move `agent.summarizers[]` into `agent.cortex[]` as `AddonInstance`
-  entries. Crew-scope summarizers stay agent-managed but project into
-  crew runtime sequence.
+- [ ] Enable the offline lane in `ChainCanvas` (currently `enabled:
+      false`). Lane-rendering tweak: no arrows between offline
+      addons since they don't pipeline.
+- [ ] Trigger config UI — a small section in AddonModal shown only
+      when the addon's `defaultLane === 'offline'` (or when the
+      user explicitly moves an instance to the offline lane).
+- [ ] Summarizer config component (Name + Prompt + Model — minimal,
+      mirrors Thinker).
+- [ ] Mention picker: surface `{{summary}}` / `{{summary:NAME}}`
+      under `/` and (optionally) a sigil.
+- [ ] History-mode picker: surface `since_summarizer: NAME` per
+      declared summarizer.
+
+### Phase 3 — brain runtime viewer
+
+- [ ] Add a Summarizers section to the existing brain viewer.
+- [ ] Per-row: name, trigger summary, watermark, last-fired
+      timestamp, collapsible text.
+- [ ] "Force run now" dev button.
+
+### Phase 4 — Alfred awareness
+
+- [ ] `bodyValidator.js` — `validateSummarizers(agentBody)` checks
+      name uniqueness and `since_summarizer` references resolve.
+- [ ] Alfred system prompt paragraph explaining the offline lane
+      and the `since_summarizer` history mode.
+
+---
+
+## Open items (small)
+
+- **Sigil for the picker.** `%` was the original suggestion. Could
+  instead go under the existing `@` group as a `Summaries` subgroup.
+  Decide when wiring `useMentionOptions.ts`.
+- **`since_transition` semantics when chaining crews.** Does a sub-
+  transition count, or only top-level crew changes? Current
+  assumption: any transition emitted in the conversation. Revisit
+  if confusion comes up.
+- **What if `every_n_messages: N` triggers on the SAME turn as a
+  transition?** Both triggers can fire on different summarizers in
+  the same turn; they run in parallel; no special interaction.
+- **Multi-conversation accumulation.** Decision 4 says we don't ship
+  this in v1. If a use case shows up later, add a `persistence:
+  'conversation' | 'user'` field to the descriptor — no migration
+  required because the default is conversation.

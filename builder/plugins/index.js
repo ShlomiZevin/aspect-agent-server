@@ -24,4 +24,5 @@ require('./vibeExtractor/addon.vibeExtractor');
 require('./fieldReasoner/addon.fieldReasoner');
 require('./fieldInterviewer/addon.fieldInterviewer');
 require('./thinker/addon.thinker');
+require('./summarizer/addon.summarizer');
 require('./transitionRouter/addon.transitionRouter');

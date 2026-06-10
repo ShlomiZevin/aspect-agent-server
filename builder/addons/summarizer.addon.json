@@ -1,0 +1,32 @@
+{
+  "pluginId":          "summarizer",
+  "displayName":       "Summarizer",
+  "description":       "Distil chat history into a compact checkpoint. Other addons read it via {{summary:NAME}}.",
+  "purpose":           "Offline-lane addon that produces a rolling synthesis of the conversation under a named slot in `brain.summary`. Fires on a configurable trigger (`every_n_messages` or `on_transition`) AFTER the user-facing response streams — never blocks the reply. Pair with the `since_summarizer` history mode: a downstream Thinker / Talker can read just the messages added since this checkpoint last fired, cutting prompt size dramatically on long conversations. Use `on_transition` when you want a clean handoff payload between crews — the summary captures decisions and unresolved threads from the previous crew. Use `every_n_messages` to keep prompts compact over the lifetime of one chat. The synthesis is rolling-replace: each run overwrites the slot wholesale, so consumers always see the current view, not an append log of past checkpoints.",
+  "icon":              "📝",
+  "color":             "#0891b2",
+
+  "defaultLane":       "offline",
+  "fieldMode":         "none",
+  "speaks":            false,
+
+  "allowedOutputTypes": ["json-to-memory"],
+  "defaultOutputType":  "json-to-memory",
+
+  "defaultContext": {
+    "history": { "mode": "all" },
+    "trigger": { "kind": "every_n_messages", "n": 8 }
+  },
+
+  "defaultPromptTemplate": "{{prompt}}",
+
+  "defaultConfig": {
+    "name":  "main",
+    "model": { "providerId": "openai", "modelId": "gpt-4o-mini" },
+    "prompt": "{{persona}}\n\nYou are summarising a conversation so that other parts of the system can work with a compact view of what's happened.\n\nWhat you know:\n{{memory}}\n\nStyle:\n- Bullet structure when the chat has multiple distinct threads; paragraph when it has one continuous arc.\n- Keep declared intents, decisions, named entities, and unresolved questions. Drop greetings, repetition, mid-stream corrections.\n- 6–12 lines target. Hard cap 25 lines.\n- Refer to the user as \"the user\". Refer to the assistant as \"the agent\".\n\nReturn a JSON object: { \"text\": \"<your synthesis>\" }\n\nOutput JSON only — no preamble, no markdown fences."
+  },
+
+  "hideStandardSections": {
+    "repository": true
+  }
+}

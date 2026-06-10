@@ -33,13 +33,11 @@ const llmService = require('../../services/llm');
 const { eq } = require('drizzle-orm');
 const db = require('../../services/db.pg');
 const { conversations } = require('../../db/schema');
-const { assemblePrompt } = require('./promptAssembler');
 const { resolveRunnable } = require('../services/builderProjects');
 const { logUsage } = require('../../services/usageLogger');
-const { getPlugin } = require('./pluginRegistry');
 const builderMemory = require('./builderMemory');
-const addonRunsStore = require('./addonRunsStore');
-const historyService = require('./historyService');
+const { runAddon } = require('./addonRunner');
+const { dispatchOfflineAddons } = require('./offlineDispatcher');
 const modelsService = require('../../services/models.service');
 
 // Provider-id → display label, pre-indexed so the per-addon resolve
@@ -170,263 +168,62 @@ async function runOnce({
   const memoryDomainList       = ()       => builderMemory.listDomainsWithValues(memory, 'memory');
   const thinkingDomainList     = ()       => builderMemory.listDomainsWithValues(memory, 'thinking');
 
+  // ── 3. Build the shared per-turn execution context. ──
+  // `addonRunner` and `offlineDispatcher` both consume this shape.
+  // Anything stable across all addons in this turn lives here so the
+  // per-addon callsites stay tiny.
+  const ctx = {
+    runnable,
+    agentSlug,
+    ownerUserId,
+    userId,
+    conversationId,
+    assistantMessageId,
+    userMessage,
+    crewLabel,
+    agentNameForLogs,
+    agentPersona,
+    agentParameters,
+    agentDynamicContexts,
+    memory,
+    memoryValuesByDomain,
+    memoryDomainList,
+    thinkingValuesByDomain,
+    thinkingDomainList,
+    fieldValueOf,
+    drizzle,
+    convRow,
+    emit,
+    llm: llmService,
+    logUsage,
+    resolveModelLabel,
+  };
+
   let assistantText = '';
+  let anyTransition = false;
 
+  // ── 4. Run the blocking chain. addonRunner is the SINGLE source of ──
+  // truth for "how one addon executes" — same code path the offline
+  // dispatcher uses below. The orchestration here (sequential,
+  // honouring `breakChain`) is what makes this the blocking lane.
   for (const instance of blockingAddons) {
-    const addonStart = Date.now();
-    const modelLabel = resolveModelLabel(instance.config?.model);
-    const meta = {
-      instanceId: instance.instanceId,
-      pluginId:   instance.pluginId,
-      lane:       instance.lane,
-      label:      instance.config?.name || instance.pluginId,
-      model:      instance.config?.model || null,
-      modelLabel,
-    };
-    emit('addon.start', meta);
-
-    // 3. Resolve the plugin descriptor. Surface unknown ids loudly —
-    // means the crew body references a plugin not loaded.
-    let plugin;
-    try {
-      plugin = getPlugin(instance.pluginId);
-    } catch (err) {
-      emit('addon.error', {
-        instanceId: instance.instanceId,
-        error: { code: 'unknown_plugin', message: err.message },
-      });
-      continue;
-    }
-
-    // 4. Resolve this addon's extracted fields (if any). Field defs
-    //    live on `agent.fields` (agent-scoped) and on each crew's
-    //    `crew.fields` (crew-scoped). The Field Extractor stores
-    //    `extractsFields: ID[]` referencing them. We intersect with
-    //    the current crew's available pool (agent fields + this
-    //    crew's crew fields).
-    const cfg = instance.config || {};
-    const extractsIds = Array.isArray(cfg.extractsFields) ? cfg.extractsFields : [];
-    const agentFields = Array.isArray(runnable.agent.body?.fields) ? runnable.agent.body.fields : [];
-    const crewFields  = Array.isArray(runnable.crew.body?.fields)  ? runnable.crew.body.fields  : [];
-    const fieldPool   = [...agentFields, ...crewFields];
-    const extractorFields = extractsIds
-      .map(id => fieldPool.find(f => f.id === id))
-      .filter(Boolean);
-
-    // 5. Assemble the prompt. Readers close over the current brain
-    //    blob, which mutates across iterations as upstream addons
-    //    produce writes.
-    let prompt = '';
-    try {
-      prompt = assemblePrompt({
-        instance,
-        agentPersona,
-        memoryValuesByDomain,
-        memoryDomainList,
-        thinkingValuesByDomain,
-        thinkingDomainList,
-        fieldValueOf,
-        extractorFields,
-        parameters:       agentParameters,
-        dynamicContexts:  agentDynamicContexts,
-        fieldsForDynamic: fieldPool,
-        onDynamicResolved: ({ fieldName, section, matched, text }) => {
-          // Emit one SSE event per resolved dynamic-context token so the
-          // chat UI can show a trail above the assistant message.
-          // De-dup is left to the client — same field may resolve once
-          // per occurrence in the template. `section` is null for the
-          // umbrella form, the section name for `{{dynamic:F:S}}`, or
-          // `'*'` for the all-sections join form.
-          emit('dynamic.resolved', {
-            instanceId: instance.instanceId,
-            fieldName,
-            section,
-            matched,
-            text,
-          });
-        },
-      });
-    } catch (err) {
-      emit('addon.error', {
-        instanceId: instance.instanceId,
-        error: { code: 'assemble_failed', message: err.message },
-      });
-      continue;
-    }
-
-    // 5. Fetch history per the instance's history config. Empty when
-    //    `mode === 'none'`. Passed as a separate LLM parameter — NOT
-    //    interpolated into the prompt string.
-    const historyMessages = await historyService.loadHistory({
-      conversationId,
-      historyMode: instance.context?.history,
-      // Exclude the just-inserted user message; it'll be the "current"
-      // message the LLM call uses separately.
-      excludeAfterMessageId: null,
-    });
-
-    emit('addon.prompt', {
-      instanceId:   instance.instanceId,
-      prompt,
-      historyCount: historyMessages.length,
-    });
-
-    // 6. Resolve the model string. Configs carry { providerId, modelId };
-    //    llm.js routes by modelId via the central models registry.
-    //    Some plugins (Transition Router) don't call an LLM and
-    //    declare `requiresModel: false` — skip the check for those.
-    const model = instance.config?.model || {};
-    const modelString = typeof model === 'string' ? model : (model.modelId || null);
-    const needsModel = plugin.requiresModel !== false;
-    if (needsModel && !modelString) {
-      emit('addon.error', {
-        instanceId: instance.instanceId,
-        error: { code: 'no_model', message: 'Addon has no model configured' },
-      });
-      continue;
-    }
-
-    // 7. Validate the chosen outputType is allowed for this plugin.
-    if (
-      Array.isArray(plugin.allowedOutputTypes) &&
-      plugin.allowedOutputTypes.length > 0 &&
-      instance.outputType &&
-      !plugin.allowedOutputTypes.includes(instance.outputType)
-    ) {
-      emit('addon.error', {
-        instanceId: instance.instanceId,
-        error: {
-          code: 'bad_output_type',
-          message: `Plugin "${plugin.id}" does not support outputType="${instance.outputType}". Allowed: ${plugin.allowedOutputTypes.join(', ')}`,
-        },
-      });
-      continue;
-    }
-
-    // 8. Call the plugin. The plugin owns LLM-call shape + parsing.
-    const usageProcess = instance.pluginId; // process column on llm_usage
-    const usageCrew    = crewLabel;          // crew column on llm_usage
-    let result;
-    try {
-      result = await plugin.run({
-        instance,
-        prompt,
-        modelString,
-        userMessage,
-        conversationId,
-        agentSlug,
-        agentNameForLogs,
-        ownerUserId,
-        userId,
-        memory,
-        historyMessages,
-        emit,
-        llm: llmService,
-        logUsage,
-        usageProcess,
-        usageCrew,
-        // Resolved field defs this addon extracts (agent + crew
-        // pool intersected with `instance.config.extractsFields`).
-        // Empty for non-extractor plugins.
-        extractorFields,
-      });
-    } catch (err) {
-      emit('addon.error', {
-        instanceId: instance.instanceId,
-        error: { code: 'plugin_run_failed', message: err.message },
-      });
-      continue;
-    }
-
-    // 9. Merge memory writes from the plugin into the conversation
-    //    memory blob + persist. Writes are visible to downstream
-    //    addons this same turn (memoryValuesByDomain closes over `memory`).
-    const memoryWrites = Array.isArray(result.memoryWrites) ? result.memoryWrites : [];
-    if (memoryWrites.length > 0) {
-      builderMemory.applyWrites(memory, memoryWrites);
-      try {
-        await builderMemory.saveMemory(userId, conversationId, memory);
-      } catch (err) {
-        console.error('[BuilderRunner] memory save failed:', err.message);
-      }
-    }
-
-    // 10. Accumulate assistantText if the plugin produced any.
-    if (typeof result.assistantText === 'string' && result.assistantText) {
+    const { result, didTransition, broke } = await runAddon({ ctx, instance });
+    if (didTransition) anyTransition = true;
+    if (result && typeof result.assistantText === 'string' && result.assistantText) {
       assistantText = result.assistantText;
     }
-
-    // 10.5 Handle transition output (Transition Router plugin).
-    //   - `result.transition.to` → write `conversation.metadata.currentCrewId`.
-    //   - `result.breakChain`    → stop iterating after this addon.
-    // Best-effort: a DB failure on the metadata write should not
-    // break the conversation; we'll just retry on the next match.
-    let didTransition = false;
-    if (result.transition && result.transition.to) {
-      try {
-        const currentMeta = convRow?.metadata || {};
-        const nextMeta = { ...currentMeta, currentCrewId: result.transition.to };
-        await drizzle.update(conversations)
-          .set({ metadata: nextMeta, updatedAt: new Date() })
-          .where(eq(conversations.id, Number(conversationId)));
-        // Mirror in the in-memory row so any later addon in the same
-        // turn reads consistent state if we ever need to.
-        if (convRow) convRow.metadata = nextMeta;
-        didTransition = true;
-      } catch (err) {
-        console.error('[BuilderRunner] transition save failed:', err.message);
-      }
-    }
-
-    // 11. Emit addon.output. Same shape live and historical (P3
-    //     uses the persisted addon_runs.run_data verbatim).
-    //     `prompt` is the FULL assembled string after every
-    //     placeholder substitution ({{memory}}, {{fields_current}},
-    //     {{persona}}, etc.) — i.e. exactly what we sent to the LLM.
-    //     The live view picks it up from the earlier addon.prompt
-    //     event; mirroring it here means a reloaded conversation
-    //     can show the same prompt without hitting the live path.
-    const outputPayload = {
-      instanceId:   instance.instanceId,
-      label:        meta.label,
-      modelLabel,
-      prompt,
-      rawOutput:    result.rawOutput ?? '',
-      parsedOutput: result.parsedOutput ?? null,
-      memoryWrites,
-      tokens:       result.tokens || { input: 0, output: 0, total: 0 },
-      durationMs:   result.durationMs ?? (Date.now() - addonStart),
-      // firstTokenMs is set by streaming plugins (Talker) — it's the
-      // time until the FIRST visible token, which is what the user
-      // actually perceives. durationMs is the full stream end time.
-      ...(typeof result.firstTokenMs === 'number' ? { firstTokenMs: result.firstTokenMs } : {}),
-      ...(result.parseError ? { parseError: result.parseError } : {}),
-      ...(didTransition ? { transition: { to: result.transition.to, reason: result.transition.reason } } : {}),
-      ...(result.breakChain ? { broke: true } : {}),
-    };
-    emit('addon.output', outputPayload);
-
-    // 12. Persist the addon_run row (P2). Best-effort — a DB hiccup
-    //     here shouldn't break the conversation.
-    try {
-      await addonRunsStore.insertRun({
-        conversationId,
-        messageId: assistantMessageId, // may be null until the engine has it
-        instance,
-        status: 'success',
-        startedAt: new Date(addonStart),
-        endedAt: new Date(),
-        durationMs: outputPayload.durationMs,
-        runData: outputPayload,
-      });
-    } catch (err) {
-      console.error('[BuilderRunner] addon_run insert failed:', err.message);
-    }
-
-    // 13. Break the chain if the plugin asked (Transition Router
-    //     with onMatch: 'break'). Remaining addons skipped this turn.
-    if (result.breakChain) break;
+    if (broke) break;
   }
+
+  // ── 5. Dispatch the OFFLINE lane after the blocking chain. ──
+  // Offline addons run AFTER the user-facing response streams (the
+  // Talker is in the blocking chain above) so the user already sees
+  // the reply. Each offline addon emits the same SSE event family as
+  // a blocking addon via `addonRunner`; only the `addon.start.lane`
+  // field distinguishes them on the client. Runs in parallel; awaited
+  // here so the request stays open until they finish — which is what
+  // lets the chat UI render their cards in the same timeline.
+  await dispatchOfflineAddons({ ctx, didTransition: anyTransition });
 
   return { assistantText, totalMs: Date.now() - totalStart };
 }

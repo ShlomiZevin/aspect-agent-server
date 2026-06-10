@@ -178,14 +178,17 @@ router.get('/:slug/conversations/:convId/messages', async (req, res) => {
 
 /**
  * GET /api/agents/:slug/conversations/:convId/memory
- *   Returns the per-conversation brain blob — two parallel sections:
+ *   Returns the per-conversation brain blob — three parallel sections:
  *     {
  *       memory:    { "<domain>": { fieldName: value, ... }, ... },
- *       thinking:  { "<domain>": { fieldName: value, ... }, ... }
+ *       thinking:  { "<domain>": { fieldName: value, ... }, ... },
+ *       summary:   { "<summarizerName>": { text, watermark, ranAt }, ... }
  *     }
  *   `memory` holds facts (Field/Vibe Extractor writes); `thinking`
- *   holds the current plan (Thinker writes). The `_general` bucket
- *   inside each section holds domain-less fields.
+ *   holds the current plan (Thinker / Field Interviewer writes);
+ *   `summary` holds rolling Summarizer checkpoints. The `_general`
+ *   bucket inside the first two sections holds domain-less fields;
+ *   `summary` is flat (keyed by free-form summarizer name, no domain).
  */
 router.get('/:slug/conversations/:convId/memory', async (req, res) => {
   try {
@@ -198,6 +201,7 @@ router.get('/:slug/conversations/:convId/memory', async (req, res) => {
     res.json({
       memory:   blob.memory,
       thinking: blob.thinking,
+      summary:  blob.summary || {},
     });
   } catch (err) {
     console.error('[builder] GET memory failed:', err);

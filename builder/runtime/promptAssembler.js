@@ -125,6 +125,34 @@ function buildThinkingBlock(domainList, valuesByDomain) {
 }
 
 /**
+ * `## Summary` block — joins every declared summarizer's current text
+ * under a `### NAME` heading. Used by `{{summary}}`. Returns empty
+ * when no summarizer has fired yet — the caller's whitespace-collapse
+ * handler keeps the prompt tidy.
+ */
+function buildSummaryBlock(summaries) {
+  if (!summaries || typeof summaries !== 'object') return '';
+  const entries = Object.entries(summaries).filter(
+    ([, slot]) => slot && typeof slot.text === 'string' && slot.text.length > 0,
+  );
+  if (entries.length === 0) return '';
+  const sections = entries.map(([name, slot]) => `### ${name}\n${slot.text}`);
+  return `## Summary\n${sections.join('\n\n')}`;
+}
+
+/**
+ * Render ONE summarizer slot for `{{summary:NAME}}`. Inline (bare text
+ * — no `### NAME` heading), since the author typically wraps it in
+ * their own copy. Missing slot → empty string.
+ */
+function resolveSummaryInline(name, summaries) {
+  if (!summaries || typeof summaries !== 'object') return '';
+  const slot = summaries[name];
+  if (!slot || typeof slot.text !== 'string') return '';
+  return slot.text;
+}
+
+/**
  * Render ONE memory or thinking domain as a `### NAME` block of JSON.
  * Used by `{{memory:NAME}}` and `{{thinking:NAME}}`. Returns an empty
  * string when the domain has no values — the caller's substitute
@@ -255,6 +283,11 @@ function assemblePrompt({
   dynamicContexts,
   fieldsForDynamic,
   onDynamicResolved,
+  // Summary slot map: `{ [name]: { text, watermark, ranAt } }` — the
+  // shape stored in `brain.summary`. Passed by the caller so the
+  // assembler doesn't reach into memory itself. Empty / missing →
+  // `{{summary}}` collapses, `{{summary:NAME}}` resolves to ''.
+  summaries,
 }) {
   let template = instance.promptTemplate || '';
   const cfg = instance.config || {};
@@ -277,12 +310,13 @@ function assemblePrompt({
   // becomes visible to the resolvers below.
   template = template.split('{{prompt}}').join(cfg.prompt || '');
 
-  // Flat whole-section tokens — persona, memory, thinking, and the
-  // extractor-only schema/current blocks.
+  // Flat whole-section tokens — persona, memory, thinking, summary,
+  // and the extractor-only schema/current blocks.
   template = substitute(template, {
     persona:        buildPersonaBlock(agentPersona),
     memory:         buildMemoryBlock(memoryDomainList   || (() => []), memoryReader),
     thinking:       buildThinkingBlock(thinkingDomainList || (() => []), thinkingReader),
+    summary:        buildSummaryBlock(summaries),
     fields_schema:  isExtractor ? buildFieldsSchemaBlock(fields) : '',
     fields_current: isExtractor ? buildFieldsCurrentBlock(fields, fieldValueOf) : '',
   });
@@ -319,6 +353,12 @@ function assemblePrompt({
     'thinking',
     name => buildSingleDomainBlock(name, thinkingReader),
     /* inline */ false,
+  );
+  template = substituteParameterised(
+    template,
+    'summary',
+    name => resolveSummaryInline(name, summaries),
+    /* inline */ true,
   );
   template = substituteParameterised(
     template,

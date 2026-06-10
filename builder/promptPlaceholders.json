@@ -8,6 +8,7 @@
     "#":  "parameters (single static value)",
     "^":  "persona (the agent persona block)",
     "*":  "dynamic context (KB-by-value-hit — pick which field's switch to drop in)",
+    "%":  "summary (whole section or single summarizer slot — written by offline-lane Summarizer addons)",
     "{{": "unified picker — every placeholder from every category in one list. Use when you don't remember which sigil opens what.",
     "/":  "alias for `{{` — same unified picker, single-keystroke trigger. Common pattern in command-bar UIs."
   },
@@ -35,6 +36,14 @@
       "render": "Full ## Thinking dump as markdown. Every thinking domain whose values exist, each as a ### sub-block.",
       "example": "{{thinking}}",
       "picker_label": "All thinking"
+    },
+    {
+      "token": "{{summary}}",
+      "category": "section",
+      "trigger": "%",
+      "render": "Full ## Summary dump as markdown. Every declared summarizer with a current text, rendered as a ### NAME sub-block. Empty if no summarizer has fired yet.",
+      "example": "{{summary}}",
+      "picker_label": "All summaries"
     }
   ],
   "domains": [
@@ -95,6 +104,14 @@
       "render": "Joins every section under the matched case as `### name` blocks separated by blank lines. Convenience form for 'inject everything authored under the current value'.",
       "example": "{{dynamic:mood:*}}",
       "picker_group": "Dynamic context"
+    },
+    {
+      "token": "{{summary:NAME}}",
+      "category": "value",
+      "trigger": "%",
+      "render": "The current text of one summarizer slot, inline (bare — no `### NAME` heading; wrap in your own copy if you want one). Empty string when the named summarizer hasn't fired yet or no longer exists.",
+      "example": "## Where things stand\n{{summary:main}}",
+      "picker_group": "Summaries"
     }
   ],
   "extractor_only": [

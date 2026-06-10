@@ -106,18 +106,48 @@ export type AddonLane = 'main' | 'background' | 'offline';
 
 /**
  * How much past conversation to inject into the step's prompt.
- *  - `none`   — no history.
- *  - `last_n` — last N messages (n is set in the same object).
- *  - `full`   — entire conversation transcript.
  *
- * Future addition (when a Summarizer plugin ships): `summary` mode
- * that reads from the conversation summary field in memory.
+ *  - `none`               — no history.
+ *  - `last_n`             — last N messages.
+ *  - `full`               — every message (legacy alias for `all`).
+ *  - `all`                — every message in the conversation.
+ *  - `since_transition`   — messages strictly after the last crew
+ *                           transition (falls back to `all` if no
+ *                           transition has happened yet).
+ *  - `since_summarizer`   — messages strictly after the named
+ *                           summarizer's last run watermark (falls
+ *                           back to `all` if the summarizer has
+ *                           never fired or doesn't exist).
+ *
+ * Resolution lives in `historyService.js`. New modes apply to EVERY
+ * addon, not just summarizers — a regular Thinker can read
+ * `since_summarizer: main` to see just the messages a checkpoint
+ * hasn't covered yet.
  */
-export interface HistoryMode {
-  mode: 'none' | 'last_n' | 'full';
-  /** Only meaningful when `mode === 'last_n'`. */
-  n?: number;
-}
+export type HistoryMode =
+  | { mode: 'none' }
+  | { mode: 'all' }
+  | { mode: 'last_n'; n: number }
+  | { mode: 'full' }                                          // legacy alias for `all`
+  | { mode: 'since_transition' }
+  | { mode: 'since_summarizer'; summarizerName: string };
+
+/**
+ * Why and when an OFFLINE-lane addon fires. Required for any addon
+ * on the `offline` lane; ignored on `main` / `background` lanes.
+ *
+ *  - `every_n_messages` — fire after every N user-message-plus-reply
+ *                         pairs (default 8). Counter lives in
+ *                         `context_data` per (conversation, instance).
+ *  - `on_transition`    — fire whenever a crew transition is emitted
+ *                         in the same turn.
+ *
+ * Designed as a discriminated union so future kinds (`when_field_equals`,
+ * `time_elapsed`, …) can be added without breaking existing data.
+ */
+export type OfflineTrigger =
+  | { kind: 'every_n_messages'; n: number }
+  | { kind: 'on_transition' };
 
 /**
  * Universal reading knobs every addon has, regardless of plugin.
@@ -126,12 +156,16 @@ export interface HistoryMode {
  * `thinkingReads`) into the `promptTemplate` itself: the user controls
  * placement of `{{memory}}` / `{{memory:domain}}` / `{{persona}}` /
  * `{{thinking}}` / `{{field:X}}` / `{{param:X}}` / `{{dynamic:X}}`
- * inline. The only universal knob left is `history`, which is runtime
- * conversation data passed to the LLM as a separate parameter — not
- * template text — so it can't be folded into promptTemplate.
+ * inline. `history` controls which raw messages reach the LLM as a
+ * separate parameter; `trigger` controls when an offline-lane addon
+ * fires at all.
  */
 export interface AddonContext {
   history: HistoryMode;
+  /** Required when this instance sits on the `offline` lane. The
+   *  runtime ignores it on `main` / `background` lanes — those run
+   *  once per turn unconditionally. */
+  trigger?: OfflineTrigger;
 }
 
 /**
@@ -194,6 +228,8 @@ export const KNOWN_PROMPT_PLACEHOLDERS = {
   memory: '{{memory}}',
   /** Full `## Thinking` dump. */
   thinking: '{{thinking}}',
+  /** Full `## Summary` dump — every declared summarizer with text. */
+  summary: '{{summary}}',
   /** Schema block for an extractor's fields. Extractor plugins only. */
   fields_schema: '{{fields_schema}}',
   /** Currently-collected values for an extractor's fields. Extractor plugins only. */
@@ -307,6 +343,66 @@ export interface ThinkerConfig {
    * write to different domains (e.g. `'strategy'`, `'tone'`).
    */
   domain: string;
+}
+
+/**
+ * Summarizer — distil chat history into a compact checkpoint.
+ *
+ * Lives on the `offline` lane (`AddonInstance.lane === 'offline'`),
+ * fires per its `context.trigger`, writes to `brain.summary[name]`.
+ * Other addons consume the synthesis via `{{summary:NAME}}` and can
+ * read "messages since this checkpoint" via the `since_summarizer`
+ * history mode.
+ *
+ * `name` is both the token name (`{{summary:NAME}}`) and the
+ * `since_summarizer.summarizerName` reference key. Free-form,
+ * unique per agent — the validator enforces uniqueness so a stale
+ * reference can't collide with a freshly-created summarizer.
+ */
+export interface SummarizerConfig {
+  prompt: string;
+  model: ModelRef;
+  /** Token name used in `{{summary:NAME}}` AND in
+   *  `since_summarizer: NAME` history references. Unique per agent. */
+  name: string;
+}
+
+// ─── Brain blob (runtime — written by addons, read by assembler) ───
+
+/**
+ * Per-summarizer entry in `brain.summary`. Replaced wholesale on
+ * each run (rolling = replace), so reading the slot always gives the
+ * current synthesis — no log of past checkpoints in v1.
+ */
+export interface SummaryEntry {
+  /** The synthesis text the LLM produced. */
+  text: string;
+  /** Highest message index this run included in its history slice.
+   *  Used by the `since_summarizer` history mode to filter messages
+   *  strictly after the checkpoint. */
+  watermark: number;
+  /** Epoch ms when the run completed. Surfaced in the brain viewer. */
+  ranAt: number;
+}
+
+/**
+ * Per-conversation brain blob — what the engine reads and the
+ * assembler renders into `{{memory}}` / `{{thinking}}` /
+ * `{{summary}}` tokens. Storage lives in `context_data` under the
+ * `builder_memory` namespace, scoped to the conversation.
+ *
+ * Mirror of the JS-side shape in `runtime/builderMemory.js`. Kept
+ * here so client code consuming the SSE `addon.brain` event has a
+ * canonical type to bind to.
+ */
+export interface Brain {
+  /** Facts the brain remembers — extractors write here. */
+  memory:   { [domain: string]: Record<string, unknown> };
+  /** Current reasoning — Thinker (and Field Interviewer's free-form
+   *  keys) write here. */
+  thinking: { [domain: string]: Record<string, unknown> };
+  /** Summarizer checkpoints, one slot per `SummarizerConfig.name`. */
+  summary:  { [name: string]: SummaryEntry };
 }
 
 // ─── Dynamic Context (KB-by-value-hit) ────────────────────────────
