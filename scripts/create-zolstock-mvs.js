@@ -121,77 +121,19 @@ function mvs(schema) {
         { name: 'idx_mv_sales_daily_seller_seller', col: 'seller_id' },
       ],
     },
-
-    // ── mv_inventory_latest — current stock per store × item ─────────────────
-    // Inventory rows (record_type='מלאי') are stock SNAPSHOTS — one set of
-    // store×item balances per snapshot date. "Current inventory" = the LATEST
-    // snapshot only; older snapshots must be excluded or every store/item is
-    // counted many times. This MV pins the latest snapshot once at build time so
-    // the agent never has to scan ~2.8M inventory rows across all snapshots.
-    //
-    // Serves: "stock in branch X", "branches with least / most inventory",
-    // "items below minimum stock". There is no price on inventory lines, so this
-    // is quantities only (no inventory value).
-    ...inventoryMvs(schema),
   ];
 }
 
-// Inventory MVs are factored out so they can be (re)built on their own — see
-// createInventoryMVs() and scripts/add-zolstock-inventory-mvs.js. Rebuilding
-// only these on the live schema is cheap (latest snapshot ~ tens/hundreds of K
-// rows) and avoids re-aggregating the heavy ~35M-row sales MVs.
-const INVENTORY_MV_NAMES = ['mv_inventory_latest'];
-
-function inventoryMvs(schema) {
-  return [
-    {
-      name: 'mv_inventory_latest',
-      sql: `
-        WITH latest AS (
-          SELECT MAX(transaction_date) AS d
-          FROM ${schema}.facts
-          WHERE record_type = 'מלאי'
-        )
-        SELECT
-          f.store_number,
-          f.item_number,
-          MAX(f.transaction_date)         AS snapshot_date,
-          SUM(f.inventory_qty)            AS inventory_qty,
-          SUM(f.inventory_qty_packages)   AS inventory_qty_packages,
-          MAX(f.min_inventory)            AS min_inventory
-        FROM ${schema}.facts f
-        JOIN latest ON f.transaction_date = latest.d
-        WHERE f.record_type = 'מלאי'
-          AND f.store_number IS NOT NULL AND f.store_number <> ''
-        GROUP BY f.store_number, f.item_number
-      `,
-      indexes: [
-        { name: 'idx_mv_inventory_latest_store', col: 'store_number' },
-        { name: 'idx_mv_inventory_latest_item',  col: 'item_number' },
-      ],
-    },
-  ];
-}
-
-async function createMVs(targetSchema, emitLog, options = {}) {
+async function createMVs(targetSchema, emitLog) {
   const schema = targetSchema || SCHEMA;
   const log = emitLog
     ? (msg) => emitLog('creating_views', msg)
     : (msg) => console.log(msg);
 
-  // `only` — restrict the build to a subset of MVs by name. Used to (re)build
-  // just the inventory MV on the live schema without touching the heavy sales
-  // MVs (a full DROP+CREATE of those risks a Cloud-Run kill during the swap).
-  let list = mvs(schema);
-  if (options.only && options.only.length > 0) {
-    const wanted = new Set(options.only);
-    list = list.filter(m => wanted.has(m.name));
-  }
-
   await createMVsForSchema({
     pool: getPool(),
     schema,
-    mvs: list,
+    mvs: mvs(schema),
     statementTimeoutMs: 3600000, // 60 min per MV — biggest aggregates over ~35M sales rows
     log,
   });
@@ -199,14 +141,8 @@ async function createMVs(targetSchema, emitLog, options = {}) {
   if (!targetSchema) await endPool();
 }
 
-// Build ONLY the inventory MV(s). Safe to run against the live `zolstock` schema
-// (does not rebuild the sales MVs). See scripts/add-zolstock-inventory-mvs.js.
-async function createInventoryMVs(targetSchema, emitLog) {
-  return createMVs(targetSchema, emitLog, { only: INVENTORY_MV_NAMES });
-}
-
 if (require.main === module) {
   createMVs().catch(e => { console.error(e.message); process.exit(1); });
 }
 
-module.exports = { createMVs, createInventoryMVs, INVENTORY_MV_NAMES };
+module.exports = { createMVs };

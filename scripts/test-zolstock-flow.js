@@ -45,12 +45,7 @@ const QUESTIONS = [
   'How many units were sold this year in total?',
   'מה ההכנסות והרווח ברבעון הראשון?',
   'Revenue by month for store number 2 this year',
-  // ── inventory (mv_inventory_latest — current stock snapshot) ──
-  'What is the current inventory in store number 2?',
-  'כמה מלאי יש כרגע בסניף 2?',
-  'Which branches have the least inventory right now?',
-  'אילו סניפים עם הכי הרבה מלאי כרגע?',
-  // ── harder / non-MV (stress: customers, agent, discounts) ──
+  // ── harder / non-MV (stress: customers, inventory, agent, discounts) ──
   'How many unique customers bought from us this year?',
   'How many items are below their minimum stock level?',
   'Total wholesale (agent) sales to branches this year',

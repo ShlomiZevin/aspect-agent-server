@@ -747,7 +747,6 @@ ORDER BY month
 - \`zolstock.mv_sales_daily_item\` — daily × item_number (use for top-products by period)
 - \`zolstock.mv_sales_daily_store\` — daily × store_number (use for top-stores by period)
 - \`zolstock.mv_sales_daily_seller\` — daily × seller_id/seller (use for top-sellers by period)
-- \`zolstock.mv_inventory_latest\` — CURRENT stock per store_number × item_number (latest snapshot only). Columns: \`inventory_qty\`, \`inventory_qty_packages\`, \`min_inventory\`, \`snapshot_date\`. Use for ALL inventory questions (stock in a branch, branches with most/least stock, items below minimum). Quantities only — there is NO inventory value/price.
 
 ### RULE 1 — facts is a WIDE table mixing 3 record kinds — ALWAYS filter by record_type
 - \`record_type = 'מכירות'\` (sales) — retail sale lines. Use for ALL sales/revenue/profit questions.
@@ -772,7 +771,7 @@ For top-N / revenue-by-period / by-store / by-item / by-seller, query the matchi
 ### RULE 5 — expensive metrics: use the MV or narrow the scope (avoid timeouts)
 - **Discounts**: \`discount_amount\` is on raw facts only (no MV). \`SUM(discount_amount)\` over a full year times out — restrict to a NARROW window (default to the current month/quarter) with \`record_type='מכירות'\` and the transaction_date filter.
 - **Unique customers**: there is NO customer dimension. \`COUNT(DISTINCT customer_number)\` over a full year of facts times out. Only attempt it for a NARROW window (default to the current month) and add \`AND customer_number IS NOT NULL AND customer_number <> ''\`.
-- **Inventory (current stock)**: ALWAYS answer from \`mv_inventory_latest\` (already pinned to the latest snapshot, store×item). NEVER scan raw \`record_type='מלאי'\` facts for "stock now" / "branches with most-least inventory" / "items below minimum" — that scans ~2.8M snapshot rows across all dates and times out. Quantities only (no value/price on inventory).
+- **Inventory below minimum**: \`record_type='מלאי'\` snapshots have no useful date filter for "current stock" — restrict to the LATEST snapshot date (see example) so it doesn't scan all snapshots.
 
 ### Reference examples
 
@@ -831,30 +830,15 @@ WHERE record_type = 'מכירות'
   AND transaction_date >= date_trunc('month', CURRENT_DATE)
 \`\`\`
 
-**Current stock in a specific branch (total units + distinct items):**
+**Inventory: items below minimum stock (latest snapshot only — record_type='מלאי'):**
 \`\`\`sql
-SELECT store_number,
-       SUM(inventory_qty)  AS total_units,
-       COUNT(*)            AS distinct_items
-FROM zolstock.mv_inventory_latest
-WHERE store_number = '123'
-GROUP BY store_number
-\`\`\`
-
-**Branches with the least (or most) inventory:**
-\`\`\`sql
-SELECT store_number, SUM(inventory_qty) AS total_units
-FROM zolstock.mv_inventory_latest
-GROUP BY store_number
-ORDER BY total_units ASC   -- DESC for the most-stocked branches
-LIMIT 10
-\`\`\`
-
-**Inventory: items below minimum stock (current snapshot):**
-\`\`\`sql
+WITH latest AS (
+  SELECT MAX(transaction_date) AS d FROM zolstock.facts WHERE record_type = 'מלאי'
+)
 SELECT store_number, item_number, inventory_qty, min_inventory
-FROM zolstock.mv_inventory_latest
-WHERE inventory_qty < min_inventory
+FROM zolstock.facts, latest
+WHERE record_type = 'מלאי' AND transaction_date = latest.d
+  AND inventory_qty < min_inventory
 ORDER BY (min_inventory - inventory_qty) DESC
 LIMIT 50
 \`\`\`
