@@ -63,6 +63,7 @@ There are NO dimension tables yet (products / customers / stores names). Group b
 - \`mv_sales_daily_item\` — daily × item_number (top products by period)
 - \`mv_sales_daily_store\` — daily × store_number (top stores by period)
 - \`mv_sales_daily_seller\` — daily × seller (top sellers by period)
+- \`mv_inventory_latest\` — current stock per store × item (latest snapshot): stock in a branch, branches with most/least inventory, items below minimum
 
 ## HOW TO USE DATA
 
@@ -94,7 +95,13 @@ User: "אילו סניפים מובילים במכירות?"
 → Call fetch_zolstock_data("top stores by total sales revenue this year")
 
 User: "מה שולי הרווח השנה?"
-→ Call fetch_zolstock_data("overall profit margin percentage this year")`,
+→ Call fetch_zolstock_data("overall profit margin percentage this year")
+
+User: "כמה מלאי יש בסניף 123?"
+→ Call fetch_zolstock_data("current inventory units in branch 123")
+
+User: "אילו סניפים עם הכי פחות מלאי?"
+→ Call fetch_zolstock_data("branches with the least inventory right now")`,
 
       model: process.env.ZOLSTOCK_CREW_MODEL || 'gpt-4o',
       maxTokens: 4096,
