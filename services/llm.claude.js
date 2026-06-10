@@ -61,28 +61,38 @@ class ClaudeService {
     try {
       const anthropicFileIds = knowledgeBase?.anthropicFileIds || [];
 
-      // Build system prompt: instructions + context + JSON instruction
+      // Build system prompt: instructions + JSON instruction. The
+      // current user message used to be appended here as `## Context`
+      // — that's been replaced with a real user turn at the tail of
+      // the messages array below, so the model treats it like every
+      // other turn.
       let promptText = systemPrompt;
-      if (message) {
-        promptText += '\n\n## Context\n' + message;
-      }
       if (jsonOutput) {
         promptText += '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code blocks, no explanation - just the raw JSON object.';
       }
 
-      // Build messages: conversation history as proper role-based messages
-      // Same pattern as streaming: system prompt + history messages
+      // Build messages: history + the current user message + a
+      // trailing code-level prod that tells the model what to return.
+      // The prod is what callers' prompts implicitly rely on for
+      // output format ("respond in JSON"); keeping it as the last
+      // message preserves backward compat.
       let messages = [];
       if (historyMessages && historyMessages.length > 0) {
         messages = historyMessages.map(m => ({ role: m.role, content: m.content }));
-        // If last message is assistant, add a user prompt to trigger response
-        if (messages[messages.length - 1].role === 'assistant') {
-          messages.push({ role: 'user', content: 'Analyze the conversation and respond.' });
-        }
-        console.log(`📜 Claude OneShot: ${messages.length} history messages`);
-      } else {
-        messages.push({ role: 'user', content: 'Analyze and respond.' });
       }
+      if (message) {
+        messages.push({ role: 'user', content: message });
+      }
+      // Code-level "what to return" prod. For jsonOutput, always
+      // append (reinforces the format the model has to emit). For
+      // plain text, only append when there's nothing for the model
+      // to respond to — same condition as before.
+      if (jsonOutput) {
+        messages.push({ role: 'user', content: 'Respond in valid JSON only.' });
+      } else if (messages.length === 0 || messages[messages.length - 1].role === 'assistant') {
+        messages.push({ role: 'user', content: 'Analyze the conversation and respond.' });
+      }
+      console.log(`📜 Claude OneShot: ${messages.length} messages (history=${historyMessages?.length ?? 0} + current=${message ? 1 : 0} + prod=${messages.length - (historyMessages?.length ?? 0) - (message ? 1 : 0)})`);
 
       // Inject KB document blocks into the first user message
       if (anthropicFileIds.length > 0) {

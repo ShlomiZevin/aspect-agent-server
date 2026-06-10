@@ -927,30 +927,35 @@ class OpenAIService {
     const { model = 'gpt-4o-mini', maxTokens = 8192, jsonOutput = false, knowledgeBase, historyMessages } = options;
 
     try {
-      // Build instructions: prompt + context
+      // Build instructions. The current user message used to be
+      // appended here as `## Context` — that's been replaced with a
+      // real user turn at the tail of the input array below, so the
+      // model treats it like every other turn.
       let fullInstructions = instructions;
-      if (message) {
-        fullInstructions += '\n\n## Context\n' + message;
-      }
       if (jsonOutput && !fullInstructions.toLowerCase().includes('json')) {
         fullInstructions += '\n\nRespond in JSON.';
       }
 
-      // Build input: conversation history as proper messages
+      // Build input: history + current user message + trailing
+      // code-level prod (the "what to return" instruction). The prod
+      // also satisfies OpenAI's json_object requirement that "json"
+      // appear somewhere in input.
       const input = [];
       if (historyMessages && historyMessages.length > 0) {
         for (const m of historyMessages) {
           const contentType = m.role === 'assistant' ? 'output_text' : 'input_text';
           input.push({ role: m.role, content: [{ type: contentType, text: m.content }] });
         }
-        console.log(`📜 OpenAI OneShot: ${historyMessages.length} history messages`);
       }
-      // Always add a final user message — OpenAI requires "json" in input for json_object format
+      if (message) {
+        input.push({ role: 'user', content: [{ type: 'input_text', text: message }] });
+      }
       if (jsonOutput) {
-        input.push({ role: 'user', content: [{ type: 'input_text', text: 'Analyze the conversation and respond in JSON.' }] });
-      } else if (input.length === 0 || historyMessages?.[historyMessages.length - 1]?.role === 'assistant') {
+        input.push({ role: 'user', content: [{ type: 'input_text', text: 'Respond in valid JSON only.' }] });
+      } else if (input.length === 0 || input[input.length - 1]?.role === 'assistant') {
         input.push({ role: 'user', content: [{ type: 'input_text', text: 'Analyze the conversation and respond.' }] });
       }
+      console.log(`📜 OpenAI OneShot: ${input.length} input items (history=${historyMessages?.length ?? 0} + current=${message ? 1 : 0} + prod=${input.length - (historyMessages?.length ?? 0) - (message ? 1 : 0)})`);
 
       const requestParams = {
         model,

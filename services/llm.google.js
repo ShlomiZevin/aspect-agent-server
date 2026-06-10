@@ -216,11 +216,11 @@ class GoogleService {
     try {
       const ai = await getClient();
 
-      // Build system instruction: prompt + context
+      // Build system instruction. The current user message used to
+      // be appended here as `## Context` — that's been replaced with
+      // a real user turn at the tail of the contents array below, so
+      // the model treats it like every other turn.
       let finalSystemPrompt = systemPrompt || '';
-      if (message) {
-        finalSystemPrompt += '\n\n## Context\n' + message;
-      }
       if (jsonOutput) {
         finalSystemPrompt += '\n\nIMPORTANT: Respond with valid JSON only. No markdown, no code blocks, no explanation - just the raw JSON object.';
       }
@@ -245,18 +245,23 @@ class GoogleService {
         console.log(`📚 Google OneShot: file_search enabled for stores: ${corpusIds.join(', ')}`);
       }
 
-      // Build contents: conversation history as proper role-based messages
+      // Build contents: history + current user message + trailing
+      // code-level prod (the "what to return" instruction).
       const contents = [];
       if (historyMessages && historyMessages.length > 0) {
         for (const m of historyMessages) {
           contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] });
         }
-        console.log(`📜 Google OneShot: ${historyMessages.length} history messages`);
       }
-      // If no history or last message is model, add a user prompt
-      if (contents.length === 0 || contents[contents.length - 1].role === 'model') {
+      if (message) {
+        contents.push({ role: 'user', parts: [{ text: message }] });
+      }
+      if (jsonOutput) {
+        contents.push({ role: 'user', parts: [{ text: 'Respond in valid JSON only.' }] });
+      } else if (contents.length === 0 || contents[contents.length - 1].role === 'model') {
         contents.push({ role: 'user', parts: [{ text: 'Analyze the conversation and respond.' }] });
       }
+      console.log(`📜 Google OneShot: ${contents.length} contents items (history=${historyMessages?.length ?? 0} + current=${message ? 1 : 0} + prod=${contents.length - (historyMessages?.length ?? 0) - (message ? 1 : 0)})`);
 
       const response = await ai.models.generateContent({
         model,
