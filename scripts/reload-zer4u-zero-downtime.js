@@ -234,24 +234,21 @@ function formatBytes(bytes) {
 
 /**
  * Returns the exact last data date from zer4u as 'YYYY-MM-DD'.
- * Primary: MAX(sale_date) on the indexed DATE column (idx_sales_sale_date makes
- * this an instant index scan) — gives the precise day data is current through.
+ * Primary: MAX(sale_date) on the indexed DATE column — idx_sales_sale_date makes
+ * this an instant index scan (rightmost leaf), so no statement timeout is needed.
+ * Gives the precise day the data is current through.
  * Fallback: month-only from mv_sales_by_month ('YYYY-MM') if the base table is
  * unavailable (e.g. mid-reload). Consumers must handle both formats.
  * Note: sale_date is a DATE column, so there is no hour component to report.
+ * Uses only db.query() so it works with both the raw zer4u pg Pool (data-info
+ * endpoint) and the main db wrapper (post-reload cache update).
  */
 async function getZer4uDataInfo(db) {
   try {
-    const client = await db.getClient();
-    try {
-      await client.query(`SET statement_timeout = 5000`);
-      const result = await client.query(
-        `SELECT TO_CHAR(MAX(sale_date), 'YYYY-MM-DD') AS last_date FROM zer4u.sales`
-      );
-      if (result.rows[0]?.last_date) return result.rows[0].last_date;
-    } finally {
-      client.release();
-    }
+    const result = await db.query(
+      `SELECT TO_CHAR(MAX(sale_date), 'YYYY-MM-DD') AS last_date FROM zer4u.sales`
+    );
+    if (result.rows[0]?.last_date) return result.rows[0].last_date;
   } catch {
     // Base table unavailable (e.g. first ever load / mid-reload) — fall through.
   }
