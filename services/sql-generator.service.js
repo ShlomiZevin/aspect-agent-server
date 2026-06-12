@@ -701,7 +701,10 @@ ORDER BY avg_order_value DESC
     - \`cost\` is NUMERIC — use directly: \`SUM(s.cost)\`
     - \`quantity\` is NUMERIC — use directly: \`SUM(s.quantity)\`
     - \`item_code\` is TEXT — join with: \`ON s.item_code = i.item_code\`
-10. **Date Intervals**: Use standard PostgreSQL date arithmetic:
+10. **VAT (מע"מ)** — report figures EXCLUDING VAT (ללא מע"מ) by default; that is the business standard here:
+    - \`revenue\` (= מכירה ללא מע"מ) and \`cost\` (= עלות ללא מע"מ) are already EXCLUDING VAT — always prefer these for sales/cost/profit.
+    - The sales table has NO ready-made VAT-inclusive sale column — do NOT invent one or multiply by a hardcoded rate. \`"אחוז מעם לתעודה"\` holds the per-document VAT %, only if a VAT-inclusive figure is ever explicitly requested.
+11. **Date Intervals**: Use standard PostgreSQL date arithmetic:
     - Last 6 months: \`WHERE s.sale_date >= CURRENT_DATE - INTERVAL '6 months'\`
     - Specific month: \`WHERE TO_CHAR(s.sale_date, 'YYYY-MM') = '2025-03'\`
     - Group by month: \`TO_CHAR(s.sale_date, 'YYYY-MM') AS month\`
