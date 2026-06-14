@@ -197,6 +197,13 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
       dynamicContexts:  agentDynamicContexts,
       fieldsForDynamic: fieldPool,
       summaries:        memory?.summary || {},
+      // Snippet pass: agent-level reusable prompt content + the live
+      // brain blob so a snippet's optional filter can be evaluated
+      // against current memory. See `promptAssembler.resolveSnippetInline`.
+      snippets:         Array.isArray(runnable.agent.body?.snippets)
+        ? runnable.agent.body.snippets
+        : [],
+      brain:            memory,
       onDynamicResolved: ({ fieldName, section, matched, text }) => {
         emit('dynamic.resolved', {
           instanceId: instance.instanceId,

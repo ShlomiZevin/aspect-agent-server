@@ -513,6 +513,52 @@ export interface DynamicContextDef {
   fallback?: string;
 }
 
+// ─── Snippets (agent-level reusable prompt content) ───────────────
+
+/**
+ * One named, reusable, optionally-gated chunk of prompt content.
+ *
+ * Inserted into any addon's prompt via `{{snippet:NAME}}`. Renders
+ * `content` when:
+ *   - no `filter` is set, OR
+ *   - `filter.conditions` is empty, OR
+ *   - `filter.mode === 'include'` and ALL conditions match, OR
+ *   - `filter.mode === 'exclude'` and AT LEAST ONE condition fails.
+ *
+ * Otherwise resolves to empty string; the assembler's whitespace
+ * collapse strips surrounding blank lines the same way it does for
+ * every other token that resolves to empty.
+ *
+ * Snippet content is mention-aware — embedded `{{field:X}}` /
+ * `{{param:Y}}` / `{{memory}}` / `{{dynamic:Z}}` / etc. tokens
+ * resolve on the regular substitution passes because the snippet
+ * pass runs FIRST in `promptAssembler` (the snippet's content is
+ * inlined into the template before sections / params / dynamic
+ * tokens are resolved). Nested `{{snippet:OTHER}}` references
+ * inside `content` are NOT recursively expanded in v1 — they show
+ * up as literal text; the validator surfaces a warning.
+ *
+ * See `docs/guides/BUILDER_V2_SNIPPETS.md` for the full design.
+ */
+export interface SnippetDef {
+  id: ID;
+  /** Canonical key — used in `{{snippet:NAME}}` tokens. Unique
+   *  per agent (validator enforces). Lowercase + underscores by
+   *  convention; the editor lints toward that shape. */
+  name: string;
+  /** Optional human-readable label shown in the snippets list and
+   *  picker description. Free-form. */
+  displayName?: string;
+  /** The prompt content. Mention-aware. */
+  content: string;
+  /** Optional gate. Same shape as the per-addon Run Filter so the
+   *  author learns ONE condition vocabulary across the system. Omit
+   *  for "always render" (the snippet then acts as a reusable
+   *  multi-line text block — that's intentional, useful even
+   *  without gating). */
+  filter?: AddonFilter;
+}
+
 // ─── Transition Router plugin ─────────────────────────────────────
 
 /**
@@ -651,7 +697,7 @@ export type AgentBody = Pick<
   AgentDoc,
   'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
   | 'fields' | 'domains' | 'parameters' | 'dynamicContexts'
-  | 'cortex'
+  | 'cortex' | 'snippets'
 >;
 
 export interface AgentVersion {
@@ -727,6 +773,15 @@ export interface AgentDoc {
    * Optional for back-compat; readers should treat absence as `[]`.
    */
   cortex?: AddonInstance[];
+  /**
+   * Agent-level reusable prompt content. Each snippet is a named,
+   * optionally-gated chunk that any addon's prompt can inline via
+   * `{{snippet:NAME}}`. See {@link SnippetDef} and
+   * `docs/guides/BUILDER_V2_SNIPPETS.md`.
+   *
+   * Optional for back-compat; readers should treat absence as `[]`.
+   */
+  snippets?: SnippetDef[];
   /**
    * The crews that belong to this agent. NOT part of the agent
    * version body — crews are their own versioned entities and live

@@ -166,6 +166,41 @@ function buildSingleDomainBlock(domainName, valuesByDomain) {
 }
 
 /**
+ * Resolve `{{snippet:NAME}}` against the agent's `snippets[]` list.
+ *
+ * Resolution rules (mirrors the per-addon Run Filter — same shape):
+ *   - Unknown name                              → ''
+ *   - No filter / empty conditions              → snippet.content
+ *   - mode='include' AND every condition matches → snippet.content
+ *   - mode='include' AND any condition fails    → ''
+ *   - mode='exclude' AND every condition matches → ''
+ *   - mode='exclude' AND any condition fails    → snippet.content
+ *
+ * `brain` is the live memory blob (per-conversation) the engine
+ * already passes around — the same shape `evaluateConditions`
+ * expects. When `brain` is missing, every condition fails and
+ * gated snippets resolve to empty (acceptable: it's a defensive
+ * default; callers that care always pass it).
+ */
+function resolveSnippetInline(name, snippets, brain) {
+  if (!Array.isArray(snippets) || snippets.length === 0) return '';
+  const snip = snippets.find(s => s && s.name === name);
+  if (!snip) return '';
+  const filter = snip.filter;
+  if (filter && Array.isArray(filter.conditions) && filter.conditions.length > 0) {
+    // Lazy require avoids a top-of-file cycle (the matcher needs no
+    // assembler internals, but loading both at module init can churn
+    // require order across test harnesses).
+    const { evaluateConditions } = require('./conditionMatcher');
+    const result = evaluateConditions(brain || {}, filter.conditions);
+    const mode = filter.mode === 'exclude' ? 'exclude' : 'include';
+    const shouldRender = mode === 'include' ? result.ok : !result.ok;
+    if (!shouldRender) return '';
+  }
+  return typeof snip.content === 'string' ? snip.content : '';
+}
+
+/**
  * Resolve one field's current memory value for `{{field:NAME}}`. The
  * value is rendered inline (bare), so strings come through as-is and
  * non-strings get JSON-stringified. Missing values resolve to an
@@ -288,6 +323,17 @@ function assemblePrompt({
   // assembler doesn't reach into memory itself. Empty / missing →
   // `{{summary}}` collapses, `{{summary:NAME}}` resolves to ''.
   summaries,
+  // Agent-level reusable snippets — `SnippetDef[]`. Inlined FIRST
+  // (before sections / params / dynamic) so embedded tokens inside
+  // snippet content resolve on the regular passes. Missing / empty
+  // → every `{{snippet:NAME}}` resolves to ''.
+  snippets,
+  // Brain blob — needed by the snippet substitution pass so a
+  // snippet's optional filter can be evaluated against current
+  // memory. Same blob `addonRunner` already passes to the filter
+  // gate at the addon level. Missing / undefined → snippet filters
+  // evaluate as "no fields populated" (conditions effectively fail).
+  brain,
 }) {
   let template = instance.promptTemplate || '';
   const cfg = instance.config || {};
@@ -309,6 +355,24 @@ function assemblePrompt({
   // template — that way any token introduced by `config.prompt`
   // becomes visible to the resolvers below.
   template = template.split('{{prompt}}').join(cfg.prompt || '');
+
+  // Snippet pass — runs BEFORE every other parameterised resolver
+  // so a snippet's `content` is inlined into the template and any
+  // tokens inside it (`{{field:X}}`, `{{param:Y}}`, `{{memory}}`,
+  // `{{dynamic:Z}}`, …) become visible to the subsequent passes.
+  // Resolution rules:
+  //   - Unknown name        → ''
+  //   - Filter present and  → ''  (gate said skip)
+  //     condition fails
+  //   - Otherwise           → snippet.content (verbatim)
+  // Nested `{{snippet:OTHER}}` inside the content is NOT recursively
+  // expanded — v1 leaves it as literal text (validator warns).
+  template = substituteParameterised(
+    template,
+    'snippet',
+    (name) => resolveSnippetInline(name, snippets, brain),
+    /* inline */ true,
+  );
 
   // Flat whole-section tokens — persona, memory, thinking, summary,
   // and the extractor-only schema/current blocks.
