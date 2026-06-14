@@ -70,6 +70,13 @@ When a user asks a business question that requires data:
 - Provide actionable recommendations when relevant
 - Use visualizations descriptions when helpful (tables, trends, comparisons)
 
+## VAT (מע"מ)
+
+- All monetary figures in the data (sales, revenue, cost, profit) are **EXCLUDING VAT** (לפני מע"מ / ללא מע"מ). This is the default and the business standard here.
+- **ALWAYS state explicitly whether the figures include or exclude VAT.** Since the data is before VAT, attach a clear note to every monetary answer — e.g. "(ללא מע״מ)" when answering in Hebrew, or "(excluding VAT)" when answering in English.
+- If the user asks for amounts *including* VAT (כולל מע"מ), explain that the data is reported before VAT (ללא מע"מ) and that you cannot add VAT unless they confirm the rate.
+- Never present a money figure without making the VAT basis clear.
+
 ## EXAMPLES
 
 User: "What were our total sales last month?"

@@ -81,6 +81,13 @@ When a user asks a business question that requires data:
 - Provide actionable recommendations when relevant
 - Use visualizations descriptions when helpful (tables, trends, comparisons)
 
+## VAT (מע"מ)
+
+- All monetary figures in the data (sales, revenue, cost, profit) are **EXCLUDING VAT** (לפני מע"מ / ללא מע"מ). This is the default and the business standard here.
+- **ALWAYS state explicitly whether the figures include or exclude VAT.** Since the data is before VAT, attach a clear note to every monetary answer — e.g. "(ללא מע״מ)" when answering in Hebrew, or "(excluding VAT)" when answering in English.
+- If the user asks for amounts *including* VAT (כולל מע"מ), explain that the data is reported before VAT (ללא מע"מ) and that you cannot add VAT unless they confirm the rate.
+- Never present a money figure without making the VAT basis clear.
+
 ## EXAMPLES
 
 User: "מה היו המכירות הכוללות החודש?"
@@ -201,21 +208,22 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
    */
   async getAdditionalContext(params) {
     // Derive "data through" from the SAME live source as the dashboard banner —
-    // the latest month in mv_sales_by_month — so the agent and the banner always
-    // agree. The cached agents.data_updated_at can drift (it failed to update on
-    // some reloads), which made the agent report a stale month vs the banner.
+    // the exact MAX(sale_date) in zer4u.sales — so the agent and the banner always
+    // agree. The customer needs to know precisely which day the data is current
+    // through, not just the month. The cached agents.data_updated_at can drift (it
+    // failed to update on some reloads), which made the agent report a stale value.
     try {
       const { getPool } = require('../../../services/db.zer4u');
       const r = await getPool().query(
-        `SELECT MAX(year_month) AS m FROM zer4u.mv_sales_by_month`
+        `SELECT TO_CHAR(MAX(sale_date), 'YYYY-MM-DD') AS d FROM zer4u.sales`
       );
-      const m = r.rows[0]?.m; // e.g. "2026-04"
-      if (m && /^\d{4}-\d{2}$/.test(m)) {
-        const [y, mo] = m.split('-').map(Number);
-        // Month granularity ("April 2026") — the data is monthly, so a specific
-        // day would be misleading.
-        const formatted = new Date(Date.UTC(y, mo - 1, 1))
-          .toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+      const d = r.rows[0]?.d; // e.g. "2026-04-30"
+      if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) {
+        const [y, mo, day] = d.split('-').map(Number);
+        // Exact day granularity ("30 April 2026"). sale_date is a DATE column, so
+        // there is no hour component to report.
+        const formatted = new Date(Date.UTC(y, mo - 1, day))
+          .toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'UTC' });
         return { dataLastUpdated: formatted };
       }
     } catch {
