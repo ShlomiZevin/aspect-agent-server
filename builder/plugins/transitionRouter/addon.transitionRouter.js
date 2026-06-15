@@ -27,6 +27,9 @@ async function run(ctx) {
   const target     = cfg.target || null;
   const onMatch    = cfg.onMatch === 'break' ? 'break' : 'continue';
   const reason     = cfg.reason || '';
+  // Default: fire the target crew's chain in the same turn.
+  // Explicit `false` opts out (target runs only on the next user turn).
+  const fireImmediately = cfg.fireImmediately !== false;
 
   // No conditions or no target = misconfigured. Don't fire; surface
   // a "no-match" output so the user sees the no-op in the timeline.
@@ -56,13 +59,16 @@ async function run(ctx) {
   }
 
   // Matched. Engine reads these fields after run() returns:
-  //   transition → write `conversations.metadata.currentCrewId`
-  //   breakChain → stop iterating the chain for this turn
+  //   transition → write `conversations.metadata.currentCrewId`,
+  //                and (when `fireImmediately`) cascade into the target
+  //                crew's chain THIS turn — capped at 4 hops per turn.
+  //   breakChain → stop iterating THIS crew's chain for this turn
   const payload = {
     matched:    true,
     to:         target,
     reason:     reason || evaluations.map(e => e.why).join(' & '),
     onMatch,
+    fireImmediately,
     evaluations,
   };
   return {
@@ -71,7 +77,7 @@ async function run(ctx) {
     memoryWrites: [],
     durationMs:   Date.now() - start,
     tokens:       { input: 0, output: 0, total: 0 },
-    transition:   { to: target, reason: payload.reason },
+    transition:   { to: target, reason: payload.reason, fireImmediately },
     breakChain:   onMatch === 'break',
   };
 }

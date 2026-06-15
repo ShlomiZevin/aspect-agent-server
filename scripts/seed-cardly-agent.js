@@ -56,13 +56,16 @@ const F = {
   customer_name:        { id: id.field(), name: 'customer_name',        type: 'string',  source: 'explicit', domain: 'customer', howToExtract: 'Capture the customer first name when they state it ("I\'m Sara").' },
   is_existing_customer: { id: id.field(), name: 'is_existing_customer', type: 'boolean', source: 'inferred', domain: 'customer', howToExtract: 'True if the customer mentions already banking with us; false if they mention another bank as their primary; otherwise leave blank.' },
   existing_card_loyalty:{ id: id.field(), name: 'existing_card_loyalty',type: 'string',  source: 'inferred', domain: 'customer', howToExtract: 'The competing card or bank the customer mentions using today (e.g. "Chase", "Amex Platinum").' },
-  customer_income_band: { id: id.field(), name: 'customer_income_band', type: 'enum',    source: 'inferred', domain: 'customer', enumValues: ['under_50k', '50k_100k', '100k_200k', 'over_200k'], howToExtract: 'Reasoned from occupation, lifestyle markers, large purchases, premium products mentioned.' },
-  customer_credit_tier: { id: id.field(), name: 'customer_credit_tier', type: 'enum',    source: 'inferred', domain: 'customer', enumValues: ['starter', 'good', 'premium'], howToExtract: 'Reasoned from income band, existing card loyalty, mentions of debt or missed payments.' },
-  customer_priority:    { id: id.field(), name: 'customer_priority',    type: 'enum',    source: 'inferred', domain: 'customer', enumValues: ['travel', 'cashback', 'low_fees', 'build_credit'], howToExtract: 'Reasoned from themes across recent messages — travel mentions, fee sensitivity, score concerns, lifestyle.' },
-  mood:                 { id: id.field(), name: 'mood',                 type: 'enum',    source: 'inferred', domain: 'signal',   enumValues: ['curious', 'skeptical', 'hurried', 'stressed', 'enthusiastic', 'hostile'], howToExtract: 'Read between the lines — word choice, pacing, hedging, urgency. Trust patterns over single utterances.' },
-  objection_type:       { id: id.field(), name: 'objection_type',       type: 'enum',    source: 'inferred', domain: 'signal',   enumValues: ['fees', 'interest', 'credit_check', 'loyalty_to_other_bank', 'not_interested', 'privacy'], howToExtract: 'The specific concern the customer is raising. Leave blank if no objection has been voiced this turn.' },
-  recommended_card:     { id: id.field(), name: 'recommended_card',     type: 'enum',    source: 'inferred', domain: 'pitch',    enumValues: ['bronze', 'silver', 'platinum', 'business'], howToExtract: 'Card best matched to the inferred credit tier and priority. See the Card Matcher prompt for the decision tree.' },
-  pitch_stage:          { id: id.field(), name: 'pitch_stage',          type: 'enum',    source: 'inferred', domain: 'pitch',    enumValues: ['rapport', 'discovery', 'objection_handling', 'closing', 'declined'], howToExtract: 'Where the conversation sits in the sales arc.' },
+  // Enum-typed fields below have no `enumType` wired — the enum bible
+  // page in the UI is the new home for value vocabularies. Wire each
+  // field to an authored EnumTypeDef after seeding.
+  customer_income_band: { id: id.field(), name: 'customer_income_band', type: 'enum',    source: 'inferred', domain: 'customer', howToExtract: 'Reasoned from occupation, lifestyle markers, large purchases, premium products mentioned.' },
+  customer_credit_tier: { id: id.field(), name: 'customer_credit_tier', type: 'enum',    source: 'inferred', domain: 'customer', howToExtract: 'Reasoned from income band, existing card loyalty, mentions of debt or missed payments.' },
+  customer_priority:    { id: id.field(), name: 'customer_priority',    type: 'enum',    source: 'inferred', domain: 'customer', howToExtract: 'Reasoned from themes across recent messages — travel mentions, fee sensitivity, score concerns, lifestyle.' },
+  mood:                 { id: id.field(), name: 'mood',                 type: 'enum',    source: 'inferred', domain: 'signal',   howToExtract: 'Read between the lines — word choice, pacing, hedging, urgency. Trust patterns over single utterances.' },
+  objection_type:       { id: id.field(), name: 'objection_type',       type: 'enum',    source: 'inferred', domain: 'signal',   howToExtract: 'The specific concern the customer is raising. Leave blank if no objection has been voiced this turn.' },
+  recommended_card:     { id: id.field(), name: 'recommended_card',     type: 'enum',    source: 'inferred', domain: 'pitch',    howToExtract: 'Card best matched to the inferred credit tier and priority. See the Card Matcher prompt for the decision tree.' },
+  pitch_stage:          { id: id.field(), name: 'pitch_stage',          type: 'enum',    source: 'inferred', domain: 'pitch',    howToExtract: 'Where the conversation sits in the sales arc.' },
 };
 
 const AGENT_FIELDS = Object.values(F);
@@ -430,7 +433,11 @@ const AGENT_BODY = {
   fields:          AGENT_FIELDS,
   domains:         ['customer', 'signal', 'pitch'],
   parameters:      PARAMS,
-  dynamicContexts: DYNAMIC_CONTEXTS,
+  // TODO: enum bible — was DYNAMIC_CONTEXTS. The DC concept has been
+  // replaced by agent-level `enums` (see EnumTypeDef). Re-author in the
+  // UI's enum bible page after seeding, or extend this script to build
+  // EnumTypeDef[] from the old DC data.
+  enums:           [],
   cortex:          AGENT_CORTEX,
 };
 
@@ -482,7 +489,7 @@ async function main() {
   console.log(`   crew       ${CREW_ID}  ("Sales Floor")`);
   console.log(`   parameters ${PARAMS.length}`);
   console.log(`   fields     ${AGENT_FIELDS.length}`);
-  console.log(`   DCs        ${DYNAMIC_CONTEXTS.length}`);
+  console.log(`   DCs        0 (enum bible not seeded — author in UI)`);
   console.log(`   agent cortex addons  ${AGENT_CORTEX.length}`);
   console.log(`   crew addons          ${CREW_ADDONS.length}`);
   console.log('');

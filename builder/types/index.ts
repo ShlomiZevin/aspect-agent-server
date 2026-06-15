@@ -57,10 +57,17 @@ export interface FieldDef {
   name: string;                 // canonical key, snake_case
   type: FieldType;
   source: FieldSource;
-  /** Free-text guidance on how to extract this field. */
+  /** Free-text guidance on how to extract this field. Field-specific
+   *  copy (e.g. "find the customer's PRIMARY motive"); shared
+   *  per-value knowledge belongs on the enum's sections, not here. */
   howToExtract: string;
-  /** Only for `type: 'enum'`. */
-  enumValues?: string[];
+  /** Only for `type: 'enum'` — references an `EnumTypeDef.id` on
+   *  `AgentDoc.enums[]`. Multiple fields can point at the same enum
+   *  type; the per-value knowledge (values list, umbrella, sections)
+   *  lives on the enum, not duplicated per field. Empty/undefined
+   *  while type === 'enum' means "type is enum but no concrete enum
+   *  picked yet" — the field is authoring-only until wired. */
+  enumType?: ID;
   /**
    * Optional memory grouping. Blank/undefined = "(no domain)" — the
    * field is still captured to a `general` bucket at runtime, just
@@ -155,10 +162,10 @@ export type OfflineTrigger =
  * Phase B collapsed the per-section toggles (`persona`, `memoryReads`,
  * `thinkingReads`) into the `promptTemplate` itself: the user controls
  * placement of `{{memory}}` / `{{memory:domain}}` / `{{persona}}` /
- * `{{thinking}}` / `{{field:X}}` / `{{param:X}}` / `{{dynamic:X}}`
- * inline. `history` controls which raw messages reach the LLM as a
- * separate parameter; `trigger` controls when an offline-lane addon
- * fires at all.
+ * `{{thinking}}` / `{{field:X}}` / `{{param:X}}` / `{{enum:X[:S]}}` /
+ * `{{dc:X[:S|*]}}` inline. `history` controls which raw messages
+ * reach the LLM as a separate parameter; `trigger` controls when an
+ * offline-lane addon fires at all.
  */
 export interface AddonContext {
   history: HistoryMode;
@@ -269,9 +276,10 @@ export const KNOWN_PROMPT_PLACEHOLDERS = {
    *  for single-field extractors (Field Reasoner). Empty for non-extractor
    *  plugins or when the extractor has no fields. */
   this_field: '{{this_field}}',
-  /** Comma-separated `enumValues` of the (first) extracted field. Source
-   *  of truth is the FieldDef on the schema; the prompt pulls it via this
-   *  token so editing the values can't drift from a prompt copy. */
+  /** Comma-separated list of the (first) extracted field's enum values.
+   *  Resolved from the field's `enumType` → that EnumTypeDef's
+   *  `values[].value`. Source of truth lives on the enum so the prompt
+   *  can't drift from the bible. */
   enum_values: '{{enum_values}}',
 } as const;
 
@@ -436,81 +444,79 @@ export interface Brain {
   summary:  { [name: string]: SummaryEntry };
 }
 
-// ─── Dynamic Context (KB-by-value-hit) ────────────────────────────
+// ─── Enums (agent-level type bible) ───────────────────────────────
 
 /**
- * One case in a DynamicContextDef — the field-value → text mapping.
- * The text can be many paragraphs of "how to handle this case" prose
- * (it's a deterministic alternative to similarity-search KB, where
- * KB goes by similarity and dynamic context goes by exact value hit).
+ * Enum types live at the agent level (`AgentDoc.enums`) as the bible
+ * of value vocabularies the agent reasons over. A FieldDef declares
+ * `type: 'enum'` + `enumType: <EnumTypeDef.id>` to bind to one — many
+ * fields can share the same enum (e.g. `primary_motive` and
+ * `secondary_motive` both bind to the `motive` enum). Per-value
+ * knowledge (umbrella prompt + free-form sections like
+ * `how_to_identify`, `definition`, `examples`) lives on the enum,
+ * not duplicated across fields.
  *
- * `value` is stringly-typed because enum/string/int/boolean all
- * compare cleanly as strings at runtime — the assembler does a
- * `String(memoryValue) === String(case.value)` match.
+ * Two token families read from this model:
+ *
+ *  - `{{enum:NAME[:SECTION]}}` (aggregate): renders headed blocks for
+ *    every value of the enum — each value's umbrella when SECTION is
+ *    absent, otherwise that value's SECTION body. Values with empty
+ *    content for the requested slot are omitted. Used for extractor /
+ *    reasoner prompts that need every-value identification guidance.
+ *
+ *  - `{{dc:FIELD[:SECTION|:*]}}` (live-value lookup): given a field of
+ *    type=enum, resolves the field's current memory value to a value
+ *    record on its enum and renders that value's umbrella (default),
+ *    a named section body, or every authored section under it (`:*`).
+ *    Resolves to empty when the field has no value or the value isn't
+ *    in the enum.
+ *
+ * No fallback concept on the enum — missing matches resolve to empty.
+ * Authors wrap with their own fallback prose in the prompt if needed.
  */
-export interface DynamicContextCase {
-  /** The field value this case fires on (e.g. an enum option name). */
-  value: string;
-  /** Umbrella prompt for this case — what `{{dynamic:FIELD}}` resolves to
-   *  when the live value matches. Optional: a case may declare only
-   *  section texts and leave the umbrella empty, in which case
-   *  `{{dynamic:FIELD}}` collapses to '' for that value. */
-  text?: string;
-  /** Per-case section bodies, keyed by the section name declared on
-   *  the parent DC. The address space (which sections exist) lives on
-   *  `DynamicContextDef.sections` — this map only holds the BODIES
-   *  authored for this specific case. Missing keys resolve to empty
-   *  at runtime. */
-  sectionTexts?: Record<string, string>;
-}
-
-/**
- * Declaration of one section name on a Dynamic Context. The list lives
- * on `DynamicContextDef.sections` and applies to every case — adding
- * or removing a section is a field-shape change, not a per-case edit.
- * Each case fills in the text under `case.sectionTexts[name]`.
- *
- * The `name` is the token key (`{{dynamic:FIELD:NAME}}`) and stays
- * snake-case for token-safety; the editor auto-sanitises typed labels
- * to that shape but leaves the result editable.
- *
- * Kept as an object (vs. a bare string) so we can extend later
- * (description, default body, ordering hints) without another migration.
- */
-export interface DynamicContextSection {
+export interface EnumSectionDecl {
+  /** The token key (`{{enum:FOO:NAME}}` / `{{dc:bar:NAME}}`). The
+   *  editor lints toward snake_case so tokens stay safe, but the
+   *  string is otherwise free-form. */
   name: string;
 }
 
-/**
- * Dynamic Context — a switch on a single field's current value.
- *
- *  - Lives at agent level (`agent.dynamicContexts`), not inside any
- *    crew or addon. Authored once, consumed everywhere via the
- *    `{{dynamic:<fieldname>}}` token.
- *  - Resolution is O(1) at prompt-assembly time — no LLM call, no
- *    chain step, no addon to add. Pure deterministic lookup against
- *    the live memory value of the referenced field.
- *  - V1 is restricted to enum fields: each enum value gets a case.
- *    The editor surfaces enumValues automatically. Other field types
- *    can be added later if a real need shows up.
- */
-export interface DynamicContextDef {
+export interface EnumValueDef {
+  /** Stable id so renames of `value` cascade through `sectionTexts`
+   *  keys in a single atomic update. */
   id: ID;
-  /** The field this dynamic context switches on. References
-   *  `agent.fields[].id`. Renames cascade via the schema panel. */
-  fieldId: ID;
-  /** Section NAMES declared on this DC — the address space for
-   *  `{{dynamic:FIELD:SECTION}}` tokens. Shared across every case:
-   *  adding a section makes it referenceable under every value, even
-   *  if some cases haven't authored a body for it yet. Each case fills
-   *  in its body via `case.sectionTexts[name]`. */
-  sections?: DynamicContextSection[];
-  /** Per-value cases. For enum fields the editor pre-seeds one case
-   *  per `field.enumValues` entry; extra cases are dropped on save. */
-  cases: DynamicContextCase[];
-  /** Text rendered when the field is unset or no case matches. Empty
-   *  string when omitted — the token resolves to "" silently. */
-  fallback?: string;
+  /** The canonical string compared against memory at runtime — what
+   *  the field's value is expected to equal (case-sensitive,
+   *  `String(memoryValue) === String(value)`). */
+  value: string;
+  /** Per-value umbrella prompt. What `{{enum:NAME}}` (no section)
+   *  emits for this value, and what `{{dc:field}}` (no section)
+   *  emits when the field's current value matches. Empty = omit. */
+  umbrellaText?: string;
+  /** Per-value section bodies, keyed by the section name declared on
+   *  the parent `EnumTypeDef.sections`. Missing keys resolve to empty
+   *  at runtime; the editor surfaces every declared section, the
+   *  author fills in what's relevant per value. Bodies can be many
+   *  paragraphs of comprehensive prose — the assembler renders them
+   *  as a single `### value` block under a wrapping `## name` header
+   *  (see assembler for the exact template). */
+  sectionTexts?: Record<string, string>;
+}
+
+export interface EnumTypeDef {
+  id: ID;
+  /** Canonical key used in `{{enum:NAME}}` tokens and in
+   *  `FieldDef.enumType` references. Unique per agent. */
+  name: string;
+  /** Section NAMES declared on this enum — the address space the
+   *  `{{enum:NAME:SECTION}}` and `{{dc:field:SECTION}}` tokens
+   *  resolve against. Shared across every value so the aggregate
+   *  token can aggregate: adding a section makes it referenceable
+   *  under every value even if some haven't authored a body. */
+  sections?: EnumSectionDecl[];
+  /** The declared values. Order is authored — the editor preserves
+   *  it; the assembler renders aggregate blocks in this order. */
+  values: EnumValueDef[];
 }
 
 // ─── Snippets (agent-level reusable prompt content) ───────────────
@@ -530,13 +536,13 @@ export interface DynamicContextDef {
  * every other token that resolves to empty.
  *
  * Snippet content is mention-aware — embedded `{{field:X}}` /
- * `{{param:Y}}` / `{{memory}}` / `{{dynamic:Z}}` / etc. tokens
- * resolve on the regular substitution passes because the snippet
- * pass runs FIRST in `promptAssembler` (the snippet's content is
- * inlined into the template before sections / params / dynamic
- * tokens are resolved). Nested `{{snippet:OTHER}}` references
- * inside `content` are NOT recursively expanded in v1 — they show
- * up as literal text; the validator surfaces a warning.
+ * `{{param:Y}}` / `{{memory}}` / `{{enum:Z[:S]}}` / `{{dc:Z[:S|*]}}`
+ * / etc. tokens resolve on the regular substitution passes because
+ * the snippet pass runs FIRST in `promptAssembler` (the snippet's
+ * content is inlined into the template before sections / params /
+ * enum / dc tokens are resolved). Nested `{{snippet:OTHER}}`
+ * references inside `content` are NOT recursively expanded in v1 —
+ * they show up as literal text; the validator surfaces a warning.
  *
  * See `docs/guides/BUILDER_V2_SNIPPETS.md` for the full design.
  */
@@ -613,14 +619,35 @@ export interface TransitionRouterConfig {
   /** Optional human-readable note shown in the AddonRunCard. */
   reason?: string;
   /**
-   * What to do with the rest of THIS turn's chain after a match:
-   * - 'continue' (default) — remaining addons run normally. Talker
-   *   (if downstream) speaks once more from the current crew. Next
-   *   user turn lands on `target`.
-   * - 'break' — remaining addons are skipped. No talker response
-   *   this turn. Next user turn lands on `target`.
+   * What to do with the rest of THIS crew's chain after a match:
+   *  - `'continue'` (default) — remaining addons in the current
+   *    crew's chain still run. Combined with `fireImmediately`, the
+   *    target crew's chain starts AFTER the current crew finishes.
+   *  - `'break'` — remaining addons in the current crew's chain
+   *    are skipped. Combined with `fireImmediately`, the target
+   *    crew's chain starts RIGHT AWAY in the same turn.
+   *
+   * `onMatch` only governs the CURRENT crew's chain; whether the
+   * target crew runs this turn is `fireImmediately`'s job.
    */
   onMatch: 'continue' | 'break';
+  /**
+   * Whether the target crew's chain runs in the SAME turn after the
+   * transition fires.
+   *
+   *  - `true` (default) — after the current crew's chain settles
+   *    (per `onMatch`), the engine resolves the target crew and runs
+   *    its main-lane chain right away. Two talkers in one turn are
+   *    allowed (the last assistant text wins on the message row).
+   *    Cascading transitions are capped at 4 hops per turn so a
+   *    misconfigured graph can't loop forever.
+   *  - `false` — the transition is recorded for the NEXT user turn.
+   *    Memory + brain still carry over; the target crew sees the
+   *    same conversation state on its next chance to run.
+   *
+   * Optional for back-compat; absence reads as `true`.
+   */
+  fireImmediately?: boolean;
 }
 
 // ─── The three-level documents ─────────────────────────────────────
@@ -696,7 +723,7 @@ export interface CrewDoc {
 export type AgentBody = Pick<
   AgentDoc,
   'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
-  | 'fields' | 'domains' | 'parameters' | 'dynamicContexts'
+  | 'fields' | 'domains' | 'parameters' | 'enums'
   | 'cortex' | 'snippets'
 >;
 
@@ -748,15 +775,18 @@ export interface AgentDoc {
    */
   parameters?: ParameterDef[];
   /**
-   * Agent-wide Dynamic Context definitions — `{{dynamic:<fieldname>}}`
-   * lookups that swap text based on a memory field's current value.
-   * Authored at the agent level (planned in advance, not in a crew
-   * chain) and consumed automatically by the assembler — no addon
-   * required. See {@link DynamicContextDef}.
+   * Agent-wide enum type bible — value vocabularies + per-value
+   * knowledge (umbrella prompt, free-form sections like
+   * `how_to_identify`). FieldDefs with `type: 'enum'` reference one
+   * via `enumType: <EnumTypeDef.id>`. Consumed by the assembler
+   * automatically — no addon required. Two token families:
+   * `{{enum:NAME[:SECTION]}}` (every value, aggregate) and
+   * `{{dc:FIELD[:SECTION|:*]}}` (current matched value of a specific
+   * field). See {@link EnumTypeDef}.
    *
    * Optional for back-compat; readers should treat absence as `[]`.
    */
-  dynamicContexts?: DynamicContextDef[];
+  enums?: EnumTypeDef[];
   /**
    * Agent-level Cortex — a chain of addons that runs BEFORE the crew's
    * cortex on every turn, regardless of which crew is current. Same

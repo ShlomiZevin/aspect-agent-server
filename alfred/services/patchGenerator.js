@@ -145,7 +145,7 @@ const SYSTEM_PROMPT = [
   '  the runtime reads them. Pay attention to which fields are optional',
   '  vs required, the discriminated unions on `OutputType` and addon',
   '  configs by `pluginId`, and the comments — they describe invariants',
-  '  the types alone can\'t express (e.g. "enum requires enumValues").',
+  '  the types alone can\'t express (e.g. "enum-typed fields reference an EnumTypeDef on agent.enums via enumType").',
   '- When you add a new entity (FieldDef, AddonInstance), generate a',
   '  stable id of the form `<kind>_<random8>` (e.g. `field_a1b2c3d4`,',
   '  `addon_e5f6g7h8`). Lowercase hex; only [a-z0-9_].',

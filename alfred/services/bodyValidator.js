@@ -67,8 +67,11 @@ function checkFieldDef(field, path, errors) {
   if (typeof field.howToExtract !== 'string')
     pushErr(errors, `${path}.howToExtract`, 'required string (may be empty)');
   if (field.type === 'enum') {
-    if (!Array.isArray(field.enumValues) || field.enumValues.length === 0)
-      pushErr(errors, `${path}.enumValues`, 'required non-empty array for enum fields');
+    // `enumType` points at an EnumTypeDef.id on `agent.enums`. Empty is
+    // allowed at validation time (field can be authored before the
+    // enum exists), but the runtime will treat the field as unwired.
+    if (field.enumType !== undefined && typeof field.enumType !== 'string')
+      pushErr(errors, `${path}.enumType`, 'must be a string id when present');
   }
 }
 

@@ -99,6 +99,12 @@ async function runOnce({
   overrideCrewId = null,
   overrideAgentBody = null,
   overrideCrewBody  = null,
+  // Map of crewId → working-copy crew body. Used by the cascade loop so
+  // a Transition Router hop into a non-current crew sees that crew's
+  // UNSAVED edits, not the saved DB body. The current crew is still
+  // covered by `overrideCrewBody` (backward compat) — we merge it in
+  // below so the lookup is uniform.
+  overrideCrewBodies = null,
   emit,
 }) {
   const totalStart = Date.now();
@@ -130,6 +136,15 @@ async function runOnce({
     }
   }
 
+  // Build a uniform crewId → body map. `overrideCrewBody` (the legacy
+  // single-crew override) gets folded in under the resolved current
+  // crew id so the cascade lookup below covers it without special
+  // cases. Map wins over individual when both exist (caller intent).
+  const crewBodyOverrides = { ...(overrideCrewBodies || {}) };
+  if (overrideCrewBody && currentCrewId && !crewBodyOverrides[currentCrewId]) {
+    crewBodyOverrides[currentCrewId] = overrideCrewBody;
+  }
+
   // ── 1. Resolve runnable: which crew + addons for this version. ──
   const runnable = await resolveRunnable({
     agentSlug,
@@ -137,12 +152,12 @@ async function runOnce({
     mode: version === 'active' ? 'active' : 'viewing',
     overrideCrewId: currentCrewId,
     overrideAgentBody,
-    overrideCrewBody,
+    overrideCrewBody: (currentCrewId && crewBodyOverrides[currentCrewId]) || overrideCrewBody,
   });
 
   const agentPersona     = runnable.agent.body?.persona || '';
-  const agentParameters      = Array.isArray(runnable.agent.body?.parameters)      ? runnable.agent.body.parameters      : [];
-  const agentDynamicContexts = Array.isArray(runnable.agent.body?.dynamicContexts) ? runnable.agent.body.dynamicContexts : [];
+  const agentParameters  = Array.isArray(runnable.agent.body?.parameters) ? runnable.agent.body.parameters : [];
+  const agentEnums       = Array.isArray(runnable.agent.body?.enums)      ? runnable.agent.body.enums      : [];
   const agentNameForLogs = runnable.agent.body?.name || agentSlug;
   const crewLabel        = runnable.crew.body?.name || 'crew';
   // Agent-level cortex runs BEFORE the crew's cortex on every turn.
@@ -200,7 +215,7 @@ async function runOnce({
     agentNameForLogs,
     agentPersona,
     agentParameters,
-    agentDynamicContexts,
+    agentEnums,
     memory,
     memoryValuesByDomain,
     memoryDomainList,
@@ -223,17 +238,107 @@ async function runOnce({
   let assistantText = '';
   let anyTransition = false;
 
+  /** Max transition cascades we'll follow in one turn. A guard against
+   *  loops, not a soft limit — authors shouldn't be relying on chained
+   *  transitions to do anything more sophisticated than "A → B → C". */
+  const MAX_TRANSITION_HOPS = 4;
+
+  /**
+   * Run one crew's main-lane chain. Returns:
+   *   - assistantText (last talker's reply, or '')
+   *   - anyTransition (true if any Transition Router fired)
+   *   - cascadeTo (next crew id when fireImmediately + matched; else null)
+   *
+   * The cascade target is the LAST transition that fired with
+   * fireImmediately set during this chain — same convention the
+   * conversation metadata uses (last writer wins).
+   */
+  async function runChain(blockingForChain) {
+    let chainText = '';
+    let chainTransition = false;
+    let cascadeTo = null;
+    for (const instance of blockingForChain) {
+      const { result, didTransition, broke } = await runAddon({ ctx, instance });
+      if (didTransition) {
+        chainTransition = true;
+        const fireImmediately = result?.transition?.fireImmediately !== false;
+        if (fireImmediately && result?.transition?.to) {
+          cascadeTo = result.transition.to;
+        }
+      }
+      if (result && typeof result.assistantText === 'string' && result.assistantText) {
+        chainText = result.assistantText;
+      }
+      if (broke) break;
+    }
+    return { chainText, chainTransition, cascadeTo };
+  }
+
   // ── 4. Run the blocking chain. addonRunner is the SINGLE source of ──
   // truth for "how one addon executes" — same code path the offline
   // dispatcher uses below. The orchestration here (sequential,
   // honouring `breakChain`) is what makes this the blocking lane.
-  for (const instance of blockingAddons) {
-    const { result, didTransition, broke } = await runAddon({ ctx, instance });
-    if (didTransition) anyTransition = true;
-    if (result && typeof result.assistantText === 'string' && result.assistantText) {
-      assistantText = result.assistantText;
+  //
+  // First pass: agent.cortex (filtered) → current crew's main-lane
+  // chain. Then, while the last chain finished with a fireImmediately
+  // cascade target, swap to that crew's main-lane chain and run it.
+  // Agent cortex does NOT re-run on cascades — it already produced its
+  // outputs in the first pass, and its purpose is "pre-crew" work.
+  {
+    const first = await runChain(blockingAddons);
+    if (first.chainText) assistantText = first.chainText;
+    if (first.chainTransition) anyTransition = true;
+
+    let cascadeTo = first.cascadeTo;
+    let hops = 0;
+    while (cascadeTo && hops < MAX_TRANSITION_HOPS) {
+      hops += 1;
+      // Resolve the new crew's runnable and reseat the shared ctx so
+      // addonRunner sees the right crew body (fields, name, etc.).
+      const nextRunnable = await resolveRunnable({
+        agentSlug,
+        ownerUserId,
+        mode: version === 'active' ? 'active' : 'viewing',
+        overrideCrewId: cascadeTo,
+        overrideAgentBody,
+        // Pick this crew's working body from the map so cascades respect
+        // unsaved edits to the target. `null` falls back to the DB body.
+        overrideCrewBody: crewBodyOverrides[cascadeTo] || null,
+      });
+      ctx.runnable  = nextRunnable;
+      ctx.crewLabel = nextRunnable.crew.body?.name || ctx.crewLabel;
+      const nextBlocking = (Array.isArray(nextRunnable.crew.body?.addons) ? nextRunnable.crew.body.addons : [])
+        .filter(a => a.lane === 'main' && a.enabled !== false);
+
+      const next = await runChain(nextBlocking);
+      // CONCATENATE cascade-chain talker text instead of clobbering it.
+      // Each chain may have its own Talker; both stream tokens into the
+      // same chat bubble live (one row per turn), so the persisted /
+      // history-reload text MUST mirror what the user already saw — both
+      // talkers' contributions, in order, separated by a blank line.
+      // Previously `assistantText = next.chainText` dropped the prior
+      // crew's reply silently, so the persisted message + history reload
+      // only carried the last talker's text.
+      if (next.chainText) {
+        assistantText = assistantText
+          ? `${assistantText}\n\n${next.chainText}`
+          : next.chainText;
+      }
+      if (next.chainTransition) anyTransition = true;
+      cascadeTo = next.cascadeTo;
     }
-    if (broke) break;
+
+    if (cascadeTo) {
+      // Hit the cap — emit a warning so authors see the cascade was
+      // truncated rather than silently stopping mid-loop.
+      try {
+        emit('warning', {
+          code:    'transition_cascade_limit',
+          message: `Stopped transition cascade at ${MAX_TRANSITION_HOPS} hops in one turn. ` +
+                   `The last hop wanted to fire crew "${cascadeTo}" but the guard kicked in.`,
+        });
+      } catch { /* emit is best-effort */ }
+    }
   }
 
   // ── 5. Persist the assistant text and announce the turn's reply. ──

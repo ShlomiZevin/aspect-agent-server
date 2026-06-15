@@ -7,7 +7,7 @@
     "!":  "thinking (whole section or single domain)",
     "#":  "parameters (single static value)",
     "^":  "persona (the agent persona block)",
-    "*":  "dynamic context (KB-by-value-hit — pick which field's switch to drop in)",
+    "*":  "enum bible — aggregate-by-section across every value of an enum, OR live-value lookup for an enum-typed field",
     "%":  "summary (whole section or single summarizer slot — written by offline-lane Summarizer addons)",
     "+":  "snippet (agent-level reusable prompt content, optionally gated by an AddonFilter)",
     "{{": "unified picker — every placeholder from every category in one list. Use when you don't remember which sigil opens what.",
@@ -83,28 +83,52 @@
       "picker_group": "Parameters"
     },
     {
-      "token": "{{dynamic:NAME}}",
+      "token": "{{enum:NAME}}",
       "category": "value",
       "trigger": "*",
-      "render": "Switches on the current memory value of the named field and renders the matching case's umbrella prompt from the agent's Dynamic Context for that field. Falls back to the DC's `fallback` (or empty) when no case matches. NAME is the field name. Renders as a block (multi-paragraph content is expected).",
-      "example": "{{dynamic:tier}}",
-      "picker_group": "Dynamic context"
+      "render": "Aggregate dump of every value's umbrella prompt for the named enum. Wrapped in a `## NAME` header, with each value rendered as a `### value` sub-block. Values with empty umbrella text are omitted. Use this when an extractor / reasoner prompt needs the per-value briefing for every possible value of an enum (e.g. `Possible motives: {{enum:motive}}`).",
+      "example": "{{enum:motive}}",
+      "picker_group": "Enum"
     },
     {
-      "token": "{{dynamic:NAME:SECTION}}",
+      "token": "{{enum:NAME:SECTION}}",
       "category": "value",
       "trigger": "*",
-      "render": "Renders one named SECTION under the matched case of the agent's Dynamic Context for FIELD. Empty when no case matches or the matched case has no such section. Sections share no fallback — the DC's `fallback` is umbrella-only.",
-      "example": "{{dynamic:mood:how_to_address}}",
-      "picker_group": "Dynamic context"
+      "render": "Aggregate dump of one declared SECTION across every value of the named enum. Wrapped in a `## NAME — SECTION` header, with each value rendered as a `### value` sub-block. Values with no body for that section are omitted. Section bodies can be many paragraphs — the renderer preserves whitespace.",
+      "example": "{{enum:motive:how_to_identify}}",
+      "picker_group": "Enum"
     },
     {
-      "token": "{{dynamic:NAME:*}}",
+      "token": "{{enum:NAME:values}}",
       "category": "value",
       "trigger": "*",
-      "render": "Joins every section under the matched case as `### name` blocks separated by blank lines. Convenience form for 'inject everything authored under the current value'.",
-      "example": "{{dynamic:mood:*}}",
-      "picker_group": "Dynamic context"
+      "render": "INLINE comma-separated list of the named enum's value names. Use in prose like `Allowed values: {{enum:motive:values}}`. The reserved keyword `values` is forbidden as a section name on the editor side so the two never collide. Empty when the enum has no declared values; literal token when the enum doesn't exist (typo surfaces loudly).",
+      "example": "Allowed values: {{enum:motive:values}}",
+      "picker_group": "Enum"
+    },
+    {
+      "token": "{{dc:FIELD}}",
+      "category": "value",
+      "trigger": "*",
+      "render": "Looks up FIELD (must be an enum-typed field), resolves its current memory value to a value record on its enum, and renders that value's umbrella prompt bare (no wrapping headers — author adds their own preamble). Resolves to empty when the field has no value or the value isn't declared on the enum.",
+      "example": "{{dc:primary_motive}}",
+      "picker_group": "Field DC"
+    },
+    {
+      "token": "{{dc:FIELD:SECTION}}",
+      "category": "value",
+      "trigger": "*",
+      "render": "Same lookup as `{{dc:FIELD}}` but renders the matched value's SECTION body bare. Empty when the field is unset, the value isn't on the enum, or that value has no body for the named section.",
+      "example": "{{dc:primary_motive:how_to_identify}}",
+      "picker_group": "Field DC"
+    },
+    {
+      "token": "{{dc:FIELD:*}}",
+      "category": "value",
+      "trigger": "*",
+      "render": "Joins every declared section under the matched value as `### section_name` blocks separated by blank lines. Convenience form for 'give me everything authored under the current value of this field'. Sections with empty bodies are omitted.",
+      "example": "{{dc:primary_motive:*}}",
+      "picker_group": "Field DC"
     },
     {
       "token": "{{summary:NAME}}",
@@ -145,7 +169,7 @@
     {
       "token": "{{enum_values}}",
       "category": "extractor",
-      "render": "Comma-separated list of the (first) field's `enumValues`. The structured enum list on the FieldDef is the single source of truth; the prompt pulls it via this token so editing the values can't drift from the prompt copy. Renders empty when the field is non-enum or has no values declared.",
+      "render": "Comma-separated list of values of the (first) extracted field's enum type. Resolved from `FieldDef.enumType` → that EnumTypeDef's `values[].value`. Single source of truth lives on the enum bible. Renders empty when the field is non-enum, has no `enumType` set, or the referenced enum has no values declared.",
       "example": "Allowed values: {{enum_values}}"
     }
   ],
@@ -171,19 +195,24 @@
       "snippet": "You are a customer support agent for {{param:bankName}}."
     },
     {
-      "name": "Dynamic guidance by value",
-      "use_when": "Behaviour should swap based on a deterministically extracted field value — e.g. switching on intent, mood, plan tier. Authored as an agent-level Dynamic Context, consumed via a single token.",
-      "snippet": "Use this guidance for the current case:\n\n{{dynamic:intent}}"
+      "name": "Live-value guidance from the enum bible",
+      "use_when": "Behaviour should swap based on a deterministically extracted enum field — e.g. switching on intent, mood, plan tier. The field's current value is looked up against its declared enum and the matched value's umbrella is dropped in.",
+      "snippet": "Use this guidance for the current case:\n\n{{dc:intent}}"
     },
     {
-      "name": "Section-targeted dynamic guidance",
-      "use_when": "A single case (e.g. `mood == sad`) needs multiple discrete chunks of guidance for different consumers — opening line, what to avoid, how to address. Sections under the case let each prompt cherry-pick just the slice it needs.",
-      "snippet": "Address the user with this opener:\n{{dynamic:mood:opening_line}}\n\nAvoid these failure modes:\n{{dynamic:mood:what_to_avoid}}"
+      "name": "Per-value identification briefing for an extractor",
+      "use_when": "An extractor / reasoner needs every value's how-to-identify guidance up-front so the LLM can pick the right one. The enum aggregate token emits one block per declared value with a stable header structure.",
+      "snippet": "Possible motives and how to spot each:\n\n{{enum:motive:how_to_identify}}"
     },
     {
-      "name": "All sections under the current case",
-      "use_when": "You want every authored section under the matching case dropped in as headed blocks — the 'give me everything' form.",
-      "snippet": "Current-case briefing:\n{{dynamic:mood:*}}"
+      "name": "Section-targeted live-value guidance",
+      "use_when": "A single matched value (e.g. `mood == sad`) needs multiple discrete chunks of guidance for different consumers — opening line, what to avoid, how to address. Sections on the enum value let each prompt cherry-pick the slice it needs.",
+      "snippet": "Address the user with this opener:\n{{dc:mood:opening_line}}\n\nAvoid these failure modes:\n{{dc:mood:what_to_avoid}}"
+    },
+    {
+      "name": "All sections under the current matched value",
+      "use_when": "You want every authored section under the matching enum value dropped in as headed blocks — the 'give me everything' form.",
+      "snippet": "Current-case briefing:\n{{dc:mood:*}}"
     }
   ]
 }

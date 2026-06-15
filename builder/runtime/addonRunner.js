@@ -73,7 +73,7 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
     agentNameForLogs,
     agentPersona,
     agentParameters,
-    agentDynamicContexts,
+    agentEnums,
     memory,
     memoryValuesByDomain,
     memoryDomainList,
@@ -194,8 +194,8 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
       fieldValueOf,
       extractorFields,
       parameters:       agentParameters,
-      dynamicContexts:  agentDynamicContexts,
-      fieldsForDynamic: fieldPool,
+      enums:            agentEnums,
+      fieldsForDc:      fieldPool,
       summaries:        memory?.summary || {},
       // Snippet pass: agent-level reusable prompt content + the live
       // brain blob so a snippet's optional filter can be evaluated
@@ -204,8 +204,17 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
         ? runnable.agent.body.snippets
         : [],
       brain:            memory,
-      onDynamicResolved: ({ fieldName, section, matched, text }) => {
-        emit('dynamic.resolved', {
+      onEnumResolved: ({ enumName, section, count, text }) => {
+        emit('enum.resolved', {
+          instanceId: instance.instanceId,
+          enumName,
+          section,
+          count,
+          text,
+        });
+      },
+      onDcResolved: ({ fieldName, section, matched, text }) => {
+        emit('dc.resolved', {
           instanceId: instance.instanceId,
           fieldName,
           section,

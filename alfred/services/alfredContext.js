@@ -261,15 +261,55 @@ const SYSTEM_PROMPT = [
   PLACEHOLDER_REFERENCE,
 ].filter(Boolean).join('\n\n');
 
-function fmtField(f) {
+/** Format one field for the Alfred context dump. Enum-typed fields
+ *  resolve their values via the agent's enum bible (`agent.enums`) —
+ *  the values list lives there, not inline on the field. */
+function fmtField(f, agentEnums) {
   const bits = [f.type];
-  if (f.type === 'enum' && Array.isArray(f.enumValues) && f.enumValues.length > 0) {
-    bits[0] = `enum: ${f.enumValues.join('/')}`;
+  if (f.type === 'enum' && f.enumType && Array.isArray(agentEnums)) {
+    const enumDef = agentEnums.find(e => e && e.id === f.enumType);
+    const vals = enumDef && Array.isArray(enumDef.values)
+      ? enumDef.values.map(v => v && v.value).filter(Boolean)
+      : [];
+    if (vals.length > 0) bits[0] = `enum ${enumDef.name}: ${vals.join('/')}`;
+    else                 bits[0] = `enum (${enumDef ? enumDef.name : 'unbound'})`;
   }
   bits.push(f.source);
   const head = `- ${f.name} (${bits.join(', ')})`;
   const desc = (f.howToExtract || '').trim();
   return desc ? `${head}: ${desc}` : head;
+}
+
+/** Format the agent's enum bible as a compact briefing for Alfred. One
+ *  block per enum: name + values + section schema + value-level umbrella
+ *  / section bodies (truncated if very long). */
+function fmtEnumBible(enums) {
+  if (!Array.isArray(enums) || enums.length === 0) return '';
+  const lines = ['Enums (bible):'];
+  for (const e of enums) {
+    if (!e || !e.name) continue;
+    const sectionNames = (Array.isArray(e.sections) ? e.sections : [])
+      .map(s => s && s.name).filter(Boolean);
+    lines.push(`  ${e.name} {`);
+    if (sectionNames.length > 0) lines.push(`    sections: ${sectionNames.join(', ')}`);
+    for (const v of (Array.isArray(e.values) ? e.values : [])) {
+      if (!v || !v.value) continue;
+      lines.push(`    - ${v.value}`);
+      const umb = (v.umbrellaText || '').trim();
+      if (umb) lines.push(`        umbrella: ${truncate1Line(umb)}`);
+      for (const sec of sectionNames) {
+        const body = (v.sectionTexts && v.sectionTexts[sec] || '').trim();
+        if (body) lines.push(`        ${sec}: ${truncate1Line(body)}`);
+      }
+    }
+    lines.push('  }');
+  }
+  return lines.join('\n');
+}
+
+function truncate1Line(s) {
+  const oneLine = s.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 140 ? oneLine.slice(0, 140) + '…' : oneLine;
 }
 
 function fmtAddon(a, crewFieldsById, agentFieldsById) {
@@ -330,7 +370,7 @@ function fmtCrew(crew, agent) {
 
   if ((crew.fields || []).length > 0) {
     lines.push('    Crew fields:');
-    crew.fields.forEach(f => lines.push('      ' + fmtField(f).replace(/^- /, '')));
+    crew.fields.forEach(f => lines.push('      ' + fmtField(f, agent.enums).replace(/^- /, '')));
   }
   return lines.join('\n');
 }
@@ -344,7 +384,13 @@ function fmtAgent(agent) {
   if ((agent.fields || []).length > 0) {
     lines.push('');
     lines.push('  Agent fields:');
-    agent.fields.forEach(f => lines.push('    ' + fmtField(f).replace(/^- /, '')));
+    agent.fields.forEach(f => lines.push('    ' + fmtField(f, agent.enums).replace(/^- /, '')));
+  }
+
+  if (Array.isArray(agent.enums) && agent.enums.length > 0) {
+    lines.push('');
+    const bible = fmtEnumBible(agent.enums);
+    if (bible) lines.push('  ' + bible.split('\n').join('\n  '));
   }
 
   if ((agent.crews || []).length > 0) {

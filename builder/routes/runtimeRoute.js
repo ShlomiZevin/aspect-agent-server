@@ -353,8 +353,14 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
     // against the actual draft state instead of the saved viewing
     // version. Both are optional — when missing the runtime falls back
     // to the DB version (the original behaviour).
-    overrideAgentBody = null,
-    overrideCrewBody  = null,
+    overrideAgentBody  = null,
+    overrideCrewBody   = null,
+    // Working-copy crew bodies keyed by crewId. The runtime consults
+    // this map during Transition Router cascades so the target crew
+    // runs against unsaved edits rather than the stale DB body. The
+    // current crew is still covered by `overrideCrewBody` for backward
+    // compat; we merge it in below.
+    overrideCrewBodies = null,
   } = req.body || {};
 
   if (!ownerUserId || !userMessage) {
@@ -462,6 +468,7 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       overrideCrewId,
       overrideAgentBody,
       overrideCrewBody,
+      overrideCrewBodies,
       emit,
     });
 

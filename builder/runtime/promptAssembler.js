@@ -9,21 +9,30 @@
  * Vocabulary lives in `aspect-agent-server/builder/promptPlaceholders.json`
  * — the same file Alfred reads. Tokens:
  *
- *   Whole sections (legacy structured behaviour, still supported until
- *   the Phase B template migration runs):
- *     {{prompt}}, {{persona}}, {{memory}}, {{thinking}}
+ *   Whole sections:
+ *     {{prompt}}, {{persona}}, {{memory}}, {{thinking}}, {{summary}}
  *
- *   Single-domain blocks (Phase B):
- *     {{memory:NAME}}, {{thinking:NAME}}
+ *   Single-domain blocks:
+ *     {{memory:NAME}}, {{thinking:NAME}}, {{summary:NAME}}
  *
- *   Single-value inline substitutions (Phase B):
+ *   Single-value inline substitutions:
  *     {{field:NAME}}    — current memory value of one field
  *     {{param:NAME}}    — static agent parameter value
+ *
+ *   Enum bible:
+ *     {{enum:NAME}}            — aggregate of every value's umbrella
+ *     {{enum:NAME:SECTION}}    — aggregate of one section across every value
+ *     {{dc:FIELD}}             — current matched value's umbrella
+ *     {{dc:FIELD:SECTION}}     — current matched value's section body
+ *     {{dc:FIELD:*}}           — every authored section under matched value
+ *
+ *   Snippets (agent-level reusable content, optionally gated):
+ *     {{snippet:NAME}}
  *
  *   Extractor-only:
  *     {{fields_schema}}, {{fields_current}},
  *     {{this_field}}    — literal NAME of the (first) extracted field
- *     {{enum_values}}   — comma-separated `enumValues` of that field
+ *     {{enum_values}}   — comma-separated values of that field's enum
  *
  * History is NOT a placeholder — it's a separate parameter to the
  * LLM. The runtime sends history as the message-history parameter,
@@ -73,31 +82,12 @@ function substituteParameterised(template, prefix, resolve, inline) {
   });
 }
 
-/**
- * Phase B note: persona is now placed by the user via `{{persona}}` in
- * the template, not toggled in structured context. Same for memory and
- * thinking sections. The persona block has no "enabled" flag — the
- * template's presence is the signal.
- */
 function buildPersonaBlock(personaText) {
   const text = (personaText || '').trim();
   if (!text) return '';
   return `## Persona\n${text}`;
 }
 
-/**
- * `## Memory` block — every domain that holds any value, rendered as a
- * `### NAME` sub-block of JSON. Phase B: the runtime no longer takes a
- * per-addon `memoryReads` list; instead the addon's template uses
- * `{{memory}}` for "all" or `{{memory:NAME}}` for a single domain.
- * Runtime contract: include only fields with VALUES, never nulls.
- *
- * @param {() => Array<string|null>} domainList
- *        — returns the names of every memory domain that currently
- *          holds at least one value. `null` is the no-domain bucket.
- * @param {(domain: string|null) => Record<string, unknown>} valuesByDomain
- *        — given a domain name (or null), return its key→value map.
- */
 function buildMemoryBlock(domainList, valuesByDomain) {
   const domains = (typeof domainList === 'function' ? domainList() : []) || [];
   if (domains.length === 0) return '';
@@ -109,10 +99,6 @@ function buildMemoryBlock(domainList, valuesByDomain) {
   return `## Memory\n${sections.join('\n\n')}`;
 }
 
-/**
- * `## Thinking` block — same shape as `## Memory`. Enumerates every
- * thinking domain with values.
- */
 function buildThinkingBlock(domainList, valuesByDomain) {
   const domains = (typeof domainList === 'function' ? domainList() : []) || [];
   if (domains.length === 0) return '';
@@ -124,12 +110,6 @@ function buildThinkingBlock(domainList, valuesByDomain) {
   return `## Thinking\n${sections.join('\n\n')}`;
 }
 
-/**
- * `## Summary` block — joins every declared summarizer's current text
- * under a `### NAME` heading. Used by `{{summary}}`. Returns empty
- * when no summarizer has fired yet — the caller's whitespace-collapse
- * handler keeps the prompt tidy.
- */
 function buildSummaryBlock(summaries) {
   if (!summaries || typeof summaries !== 'object') return '';
   const entries = Object.entries(summaries).filter(
@@ -140,11 +120,6 @@ function buildSummaryBlock(summaries) {
   return `## Summary\n${sections.join('\n\n')}`;
 }
 
-/**
- * Render ONE summarizer slot for `{{summary:NAME}}`. Inline (bare text
- * — no `### NAME` heading), since the author typically wraps it in
- * their own copy. Missing slot → empty string.
- */
 function resolveSummaryInline(name, summaries) {
   if (!summaries || typeof summaries !== 'object') return '';
   const slot = summaries[name];
@@ -152,12 +127,6 @@ function resolveSummaryInline(name, summaries) {
   return slot.text;
 }
 
-/**
- * Render ONE memory or thinking domain as a `### NAME` block of JSON.
- * Used by `{{memory:NAME}}` and `{{thinking:NAME}}`. Returns an empty
- * string when the domain has no values — the caller's substitute
- * handler collapses the surrounding whitespace.
- */
 function buildSingleDomainBlock(domainName, valuesByDomain) {
   const map = (valuesByDomain && valuesByDomain(domainName)) || {};
   if (!map || Object.keys(map).length === 0) return '';
@@ -167,20 +136,7 @@ function buildSingleDomainBlock(domainName, valuesByDomain) {
 
 /**
  * Resolve `{{snippet:NAME}}` against the agent's `snippets[]` list.
- *
- * Resolution rules (mirrors the per-addon Run Filter — same shape):
- *   - Unknown name                              → ''
- *   - No filter / empty conditions              → snippet.content
- *   - mode='include' AND every condition matches → snippet.content
- *   - mode='include' AND any condition fails    → ''
- *   - mode='exclude' AND every condition matches → ''
- *   - mode='exclude' AND any condition fails    → snippet.content
- *
- * `brain` is the live memory blob (per-conversation) the engine
- * already passes around — the same shape `evaluateConditions`
- * expects. When `brain` is missing, every condition fails and
- * gated snippets resolve to empty (acceptable: it's a defensive
- * default; callers that care always pass it).
+ * See SnippetDef in types. Mirrors the per-addon Run Filter shape.
  */
 function resolveSnippetInline(name, snippets, brain) {
   if (!Array.isArray(snippets) || snippets.length === 0) return '';
@@ -188,9 +144,6 @@ function resolveSnippetInline(name, snippets, brain) {
   if (!snip) return '';
   const filter = snip.filter;
   if (filter && Array.isArray(filter.conditions) && filter.conditions.length > 0) {
-    // Lazy require avoids a top-of-file cycle (the matcher needs no
-    // assembler internals, but loading both at module init can churn
-    // require order across test harnesses).
     const { evaluateConditions } = require('./conditionMatcher');
     const result = evaluateConditions(brain || {}, filter.conditions);
     const mode = filter.mode === 'exclude' ? 'exclude' : 'include';
@@ -200,13 +153,6 @@ function resolveSnippetInline(name, snippets, brain) {
   return typeof snip.content === 'string' ? snip.content : '';
 }
 
-/**
- * Resolve one field's current memory value for `{{field:NAME}}`. The
- * value is rendered inline (bare), so strings come through as-is and
- * non-strings get JSON-stringified. Missing values resolve to an
- * empty string — the caller treats that as "collapse but keep going",
- * not as "leave the token in place".
- */
 function resolveFieldInline(name, fieldValueOf) {
   if (!fieldValueOf) return '';
   const v = fieldValueOf(name);
@@ -214,10 +160,6 @@ function resolveFieldInline(name, fieldValueOf) {
   return typeof v === 'string' ? v : JSON.stringify(v);
 }
 
-/**
- * Resolve a `{{param:NAME}}` from the agent's parameter list. Same
- * inline semantics as `{{field:NAME}}`: missing → empty string.
- */
 function resolveParamInline(name, parameters) {
   if (!Array.isArray(parameters)) return '';
   const found = parameters.find(p => p && p.name === name);
@@ -228,23 +170,42 @@ function resolveParamInline(name, parameters) {
 }
 
 /**
+ * Look up an EnumTypeDef by id from the agent's `enums[]`. Helper kept
+ * tight because both the schema-block builder and the {{enum:}} / {{dc:}}
+ * resolvers want it.
+ */
+function findEnumById(enums, id) {
+  if (!Array.isArray(enums) || !id) return null;
+  return enums.find(e => e && e.id === id) || null;
+}
+
+function findEnumByName(enums, name) {
+  if (!Array.isArray(enums) || !name) return null;
+  return enums.find(e => e && e.name === name) || null;
+}
+
+/**
  * `## Field schema` block — one line per field.
- *
- * Format uses explicit `key=value` props inside the parens so the
- * LLM can't confuse the source ("explicit" / "inferred") with an
- * enum value. Mirrors the client byte-for-byte.
  *
  *   - <name> (type=<type>, [values=[a, b, c],] source=<source>): <how>
  *
- * - `values=[...]` only appears for enum fields that have enumValues.
- * - The trailing `: <how>` is omitted when howToExtract is empty.
+ * For enum-typed fields the values list is resolved by following
+ * `field.enumType` → matching `EnumTypeDef.values[].value`. Fields whose
+ * enumType points at a missing / empty enum render without the values
+ * clause (no crash; just incomplete schema — the validator surfaces it).
  */
-function buildFieldsSchemaBlock(fields) {
+function buildFieldsSchemaBlock(fields, enums) {
   if (!fields || fields.length === 0) return '';
   const lines = fields.map(f => {
     const props = [`type=${f.type}`];
-    if (f.type === 'enum' && Array.isArray(f.enumValues) && f.enumValues.length > 0) {
-      props.push(`values=[${f.enumValues.join(', ')}]`);
+    if (f.type === 'enum') {
+      const enumDef = findEnumById(enums, f.enumType);
+      const vals = enumDef && Array.isArray(enumDef.values)
+        ? enumDef.values.map(v => v && v.value).filter(Boolean)
+        : [];
+      if (vals.length > 0) {
+        props.push(`values=[${vals.join(', ')}]`);
+      }
     }
     props.push(`source=${f.source}`);
     const head = `- ${f.name} (${props.join(', ')})`;
@@ -254,16 +215,6 @@ function buildFieldsSchemaBlock(fields) {
   return lines.join('\n');
 }
 
-/**
- * `## Already collected` block — JSON of fields that have a value.
- * Runtime contract: ONLY fields with values. No nulls.
- *
- * @param {(fieldName: string) => unknown | undefined} valueOf
- *        — return the current value of a field by name, or
- *          undefined if the field has no value yet. Undefined
- *          values are skipped.
- * @param {FieldDef[]} fields — the extractor's own fields.
- */
 function buildFieldsCurrentBlock(fields, valueOf) {
   if (!fields || fields.length === 0) return '{}';
   const out = {};
@@ -276,33 +227,179 @@ function buildFieldsCurrentBlock(fields, valueOf) {
   return JSON.stringify(out, null, 2);
 }
 
+/** Reserved second segment of `{{enum:NAME:…}}` — surfaces the
+ *  enum's values list inline. Section names are linted to not collide
+ *  with this on the editor side. */
+const ENUM_VALUES_KEYWORD = 'values';
+
+/**
+ * Resolve `{{enum:NAME}}`, `{{enum:NAME:SECTION}}`, and the reserved
+ * `{{enum:NAME:values}}` — STATIC, no brain lookup.
+ *
+ *   {{enum:NAME}}           → ## NAME ··· every value's umbrella as `### v` blocks
+ *   {{enum:NAME:SECTION}}   → ## NAME — SECTION ··· every value's body as `### v` blocks
+ *   {{enum:NAME:values}}    → INLINE comma-separated list of the enum's value names
+ *
+ * Headed-block forms omit values with empty content for the requested
+ * slot (no noisy empty `###` blocks).
+ *
+ * Returns:
+ *   - null  when the enum name doesn't exist (token stays literal so a
+ *           typo surfaces loudly)
+ *   - ''    when the enum exists but has nothing to render
+ *   - the rendered text otherwise
+ */
+function resolveEnumAggregate(rawName, { enums, onEnumResolved }) {
+  const colonIdx = rawName.indexOf(':');
+  const enumName    = colonIdx === -1 ? rawName : rawName.slice(0, colonIdx);
+  const sectionPart = colonIdx === -1 ? null    : rawName.slice(colonIdx + 1);
+
+  const enumDef = findEnumByName(enums, enumName);
+  if (!enumDef) return null;
+
+  const values = Array.isArray(enumDef.values) ? enumDef.values : [];
+
+  // Reserved: `{{enum:NAME:values}}` → comma-separated values list.
+  // Rendered inline (no headers, no block whitespace) so it slots into
+  // prose like: `Allowed values: {{enum:motive:values}}`.
+  if (sectionPart === ENUM_VALUES_KEYWORD) {
+    const list = values
+      .map(v => v && typeof v.value === 'string' ? v.value : null)
+      .filter(Boolean)
+      .join(', ');
+    if (onEnumResolved) onEnumResolved({ enumName, section: ENUM_VALUES_KEYWORD, count: values.length, text: list });
+    return list;
+  }
+
+  const blocks = [];
+  for (const v of values) {
+    if (!v || typeof v.value !== 'string') continue;
+    let body;
+    if (sectionPart === null) {
+      body = (v.umbrellaText || '').trim();
+    } else {
+      const texts = v.sectionTexts || {};
+      const raw = texts[sectionPart];
+      body = typeof raw === 'string' ? raw.trim() : '';
+    }
+    if (body.length === 0) continue;
+    blocks.push(`### ${v.value}\n${body}`);
+  }
+
+  if (blocks.length === 0) {
+    if (onEnumResolved) onEnumResolved({ enumName, section: sectionPart, count: 0, text: '' });
+    return '';
+  }
+
+  const header = sectionPart === null
+    ? `## ${enumDef.name}`
+    : `## ${enumDef.name} — ${sectionPart}`;
+  const text = `${header}\n\n${blocks.join('\n\n')}`;
+
+  if (onEnumResolved) onEnumResolved({ enumName, section: sectionPart, count: blocks.length, text });
+  return text;
+}
+
+/**
+ * Resolve `{{dc:FIELD}}` / `{{dc:FIELD:SECTION}}` / `{{dc:FIELD:*}}` —
+ * LIVE lookup against memory.
+ *
+ * Steps:
+ *   1. Look up FieldDef by `name === FIELD` across agent + crew scope.
+ *      Missing → return null so the token stays literal (loud miss).
+ *   2. Field must be `type === 'enum'` with `enumType` set. Otherwise
+ *      → '' (silent — the field exists but isn't an enum field, so
+ *      there's nothing to switch on).
+ *   3. Find the enum by id on `agent.enums[]`. Missing → ''.
+ *   4. Read the field's live memory value via `fieldValueOf`. Find the
+ *      value record whose `value === String(live)`. Missing → ''.
+ *   5. Render based on form:
+ *        FIELD              → matched value's `umbrellaText`, bare
+ *        FIELD:SECTION      → matched value's `sectionTexts[SECTION]`, bare
+ *        FIELD:*            → every section under the matched value as
+ *                             `### name\n<body>` blocks (sections with
+ *                             empty bodies omitted)
+ *
+ * No fallback concept — unmatched / missing → empty string. The author
+ * wraps the token in their own fallback prose if needed.
+ *
+ * Side-effect: fires `onDcResolved({ fieldName, section, matched, text })`
+ * if supplied — runtime emits SSE events for the chat trail.
+ */
+function resolveDcInline(rawName, { enums, fieldsForDc, fieldValueOf, onDcResolved }) {
+  const colonIdx = rawName.indexOf(':');
+  const fieldName   = colonIdx === -1 ? rawName : rawName.slice(0, colonIdx);
+  const sectionPart = colonIdx === -1 ? null    : rawName.slice(colonIdx + 1);
+
+  const field = (fieldsForDc || []).find(f => f && f.name === fieldName);
+  if (!field) return null;                             // typo — stay literal
+
+  if (field.type !== 'enum' || !field.enumType) {
+    if (onDcResolved) onDcResolved({ fieldName, section: sectionPart, matched: null, text: '' });
+    return '';
+  }
+
+  const enumDef = findEnumById(enums, field.enumType);
+  if (!enumDef || !Array.isArray(enumDef.values)) {
+    if (onDcResolved) onDcResolved({ fieldName, section: sectionPart, matched: null, text: '' });
+    return '';
+  }
+
+  const live = fieldValueOf ? fieldValueOf(fieldName) : undefined;
+  const liveStr = live === undefined || live === null ? null : String(live);
+
+  const matchedValue = liveStr === null
+    ? null
+    : enumDef.values.find(v => v && String(v.value) === liveStr) || null;
+
+  let text = '';
+  if (!matchedValue) {
+    if (onDcResolved) onDcResolved({ fieldName, section: sectionPart, matched: null, text: '' });
+    return '';
+  }
+
+  if (sectionPart === null) {
+    text = (matchedValue.umbrellaText || '').trim();
+  } else if (sectionPart === '*') {
+    const declared = Array.isArray(enumDef.sections) ? enumDef.sections : [];
+    const texts = matchedValue.sectionTexts || {};
+    const parts = declared
+      .filter(s => s && typeof s.name === 'string')
+      .map(s => ({ name: s.name, body: (texts[s.name] || '').trim() }))
+      .filter(p => p.body.length > 0)
+      .map(p => `### ${p.name}\n${p.body}`);
+    text = parts.join('\n\n');
+  } else {
+    const raw = matchedValue.sectionTexts && matchedValue.sectionTexts[sectionPart];
+    text = typeof raw === 'string' ? raw.trim() : '';
+  }
+
+  if (onDcResolved) {
+    onDcResolved({ fieldName, section: sectionPart, matched: liveStr, text });
+  }
+  return text;
+}
+
 /**
  * Assemble the prompt for an addon instance.
  *
  * @param {object} args
- * @param {object} args.instance       — AddonInstance (has promptTemplate, context, config)
- * @param {string} args.agentPersona   — agent's persona text (used by {{persona}} and {{persona}}-bearing templates)
- * @param {function} args.memoryValuesByDomain   — (domain) → memory values map
- * @param {function} args.thinkingValuesByDomain — (domain) → thinking values map
- * @param {function} args.fieldValueOf — (fieldName) → captured value or undefined
+ * @param {object} args.instance       — AddonInstance
+ * @param {string} args.agentPersona
+ * @param {function} args.memoryValuesByDomain
+ * @param {function} args.thinkingValuesByDomain
+ * @param {function} args.fieldValueOf
  * @param {Array}    [args.extractorFields] — field defs this extractor extracts
- *        (already resolved by the caller from agent.fields ∪ crew.fields
- *        against instance.config.extractsFields). Empty for non-extractor
- *        plugins.
- * @param {Array}    [args.parameters] — agent.parameters used by `{{param:NAME}}` substitutions.
- * @param {Array}    [args.dynamicContexts] — agent.dynamicContexts used by
- *        `{{dynamic:NAME}}` / `{{dynamic:NAME:SECTION}}` / `{{dynamic:NAME:*}}`
- *        substitutions. Each DC carries `fieldId` + `cases` (each case has
- *        an optional umbrella `text` and an optional ordered `sections`
- *        list) + optional `fallback` (umbrella-only).
- * @param {Array}    [args.fieldsForDynamic] — agent + crew field defs in scope
- *        for resolving dynamic tokens (we look up fieldId by name).
- * @param {function} [args.onDynamicResolved] — callback
- *        `({ fieldName, section, matched, text }) => void` fired each
- *        time a dynamic token resolves. `section` is `null` for the
- *        umbrella form, the section name for `{{dynamic:F:S}}`, or
- *        `'*'` for the all-sections join. Used by the runtime to emit
- *        SSE events for the live chat trail.
+ * @param {Array}    [args.parameters]      — agent.parameters
+ * @param {Array}    [args.enums]           — agent.enums[] — drives both
+ *        `{{enum:...}}` (aggregate) and `{{dc:...}}` (live-value lookup).
+ * @param {Array}    [args.fieldsForDc] — agent + crew field defs in scope
+ *        for `{{dc:FIELD...}}` lookups (we resolve fieldId by name from this).
+ * @param {function} [args.onEnumResolved] — `({ enumName, section, count, text }) => void`.
+ * @param {function} [args.onDcResolved]   — `({ fieldName, section, matched, text }) => void`.
+ * @param {object}   [args.summaries]
+ * @param {Array}    [args.snippets]
+ * @param {object}   [args.brain] — needed by snippet filter evaluation
  * @returns {string} the assembled prompt
  */
 function assemblePrompt({
@@ -315,97 +412,69 @@ function assemblePrompt({
   fieldValueOf,
   extractorFields,
   parameters,
-  dynamicContexts,
-  fieldsForDynamic,
-  onDynamicResolved,
-  // Summary slot map: `{ [name]: { text, watermark, ranAt } }` — the
-  // shape stored in `brain.summary`. Passed by the caller so the
-  // assembler doesn't reach into memory itself. Empty / missing →
-  // `{{summary}}` collapses, `{{summary:NAME}}` resolves to ''.
+  enums,
+  fieldsForDc,
+  onEnumResolved,
+  onDcResolved,
   summaries,
-  // Agent-level reusable snippets — `SnippetDef[]`. Inlined FIRST
-  // (before sections / params / dynamic) so embedded tokens inside
-  // snippet content resolve on the regular passes. Missing / empty
-  // → every `{{snippet:NAME}}` resolves to ''.
   snippets,
-  // Brain blob — needed by the snippet substitution pass so a
-  // snippet's optional filter can be evaluated against current
-  // memory. Same blob `addonRunner` already passes to the filter
-  // gate at the addon level. Missing / undefined → snippet filters
-  // evaluate as "no fields populated" (conditions effectively fail).
   brain,
 }) {
   let template = instance.promptTemplate || '';
   const cfg = instance.config || {};
   const fields = Array.isArray(extractorFields) ? extractorFields : [];
+  const enumsList = Array.isArray(enums) ? enums : [];
 
-  // Treat as extractor if either: caller supplied field defs OR the
-  // template references the extractor placeholders. Keeps the
-  // template-driven nature intact while letting non-extractor
-  // plugins (Talker, etc.) skip the schema/current blocks.
   const isExtractor = fields.length > 0 || /\{\{fields_(schema|current)\}\}/.test(template);
 
   const memoryReader   = memoryValuesByDomain   || (() => ({}));
   const thinkingReader = thinkingValuesByDomain || (() => ({}));
 
-  // Phase B note: Talker's `config.prompt` may itself contain
-  // placeholders (e.g. the user typed `@customer_age` which inserted
-  // `{{field:customer_age}}`). So we substitute `{{prompt}}` FIRST,
-  // then run the section + parameterised passes on the expanded
-  // template — that way any token introduced by `config.prompt`
-  // becomes visible to the resolvers below.
+  // {{prompt}} expands first so any token the user authored inside
+  // `config.prompt` (e.g. `@customer_age` → `{{field:customer_age}}`)
+  // becomes visible to the passes below.
   template = template.split('{{prompt}}').join(cfg.prompt || '');
 
-  // Snippet pass — runs BEFORE every other parameterised resolver
-  // so a snippet's `content` is inlined into the template and any
-  // tokens inside it (`{{field:X}}`, `{{param:Y}}`, `{{memory}}`,
-  // `{{dynamic:Z}}`, …) become visible to the subsequent passes.
-  // Resolution rules:
-  //   - Unknown name        → ''
-  //   - Filter present and  → ''  (gate said skip)
-  //     condition fails
-  //   - Otherwise           → snippet.content (verbatim)
-  // Nested `{{snippet:OTHER}}` inside the content is NOT recursively
-  // expanded — v1 leaves it as literal text (validator warns).
+  // Snippet pass FIRST — see resolveSnippetInline. Embedded tokens
+  // inside snippet content resolve on the regular passes below.
   template = substituteParameterised(
     template,
     'snippet',
-    (name) => resolveSnippetInline(name, snippets, brain),
+    name => resolveSnippetInline(name, snippets, brain),
     /* inline */ true,
   );
 
-  // Flat whole-section tokens — persona, memory, thinking, summary,
-  // and the extractor-only schema/current blocks.
+  // Flat whole-section tokens.
   template = substitute(template, {
     persona:        buildPersonaBlock(agentPersona),
     memory:         buildMemoryBlock(memoryDomainList   || (() => []), memoryReader),
     thinking:       buildThinkingBlock(thinkingDomainList || (() => []), thinkingReader),
     summary:        buildSummaryBlock(summaries),
-    fields_schema:  isExtractor ? buildFieldsSchemaBlock(fields) : '',
+    fields_schema:  isExtractor ? buildFieldsSchemaBlock(fields, enumsList) : '',
     fields_current: isExtractor ? buildFieldsCurrentBlock(fields, fieldValueOf) : '',
   });
 
-  // Single-field INLINE tokens — the FIRST extractor field is "this
-  // field" for the purposes of {{this_field}} / {{enum_values}}. Field
-  // Reasoner is the primary consumer (UI constrains it to exactly one
-  // field); multi-field extractors that include these tokens will
-  // resolve to their first field, which is acceptable since the tokens
-  // are semantically tied to single-field reasoning.
-  //
-  // Substituted inline (plain string replace, no surrounding-whitespace
-  // collapse) because these are embedded in prose like
-  //   `inferring the value of {{this_field}}`
-  // rather than block boundaries.
+  // Single-field inline tokens — `{{this_field}}` and `{{enum_values}}`
+  // are tied to the FIRST extractor field (Field Reasoner constrains to
+  // one; multi-field extractors still resolve to their first). The enum
+  // values list is now resolved through the bible — same as
+  // buildFieldsSchemaBlock.
   const thisField = isExtractor && fields.length > 0 ? fields[0] : null;
   const thisFieldName  = thisField ? thisField.name : '';
-  const enumValuesText = thisField && Array.isArray(thisField.enumValues)
-    ? thisField.enumValues.join(', ')
-    : '';
+  let enumValuesText = '';
+  if (thisField && thisField.type === 'enum') {
+    const enumDef = findEnumById(enumsList, thisField.enumType);
+    if (enumDef && Array.isArray(enumDef.values)) {
+      enumValuesText = enumDef.values
+        .map(v => v && v.value)
+        .filter(Boolean)
+        .join(', ');
+    }
+  }
   template = template.split('{{this_field}}').join(thisFieldName);
   template = template.split('{{enum_values}}').join(enumValuesText);
 
-  // Parameterised tokens last so anything introduced by the
-  // {{prompt}} or section substitutions can still resolve.
+  // Parameterised tokens — same order as before.
   template = substituteParameterised(
     template,
     'memory',
@@ -436,119 +505,42 @@ function assemblePrompt({
     name => resolveParamInline(name, parameters),
     /* inline */ true,
   );
+
+  // Enum aggregate — static, no field lookup.
+  //
+  // Two substitution modes share the same `enum:` prefix:
+  //   • {{enum:NAME:values}} — inline values list (slots into prose).
+  //   • {{enum:NAME[:SECTION]}} — headed block (`## NAME[ — SECTION]`).
+  //
+  // We run the inline `:values` pass first so the block pass below
+  // can treat any remaining `{{enum:…}}` tokens as block.
+  template = template.replace(/\{\{enum:([^:}\s]+):values\}\}/g, (match, name) => {
+    const out = resolveEnumAggregate(`${name}:values`, { enums: enumsList, onEnumResolved });
+    return out === null || out === undefined ? match : out;
+  });
   template = substituteParameterised(
     template,
-    'dynamic',
-    name => resolveDynamicInline(name, {
-      dynamicContexts:  dynamicContexts  || [],
-      fieldsForDynamic: fieldsForDynamic || [],
+    'enum',
+    name => resolveEnumAggregate(name, { enums: enumsList, onEnumResolved }),
+    /* inline */ false,
+  );
+
+  // DC live-value lookup — follows field.enumType → enum → matched
+  // value. Bare content (the matched value's umbrella / section body),
+  // so author wraps with their own preamble.
+  template = substituteParameterised(
+    template,
+    'dc',
+    name => resolveDcInline(name, {
+      enums:        enumsList,
+      fieldsForDc:  fieldsForDc || [],
       fieldValueOf,
-      onDynamicResolved,
+      onDcResolved,
     }),
-    /* inline */ false, // dynamic content can be multi-paragraph — treat as a block
+    /* inline */ false,
   );
 
   return template.replace(/\n{3,}/g, '\n\n').trim();
-}
-
-/**
- * Resolve a `{{dynamic:…}}` token against the supplied DC list.
- *
- * The token captured by `substituteParameterised` (regex `[^}\s]+`) is
- * either `FIELD`, `FIELD:SECTION`, or `FIELD:*` — we split on the first
- * `:` and dispatch accordingly.
- *
- * Common steps (every form):
- *   1. Look up the FieldDef whose `name === FIELD` (agent + crew scope).
- *      Missing → return null so the token stays literal — a typo
- *      surfaces loudly rather than silently collapsing.
- *   2. Find a DC whose `fieldId === field.id`. Missing → return ''
- *      (the field exists, just no DC attached).
- *   3. Read the live memory value for that field via `fieldValueOf`.
- *   4. Find the case whose `value === live`. Otherwise treat as a
- *      no-match (uses `dc.fallback` only for the umbrella form).
- *
- * Form-specific:
- *   • `FIELD`           → returns the matched case's `text` (umbrella).
- *                          Falls back to `dc.fallback` if no case matched.
- *   • `FIELD:SECTION`   → returns the matched case's `sections[SECTION].text`.
- *                          Empty when section missing or no case matched
- *                          (fallback is umbrella-only — sections don't
- *                          share a fallback by design).
- *   • `FIELD:*`         → joins every section in the matched case under
- *                          `### name` headings. Empty when no sections
- *                          or no case matched.
- *
- * Side-effect: when an `onDynamicResolved` callback is supplied, fire
- * it with `{ fieldName, section, matched, text }`. The runtime uses
- * this to emit an SSE event so the chat UI can show what was loaded.
- * `section` is `null` for umbrella, the section name for `FIELD:SECTION`,
- * or `'*'` for the all-sections form.
- */
-function resolveDynamicInline(rawName, { dynamicContexts, fieldsForDynamic, fieldValueOf, onDynamicResolved }) {
-  // Split on the FIRST colon — section names can't contain ':' (the
-  // editor sanitises to snake_case) so this is unambiguous.
-  const colonIdx = rawName.indexOf(':');
-  const fieldName    = colonIdx === -1 ? rawName : rawName.slice(0, colonIdx);
-  const sectionPart  = colonIdx === -1 ? null    : rawName.slice(colonIdx + 1);
-
-  const field = fieldsForDynamic.find(f => f && f.name === fieldName);
-  if (!field) return null; // leave token literal — loud miss
-
-  const dc = dynamicContexts.find(d => d && d.fieldId === field.id);
-  if (!dc) {
-    if (onDynamicResolved) onDynamicResolved({ fieldName, section: sectionPart, matched: null, text: '' });
-    return '';
-  }
-
-  const live = fieldValueOf ? fieldValueOf(fieldName) : undefined;
-  const liveStr = live === undefined || live === null ? null : String(live);
-
-  let matched = null;
-  let matchedCase = null;
-  if (liveStr !== null && Array.isArray(dc.cases)) {
-    const hit = dc.cases.find(c => c && String(c.value) === liveStr);
-    if (hit) {
-      matched = liveStr;
-      matchedCase = hit;
-    }
-  }
-
-  let text = '';
-  if (sectionPart === null) {
-    // {{dynamic:FIELD}} — umbrella + dc.fallback semantics.
-    if (matchedCase) {
-      text = matchedCase.text || '';
-    } else if (typeof dc.fallback === 'string') {
-      text = dc.fallback;
-    }
-  } else if (sectionPart === '*') {
-    // {{dynamic:FIELD:*}} — every section declared on the DC, joined
-    // under `### name` headings. Section names live on `dc.sections`
-    // (shared across cases); each body comes from
-    // `matchedCase.sectionTexts[name]`. Sections with no authored body
-    // for the matched case are skipped to keep the prompt clean —
-    // empty `### name` blocks are noise the LLM doesn't need.
-    if (matchedCase && Array.isArray(dc.sections)) {
-      const texts = matchedCase.sectionTexts || {};
-      const parts = dc.sections
-        .filter(s => s && typeof s.name === 'string')
-        .map(s => ({ name: s.name, body: texts[s.name] || '' }))
-        .filter(p => p.body.length > 0)
-        .map(p => `### ${p.name}\n${p.body}`);
-      text = parts.join('\n\n');
-    }
-  } else {
-    // {{dynamic:FIELD:SECTION}} — exact section body for the matched
-    // case. Empty when the case has no body authored for it, or when
-    // no case matched.
-    if (matchedCase && matchedCase.sectionTexts && typeof matchedCase.sectionTexts[sectionPart] === 'string') {
-      text = matchedCase.sectionTexts[sectionPart];
-    }
-  }
-
-  if (onDynamicResolved) onDynamicResolved({ fieldName, section: sectionPart, matched, text });
-  return text;
 }
 
 module.exports = { assemblePrompt };
