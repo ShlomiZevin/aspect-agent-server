@@ -45,7 +45,10 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
         [schemaName]
       )).rows.length > 0;
       // Revenue/avg expressions (cast via ::text so it works whether the column is NUMERIC or TEXT).
-      const REV    = (a) => `SUM(NULLIF(${a}.${revName}::text, '')::numeric)`;
+      // COALESCE(..,0): groups with no revenue rows (e.g. inactive stores that only have
+      // transfer/order documents) get 0, not NULL — so `ORDER BY total_revenue DESC` ranks
+      // them last instead of first (Postgres sorts NULLs first under DESC).
+      const REV    = (a) => `COALESCE(SUM(NULLIF(${a}.${revName}::text, '')::numeric), 0)`;
       const AVGREV = (a) => `AVG(NULLIF(${a}.${revName}::text, '')::numeric)`;
       // hesbonithiuvi LEFT JOIN + transaction-count expression (alias `h`); empty/COUNT(*) fallback.
       const hesJoin = (a) => hesExists ? `LEFT JOIN ${s}.hesbonithiuvi h ON h."UniqueInvoiceKey" = ${a}.${invKey}` : '';
