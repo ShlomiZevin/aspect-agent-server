@@ -30,6 +30,31 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
       // Resolve actual column names from information_schema
       const r = await resolveColumns(pool, schemaName);
 
+      // ── BI parity (task 652) ────────────────────────────────────────────────
+      // Revenue: BI's "פדיון" sums the INCLUDING-vouchers column, not `revenue`
+      //   (which is excl vouchers). Fall back to `revenue` if that column is absent.
+      // Transactions: BI's "כמות עסקאות" counts distinct invoices but EXCLUDES
+      //   tax-invoices (חשבונית חיוב) listed in the `hesbonithiuvi` table, and
+      //   subtracts them a second time (matches Qlik vOrdersCount exactly):
+      //     count(invoices NOT in hesbonithiuvi) - count(invoices IN hesbonithiuvi)
+      //   Falls back to COUNT(*) (line items) if the table/key is unavailable.
+      const invKey = col(r, 'sales.invoice_key'); // "UniqueInvoiceKey" or null
+      const revName = col(r, 'sales.revenue_incl_vouchers') || col(r, 'sales.revenue');
+      const hesExists = invKey && (await pool.query(
+        `SELECT 1 FROM information_schema.tables WHERE table_schema=$1 AND table_name='hesbonithiuvi'`,
+        [schemaName]
+      )).rows.length > 0;
+      // Revenue/avg expressions (cast via ::text so it works whether the column is NUMERIC or TEXT).
+      const REV    = (a) => `SUM(NULLIF(${a}.${revName}::text, '')::numeric)`;
+      const AVGREV = (a) => `AVG(NULLIF(${a}.${revName}::text, '')::numeric)`;
+      // hesbonithiuvi LEFT JOIN + transaction-count expression (alias `h`); empty/COUNT(*) fallback.
+      const hesJoin = (a) => hesExists ? `LEFT JOIN ${s}.hesbonithiuvi h ON h."UniqueInvoiceKey" = ${a}.${invKey}` : '';
+      const TXN = (a) => hesExists
+        ? `COUNT(DISTINCT ${a}.${invKey}) FILTER (WHERE h."UniqueInvoiceKey" IS NULL) `
+          + `- COUNT(DISTINCT ${a}.${invKey}) FILTER (WHERE h."UniqueInvoiceKey" IS NOT NULL)`
+        : `COUNT(*)`;
+      log(`[mv] BI-parity: revenue col="${revName}", hesbonithiuvi join=${hesExists ? 'on' : 'off (fallback COUNT(*))'}`);
+
       // Drop orphaned composite types left by previously aborted runs.
       await setupClient.query(`
         DO $$ DECLARE rec RECORD;
@@ -109,13 +134,13 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
             SELECT
               ${s}.to_int_safe(s.${col(r, 'sales.store_id')}) AS store_number,
               st.${col(r, 'stores.store_name')} AS store_name,
-              COUNT(*) AS transaction_count,
-              SUM(s.${col(r, 'sales.revenue')}::numeric) AS total_revenue,
-              AVG(s.${col(r, 'sales.revenue')}::numeric) AS avg_revenue
+              ${TXN('s')} AS transaction_count,
+              ${REV('s')} AS total_revenue,
+              ${AVGREV('s')} AS avg_revenue
             FROM ${s}.sales s
             LEFT JOIN ${s}.stores st
               ON ${s}.to_int_safe(s.${col(r, 'sales.store_id')}) = ${s}.to_int_safe(st.${col(r, 'stores.store_id')})
-            WHERE s.${col(r, 'sales.revenue')} IS NOT NULL
+            ${hesJoin('s')}
             GROUP BY ${s}.to_int_safe(s.${col(r, 'sales.store_id')}), st.${col(r, 'stores.store_name')}
           `);
           await c.query(`CREATE INDEX ON ${s}.mv_sales_by_store (store_number)`);
@@ -136,12 +161,12 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
             SELECT
               ${s}.to_int_safe(s.${col(r, 'sales.customer_id')}) AS customer_number,
               c.${col(r, 'customers.customer_name')} AS customer_name,
-              COUNT(*) AS purchase_count,
-              SUM(s.${col(r, 'sales.revenue')}::numeric) AS total_purchases
+              ${TXN('s')} AS purchase_count,
+              ${REV('s')} AS total_purchases
             FROM ${s}.sales s
             LEFT JOIN ${s}.customers c
               ON ${s}.to_int_safe(s.${col(r, 'sales.customer_id')}) = ${s}.to_int_safe(c.${col(r, 'customers.customer_id')})
-            WHERE s.${col(r, 'sales.revenue')} IS NOT NULL
+            ${hesJoin('s')}
             GROUP BY ${s}.to_int_safe(s.${col(r, 'sales.customer_id')}), c.${col(r, 'customers.customer_name')}
           `);
           await c.query(`CREATE INDEX ON ${s}.mv_sales_by_customer (customer_number)`);
@@ -163,7 +188,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
               s.${col(r, 'sales.item_code')} AS item_code,
               i.${col(r, 'items.item_name')} AS item_name,
               SUM(s.${col(r, 'sales.quantity')}::numeric) AS total_quantity,
-              SUM(s.${col(r, 'sales.revenue')}::numeric) AS total_revenue
+              ${REV('s')} AS total_revenue
             FROM ${s}.sales s
             LEFT JOIN ${s}.items i ON s.${col(r, 'sales.item_code')} = i.${col(r, 'items.item_code')}
             WHERE s.${col(r, 'sales.quantity')} IS NOT NULL
@@ -185,14 +210,14 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
           await c.query(`
             CREATE MATERIALIZED VIEW ${s}.mv_sales_by_year AS
             SELECT
-              EXTRACT(YEAR FROM ${s}.parse_date_ddmmyyyy(${col(r, 'sales.date')}))::integer AS sale_year,
-              COUNT(*) AS transaction_count,
-              SUM(${col(r, 'sales.revenue')}::numeric) AS total_revenue,
-              AVG(${col(r, 'sales.revenue')}::numeric) AS avg_revenue,
-              SUM(${col(r, 'sales.cost')}::numeric) AS total_cost
-            FROM ${s}.sales
-            WHERE ${col(r, 'sales.date')} IS NOT NULL
-              AND ${col(r, 'sales.revenue')} IS NOT NULL
+              EXTRACT(YEAR FROM ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}))::integer AS sale_year,
+              ${TXN('s')} AS transaction_count,
+              ${REV('s')} AS total_revenue,
+              ${AVGREV('s')} AS avg_revenue,
+              SUM(s.${col(r, 'sales.cost')}::numeric) AS total_cost
+            FROM ${s}.sales s
+            ${hesJoin('s')}
+            WHERE s.${col(r, 'sales.date')} IS NOT NULL
             GROUP BY sale_year
             ORDER BY sale_year
           `);
@@ -214,16 +239,16 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
           await c.query(`
             CREATE MATERIALIZED VIEW ${s}.mv_sales_by_month AS
             SELECT
-              TO_CHAR(${s}.parse_date_ddmmyyyy(${col(r, 'sales.date')}), 'YYYY-MM') AS year_month,
-              EXTRACT(YEAR  FROM ${s}.parse_date_ddmmyyyy(${col(r, 'sales.date')}))::integer AS sale_year,
-              EXTRACT(MONTH FROM ${s}.parse_date_ddmmyyyy(${col(r, 'sales.date')}))::integer AS sale_month,
-              COUNT(*) AS transaction_count,
-              COUNT(DISTINCT ${s}.to_int_safe(${col(r, 'sales.customer_id')})) AS customer_count,
-              SUM(${col(r, 'sales.revenue')}::numeric) AS total_revenue,
-              AVG(${col(r, 'sales.revenue')}::numeric) AS avg_revenue
-            FROM ${s}.sales
-            WHERE ${col(r, 'sales.date')} IS NOT NULL
-              AND ${col(r, 'sales.revenue')} IS NOT NULL
+              TO_CHAR(${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}), 'YYYY-MM') AS year_month,
+              EXTRACT(YEAR  FROM ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}))::integer AS sale_year,
+              EXTRACT(MONTH FROM ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}))::integer AS sale_month,
+              ${TXN('s')} AS transaction_count,
+              COUNT(DISTINCT ${s}.to_int_safe(s.${col(r, 'sales.customer_id')})) FILTER (WHERE s.${col(r, 'sales.revenue')} IS NOT NULL) AS customer_count,
+              ${REV('s')} AS total_revenue,
+              ${AVGREV('s')} AS avg_revenue
+            FROM ${s}.sales s
+            ${hesJoin('s')}
+            WHERE s.${col(r, 'sales.date')} IS NOT NULL
             GROUP BY year_month, sale_year, sale_month
             ORDER BY year_month
           `);
@@ -254,13 +279,13 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
               TO_CHAR(${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}), 'YYYY-MM') AS year_month,
               EXTRACT(YEAR  FROM ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}))::integer AS sale_year,
               EXTRACT(MONTH FROM ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}))::integer AS sale_month,
-              COUNT(*) AS transaction_count,
-              SUM(s.${col(r, 'sales.revenue')}::numeric) AS total_revenue
+              ${TXN('s')} AS transaction_count,
+              ${REV('s')} AS total_revenue
             FROM ${s}.sales s
             LEFT JOIN ${s}.stores st
               ON ${s}.to_int_safe(s.${col(r, 'sales.store_id')}) = ${s}.to_int_safe(st.${col(r, 'stores.store_id')})
+            ${hesJoin('s')}
             WHERE s.${col(r, 'sales.date')} IS NOT NULL
-              AND s.${col(r, 'sales.revenue')} IS NOT NULL
             GROUP BY store_number, store_name, year_month, sale_year, sale_month
             ORDER BY store_number, year_month
           `);
@@ -286,14 +311,14 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
           await c.query(`
             CREATE MATERIALIZED VIEW ${s}.mv_sales_by_day AS
             SELECT
-              ${s}.parse_date_ddmmyyyy(${col(r, 'sales.date')}) AS sale_date,
-              COUNT(*) AS transaction_count,
-              SUM(${col(r, 'sales.revenue')}::numeric) AS total_revenue,
-              AVG(${col(r, 'sales.revenue')}::numeric) AS avg_revenue
-            FROM ${s}.sales
-            WHERE ${col(r, 'sales.date')} IS NOT NULL
-              AND ${col(r, 'sales.revenue')} IS NOT NULL
-              AND ${s}.parse_date_ddmmyyyy(${col(r, 'sales.date')}) >= CURRENT_DATE - INTERVAL '90 days'
+              ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}) AS sale_date,
+              ${TXN('s')} AS transaction_count,
+              ${REV('s')} AS total_revenue,
+              ${AVGREV('s')} AS avg_revenue
+            FROM ${s}.sales s
+            ${hesJoin('s')}
+            WHERE s.${col(r, 'sales.date')} IS NOT NULL
+              AND ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}) >= CURRENT_DATE - INTERVAL '90 days'
             GROUP BY sale_date
             ORDER BY sale_date
           `);
@@ -369,7 +394,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
               EXTRACT(YEAR  FROM ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}))::integer AS sale_year,
               EXTRACT(MONTH FROM ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}))::integer AS sale_month,
               SUM(s.${col(r, 'sales.quantity')}::numeric) AS total_quantity,
-              SUM(s.${col(r, 'sales.revenue')}::numeric) AS total_revenue
+              ${REV('s')} AS total_revenue
             FROM ${s}.sales s
             LEFT JOIN ${s}.items i ON s.${col(r, 'sales.item_code')} = i.${col(r, 'items.item_code')}
             WHERE s.${col(r, 'sales.date')} IS NOT NULL
@@ -408,7 +433,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
               s.${col(r, 'sales.item_code')} AS item_code,
               MAX(i.${col(r, 'items.item_name')}) AS item_name,
               SUM(s.${col(r, 'sales.quantity')}::numeric) AS total_quantity,
-              SUM(s.${col(r, 'sales.revenue')}::numeric) AS total_revenue
+              ${REV('s')} AS total_revenue
             FROM ${s}.sales s
             LEFT JOIN ${s}.stores st
               ON ${s}.to_int_safe(s.${col(r, 'sales.store_id')}) = ${s}.to_int_safe(st.${col(r, 'stores.store_id')})
@@ -443,13 +468,13 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
             CREATE MATERIALIZED VIEW ${s}.mv_sales_by_city AS
             SELECT
               c."ישוב" AS city,
-              COUNT(DISTINCT ${s}.to_int_safe(s.${col(r, 'sales.customer_id')})) AS customer_count,
-              COUNT(*) AS transaction_count,
-              SUM(s.${col(r, 'sales.revenue')}::numeric) AS total_revenue
+              COUNT(DISTINCT ${s}.to_int_safe(s.${col(r, 'sales.customer_id')})) FILTER (WHERE s.${col(r, 'sales.revenue')} IS NOT NULL) AS customer_count,
+              ${TXN('s')} AS transaction_count,
+              ${REV('s')} AS total_revenue
             FROM ${s}.sales s
             LEFT JOIN ${s}.customers c
               ON ${s}.to_int_safe(s.${col(r, 'sales.customer_id')}) = ${s}.to_int_safe(c.${col(r, 'customers.customer_id')})
-            WHERE s.${col(r, 'sales.revenue')} IS NOT NULL
+            ${hesJoin('s')}
             GROUP BY c."ישוב"
           `);
           await c.query(`

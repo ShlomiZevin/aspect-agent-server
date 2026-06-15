@@ -697,14 +697,16 @@ ORDER BY avg_order_value DESC
     - \`sale_date\` is DATE — use standard date comparisons: \`WHERE s.sale_date >= '2024-01-01'\`
     - \`store_id\` is INTEGER — join directly: \`ON s.store_id = st.store_id\`
     - \`customer_id\` is INTEGER — join directly: \`ON s.customer_id = c.customer_id\`
-    - \`revenue\` is NUMERIC — aggregate directly: \`SUM(s.revenue)\`
-    - \`cost\` is NUMERIC — use directly: \`SUM(s.cost)\`
+    - \`cost\` is NUMERIC (excl VAT) — use directly: \`SUM(s.cost)\`
     - \`quantity\` is NUMERIC — use directly: \`SUM(s.quantity)\`
     - \`item_code\` is TEXT — join with: \`ON s.item_code = i.item_code\`
-10. **VAT (מע"מ)** — report figures EXCLUDING VAT (ללא מע"מ) by default; that is the business standard here:
-    - \`revenue\` (= מכירה ללא מע"מ) and \`cost\` (= עלות ללא מע"מ) are already EXCLUDING VAT — always prefer these for sales/cost/profit.
-    - The sales table has NO ready-made VAT-inclusive sale column — do NOT invent one or multiply by a hardcoded rate. \`"אחוז מעם לתעודה"\` holds the per-document VAT %, only if a VAT-inclusive figure is ever explicitly requested.
-11. **Date Intervals**: Use standard PostgreSQL date arithmetic:
+10. **Revenue / total sales (פדיון) — must match the BI**: the revenue measure is the column \`"מכירות כולל שוברים ללא מעמ"\` (sales INCLUDING vouchers, EXCLUDING VAT). Aggregate it as \`SUM(NULLIF(s."מכירות כולל שוברים ללא מעמ"::text,'')::numeric)\`.
+    - The \`revenue\` column is sale EXCLUDING vouchers and under-reports vs the BI — do NOT use it for headline revenue/פדיון. Gross profit = revenue(incl vouchers) − \`cost\`.
+    - STRONGLY PREFER the materialized views' \`total_revenue\` (already computed from the incl-vouchers column) over aggregating the sales table directly.
+11. **VAT (מע"מ)** — all monetary figures are EXCLUDING VAT (ללא מע"מ); that is the business standard. There is NO VAT-inclusive sale column — do NOT invent one or multiply by a hardcoded rate. \`"אחוז מעם לתעודה"\` holds the per-document VAT %, only if a VAT-inclusive figure is ever explicitly requested.
+12. **Transactions / number of receipts (כמות עסקאות) — must match the BI**: NEVER use \`COUNT(*)\` on sales (that counts line items, ~2.7x too high). Use the materialized views' \`transaction_count\` (already BI-correct). For ad-hoc counts on the sales table, count distinct receipts EXCLUDING tax-invoices (חשבונית חיוב), which are listed in \`${schemaName}.hesbonithiuvi\`:
+    \`COUNT(DISTINCT s."UniqueInvoiceKey") FILTER (WHERE h."UniqueInvoiceKey" IS NULL) - COUNT(DISTINCT s."UniqueInvoiceKey") FILTER (WHERE h."UniqueInvoiceKey" IS NOT NULL)\` with \`LEFT JOIN ${schemaName}.hesbonithiuvi h ON h."UniqueInvoiceKey" = s."UniqueInvoiceKey"\`.
+13. **Date Intervals**: Use standard PostgreSQL date arithmetic:
     - Last 6 months: \`WHERE s.sale_date >= CURRENT_DATE - INTERVAL '6 months'\`
     - Specific month: \`WHERE TO_CHAR(s.sale_date, 'YYYY-MM') = '2025-03'\`
     - Group by month: \`TO_CHAR(s.sale_date, 'YYYY-MM') AS month\`
@@ -718,9 +720,14 @@ WHERE s.sale_date >= CURRENT_DATE - INTERVAL '6 months'
 SELECT * FROM ${schemaName}.sales s
 JOIN ${schemaName}.stores st ON s.store_id = st.store_id
 
-**CORRECT** (revenue aggregation — revenue is NUMERIC):
+**CORRECT** (monthly revenue + transactions — PREFER the materialized view, already BI-correct):
+SELECT year_month, total_revenue, transaction_count, customer_count
+FROM ${schemaName}.mv_sales_by_month
+WHERE sale_year = 2026 AND sale_month = 1
+
+**CORRECT** (ad-hoc revenue from the sales table — use the incl-vouchers column, NOT \`revenue\`):
 SELECT TO_CHAR(s.sale_date, 'YYYY-MM') AS month,
-       SUM(s.revenue) AS total_revenue
+       SUM(NULLIF(s."מכירות כולל שוברים ללא מעמ"::text,'')::numeric) AS total_revenue
 FROM ${schemaName}.sales s
 WHERE s.sale_date >= CURRENT_DATE - INTERVAL '6 months'
 GROUP BY month
