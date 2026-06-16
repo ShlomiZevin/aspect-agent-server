@@ -1,6 +1,7 @@
 const { Storage } = require('@google-cloud/storage');
 const csv = require('csv-parser');
 const { Readable } = require('stream');
+const { StringDecoder } = require('string_decoder');
 const path = require('path');
 const fs = require('fs');
 
@@ -203,9 +204,14 @@ class GCSService {
     return withTimeout(new Promise((resolve, reject) => {
       const file = this.storage.bucket(this.bucketName).file(filePath);
       const stream = file.createReadStream();
+      // Decode UTF-8 across chunk boundaries. A plain chunk.toString() decodes each
+      // chunk in isolation, so a multi-byte char split across two chunks becomes
+      // U+FFFD on BOTH halves — silently corrupting header (= column) names, e.g.
+      // "מכירות..." -> "מכ��רות...". StringDecoder buffers the partial bytes.
+      const decoder = new StringDecoder('utf8');
       let buffer = '';
       stream.on('data', chunk => {
-        buffer += chunk.toString();
+        buffer += decoder.write(chunk);
         const newlineIdx = buffer.indexOf('\n');
         if (newlineIdx !== -1) {
           stream.destroy(); // stop downloading after first line
@@ -235,7 +241,8 @@ class GCSService {
         reject(err);
       });
       stream.on('end', () => {
-        // File had no newline (single-line file)
+        // File had no newline (single-line file). Flush any bytes held by the decoder.
+        buffer += decoder.end();
         const headers = buffer.replace(/\r?\n$/, '').split(',').map(h => h.replace(/^\uFEFF/, '').trim());
         resolve(headers.filter(h => h.length > 0));
       });

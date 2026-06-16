@@ -16,7 +16,7 @@ const { createSchema } = require('./create-zer4u-schema');
 const { loadAllCSVFiles } = require('./load-csv-to-db-copy');
 const { createIndexes } = require('./create-zer4u-indexes-v2');
 const { createViews } = require('./create-materialized-views');
-const { buildColumnLookup } = require('./column-aliases');
+const { buildColumnLookup, normalizeKey } = require('./column-aliases');
 
 const GCS_FOLDER = 'zer4u/';
 
@@ -73,7 +73,7 @@ async function buildSchemasFromHeaders(gcsFiles, emitLog) {
 
       const columns = headers.map(h => {
         const csvName = h.replace(/^﻿/, '').trim();
-        const schema = lookup.get(csvName);
+        const schema = lookup.get(normalizeKey(csvName));  // byte-robust match (invisible Unicode)
         return {
           csvName,
           name: schema ? schema.dbName : csvName,  // English if known, original otherwise

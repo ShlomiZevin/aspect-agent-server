@@ -19,7 +19,7 @@ const ALIASES = {
   'sales.revenue':       ['revenue',     'מכירה ללא מעמ', 'מכירה ללא מע"מ'],
   // BI "פדיון" = sales INCLUDING vouchers (שוברים), excl VAT. Kept TEXT (cast at use).
   // This is the column the Qlik BI sums, so the agent must match it for revenue parity.
-  'sales.revenue_incl_vouchers': ['מכירות כולל שוברים ללא מעמ', 'מכירות כולל שוברים ללא מע"מ'],
+  'sales.revenue_incl_vouchers': ['revenue_incl_vouchers', 'מכירות כולל שוברים ללא מעמ', 'מכירות כולל שוברים ללא מע"מ'],
   'sales.cost':          ['cost',        'עלות ללא מעמ', 'עלות ללא מע"מ'],
   'sales.quantity':      ['quantity',    'כמות ברמת שורה', 'כמות'],
   'sales.invoice_key':   ['UniqueInvoiceKey'],
@@ -58,6 +58,10 @@ const COLUMN_SCHEMA = {
   'sales.item_code':   { type: 'TEXT',    dbName: 'item_code' },
   'sales.revenue':     { type: 'NUMERIC', dbName: 'revenue' },
   'sales.cost':        { type: 'NUMERIC', dbName: 'cost' },
+  // Give the BI incl-vouchers revenue column a stable ASCII name. Its raw Hebrew
+  // header carries invisible Unicode bytes that defeat exact-string matching, so it
+  // must be matched via normalizeKey() and renamed to English on import.
+  'sales.revenue_incl_vouchers': { type: 'TEXT', dbName: 'revenue_incl_vouchers' },
   'sales.quantity':    { type: 'NUMERIC', dbName: 'quantity' },
   // stores
   'stores.store_id':   { type: 'INTEGER', dbName: 'store_id' },
@@ -78,13 +82,29 @@ const COLUMN_SCHEMA = {
  * Returns a Map<string, { type, dbName }> where key is any known alias for
  * that concept in the given table (Hebrew or English).
  */
+/**
+ * Normalize a column name for byte-robust matching. Some Qlik CSV exports carry
+ * the same Hebrew header with different invisible bytes (NFC/NFD form, bidi/RTL
+ * marks, zero-width chars, NBSP/whitespace), so an exact === against the alias
+ * literal fails and the concept is silently missed. NFKC-fold, strip all bidi/
+ * zero-width/BOM marks, drop whitespace, lowercase. Keeps Hebrew + Latin letters
+ * and digits, so e.g. the "... YTD" variant stays distinct from the base column.
+ */
+function normalizeKey(s) {
+  return String(s)
+    .normalize('NFKC')
+    .replace(/[​-\u200F\u202A-\u202E\u2066-\u2069﻿]/g, '')
+    .replace(/\s+/g, '')
+    .toLowerCase();
+}
+
 function buildColumnLookup(tableName) {
   const lookup = new Map();
   for (const [concept, schema] of Object.entries(COLUMN_SCHEMA)) {
     if (!concept.startsWith(tableName + '.')) continue;
     const aliases = ALIASES[concept] || [];
     for (const alias of aliases) {
-      lookup.set(alias, schema);
+      lookup.set(normalizeKey(alias), schema);  // key by normalized form
     }
   }
   return lookup;
@@ -114,7 +134,17 @@ async function resolveColumns(pool, schemaName) {
   for (const [concept, aliases] of Object.entries(ALIASES)) {
     const table = concept.split('.')[0];
     const cols = tableColumns[table] || new Set();
-    resolved[concept] = aliases.find(a => cols.has(a)) ?? null;
+    const wanted = new Set(aliases.map(normalizeKey));
+    // Match on the normalized form but RETURN the actual column name (exact bytes)
+    // so the generated SQL references the real column. English aliases come first,
+    // so a post-migration English column resolves before any Hebrew variant.
+    let match = null;
+    for (const alias of aliases) {
+      const direct = [...cols].find(c => normalizeKey(c) === normalizeKey(alias));
+      if (direct) { match = direct; break; }
+    }
+    if (!match) match = [...cols].find(c => wanted.has(normalizeKey(c))) ?? null;
+    resolved[concept] = match;
   }
 
   return resolved;
@@ -130,4 +160,4 @@ function col(resolved, concept) {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-module.exports = { ALIASES, COLUMN_SCHEMA, buildColumnLookup, resolveColumns, col };
+module.exports = { ALIASES, COLUMN_SCHEMA, buildColumnLookup, resolveColumns, col, normalizeKey };
