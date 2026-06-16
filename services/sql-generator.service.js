@@ -41,7 +41,13 @@ class SQLGeneratorService {
 
       // Step 3: Build the prompt for Claude
       const systemPrompt = this._buildSystemPrompt(schemaName, schemaDescription, antiPatterns);
-      const userMessage = this._buildUserMessage(question);
+      let userMessage = this._buildUserMessage(question);
+
+      // Self-correction: if a previous attempt failed when executed, feed the exact
+      // PostgreSQL error + the failing SQL back so the model fixes that specific problem.
+      if (options.previousError) {
+        userMessage += `\n\nIMPORTANT — your previous query FAILED when executed against PostgreSQL. Return a corrected query that fixes this exact error.\n\nPrevious SQL:\n${options.previousSql || ''}\n\nDatabase error:\n${options.previousError}\n\nCommon fixes: qualify ambiguous columns with their table alias; cast TEXT numeric columns as NULLIF(col::text,'')::numeric before SUM/arithmetic; never reference a non-ASCII (Hebrew) column directly — use a materialized view's column instead; wrap every division denominator in NULLIF(x,0); when using GROUP BY, wrap measures in SUM(...). If the requested data genuinely does not exist in the schema, return a query that selects zero rows (e.g. WHERE false) rather than referencing a missing column.`;
+      }
 
       console.log(`   Calling Claude to generate SQL (${antiPatterns.length} anti-patterns loaded)...`);
 
