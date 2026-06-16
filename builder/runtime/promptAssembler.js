@@ -474,6 +474,16 @@ function assemblePrompt({
   template = template.split('{{this_field}}').join(thisFieldName);
   template = template.split('{{enum_values}}').join(enumValuesText);
 
+  // Multi-field inline counterpart — comma-separated list of wired
+  // field NAMES. Use in Reasoner / Interviewer prompts that drive more
+  // than one field per call, e.g. "Return JSON with one key per of
+  // {{these_fields}}". Resolves to '' when there are no wired fields,
+  // matching {{this_field}}'s no-field behaviour.
+  const theseFieldsText = isExtractor
+    ? fields.map(f => f && f.name).filter(Boolean).join(', ')
+    : '';
+  template = template.split('{{these_fields}}').join(theseFieldsText);
+
   // Parameterised tokens — same order as before.
   template = substituteParameterised(
     template,

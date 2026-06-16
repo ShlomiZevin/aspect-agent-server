@@ -115,6 +115,36 @@ const addonRuns = pgTable('addon_runs', {
   messageIdx:      index('addon_runs_message_idx').on(t.messageId),
 }));
 
+// Repo entries — shared library of reusable prompt strings (and, in
+// the future, whole addon configs). One table for both shapes so the
+// future addon-repo work doesn't need a schema migration; the `kind`
+// column tells consumers what's in `content`.
+//
+//   kind = 'prompt' → content = { "prompt": "<string>" }
+//   kind = 'addon'  → content = the AddonInstance config blob (future)
+//
+// Built-in defaults are NOT stored here — they're synthesised on the
+// client from the live `@addons/*.addon.json` imports so updating an
+// addon descriptor's `defaultConfig.prompt` lands automatically with
+// no DB migration. This table only holds USER-saved entries.
+//
+// `ownerUserId` is null for "global" entries (the current default
+// behaviour — everyone in this workspace sees them). Once per-user
+// scoping is needed we just start writing the value and add an OR
+// filter on read.
+const repoEntries = pgTable('repo_entries', {
+  id:           varchar('id', { length: 64 }).primaryKey(),
+  kind:         varchar('kind', { length: 20 }).notNull(),
+  pluginId:     varchar('plugin_id', { length: 100 }).notNull(),
+  name:         text('name').notNull(),
+  content:      jsonb('content').notNull(),
+  ownerUserId:  varchar('owner_user_id', { length: 64 }),
+  createdAt:    timestamp('created_at').defaultNow().notNull(),
+  updatedAt:    timestamp('updated_at').defaultNow().notNull(),
+}, t => ({
+  kindPluginIdx: index('repo_entries_kind_plugin_idx').on(t.kind, t.pluginId),
+}));
+
 module.exports = {
   builderProjects,
   builderAgents,
@@ -122,4 +152,5 @@ module.exports = {
   builderCrews,
   builderCrewVersions,
   addonRuns,
+  repoEntries,
 };

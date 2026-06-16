@@ -110,6 +110,10 @@ app.get('/health', async (req, res) => {
 // its more-specific prefix beats /api/builder/* below if the catch-all
 // projectsRoute ever grows an /alfred handler.
 app.use('/api/builder/alfred', require('./alfred/routes/alfredRoute'));
+// Repo — shared library of reusable prompts (kind='prompt') and,
+// later, whole addon configs (kind='addon'). Mounted on a specific
+// prefix so the catch-all projectsRoute below doesn't shadow it.
+app.use('/api/builder/repo', require('./builder/routes/repoRoute'));
 // Builder doc CRUD (creating projects/agents/crews, saving versions,
 // setting active/viewing pointers). All under /api/builder/*.
 app.use('/api/builder', require('./builder/routes/projectsRoute'));

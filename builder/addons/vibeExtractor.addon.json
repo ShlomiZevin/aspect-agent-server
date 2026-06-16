@@ -21,7 +21,7 @@
   "defaultPromptTemplate": "{{prompt}}",
 
   "defaultConfig": {
-    "prompt": "Read between the lines of the conversation. Capture the user's vibe — tone, mood, communication style, emotional state — based on patterns, not single statements.\n\n## Vibe schema\n{{fields_schema}}\n\n## Currently read\n{{fields_current}}\n\nGuidance:\n- Look at HOW the user writes: word choice, pacing, hedging, urgency, sarcasm.\n- Trust patterns over single utterances. One frustrated message doesn't mean an angry user; consistent terseness does.\n- Stay tentative when signals are mixed. Better to leave a field empty than to misread it.\n\nOUTPUT RULES:\n- ONLY include a key for a field if you actually have a confident read this turn.\n- If you couldn't read a vibe, OMIT the key — do not include it.\n- Never return null. Never return empty strings. Never return \"unknown\" or \"unclear\".\n- It is correct and expected to return {} when nothing was clear enough to capture.",
+    "prompt": "Read the user's vibe — tone, mood, communication style — from patterns across the conversation, not single messages.\n\nJSON keys MUST be the exact field names from the schema — character-for-character. Don't translate, alias, or rephrase them. Values can be in any language; keys must not.\n\n## Vibe to read\n{{fields_schema}}\n\n## Currently read\n{{fields_current}}\n\nOnly include keys you have a confident read for. Omit the rest. Never use null, empty strings, or placeholders. Return {} when nothing was clear enough.",
     "model":  { "providerId": "anthropic", "modelId": "claude-sonnet-4-6" },
     "name":   "",
     "extractsFields": []

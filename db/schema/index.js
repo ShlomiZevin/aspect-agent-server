@@ -480,5 +480,6 @@ module.exports = {
   builderCrews:           builderSchema.builderCrews,
   builderCrewVersions:    builderSchema.builderCrewVersions,
   addonRuns:              builderSchema.addonRuns,
+  repoEntries:            builderSchema.repoEntries,
   agentLog,
 };
