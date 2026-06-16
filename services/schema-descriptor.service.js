@@ -87,17 +87,27 @@ Format the description in a clear, structured way.`;
 
       console.log(`  Generating description with Claude...`);
 
-      const rawResult = await claudeService.sendOneShot(
-        systemPrompt,
-        userMessage,
-        {
-          model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514',
-          maxTokens: 8192
-        }
-      );
-      const description = (rawResult && typeof rawResult === 'object' && 'text' in rawResult) ? rawResult.text : rawResult;
-
-      console.log(`  ✅ Generated ${description.length} characters`);
+      // Claude only PRETTIFIES the already-complete raw schema map (rawSchemaText
+      // holds every table/MV's exact columns + samples). If that call fails — e.g.
+      // a deprecated/unavailable model id — fall back to the raw map so the SQL
+      // generator ALWAYS gets the real, current columns and never has to guess.
+      // Pinned to a current model on purpose: env CLAUDE_MODEL has historically held
+      // a now-404 id (claude-sonnet-4-20250514), which silently broke regeneration.
+      const DESCRIPTOR_MODEL = process.env.SCHEMA_DESCRIPTOR_MODEL || 'claude-sonnet-4-6';
+      let description;
+      try {
+        const rawResult = await claudeService.sendOneShot(
+          systemPrompt,
+          userMessage,
+          { model: DESCRIPTOR_MODEL, maxTokens: 8192 }
+        );
+        description = (rawResult && typeof rawResult === 'object' && 'text' in rawResult) ? rawResult.text : rawResult;
+        if (!description || !String(description).trim()) throw new Error('empty description from model');
+        console.log(`  ✅ Generated ${description.length} characters (model ${DESCRIPTOR_MODEL})`);
+      } catch (err) {
+        console.warn(`  ⚠️  Claude prettify failed (${err.message}) — falling back to raw deterministic schema map`);
+        description = rawSchemaText;
+      }
 
       return description;
 
