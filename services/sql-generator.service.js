@@ -726,6 +726,10 @@ JOIN (
 WHERE sm.sale_year = EXTRACT(YEAR FROM CURRENT_DATE)::int
 ORDER BY sm.year_month DESC, pct_of_target DESC
 \`\`\`
+17. **Inventory questions — use \`mv_inventory_by_item\`** (columns: \`item_code\`, \`item_name\`, \`total_stock\`, \`total_value\`, \`min_stock\`). The base \`inventory\` table has only \`InventoryKey\` + non-ASCII columns — never query it directly. \`mv_inventory_by_item\` is item-level across ALL stores; there is NO reliable per-store stock breakdown, so if a per-store split is requested, say it isn't available rather than guessing columns.
+18. **Concepts the data does NOT support — answer in words, do NOT emit guessing SQL** (emitting SQL here only produces "column does not exist" / timeouts):
+    - **Payment method / payment type**: not tracked — there is no payment-method column. Tell the user.
+    - **Discount totals**: discount lives only in non-ASCII text columns with no materialized view and cannot be reliably aggregated — tell the user discount totals aren't available.
 
 ## Important Examples
 
