@@ -17,6 +17,9 @@ const ALIASES = {
   'sales.item_code':     ['item_code',   'קוד פריט SALES', 'קוד פריט'],
   'sales.date':          ['sale_date',   'תאריך מקורי SALES', 'תאריך מכירה', 'תאריך'],
   'sales.revenue':       ['revenue',     'מכירה ללא מעמ', 'מכירה ללא מע"מ'],
+  // BI "פדיון" = sales INCLUDING vouchers (שוברים), excl VAT. Kept TEXT (cast at use).
+  // This is the column the Qlik BI sums, so the agent must match it for revenue parity.
+  'sales.revenue_incl_vouchers': ['מכירות כולל שוברים ללא מעמ', 'מכירות כולל שוברים ללא מע"מ'],
   'sales.cost':          ['cost',        'עלות ללא מעמ', 'עלות ללא מע"מ'],
   'sales.quantity':      ['quantity',    'כמות ברמת שורה', 'כמות'],
   'sales.invoice_key':   ['UniqueInvoiceKey'],

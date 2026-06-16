@@ -54,77 +54,99 @@ class DataQueryService {
     console.log(`Data Query: question for schema "${customerSchema}": "${question}"`);
 
     const startTime = Date.now();
-    let sql, explanation, confidence;
+    // Up to 3 attempts: the LLM occasionally emits SQL that errors at execution
+    // (ambiguous column, SUM on a TEXT column, a wrong column name). On a non-timeout
+    // execution error we feed the exact DB error back to the generator so it fixes
+    // that specific problem, then re-run. Only the FINAL outcome is logged, so a
+    // question that succeeds on retry records no error.
+    const MAX_ATTEMPTS = 3;
+    let prevError = null, prevSql = null;
 
-    // Step 1: Generate SQL — no DB connection held during the LLM call
-    try {
-      const generated = await sqlGeneratorService.generateSQL(question, customerSchema, {
-        agentName: llmAgentName || agentName,
-        conversationId,
-        userId,
-      });
-      sql = generated.sql;
-      explanation = generated.explanation;
-      confidence = generated.confidence;
-      // Safety guard: sql-generator validates too, but enforce here as the last line of defence
-      this._validateSQL(sql);
-      // Ensure the query can't return more rows than the caller allows
-      sql = this._enforceLimit(sql, maxRows);
-      console.log(`   Generated SQL (confidence: ${confidence}): ${sql}`);
-    } catch (error) {
-      const duration = Date.now() - startTime;
-      slowQueryService.logSlowQuery({
-        agentName, schemaName: customerSchema, question, sql: '',
-        durationMs: duration, queryType: 'error', errorMessage: error.message,
-      }).catch(() => {});
-      return { error: true, timeout: false, message: error.message, sql: null, explanation: null, confidence: null, data: [], rowCount: 0 };
-    }
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      let sql, explanation, confidence;
 
-    // Step 2: Execute — connection acquired only now
-    const client = await this.pool.connect();
-    try {
-      await client.query(`SET statement_timeout = ${timeout}`);
-      const result = await client.query(sql);
-      const duration = Date.now() - startTime;
-
-      console.log(`   Query done in ${duration}ms, ${result.rows.length} rows`);
-
-      if (duration > slowQueryService.threshold) {
+      // Step 1: Generate SQL — no DB connection held during the LLM call
+      try {
+        const generated = await sqlGeneratorService.generateSQL(question, customerSchema, {
+          agentName: llmAgentName || agentName,
+          conversationId,
+          userId,
+          previousError: attempt > 1 ? prevError : undefined,
+          previousSql: attempt > 1 ? prevSql : undefined,
+        });
+        sql = generated.sql;
+        explanation = generated.explanation;
+        confidence = generated.confidence;
+        // Safety guard: sql-generator validates too, but enforce here as the last line of defence
+        this._validateSQL(sql);
+        // Ensure the query can't return more rows than the caller allows
+        sql = this._enforceLimit(sql, maxRows);
+        console.log(`   [attempt ${attempt}] Generated SQL (confidence: ${confidence}): ${sql}`);
+      } catch (error) {
+        const duration = Date.now() - startTime;
         slowQueryService.logSlowQuery({
-          agentName, schemaName: customerSchema, question, sql,
-          durationMs: duration, rowsReturned: result.rows.length, queryType: 'slow',
+          agentName, schemaName: customerSchema, question, sql: '',
+          durationMs: duration, queryType: 'error', errorMessage: error.message,
         }).catch(() => {});
+        return { error: true, timeout: false, message: error.message, sql: null, explanation: null, confidence: null, data: [], rowCount: 0 };
       }
 
-      return {
-        sql, explanation, confidence,
-        data: result.rows,
-        rowCount: result.rows.length,
-        duration,
-        columns: result.fields?.map(f => f.name) || [],
-      };
+      // Step 2: Execute — connection acquired only now
+      const client = await this.pool.connect();
+      try {
+        await client.query(`SET statement_timeout = ${timeout}`);
+        const result = await client.query(sql);
+        const duration = Date.now() - startTime;
 
-    } catch (error) {
-      const duration = Date.now() - startTime;
-      const isTimeout = error.message?.includes('canceling statement due to statement timeout')
-        || error.message?.includes('Query read timeout')
-        || error.code === '57014';
+        console.log(`   Query done in ${duration}ms, ${result.rows.length} rows (attempt ${attempt})`);
 
-      slowQueryService.logSlowQuery({
-        agentName, schemaName: customerSchema, question, sql: sql ?? '',
-        durationMs: duration, queryType: isTimeout ? 'timeout' : 'error',
-        errorMessage: error.message,
-      }).catch(() => {});
+        if (duration > slowQueryService.threshold) {
+          slowQueryService.logSlowQuery({
+            agentName, schemaName: customerSchema, question, sql,
+            durationMs: duration, rowsReturned: result.rows.length, queryType: 'slow',
+          }).catch(() => {});
+        }
 
-      return {
-        error: true, timeout: isTimeout,
-        message: isTimeout ? this._getTimeoutMessage() : error.message,
-        sql, explanation, confidence, data: [], rowCount: 0,
-      };
+        return {
+          sql, explanation, confidence,
+          data: result.rows,
+          rowCount: result.rows.length,
+          duration,
+          columns: result.fields?.map(f => f.name) || [],
+        };
 
-    } finally {
-      await client.query('RESET statement_timeout').catch(() => {});
-      client.release();
+      } catch (error) {
+        const duration = Date.now() - startTime;
+        const isTimeout = error.message?.includes('canceling statement due to statement timeout')
+          || error.message?.includes('Query read timeout')
+          || error.code === '57014';
+
+        // Retry on a fixable (non-timeout) error while attempts remain; timeouts get one
+        // retry too (the model may rewrite to a materialized view), but no more.
+        const canRetry = attempt < MAX_ATTEMPTS && (!isTimeout || attempt < 2);
+        if (canRetry) {
+          console.log(`   [attempt ${attempt}] SQL ${isTimeout ? 'timeout' : 'error'}, retrying: ${error.message}`);
+          prevError = isTimeout ? `Query timed out after ${timeout}ms — rewrite it to be cheaper (use a materialized view, narrow the date range).` : error.message;
+          prevSql = sql;
+          continue;
+        }
+
+        slowQueryService.logSlowQuery({
+          agentName, schemaName: customerSchema, question, sql: sql ?? '',
+          durationMs: duration, queryType: isTimeout ? 'timeout' : 'error',
+          errorMessage: error.message,
+        }).catch(() => {});
+
+        return {
+          error: true, timeout: isTimeout,
+          message: isTimeout ? this._getTimeoutMessage() : error.message,
+          sql, explanation, confidence, data: [], rowCount: 0,
+        };
+
+      } finally {
+        await client.query('RESET statement_timeout').catch(() => {});
+        client.release();
+      }
     }
   }
 
