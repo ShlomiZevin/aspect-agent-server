@@ -26,9 +26,17 @@
       "token": "{{persona}}",
       "category": "section",
       "trigger": "^",
-      "render": "Agent persona text under a ## Persona heading. Empty if the agent's persona field is blank.",
+      "render": "Every persona applicable to THIS addon (its appliesTo includes the addon's pluginId or '*'), concatenated in the Personas-page order. One → ## Persona heading; several → ## Persona: NAME blocks. Empty if none apply.",
       "example": "{{persona}}",
-      "picker_label": "Persona"
+      "picker_label": "Persona (applicable)"
+    },
+    {
+      "token": "{{persona:NAME}}",
+      "category": "value",
+      "trigger": "^",
+      "render": "The content of one specific persona by name, inline (no heading). Regardless of its appliesTo. Left in place if NAME doesn't exist.",
+      "example": "{{persona:sales}}",
+      "picker_label": "Persona by name"
     },
     {
       "token": "{{thinking}}",

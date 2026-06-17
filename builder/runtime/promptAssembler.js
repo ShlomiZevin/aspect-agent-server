@@ -82,10 +82,41 @@ function substituteParameterised(template, prefix, resolve, inline) {
   });
 }
 
-function buildPersonaBlock(personaText) {
-  const text = (personaText || '').trim();
-  if (!text) return '';
-  return `## Persona\n${text}`;
+/**
+ * Personas applicable to an addon via the bare `{{persona}}` token: a
+ * persona applies when its `appliesTo` includes the addon's pluginId or
+ * the `'*'` wildcard. Order follows the personas array (the Personas
+ * page's list order).
+ */
+function applicablePersonas(personas, pluginId) {
+  const list = Array.isArray(personas) ? personas : [];
+  return list.filter(p => {
+    const a = Array.isArray(p?.appliesTo) ? p.appliesTo : [];
+    return a.includes('*') || a.includes(pluginId);
+  });
+}
+
+/** Find one persona by name (for `{{persona:NAME}}`). */
+function findPersonaByName(personas, name) {
+  const list = Array.isArray(personas) ? personas : [];
+  return list.find(p => p && p.name === name) || null;
+}
+
+/**
+ * Build the `## Persona` block for the bare `{{persona}}` token from the
+ * applicable personas. Empty/blank personas are dropped.
+ *   - 0 → '' (token collapses).
+ *   - 1 → `## Persona\n<content>`  (unchanged from the single-persona era).
+ *   - ≥2 → each as `## Persona: <name>\n<content>`, blank-line separated,
+ *          so the LLM can tell them apart.
+ */
+function buildPersonaBlock(personas) {
+  const list = (Array.isArray(personas) ? personas : [])
+    .map(p => ({ name: p && p.name, content: ((p && p.content) || '').trim() }))
+    .filter(p => p.content);
+  if (list.length === 0) return '';
+  if (list.length === 1) return `## Persona\n${list[0].content}`;
+  return list.map(p => `## Persona: ${p.name}\n${p.content}`).join('\n\n');
 }
 
 function buildMemoryBlock(domainList, valuesByDomain) {
@@ -385,7 +416,7 @@ function resolveDcInline(rawName, { enums, fieldsForDc, fieldValueOf, onDcResolv
  *
  * @param {object} args
  * @param {object} args.instance       — AddonInstance
- * @param {string} args.agentPersona
+ * @param {Array}  args.personas — agent personas ({id,name,content,appliesTo}); `{{persona}}` uses those applicable to this addon, `{{persona:NAME}}` picks one by name
  * @param {function} args.memoryValuesByDomain
  * @param {function} args.thinkingValuesByDomain
  * @param {function} args.fieldValueOf
@@ -404,7 +435,7 @@ function resolveDcInline(rawName, { enums, fieldsForDc, fieldValueOf, onDcResolv
  */
 function assemblePrompt({
   instance,
-  agentPersona,
+  personas,
   memoryValuesByDomain,
   memoryDomainList,
   thinkingValuesByDomain,
@@ -444,9 +475,26 @@ function assemblePrompt({
     /* inline */ true,
   );
 
+  // Named-persona tokens `{{persona:NAME}}` — resolve to that persona's
+  // raw content (composable inline). Unknown name → left in place so the
+  // author sees the typo. Done before the flat pass so a bare
+  // `{{persona}}` isn't mistaken for `{{persona:...}}` and vice-versa
+  // (they're disjoint, but keeping persona resolution together reads
+  // clearly).
+  template = substituteParameterised(
+    template,
+    'persona',
+    name => {
+      const p = findPersonaByName(personas, name);
+      if (!p) return null;
+      return (p.content || '').trim();
+    },
+    /* inline */ true,
+  );
+
   // Flat whole-section tokens.
   template = substitute(template, {
-    persona:        buildPersonaBlock(agentPersona),
+    persona:        buildPersonaBlock(applicablePersonas(personas, instance.pluginId)),
     memory:         buildMemoryBlock(memoryDomainList   || (() => []), memoryReader),
     thinking:       buildThinkingBlock(thinkingDomainList || (() => []), thinkingReader),
     summary:        buildSummaryBlock(summaries),

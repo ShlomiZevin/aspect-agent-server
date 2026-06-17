@@ -33,6 +33,26 @@ function drizzle() {
   return db.getDrizzle();
 }
 
+/**
+ * Normalize an agent body's personas on READ. If `personas` is already
+ * an array (incl. an explicit empty one) it's respected. If absent
+ * (legacy single-persona agents), seed one general persona named
+ * "main" carrying the legacy `persona` string and applied to ALL
+ * addons (`'*'`). This surfaces the old persona as a first-class,
+ * editable persona instead of leaving it invisible — and is idempotent
+ * (once saved, `personas` exists so this is a no-op). The legacy
+ * `persona` string is left untouched as a runtime fallback.
+ */
+function withPersonas(body) {
+  if (!body || typeof body !== 'object') return body;
+  if (Array.isArray(body.personas)) return body;
+  const legacy = typeof body.persona === 'string' ? body.persona : '';
+  return {
+    ...body,
+    personas: [{ id: 'persona_main', name: 'main', content: legacy, appliesTo: ['*'] }],
+  };
+}
+
 // ─── Hydration (denormalised "ProjectDoc" matching the client shape) ──
 
 /**
@@ -66,7 +86,7 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
 
   // Build the working-copy agent fields from the viewing version's body.
   const viewing = agentVersions.find(v => v.id === agent.viewingVersionId);
-  const agentBody = viewing ? viewing.body : {};
+  const agentBody = withPersonas(viewing ? viewing.body : {});
 
   // All crews of this agent.
   const crewRows = await d.select()
@@ -123,6 +143,7 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       name:            agentBody.name           || agent.slug,
       spec:            agentBody.spec           || '',
       persona:         agentBody.persona        || '',
+      personas:        Array.isArray(agentBody.personas) ? agentBody.personas : [],
       defaultCrewId:   agentBody.defaultCrewId,
       fields:          Array.isArray(agentBody.fields)          ? agentBody.fields          : [],
       domains:         Array.isArray(agentBody.domains)         ? agentBody.domains         : [],
@@ -136,7 +157,9 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
         number:       v.number,
         description:  v.description || undefined,
         createdAt:    v.createdAt.toISOString(),
-        body:         v.body,
+        // Seed personas symmetrically with the working copy so a legacy
+        // agent doesn't read as "dirty" the moment it loads.
+        body:         withPersonas(v.body),
       })),
       activeVersionId:  agent.activeVersionId,
       viewingVersionId: agent.viewingVersionId,

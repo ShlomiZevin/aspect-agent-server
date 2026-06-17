@@ -155,7 +155,15 @@ async function runOnce({
     overrideCrewBody: (currentCrewId && crewBodyOverrides[currentCrewId]) || overrideCrewBody,
   });
 
-  const agentPersona     = runnable.agent.body?.persona || '';
+  // Multi-persona: prefer the named `personas[]`; fall back to the
+  // legacy single `persona` string (seeded as one general persona
+  // applied to all addons) so agents saved before multi-persona keep
+  // working. The assembler picks which apply per addon via `appliesTo`.
+  const agentPersonas    = Array.isArray(runnable.agent.body?.personas)
+    ? runnable.agent.body.personas
+    : (runnable.agent.body?.persona
+        ? [{ id: 'persona_main', name: 'main', content: runnable.agent.body.persona, appliesTo: ['*'] }]
+        : []);
   const agentParameters  = Array.isArray(runnable.agent.body?.parameters) ? runnable.agent.body.parameters : [];
   const agentEnums       = Array.isArray(runnable.agent.body?.enums)      ? runnable.agent.body.enums      : [];
   const agentNameForLogs = runnable.agent.body?.name || agentSlug;
@@ -213,7 +221,7 @@ async function runOnce({
     userMessage,
     crewLabel,
     agentNameForLogs,
-    agentPersona,
+    agentPersonas,
     agentParameters,
     agentEnums,
     memory,

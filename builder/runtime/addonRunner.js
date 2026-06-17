@@ -71,7 +71,7 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
     userMessage,
     crewLabel,
     agentNameForLogs,
-    agentPersona,
+    agentPersonas,
     agentParameters,
     agentEnums,
     memory,
@@ -186,7 +186,7 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
   try {
     prompt = assemblePrompt({
       instance,
-      agentPersona,
+      personas: agentPersonas,
       memoryValuesByDomain,
       memoryDomainList,
       thinkingValuesByDomain,
