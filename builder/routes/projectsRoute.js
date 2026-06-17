@@ -96,6 +96,47 @@ router.post('/projects', async (req, res) => {
   }
 });
 
+// ─── Agent shell mutations (rename / move / archive) ──────────────
+
+/**
+ * PATCH /api/builder/agents/:agentId
+ *   Body may carry any of:
+ *     { name, slug }        → rename (display name + URL slug)
+ *     { workspaceId|null }  → move into a workspace / to top level
+ *     { archived: bool }    → archive / restore
+ *   Applied in that order. Returns { ok, slug? } (new slug on rename).
+ */
+router.patch('/agents/:agentId', async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const body = req.body || {};
+    let result = { ok: true };
+
+    if (body.name !== undefined || body.slug !== undefined) {
+      const renamed = await projects.renameAgent({
+        agentId, name: body.name, slug: body.slug,
+      });
+      result.slug = renamed.slug;
+      result.name = renamed.name;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'workspaceId')) {
+      await projects.moveAgent({ agentId, workspaceId: body.workspaceId || null });
+    }
+    if (typeof body.archived === 'boolean') {
+      await projects.setAgentArchived({ agentId, archived: body.archived });
+    }
+
+    res.json(result);
+  } catch (err) {
+    const status = err.code === 'slug_taken' ? 409
+      : err.code === 'bad_input' ? 400
+      : err.code === 'not_found' ? 404
+      : 500;
+    if (status === 500) console.error('[builder] PATCH agent failed:', err);
+    res.status(status).json({ error: err.message, code: err.code });
+  }
+});
+
 // ─── Agent version actions ────────────────────────────────────────
 
 /**

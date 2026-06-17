@@ -114,6 +114,9 @@ app.use('/api/builder/alfred', require('./alfred/routes/alfredRoute'));
 // later, whole addon configs (kind='addon'). Mounted on a specific
 // prefix so the catch-all projectsRoute below doesn't shadow it.
 app.use('/api/builder/repo', require('./builder/routes/repoRoute'));
+// Workspaces — named folders grouping agents on the home page.
+// Specific prefix so the catch-all projectsRoute below doesn't shadow it.
+app.use('/api/builder/workspaces', require('./builder/routes/workspacesRoute'));
 // Builder doc CRUD (creating projects/agents/crews, saving versions,
 // setting active/viewing pointers). All under /api/builder/*.
 app.use('/api/builder', require('./builder/routes/projectsRoute'));

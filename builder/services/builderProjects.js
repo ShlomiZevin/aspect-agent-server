@@ -163,6 +163,8 @@ async function listProjects({ ownerUserId: _ownerUserId } = {}) {
     projectName: builderProjects.name,
     agentId:     builderAgents.id,
     agentSlug:   builderAgents.slug,
+    workspaceId: builderAgents.workspaceId,
+    archivedAt:  builderAgents.archivedAt,
     agentBody:   builderAgentVersions.body,
     updatedAt:   builderAgents.updatedAt,
   })
@@ -177,13 +179,101 @@ async function listProjects({ ownerUserId: _ownerUserId } = {}) {
   return rows.map(r => ({
     projectId:   r.projectId,
     projectName: r.projectName,
+    agentId:     r.agentId,
     agentSlug:   r.agentSlug,
+    // null = top level. The home page groups by this.
+    workspaceId: r.workspaceId || null,
+    // null = live; ISO string = archived. The home page splits the
+    // Live / Archived tabs on this.
+    archivedAt:  r.archivedAt ? r.archivedAt.toISOString() : null,
     // Active version body holds the canonical agent name. Fall back
     // to the slug when the agent has no versions yet (shouldn't happen
     // in practice — bootstrap creates v1 — but cheap defensive default).
     agentName:   (r.agentBody && r.agentBody.name) || r.agentSlug,
     updatedAt:   r.updatedAt.toISOString(),
   }));
+}
+
+// ─── Agent shell mutations (rename / move / archive) ──────────────
+
+/**
+ * Rename an agent. Changes both the display name and the slug (the
+ * URL). The name + slug live inside the versioned AgentBody, so we
+ * update the active AND viewing version bodies (so the home list and
+ * the open builder agree) plus the slug column on the shell.
+ *
+ * Slugs must be globally unique — hydrateProject / resolveRunnable
+ * look an agent up by slug alone. Refuses a slug already taken by
+ * another agent (throws a labelled error → 409).
+ */
+async function renameAgent({ agentId, name, slug }) {
+  const d = drizzle();
+  const trimmedName = (name || '').trim();
+  const trimmedSlug = (slug || '').trim();
+  if (!trimmedName) {
+    const e = new Error('Agent name cannot be empty'); e.code = 'bad_input'; throw e;
+  }
+  if (!trimmedSlug) {
+    const e = new Error('Agent slug cannot be empty'); e.code = 'bad_input'; throw e;
+  }
+
+  await d.transaction(async tx => {
+    const agentRows = await tx.select().from(builderAgents)
+      .where(eq(builderAgents.id, agentId)).limit(1);
+    if (agentRows.length === 0) {
+      const e = new Error('Agent not found'); e.code = 'not_found'; throw e;
+    }
+    const agent = agentRows[0];
+
+    // Global slug uniqueness — another agent already on this slug blocks it.
+    if (trimmedSlug !== agent.slug) {
+      const clash = await tx.select({ id: builderAgents.id }).from(builderAgents)
+        .where(eq(builderAgents.slug, trimmedSlug)).limit(1);
+      if (clash.length > 0 && clash[0].id !== agentId) {
+        const e = new Error(`The URL "/${trimmedSlug}" is already used by another agent.`);
+        e.code = 'slug_taken';
+        throw e;
+      }
+    }
+
+    // Update name + slug inside the active and viewing version bodies.
+    const versionIds = [...new Set(
+      [agent.activeVersionId, agent.viewingVersionId].filter(Boolean),
+    )];
+    for (const vid of versionIds) {
+      const verRows = await tx.select().from(builderAgentVersions)
+        .where(eq(builderAgentVersions.id, vid)).limit(1);
+      if (verRows.length === 0) continue;
+      const body = { ...(verRows[0].body || {}), name: trimmedName, slug: trimmedSlug };
+      await tx.update(builderAgentVersions)
+        .set({ body, updatedAt: new Date() })
+        .where(eq(builderAgentVersions.id, vid));
+    }
+
+    // Slug column on the shell + project name (kept in sync for the list).
+    await tx.update(builderAgents)
+      .set({ slug: trimmedSlug, updatedAt: new Date() })
+      .where(eq(builderAgents.id, agentId));
+    await tx.update(builderProjects)
+      .set({ name: trimmedName, updatedAt: new Date() })
+      .where(eq(builderProjects.id, agent.projectId));
+  });
+
+  return { slug: trimmedSlug, name: trimmedName };
+}
+
+/** Move an agent into a workspace (or to top level when workspaceId is null). */
+async function moveAgent({ agentId, workspaceId }) {
+  await drizzle().update(builderAgents)
+    .set({ workspaceId: workspaceId || null, updatedAt: new Date() })
+    .where(eq(builderAgents.id, agentId));
+}
+
+/** Archive (archived=true) or restore (archived=false) an agent. */
+async function setAgentArchived({ agentId, archived }) {
+  await drizzle().update(builderAgents)
+    .set({ archivedAt: archived ? new Date() : null, updatedAt: new Date() })
+    .where(eq(builderAgents.id, agentId));
 }
 
 // ─── Bootstrap a new project ──────────────────────────────────────
@@ -548,6 +638,16 @@ async function resolveRunnable({
   }
 
   const agent = agentRow[0].builder_agents;
+
+  // Archived agents are blocked from running (the home page hides them
+  // and they can't be talked to until restored). Labelled so the route
+  // can surface a clean reason.
+  if (agent.archivedAt) {
+    const e = new Error('This agent is archived. Restore it from the builder home page to use it.');
+    e.code = 'archived';
+    throw e;
+  }
+
   const agentVersionId = mode === 'active' ? agent.activeVersionId : agent.viewingVersionId;
   if (!agentVersionId) throw new Error('Agent has no version pointer');
 
@@ -635,6 +735,9 @@ module.exports = {
   hydrateProject,
   listProjects,
   createProject,
+  renameAgent,
+  moveAgent,
+  setAgentArchived,
   deleteAgentVersion,
   deleteCrewVersion,
   saveAgentVersion,

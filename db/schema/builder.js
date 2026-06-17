@@ -34,13 +34,30 @@ const builderProjects = pgTable('builder_projects', {
   ownerIdx: index('builder_projects_owner_idx').on(t.ownerUserId),
 }));
 
+// Workspace — a named folder grouping agents. Global/shared for now
+// (owner_user_id stored but not used to filter during the no-auth
+// build phase, same as builder_projects).
+const builderWorkspaces = pgTable('builder_workspaces', {
+  id:           varchar('id', { length: 64 }).primaryKey(),
+  ownerUserId:  varchar('owner_user_id', { length: 64 }),
+  name:         text('name').notNull().default(''),
+  createdAt:    timestamp('created_at').defaultNow().notNull(),
+  updatedAt:    timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Agent shell — identity + version pointers. The body fields
 // (name, slug, spec, persona, defaultCrewId) live in
 // builder_agent_versions and are recovered via the viewing pointer.
+//
+// `workspaceId` (nullable, null = top level) groups the agent under a
+// builder_workspaces folder. `archivedAt` (nullable, null = live)
+// hides the agent from the live grid AND blocks it from running.
 const builderAgents = pgTable('builder_agents', {
   id:               varchar('id', { length: 64 }).primaryKey(),
   projectId:        varchar('project_id', { length: 64 }).notNull(),
   slug:             varchar('slug', { length: 100 }).notNull(),
+  workspaceId:      varchar('workspace_id', { length: 64 }),
+  archivedAt:       timestamp('archived_at'),
   activeVersionId:  varchar('active_version_id', { length: 64 }),
   viewingVersionId: varchar('viewing_version_id', { length: 64 }),
   createdAt:        timestamp('created_at').defaultNow().notNull(),
@@ -48,6 +65,8 @@ const builderAgents = pgTable('builder_agents', {
 }, t => ({
   projectSlugUnique: uniqueIndex('builder_agents_project_slug_unique').on(t.projectId, t.slug),
   projectIdx:        index('builder_agents_project_idx').on(t.projectId),
+  workspaceIdx:      index('builder_agents_workspace_idx').on(t.workspaceId),
+  archivedIdx:       index('builder_agents_archived_idx').on(t.archivedAt),
 }));
 
 // Agent version body. Each row = one snapshot of the agent shell.
@@ -147,6 +166,7 @@ const repoEntries = pgTable('repo_entries', {
 
 module.exports = {
   builderProjects,
+  builderWorkspaces,
   builderAgents,
   builderAgentVersions,
   builderCrews,

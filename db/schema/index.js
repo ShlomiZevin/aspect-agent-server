@@ -475,6 +475,7 @@ module.exports = {
   libraryFiles,
   // V2 builder
   builderProjects:        builderSchema.builderProjects,
+  builderWorkspaces:      builderSchema.builderWorkspaces,
   builderAgents:          builderSchema.builderAgents,
   builderAgentVersions:   builderSchema.builderAgentVersions,
   builderCrews:           builderSchema.builderCrews,
