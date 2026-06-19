@@ -116,42 +116,97 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
   // and persist an addon_runs row with status 'skipped' so the
   // historical view stays consistent.
   const filter = instance.context?.filter;
-  if (filter && Array.isArray(filter.conditions) && filter.conditions.length > 0) {
-    const evalResult = evaluateConditions(memory, filter.conditions);
-    const mode = filter.mode === 'exclude' ? 'exclude' : 'include';
-    const shouldRun = mode === 'include' ? evalResult.ok : !evalResult.ok;
-    if (!shouldRun) {
-      const skipPayload = {
-        instanceId:  instance.instanceId,
-        label:       meta.label,
-        modelLabel,
-        lane:        instance.lane,
-        filter: {
-          mode,
-          evaluations: evalResult.evaluations,
-        },
-        // Single-line summary the card can use as a tooltip / chip.
-        reason: mode === 'include'
-          ? `Filter (include) did not match: ${(evalResult.evaluations.find(e => !e.ok) || {}).why || 'no condition matched'}`
-          : `Filter (exclude) matched — addon suppressed: ${(evalResult.evaluations.find(e => e.ok) || {}).why || ''}`,
-        durationMs:  Date.now() - addonStart,
-      };
-      emit('addon.skipped', skipPayload);
-      try {
-        await addonRunsStore.insertRun({
-          conversationId,
-          messageId: assistantMessageId,
-          instance,
-          status: 'skipped',
-          startedAt: new Date(addonStart),
-          endedAt:   new Date(),
-          durationMs: skipPayload.durationMs,
-          runData:   skipPayload,
-        });
-      } catch (err) {
-        console.error('[addonRunner] skipped addon_run insert failed:', err.message);
+  if (filter) {
+    // ── Cap check FIRST ──────────────────────────────────────────
+    // The cap is independent of the condition list and its
+    // include/exclude polarity. Once hit, skip regardless of
+    // condition state.
+    const cap = Number(filter.cap);
+    const hasCap = Number.isFinite(cap) && cap > 0;
+    if (hasCap) {
+      const counts = (memory && memory.runCounts) || {};
+      const seen = Number(counts[instance.instanceId]) || 0;
+      if (seen >= cap) {
+        const skipPayload = {
+          instanceId:  instance.instanceId,
+          label:       meta.label,
+          modelLabel,
+          lane:        instance.lane,
+          filter: {
+            cap,
+            seen,
+            // Surface a synthetic single-condition evaluation so
+            // existing skip-card UI keeps reading nicely.
+            evaluations: [{
+              type: 'cap',
+              ok:   false,
+              why:  `already ran ${seen} time${seen === 1 ? '' : 's'} (cap ${cap})`,
+            }],
+          },
+          reason:      `Cap reached: ran ${seen} of ${cap} allowed times`,
+          durationMs:  Date.now() - addonStart,
+        };
+        emit('addon.skipped', skipPayload);
+        try {
+          await addonRunsStore.insertRun({
+            conversationId,
+            messageId: assistantMessageId,
+            instance,
+            status: 'skipped',
+            startedAt: new Date(addonStart),
+            endedAt:   new Date(),
+            durationMs: skipPayload.durationMs,
+            runData:   skipPayload,
+          });
+        } catch (err) {
+          console.error('[addonRunner] skipped addon_run insert failed:', err.message);
+        }
+        return { result: null, didTransition: false, broke: false, skipped: true };
       }
-      return { result: null, didTransition: false, broke: false, skipped: true };
+    }
+
+    // ── Conditions ───────────────────────────────────────────────
+    if (Array.isArray(filter.conditions) && filter.conditions.length > 0) {
+      // Pass `instanceId` via ctx so legacy `run-count` conditions
+      // (transition router) keep working.
+      const evalResult = evaluateConditions(memory, filter.conditions, {
+        instanceId: instance.instanceId,
+      });
+      const mode = filter.mode === 'exclude' ? 'exclude' : 'include';
+      const shouldRun = mode === 'include' ? evalResult.ok : !evalResult.ok;
+      if (!shouldRun) {
+        const skipPayload = {
+          instanceId:  instance.instanceId,
+          label:       meta.label,
+          modelLabel,
+          lane:        instance.lane,
+          filter: {
+            mode,
+            evaluations: evalResult.evaluations,
+          },
+          // Single-line summary the card can use as a tooltip / chip.
+          reason: mode === 'include'
+            ? `Filter (include) did not match: ${(evalResult.evaluations.find(e => !e.ok) || {}).why || 'no condition matched'}`
+            : `Filter (exclude) matched — addon suppressed: ${(evalResult.evaluations.find(e => e.ok) || {}).why || ''}`,
+          durationMs:  Date.now() - addonStart,
+        };
+        emit('addon.skipped', skipPayload);
+        try {
+          await addonRunsStore.insertRun({
+            conversationId,
+            messageId: assistantMessageId,
+            instance,
+            status: 'skipped',
+            startedAt: new Date(addonStart),
+            endedAt:   new Date(),
+            durationMs: skipPayload.durationMs,
+            runData:   skipPayload,
+          });
+        } catch (err) {
+          console.error('[addonRunner] skipped addon_run insert failed:', err.message);
+        }
+        return { result: null, didTransition: false, broke: false, skipped: true };
+      }
     }
   }
 
@@ -341,11 +396,24 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
   const memoryWrites = Array.isArray(result.memoryWrites) ? result.memoryWrites : [];
   if (memoryWrites.length > 0) {
     builderMemory.applyWrites(memory, memoryWrites);
-    try {
-      await builderMemory.saveMemory(userId, conversationId, memory);
-    } catch (err) {
-      console.error('[addonRunner] memory save failed:', err.message);
-    }
+  }
+
+  // ── Bump the per-instance run counter on the brain blob. Drives ──
+  // the `run-count` filter condition. Mutates `memory` in place so
+  // any downstream addon in this same turn that uses a run-count
+  // filter sees this run reflected. Persisted in the same memory
+  // save call below.
+  if (!memory.runCounts || typeof memory.runCounts !== 'object') {
+    memory.runCounts = {};
+  }
+  memory.runCounts[instance.instanceId] = (Number(memory.runCounts[instance.instanceId]) || 0) + 1;
+
+  // Persist whenever memory was touched — by a write OR by the
+  // run-count bump above. Single save covers both.
+  try {
+    await builderMemory.saveMemory(userId, conversationId, memory);
+  } catch (err) {
+    console.error('[addonRunner] memory save failed:', err.message);
   }
 
   // ── Handle transition output (Transition Router). Stamps both ──

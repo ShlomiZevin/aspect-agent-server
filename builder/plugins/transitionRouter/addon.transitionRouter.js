@@ -46,7 +46,11 @@ async function run(ctx) {
   // ALL conditions must pass — shared matcher short-circuits on first
   // miss and returns the partial evaluations array so we can show
   // exactly which condition failed in the addon run card.
-  const { ok: allOk, evaluations } = evaluateConditions(memory, conditions);
+  // ctx carries `instanceId` so the `run-count` condition can read
+  // THIS router's per-conversation count off the brain blob.
+  const { ok: allOk, evaluations } = evaluateConditions(memory, conditions, {
+    instanceId: ctx.instance.instanceId,
+  });
 
   if (!allOk) {
     return {

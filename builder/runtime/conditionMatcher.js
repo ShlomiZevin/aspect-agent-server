@@ -10,6 +10,10 @@
  *
  *   - { type: 'fields-collected', fields: string[] }
  *   - { type: 'field', field: string, op: FieldOp, value?, values? }
+ *   - { type: 'run-count', max: number } — caps how many times THIS
+ *     addon instance has run successfully this conversation. Counter
+ *     lives on `blob.runCounts[instanceId]`; the runtime bumps it on
+ *     every successful addon completion (see addonRunner.js).
  *
  * Operators (`FieldOp`): equals, not-equals, contains, starts-with,
  * ends-with, gt, gte, lt, lte, in, not-in.
@@ -53,9 +57,13 @@ function applyOp(op, actual, expected) {
  *
  * @param {Object} blob       — the full brain blob (memory + thinking + triggered)
  * @param {Object} condition  — TransitionCondition shape
+ * @param {Object} [ctx]      — optional evaluation context. Today only
+ *   `instanceId` is consulted (used by the `run-count` condition to
+ *   look up `blob.runCounts[instanceId]`). When omitted, conditions
+ *   that need it return ok=false with a self-explanatory `why`.
  * @returns {{ ok: boolean, why: string }}
  */
-function evaluateCondition(blob, condition) {
+function evaluateCondition(blob, condition, ctx) {
   switch (condition.type) {
     case 'fields-collected': {
       const fields = Array.isArray(condition.fields) ? condition.fields : [];
@@ -67,6 +75,23 @@ function evaluateCondition(blob, condition) {
       return missing.length === 0
         ? { ok: true,  why: `all ${fields.length} fields populated` }
         : { ok: false, why: `missing: ${missing.join(', ')}` };
+    }
+    case 'run-count': {
+      const max = Number(condition.max);
+      if (!Number.isFinite(max) || max < 1) {
+        return { ok: false, why: 'invalid max' };
+      }
+      const instanceId = ctx && ctx.instanceId;
+      if (!instanceId) {
+        // Defensive: the caller forgot to pass ctx. Treat as "true"
+        // (don't accidentally cap every addon to zero runs).
+        return { ok: true, why: 'no instance context — treating as unbounded' };
+      }
+      const counts = (blob && blob.runCounts) || {};
+      const seen = Number(counts[instanceId]) || 0;
+      return seen < max
+        ? { ok: true,  why: `run ${seen + 1} of max ${max}` }
+        : { ok: false, why: `already ran ${seen} time${seen === 1 ? '' : 's'} (max ${max})` };
     }
     case 'field': {
       const v = builderMemory.findFieldValue(blob, condition.field, 'memory');
@@ -103,13 +128,13 @@ function evaluateCondition(blob, condition) {
  * @param {Array<Object>} conditions
  * @returns {{ ok: boolean, evaluations: Array<{ type: string, ok: boolean, why: string }> }}
  */
-function evaluateConditions(blob, conditions) {
+function evaluateConditions(blob, conditions, ctx) {
   const evaluations = [];
   if (!Array.isArray(conditions) || conditions.length === 0) {
     return { ok: false, evaluations };
   }
   for (const c of conditions) {
-    const res = evaluateCondition(blob, c);
+    const res = evaluateCondition(blob, c, ctx);
     evaluations.push({ type: c.type, ok: res.ok, why: res.why });
     if (!res.ok) {
       return { ok: false, evaluations };
