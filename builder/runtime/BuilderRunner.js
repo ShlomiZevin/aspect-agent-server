@@ -301,6 +301,18 @@ async function runOnce({
     let hops = 0;
     while (cascadeTo && hops < MAX_TRANSITION_HOPS) {
       hops += 1;
+      // Reset crew-transition-scoped system fields (e.g. `moveOn`)
+      // BEFORE the next crew's chain runs. Otherwise the new crew's
+      // Thinker / Router would see the stale signal from the crew
+      // we just left and might trigger again unwarranted.
+      const { resetSystemFields } = require('./systemFields');
+      resetSystemFields(memory, 'crew-transition');
+      try {
+        await builderMemory.saveMemory(userId, conversationId, memory);
+      } catch (err) {
+        console.error('[BuilderRunner] system-field reset save failed:', err.message);
+      }
+
       // Resolve the new crew's runnable and reseat the shared ctx so
       // addonRunner sees the right crew body (fields, name, etc.).
       const nextRunnable = await resolveRunnable({

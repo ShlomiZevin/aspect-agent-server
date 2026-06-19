@@ -127,23 +127,23 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
       const counts = (memory && memory.runCounts) || {};
       const seen = Number(counts[instance.instanceId]) || 0;
       if (seen >= cap) {
+        // Cap skip — kept distinct from condition skips on the
+        // wire so the client can render a cleaner card (no "by
+        // filter (mode)" subtitle, no per-condition eval list). The
+        // single reason line carries all the detail an author needs.
         const skipPayload = {
           instanceId:  instance.instanceId,
           label:       meta.label,
           modelLabel,
           lane:        instance.lane,
           filter: {
+            kind: 'cap',
             cap,
             seen,
-            // Surface a synthetic single-condition evaluation so
-            // existing skip-card UI keeps reading nicely.
-            evaluations: [{
-              type: 'cap',
-              ok:   false,
-              why:  `already ran ${seen} time${seen === 1 ? '' : 's'} (cap ${cap})`,
-            }],
           },
-          reason:      `Cap reached: ran ${seen} of ${cap} allowed times`,
+          reason:      cap === 1
+            ? 'Cap reached — already ran once this conversation'
+            : `Cap reached — ran ${seen} of ${cap} allowed times`,
           durationMs:  Date.now() - addonStart,
         };
         emit('addon.skipped', skipPayload);
@@ -181,13 +181,14 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
           modelLabel,
           lane:        instance.lane,
           filter: {
+            kind: 'conditions',
             mode,
             evaluations: evalResult.evaluations,
           },
           // Single-line summary the card can use as a tooltip / chip.
           reason: mode === 'include'
-            ? `Filter (include) did not match: ${(evalResult.evaluations.find(e => !e.ok) || {}).why || 'no condition matched'}`
-            : `Filter (exclude) matched — addon suppressed: ${(evalResult.evaluations.find(e => e.ok) || {}).why || ''}`,
+            ? `Conditions not met — ${(evalResult.evaluations.find(e => !e.ok) || {}).why || 'no condition matched'}`
+            : `Conditions matched (exclude mode) — ${(evalResult.evaluations.find(e => e.ok) || {}).why || ''}`,
           durationMs:  Date.now() - addonStart,
         };
         emit('addon.skipped', skipPayload);
@@ -393,7 +394,19 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
 
   // ── Merge memory writes + persist. Writes are visible to ──
   // downstream addons this same turn (readers close over `memory`).
-  const memoryWrites = Array.isArray(result.memoryWrites) ? result.memoryWrites : [];
+  //
+  // The plugin's own writes go first; then we harvest any SYSTEM
+  // field keys (e.g. `moveOn`) from the parsed output. The plugin
+  // wasn't required to know about system fields — the engine scans
+  // for them universally and writes them to the `_system` domain.
+  // Order: plugin writes first → system writes second. If a plugin
+  // happens to also write a system-named field (legacy or hand-rolled
+  // shape), the harvest pass overrides with the canonical type-coerced
+  // value.
+  const { harvestSystemFieldWrites } = require('./systemFields');
+  const pluginWrites = Array.isArray(result.memoryWrites) ? result.memoryWrites : [];
+  const systemWrites = harvestSystemFieldWrites(result.parsedOutput);
+  const memoryWrites = [...pluginWrites, ...systemWrites];
   if (memoryWrites.length > 0) {
     builderMemory.applyWrites(memory, memoryWrites);
   }

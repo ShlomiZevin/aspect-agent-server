@@ -67,16 +67,24 @@ function sectionKey(kind) {
 
 /**
  * Normalize a raw stored blob (possibly legacy-shaped) into the
- * { memory, thinking } shape every other helper expects. Old blobs
- * with a `triggered` key are read tolerantly (just dropped) — the
- * triggered section is gone since Dynamic Context replaced the
- * Triggered Context addon.
+ * { memory, thinking, summary, runCounts } shape every other helper
+ * expects. Old blobs with a `triggered` key are read tolerantly (just
+ * dropped) — the triggered section is gone since Dynamic Context
+ * replaced the Triggered Context addon.
+ *
+ * `runCounts` is a top-level sibling of the memory sections — a flat
+ * `{ [instanceId]: number }` map populated by `addonRunner` on every
+ * successful run, used by the `AddonFilter.cap` gate to limit how
+ * many times an addon may run per conversation. Lives outside the
+ * three semantic sections because it's runtime bookkeeping, not
+ * authored content.
  */
 function normalizeBlob(raw) {
   const empty = () => ({
     [SECTION_MEMORY]:   {},
     [SECTION_THINKING]: {},
     [SECTION_SUMMARY]:  {},
+    runCounts:          {},
   });
   if (!raw || typeof raw !== 'object') return empty();
   if (Object.prototype.hasOwnProperty.call(raw, SECTION_MEMORY) ||
@@ -86,6 +94,7 @@ function normalizeBlob(raw) {
       [SECTION_MEMORY]:   raw[SECTION_MEMORY]   && typeof raw[SECTION_MEMORY]   === 'object' ? raw[SECTION_MEMORY]   : {},
       [SECTION_THINKING]: raw[SECTION_THINKING] && typeof raw[SECTION_THINKING] === 'object' ? raw[SECTION_THINKING] : {},
       [SECTION_SUMMARY]:  raw[SECTION_SUMMARY]  && typeof raw[SECTION_SUMMARY]  === 'object' ? raw[SECTION_SUMMARY]  : {},
+      runCounts:          raw.runCounts && typeof raw.runCounts === 'object' ? raw.runCounts : {},
     };
   }
   // Legacy shape: domains at the root → treat as memory only.
