@@ -1,106 +1,169 @@
 /**
- * Test Zer4U Data Flow
+ * Emulate a user chatting with the Zer4U agent.
+ * POSTs to /api/finance-assistant/stream like the React UI does,
+ * parses the SSE stream, and prints thinking steps + final assistant message.
  *
- * Tests the complete flow:
- * 1. Schema description generation
- * 2. SQL generation from question
- * 3. Query execution
- * 4. Data retrieval
+ * Questions mirror the client's Quick Questions (EN + HE) plus a few core probes,
+ * so this exercises exactly what a real user / tester would click on.
+ *
+ * Usage:
+ *   node scripts/test-zer4u-flow.js              — list canned questions
+ *   node scripts/test-zer4u-flow.js N            — run canned question #N
+ *   node scripts/test-zer4u-flow.js all          — run the whole battery, print a summary
+ *   node scripts/test-zer4u-flow.js "your question here"
+ *   API_BASE=https://aspect-agent-server-1018338671074.europe-west1.run.app node ...   — target prod
  */
 
 require('dotenv').config();
-const schemaDescriptorService = require('../services/schema-descriptor.service');
-const sqlGeneratorService = require('../services/sql-generator.service');
-const dataQueryService = require('../services/data-query.service');
+const crypto = require('crypto');
 
-async function testCompleteFlow() {
-  console.log('🧪 Testing Zer4U Data Flow\n');
-  console.log('═'.repeat(60));
+const API_BASE = process.env.API_BASE || 'http://localhost:3000';
+const AGENT_NAME = 'Zer4U';
 
-  try {
-    // Test 1: Schema Description
-    console.log('\n📊 Test 1: Generating Schema Description...\n');
-    const description = await schemaDescriptorService.getDescription('zer4u');
-    console.log(`✅ Generated description (${description.length} characters)`);
-    console.log(`First 500 chars:\n${description.substring(0, 500)}...\n`);
+// Mirrors src/i18n/translations.ts quick.zer4u.* (English + Hebrew), plus core probes.
+const QUESTIONS = [
+  // core probes
+  'How many stores do we have?',
+  'כמה חנויות יש לנו?',
+  // English quick questions
+  'What are my total sales this month?',
+  'Which products are selling the most?',
+  'Show me performance by store',
+  'What is the current inventory status?',
+  'Who are my top customers?',
+  'Compare this month to the same month last year',
+  'Based on my data, how can I reduce costs and improve profitability?',
+  'Show me products with inventory problems',
+  'How are we doing against our targets?',
+  'Show me slow-moving inventory',
+  // Hebrew quick questions
+  'מה סך המכירות החודש?',
+  'אילו מוצרים נמכרים הכי הרבה?',
+  'הראה לי ביצועים לפי חנות',
+  'מה מצב המלאי הנוכחי?',
+  'מי הלקוחות המובילים שלי?',
+  'השווה את החודש הזה לאותו חודש בשנה שעברה',
+  'על סמך הנתונים שלי, איך אני יכול להפחית עלויות ולשפר רווחיות?',
+  'הראה לי מוצרים עם בעיות מלאי',
+  'איך אנחנו עומדים ביחס ליעדים?',
+  'הראה לי מלאי שנע לאט',
+];
 
-    // Test 2: SQL Generation
-    console.log('\n🤖 Test 2: Generating SQL from Question...\n');
-
-    const testQuestions = [
-      'How many stores do we have?',
-      'What are the top 5 selling items?',
-      'Show me total sales by store'
-    ];
-
-    for (const question of testQuestions) {
-      console.log(`\nQuestion: "${question}"`);
-
-      const sqlResult = await sqlGeneratorService.generateSQL(question, 'zer4u');
-
-      console.log(`Generated SQL:`);
-      console.log(`  ${sqlResult.sql}`);
-      console.log(`Explanation: ${sqlResult.explanation}`);
-      console.log(`Confidence: ${sqlResult.confidence}`);
-      console.log(`Tables: ${sqlResult.tables.join(', ')}`);
-    }
-
-    // Test 3: Full Data Query
-    console.log('\n\n📈 Test 3: Full Data Query (Question → SQL → Data)...\n');
-
-    const queryQuestion = 'How many stores do we have?';
-    console.log(`Question: "${queryQuestion}"`);
-
-    const result = await dataQueryService.queryByQuestion(queryQuestion, 'zer4u');
-
-    if (result.error) {
-      console.log(`❌ Error: ${result.message}`);
-    } else {
-      console.log(`\n✅ Query successful!`);
-      console.log(`SQL: ${result.sql}`);
-      console.log(`Explanation: ${result.explanation}`);
-      console.log(`Rows returned: ${result.rowCount}`);
-      console.log(`Columns: ${result.columns.join(', ')}`);
-      console.log(`Duration: ${result.duration}ms`);
-
-      if (result.data.length > 0) {
-        console.log(`\nFirst result:`);
-        console.log(JSON.stringify(result.data[0], null, 2));
-      }
-    }
-
-    // Test 4: Sample Data
-    console.log('\n\n📋 Test 4: Fetching Sample Data...\n');
-
-    const sampleTables = ['stores', 'customers', 'items'];
-
-    for (const table of sampleTables) {
-      try {
-        const sample = await dataQueryService.getSampleData('zer4u', table, 3);
-        console.log(`\nTable: ${table}`);
-        console.log(`  Rows: ${sample.rowCount}`);
-        console.log(`  Columns: ${sample.columns.join(', ')}`);
-        if (sample.data.length > 0) {
-          console.log(`  Sample: ${JSON.stringify(sample.data[0])}`);
-        }
-      } catch (error) {
-        console.log(`\nTable: ${table}`);
-        console.log(`  ⚠️  ${error.message}`);
-      }
-    }
-
-    console.log('\n\n═'.repeat(60));
-    console.log('✅ All tests completed!\n');
-
-  } catch (error) {
-    console.error('\n❌ Test failed:', error);
-    console.error(error.stack);
-  } finally {
-    await schemaDescriptorService.close();
-    await dataQueryService.close();
-    process.exit(0);
+async function askUser(question, { quiet = false } = {}) {
+  const conversationId = crypto.randomUUID();
+  if (!quiet) {
+    console.log('\n>>> USER: ' + question);
+    console.log('    convId=' + conversationId);
   }
+  const t0 = Date.now();
+
+  const res = await fetch(`${API_BASE}/api/finance-assistant/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({
+      message: question,
+      conversationId,
+      agentName: AGENT_NAME,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = (await res.text()).substring(0, 300);
+    if (!quiet) console.log('HTTP ' + res.status + ': ' + body);
+    return { question, ok: false, ms: Date.now() - t0, error: `HTTP ${res.status}: ${body}` };
+  }
+
+  let buffer = '';
+  let assistantText = '';
+  const thinkingSteps = [];
+  let crewInfo = null;
+  let sql = null;
+  let error = null;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const payload = line.slice(6).trim();
+      if (!payload) continue;
+      let evt;
+      try { evt = JSON.parse(payload); } catch { continue; }
+      // Server emits typed events for thinking/meta and untyped {chunk:"..."} for assistant text
+      if (typeof evt.chunk === 'string') {
+        assistantText += evt.chunk;
+      } else if (evt.type === 'thinking_step') {
+        thinkingSteps.push(evt.step?.description || JSON.stringify(evt.step).substring(0, 80));
+      } else if (evt.type === 'function_result') {
+        if (evt.result?.sql) sql = evt.result.sql;
+      } else if (evt.type === 'crew_info') {
+        crewInfo = evt.crew?.displayName || evt.crew?.name;
+      } else if (evt.type === 'error') {
+        error = evt.message || JSON.stringify(evt);
+      }
+    }
+  }
+
+  const ms = Date.now() - t0;
+  if (!quiet) {
+    console.log('--- thinking steps (' + thinkingSteps.length + ') ---');
+    thinkingSteps.forEach(s => console.log('  • ' + s));
+    if (crewInfo) console.log('crew: ' + crewInfo);
+    if (sql) console.log('SQL: ' + sql.replace(/\s+/g, ' ').substring(0, 300));
+    if (error) console.log('ERROR: ' + error);
+    console.log('--- assistant reply (' + ms + 'ms) ---');
+    console.log((assistantText || '(empty)').substring(0, 1200));
+  }
+
+  return {
+    question,
+    ok: !error && !!assistantText,
+    ms,
+    sql,
+    error,
+    reply: assistantText,
+  };
 }
 
-// Run tests
-testCompleteFlow();
+(async () => {
+  const arg = process.argv[2];
+
+  if (!arg) {
+    console.log('Canned questions:');
+    QUESTIONS.forEach((q, i) => console.log('  ' + (i + 1) + '. ' + q));
+    console.log('\nRun: node scripts/test-zer4u-flow.js N   (or  "your question"  or  all)');
+    process.exit(0);
+  }
+
+  if (arg.toLowerCase() === 'all') {
+    console.log(`Running ${QUESTIONS.length} questions against ${API_BASE} (agent=${AGENT_NAME})\n`);
+    const results = [];
+    for (const q of QUESTIONS) {
+      const r = await askUser(q);
+      results.push(r);
+    }
+    console.log('\n\n══════════════ SUMMARY ══════════════');
+    let okCount = 0;
+    results.forEach((r, i) => {
+      const status = r.ok ? 'OK ' : 'FAIL';
+      if (r.ok) okCount++;
+      const note = r.error ? ` — ${r.error.substring(0, 120)}` : '';
+      console.log(`${String(i + 1).padStart(2)}. [${status}] ${r.ms}ms  ${r.question.substring(0, 50)}${note}`);
+    });
+    const times = results.map(r => r.ms).sort((a, b) => a - b);
+    const p50 = times[Math.floor(times.length * 0.5)];
+    const max = times[times.length - 1];
+    console.log(`\n${okCount}/${results.length} OK   p50=${p50}ms   max=${max}ms`);
+    process.exit(okCount === results.length ? 0 : 1);
+  }
+
+  const n = parseInt(arg, 10);
+  const question = (!isNaN(n) && n >= 1 && n <= QUESTIONS.length) ? QUESTIONS[n - 1] : arg;
+  await askUser(question);
+  process.exit(0);
+})();
