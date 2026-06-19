@@ -1,13 +1,24 @@
 /**
  * Create indexes for the tevanaot (Teva Naot) schema.
  *
- * The heavy sales aggregations are served by mv_sales / mv_sales_daily
- * (see create-tevanaot-mvs.js). Indexes here cover the dimension JOIN keys and
- * direct lookups on the raw fact/dimension tables.
+ * Index philosophy (kept deliberately minimal — see the indexing post-mortem):
+ *   - Heavy SALES aggregations are served by mv_sales / mv_sales_daily
+ *     (create-tevanaot-mvs.js), which carry their OWN indexes. The raw `sales`
+ *     table is never queried directly, so it needs no indexes here.
+ *   - The composite synthetic keys (inventory.branch_part_key,
+ *     inventory_in_date.end_month_branch_part_key, orders.part_cust_date_key,
+ *     sales_rate.branch_part_salesrate_key) are NEVER equality-matched — the SQL
+ *     resolves them with split_part/regexp (a scan, not a seek). A btree on the
+ *     raw key is therefore useless. An index on inventory_in_date's ~5M-row
+ *     long-text key in particular took ~50min+ to build and bought nothing.
+ *   - Dimension tables customers (~57KB), sites (~216KB), suppliers (~178B),
+ *     purchase_orders (~626KB) are tiny — Postgres hash-joins them with no index.
  *
- * All building logic lives in scripts/lib/index-builder.js — this file is just
- * the index list specific to tevanaot.
+ * What's left: only `parts` is a large dimension (~2GB CSV). It is JOINed by
+ * `part` from the aggregated top-N sales result (a seek), and looked up by sku /
+ * barcode for "find this product". Those three are the only indexes worth building.
  *
+ * Building logic lives in scripts/lib/index-builder.js.
  * Run: node scripts/create-tevanaot-indexes.js
  */
 
@@ -18,44 +29,10 @@ const { createIndexesForSchema } = require('./lib/index-builder');
 const SCHEMA = 'tevanaot';
 
 const INDEXES = [
-  // ── sales (~2.7M raw rows; queries normally go through mv_sales) ───────────
-  { name: 'idx_sales_invoice_number', table: 'sales', col: '"invoice_number"' },
-  { name: 'idx_sales_pos_cust_num',   table: 'sales', col: '"pos_cust_num"' },
-
-  // ── parts — product master (JOIN on part; filters by attributes) ──────────
-  { name: 'idx_parts_part',          table: 'parts', col: '"part"' },
-  { name: 'idx_parts_sku',           table: 'parts', col: '"sku"' },
-  { name: 'idx_parts_barcode',       table: 'parts', col: '"barcode"' },
-  { name: 'idx_parts_model_code',    table: 'parts', col: '"model_code"' },
-  { name: 'idx_parts_family_code',   table: 'parts', col: '"family_code"' },
-  { name: 'idx_parts_supplier_code', table: 'parts', col: '"supplier_code"' },
-
-  // ── inventory — current stock (BRANCH-PART key) ───────────────────────────
-  { name: 'idx_inventory_key', table: 'inventory', col: '"branch_part_key"' },
-
-  // ── inventory_in_date — stock at end-of-month (DATE-BRANCH-PART key) ───────
-  { name: 'idx_inventory_in_date_key', table: 'inventory_in_date', col: '"end_month_branch_part_key"' },
-
-  // ── orders — customer orders (PART-CUST-DATE key) ─────────────────────────
-  { name: 'idx_orders_key',          table: 'orders', col: '"part_cust_date_key"' },
-  { name: 'idx_orders_customer_ord', table: 'orders', col: '"customer_order"' },
-
-  // ── customers ─────────────────────────────────────────────────────────────
-  { name: 'idx_customers_customer_id', table: 'customers', col: '"customer_id"' },
-  { name: 'idx_customers_cust',        table: 'customers', col: '"cust"' },
-
-  // ── sites — store / warehouse master ──────────────────────────────────────
-  { name: 'idx_sites_warhs',      table: 'sites', col: '"warhs"' },
-  { name: 'idx_sites_store_code', table: 'sites', col: '"store_code"' },
-  { name: 'idx_sites_branch',     table: 'sites', col: '"branch"' },
-
-  // ── purchase_orders + suppliers ───────────────────────────────────────────
-  { name: 'idx_purchase_orders_part', table: 'purchase_orders', col: '"part"' },
-  { name: 'idx_purchase_orders_sup',  table: 'purchase_orders', col: '"sup"' },
-  { name: 'idx_suppliers_sup',        table: 'suppliers', col: '"sup"' },
-
-  // ── sales_rate — velocity (BRANCH-PART key) ───────────────────────────────
-  { name: 'idx_sales_rate_key', table: 'sales_rate', col: '"branch_part_salesrate_key"' },
+  // ── parts — the only large dimension (~2GB CSV) ───────────────────────────
+  { name: 'idx_parts_part',    table: 'parts', col: '"part"' },     // JOIN key from mv_sales.part (top-N seek)
+  { name: 'idx_parts_sku',     table: 'parts', col: '"sku"' },      // "find product by SKU"
+  { name: 'idx_parts_barcode', table: 'parts', col: '"barcode"' },  // "find product by barcode"
 ];
 
 async function createIndexes(targetSchema, emitLog) {
@@ -68,7 +45,7 @@ async function createIndexes(targetSchema, emitLog) {
     pool: getPool(),
     schema,
     indexes: INDEXES,
-    statementTimeoutMs: 1800000, // 30 min per index
+    statementTimeoutMs: 1800000, // 30 min per index (parts indexes build in <2min)
     log,
   });
 
