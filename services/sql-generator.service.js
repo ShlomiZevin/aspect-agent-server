@@ -888,6 +888,127 @@ WHERE record_type = 'מכירות'
 \`\`\``;
     }
 
+    if (schemaName === 'tevanaot') {
+      return `
+## tevanaot-Specific Rules (Teva Naot — footwear retail — CRITICAL, follow exactly)
+
+Teva Naot is a QlikSense star-schema export. The raw fact tables (\`sales\`, \`inventory\`,
+\`orders\`) carry only measures plus a synthetic composite key. The sales key has ALREADY
+been resolved into a clean materialized view — query the view, never parse the raw key.
+
+**Tables / views:**
+- \`mv_sales\` — RESOLVED item-level sales (~2.7M rows). Columns: \`transaction_date\` (DATE), \`warhs\`, \`part\`, \`cust\`, \`invoice_number\`, \`invoice_type\`, \`qty_sold\`, \`sales_ex_vat\`, \`sales_inc_vat\`, \`sale_price\`, \`vat_pct\`, \`doc_discount\`. **USE THIS FOR ALL SALES QUESTIONS.**
+- \`mv_sales_daily\` — daily totals: \`transaction_date\`, \`line_count\`, \`total_qty\`, \`revenue_ex_vat\`, \`revenue_inc_vat\`. Use for "total revenue this year/month", trends.
+- \`parts\` — product master (~? rows): \`part\`, \`sku\`, \`barcode\`, \`product_description\`, \`model_code\`, \`model_name\`, \`model_color_name\`, \`color\`, \`size\`, \`shoe_type\`, \`product_line\`, \`gender\`, \`collection\`, \`season\`, \`family_code\`, \`family_description\`, \`family_type\`, \`consumer_price\`, \`consumer_price_inc_vat\`, \`supplier_code\`, \`supplier_name\`, \`item_status\`, \`variety\`, \`quality\`, \`budget_line\`.
+- \`sites\` — store/warehouse master: \`warhs\`, \`warehouse_code\`, \`warehouse_name\`, \`store_code\`, \`store_name\`, \`branch\`, \`store_type\`, \`branch_cluster\`, \`store_rank\`, \`franchisee\`, \`warehouse_type\`.
+- \`inventory\` — current stock, key \`branch_part_key\` = BRANCH-PART. \`inventory_balance\`, \`inventory_value\`, \`cost_price\`, \`location\`, \`inventory_channel\`.
+- \`inventory_in_date\` — end-of-month stock, key \`end_month_branch_part_key\` = DATE(dd/mm/yyyy)-BRANCH-PART, \`inventory_balance_at_date\`.
+- \`orders\` — customer orders, key \`part_cust_date_key\` = PART-CUST-DATE. \`customer_order\`, \`order_qty\`, \`order_total_ex_vat\`, \`order_status\`.
+- \`customers\` — \`customer_id\`, \`cust\`, \`customer_name\`, \`national_id\`, \`distribution_channel\`.
+- \`purchase_orders\` — \`sup\`, \`part\`, \`po_qty\`, \`po_remaining_to_supply\`, \`purchase_order\`, \`po_status\`.
+- \`suppliers\` — \`sup\`, \`supplier_code\`, \`supplier_name\`.
+
+### RULE 1 — Sales come from mv_sales / mv_sales_daily (NEVER the raw \`sales\` table)
+The raw \`sales\` table has no usable date/store/product columns (they are inside the
+composite key). \`mv_sales\` already resolved them. For revenue/units/top-N use mv_sales;
+for plain "total revenue this year/month/week" use mv_sales_daily (smaller/faster).
+
+### RULE 2 — transaction_date is a real DATE on the MVs (sargable)
+- This year: \`transaction_date >= DATE_TRUNC('year', CURRENT_DATE) AND transaction_date < DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'\`
+- This month: \`transaction_date >= DATE_TRUNC('month', CURRENT_DATE) AND transaction_date < DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'\`
+- Specific year: \`transaction_date >= '2025-01-01' AND transaction_date < '2026-01-01'\`
+- Do NOT wrap transaction_date in EXTRACT/TO_CHAR in WHERE (disables the index).
+
+### RULE 3 — Revenue / units / returns
+- Revenue ex-VAT: \`SUM(sales_ex_vat)\`; inc-VAT: \`SUM(sales_inc_vat)\`. Default to ex-VAT unless the user asks "with VAT / כולל מעמ".
+- Units: \`SUM(qty_sold)\`. \`qty_sold\` is NEGATIVE on returns/refunds, so SUM nets returns automatically (this is correct for "net sales").
+- Teva data has NO cost/profit column on the sale line — do NOT invent profit/margin from sales. (Cost exists only on \`inventory.cost_price\` and \`parts.consumer_price\`.)
+
+### RULE 4 — Transactions and average basket
+- A "transaction" / עסקה = a distinct \`invoice_number\`. \`COUNT(DISTINCT invoice_number)\` on mv_sales is fine WITH a date filter.
+- Average basket / סל ממוצע = \`SUM(sales_ex_vat) / NULLIF(COUNT(DISTINCT invoice_number), 0)\`.
+
+### RULE 5 — JOINs
+- Products: \`JOIN tevanaot.parts p ON s.part = p.part\` (mv_sales aliased \`s\`)
+- Stores: \`JOIN tevanaot.sites si ON s.warhs = si.warhs\` — store name = \`si.store_name\` (fallback \`si.warehouse_name\`)
+- Customers: \`JOIN tevanaot.customers c ON s.cust = c.cust\`
+For top-N by product/store, GROUP BY the mv_sales key column (part / warhs) first, then JOIN the small result to parts/sites for names.
+
+### RULE 6 — Product attribute breakdowns (shoes)
+Group sales by shoe attributes via the parts JOIN: \`p.model_name\`, \`p.color\`, \`p.size\`, \`p.shoe_type\`, \`p.gender\`, \`p.collection\`, \`p.season\`, \`p.family_description\`. E.g. "best-selling models", "sales by gender", "top colors this season".
+
+### RULE 7 — Inventory (resolve the BRANCH-PART key with split_part)
+\`inventory.branch_part_key\` = 'BRANCH-PART' (e.g. '17-8538'). Resolve:
+\`split_part(branch_part_key,'-',1) AS branch\`, \`split_part(branch_part_key,'-',2) AS part\`.
+- Stock by store: GROUP BY branch, JOIN sites ON branch = warhs (or store_code).
+- Stock by product: JOIN parts ON resolved part = parts.part.
+- "Stock value" = \`SUM(inventory_value)\`; "units in stock" = \`SUM(inventory_balance)\`.
+
+### Reference examples
+
+**Total revenue this month:**
+\`\`\`sql
+SELECT SUM(revenue_ex_vat) AS revenue, SUM(total_qty) AS units, SUM(line_count) AS lines
+FROM tevanaot.mv_sales_daily
+WHERE transaction_date >= DATE_TRUNC('month', CURRENT_DATE)
+  AND transaction_date <  DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'
+\`\`\`
+
+**Top 10 selling models this year (by quantity and revenue):**
+\`\`\`sql
+WITH agg AS (
+  SELECT part, SUM(qty_sold) AS qty, SUM(sales_ex_vat) AS revenue
+  FROM tevanaot.mv_sales
+  WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY part
+)
+SELECT p.model_name, p.color, p.shoe_type, a.qty, a.revenue
+FROM agg a
+JOIN tevanaot.parts p ON a.part = p.part
+ORDER BY a.qty DESC
+LIMIT 10
+\`\`\`
+
+**Top stores by revenue this year:**
+\`\`\`sql
+WITH agg AS (
+  SELECT warhs, SUM(sales_ex_vat) AS revenue, SUM(qty_sold) AS units
+  FROM tevanaot.mv_sales
+  WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY warhs
+)
+SELECT COALESCE(si.store_name, si.warehouse_name) AS store, a.revenue, a.units
+FROM agg a
+LEFT JOIN tevanaot.sites si ON a.warhs = si.warhs
+ORDER BY a.revenue DESC
+LIMIT 10
+\`\`\`
+
+**Transactions and average basket this month:**
+\`\`\`sql
+SELECT COUNT(DISTINCT invoice_number) AS transactions,
+       SUM(sales_ex_vat)              AS revenue,
+       SUM(sales_ex_vat) / NULLIF(COUNT(DISTINCT invoice_number), 0) AS avg_basket
+FROM tevanaot.mv_sales
+WHERE transaction_date >= DATE_TRUNC('month', CURRENT_DATE)
+  AND transaction_date <  DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'
+\`\`\`
+
+**Current inventory value and units by store:**
+\`\`\`sql
+SELECT COALESCE(si.store_name, si.warehouse_name) AS store,
+       SUM(i.inventory_balance) AS units,
+       SUM(i.inventory_value)   AS stock_value
+FROM tevanaot.inventory i
+LEFT JOIN tevanaot.sites si ON split_part(i.branch_part_key, '-', 1) = si.warhs
+GROUP BY 1
+ORDER BY stock_value DESC
+LIMIT 20
+\`\`\``;
+    }
+
     return '';
   }
 
