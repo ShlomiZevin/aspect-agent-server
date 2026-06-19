@@ -5795,6 +5795,8 @@ async function startServer() {
     require('./agents/tevanaot/data-reload').register(dataReloadService);
     app.set('dataReloadService', dataReloadService);
     await dataReloadService.cleanupStaleRuns();
+    // Auto-complete a swap if a worker died right after MVs (no manual re-run needed).
+    dataReloadService.startSelfHealLoop();
     dataReloadService.startPeriodicCleanup();
 
     // Pre-load provider config (API keys) into memory

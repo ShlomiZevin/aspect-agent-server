@@ -601,6 +601,32 @@ class DataReloadService {
   }
 
   /**
+   * Periodic self-heal sweep. The indexing worker can be killed by the platform
+   * right after the MVs finish but before the swap runs (the swap is the very
+   * last step). This timer calls ensureSwapped for every registered schema, so a
+   * built-but-unswapped shadow gets swapped automatically within one interval —
+   * no manual "Create Indexes" re-run needed. ensureSwapped is a cheap no-op when
+   * there is nothing to swap or a build is running on this instance.
+   */
+  startSelfHealLoop(intervalMs = 60000) {
+    if (this._selfHealTimer) return;
+    this._selfHealTimer = setInterval(async () => {
+      for (const schemaName of Object.keys(this.reloaders)) {
+        try {
+          const r = await this.ensureSwapped(schemaName);
+          if (r.action === 'swapped') {
+            console.log(`[DataReloadService] self-heal sweep: swapped ${schemaName} (run #${r.runId})`);
+          }
+        } catch {
+          // never let the sweep throw
+        }
+      }
+    }, intervalMs);
+    if (this._selfHealTimer.unref) this._selfHealTimer.unref();
+    console.log(`[DataReloadService] self-heal sweep started (every ${Math.round(intervalMs / 1000)}s)`);
+  }
+
+  /**
    * Self-heal: if a fully-built shadow schema (indexed + materialized views)
    * exists but was never swapped — e.g. the platform killed the background
    * worker right at the swap step — complete the swap automatically.
