@@ -928,14 +928,19 @@ for plain "total revenue this year/month/week" use mv_sales_daily (smaller/faste
 - A "transaction" / עסקה = a distinct \`invoice_number\`. \`COUNT(DISTINCT invoice_number)\` on mv_sales is fine WITH a date filter.
 - Average basket / סל ממוצע = \`SUM(sales_ex_vat) / NULLIF(COUNT(DISTINCT invoice_number), 0)\`.
 
-### RULE 5 — JOINs
-- Products: \`JOIN tevanaot.parts p ON s.part = p.part\` (mv_sales aliased \`s\`)
-- Stores: \`JOIN tevanaot.sites si ON s.warhs = si.warhs\` — store name = \`si.store_name\` (fallback \`si.warehouse_name\`)
-- Customers: \`JOIN tevanaot.customers c ON s.cust = c.cust\`
-For top-N by product/store, GROUP BY the mv_sales key column (part / warhs) first, then JOIN the small result to parts/sites for names.
+### RULE 5 — JOINs, and the parts FAN-OUT TRAP (CRITICAL)
+- Stores: \`JOIN tevanaot.sites si ON s.warhs = si.warhs\` — store = \`si.store_name\` (fallback \`si.warehouse_name\`). sites is unique per warhs — safe to join directly.
+- Customers: \`JOIN tevanaot.customers c ON s.cust = c.cust\`.
+- Products: **\`parts\` has MANY rows per \`part\` value (one per size), so \`part\` is NOT unique.** JOINing mv_sales (or an aggregate of it) directly to \`parts\` and SUM-ing AFTER the join multiplies every measure by the size-row count — a 16–50x over-count (we have seen "billions of ₪" / millions of units vs a real total in the tens of thousands). NEVER write \`... JOIN tevanaot.parts p ON a.part = p.part ... SUM(a.qty)\`.
+  Instead aggregate mv_sales by \`part\` FIRST, then join a DE-DUPLICATED parts subquery (one row per part):
+  \`JOIN (SELECT DISTINCT ON (part) part, model_code, model_name, model_color_name, color, gender, shoe_type, collection, season, family_description, sku, barcode FROM tevanaot.parts ORDER BY part) p ON a.part = p.part\`.
+  model / color / gender / shoe_type / season / family are constant within a \`part\`, so DISTINCT ON is exact (no double counting).
 
-### RULE 6 — Product attribute breakdowns (shoes)
-Group sales by shoe attributes via the parts JOIN: \`p.model_name\`, \`p.color\`, \`p.size\`, \`p.shoe_type\`, \`p.gender\`, \`p.collection\`, \`p.season\`, \`p.family_description\`. E.g. "best-selling models", "sales by gender", "top colors this season".
+### RULE 6 — "model" vs "item" grain
+\`part\` is the model-COLOR grain (a model has several colors → several parts; each part also has several size-rows in \`parts\`).
+- "top MODELS" → roll up to the model: aggregate mv_sales by part, join the de-duplicated parts, then \`GROUP BY model_code, model_name\` and SUM. (Listing parts directly repeats the same model once per color.)
+- "top items / SKUs" → keep part grain, show \`model_color_name\`.
+- "sales by color / gender / shoe_type / season / family" → aggregate by part, join the de-duplicated parts, GROUP BY the attribute, SUM. NEVER SUM over a raw parts join (fan-out).
 
 ### RULE 7 — Inventory (resolve the BRANCH-PART key with split_part)
 \`inventory.branch_part_key\` = 'BRANCH-PART' (e.g. '17-8538'). Resolve:
@@ -954,7 +959,7 @@ WHERE transaction_date >= DATE_TRUNC('month', CURRENT_DATE)
   AND transaction_date <  DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'
 \`\`\`
 
-**Top 10 selling models this year (by quantity and revenue):**
+**Top 10 selling MODELS this year (rolled up to model; de-duplicated parts join):**
 \`\`\`sql
 WITH agg AS (
   SELECT part, SUM(qty_sold) AS qty, SUM(sales_ex_vat) AS revenue
@@ -962,12 +967,31 @@ WITH agg AS (
   WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
     AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
   GROUP BY part
-)
-SELECT p.model_name, p.color, p.shoe_type, a.qty, a.revenue
+),
+dim AS (SELECT DISTINCT ON (part) part, model_code, model_name FROM tevanaot.parts ORDER BY part)
+SELECT d.model_name, SUM(a.qty) AS units, SUM(a.revenue) AS revenue
 FROM agg a
-JOIN tevanaot.parts p ON a.part = p.part
-ORDER BY a.qty DESC
+JOIN dim d ON a.part = d.part
+GROUP BY d.model_code, d.model_name
+ORDER BY units DESC
 LIMIT 10
+\`\`\`
+
+**Sales by gender (or color / shoe_type / season) this year — de-duplicated parts join (NO fan-out):**
+\`\`\`sql
+WITH agg AS (
+  SELECT part, SUM(qty_sold) AS qty, SUM(sales_ex_vat) AS revenue
+  FROM tevanaot.mv_sales
+  WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
+    AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
+  GROUP BY part
+),
+dim AS (SELECT DISTINCT ON (part) part, gender FROM tevanaot.parts ORDER BY part)
+SELECT COALESCE(d.gender, '(unknown)') AS gender, SUM(a.qty) AS units, SUM(a.revenue) AS revenue
+FROM agg a
+JOIN dim d ON a.part = d.part
+GROUP BY d.gender
+ORDER BY units DESC
 \`\`\`
 
 **Top stores by revenue this year:**
