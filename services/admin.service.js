@@ -43,7 +43,10 @@ class AdminService {
     // Hide users with no tenant (anonymous/internal users) from the admin list.
     // Each client's admin should only see their own tenanted users.
     // Super admin (`includeAllTenants`) bypasses this to see everything.
-    if (!includeAllTenants) {
+    // When `agentName` is set (V2 builder admin), the agent join below IS
+    // the scope — V2 builder users carry no tenant, so applying the gate
+    // would hide them all. Skip it in that case.
+    if (!includeAllTenants && !agentName) {
       conditions.push(sql`${users.tenant} IS NOT NULL AND ${users.tenant} != ''`);
     }
 
@@ -121,7 +124,14 @@ class AdminService {
       .limit(limit)
       .offset(offset);
 
-    // Get conversation counts for each user
+    // Get conversation counts for each user. When the list is scoped
+    // to an agent, scope the count the same way so the number matches
+    // what the agent's admin drill-down actually shows (otherwise the
+    // count is cross-agent and overstates this agent's conversations).
+    const agentConvFilter = agentName
+      ? sql`agent_id IN (SELECT id FROM agents WHERE LOWER(url_slug) = ${agentName.toLowerCase()} OR LOWER(name) = ${agentName.toLowerCase()})`
+      : null;
+
     const usersWithCounts = await Promise.all(
       userList.map(async (user) => {
         const convCountResult = await this.drizzle
@@ -130,7 +140,8 @@ class AdminService {
           .where(
             and(
               eq(conversations.userId, user.id),
-              eq(conversations.status, 'active')
+              eq(conversations.status, 'active'),
+              ...(agentConvFilter ? [agentConvFilter] : [])
             )
           );
 
@@ -548,8 +559,10 @@ class AdminService {
     const { includeAllTenants = false } = options;
 
     // Match the user-list scoping: usually exclude null-tenant users so stats
-    // line up with the table; super admin sees everything.
-    const baseUserFilter = includeAllTenants
+    // line up with the table; super admin sees everything. When scoped by
+    // `agentName` (V2 builder admin), the agent join is the scope and the
+    // tenant gate is skipped — otherwise tenant-less V2 users count as zero.
+    const baseUserFilter = (includeAllTenants || agentName)
       ? null
       : sql`${users.tenant} IS NOT NULL AND ${users.tenant} != ''`;
 

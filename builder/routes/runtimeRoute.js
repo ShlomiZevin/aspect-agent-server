@@ -15,7 +15,7 @@
  */
 
 const express = require('express');
-const { eq, and, desc } = require('drizzle-orm');
+const { eq, and, desc, inArray, sql } = require('drizzle-orm');
 const db = require('../../services/db.pg');
 const { agents, conversations, messages, users } = require('../../db/schema');
 const { runOnce } = require('../runtime/BuilderRunner');
@@ -127,6 +127,73 @@ router.get('/:slug/conversations', async (req, res) => {
     })) });
   } catch (err) {
     console.error('[builder] GET conversations failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/agents/:slug/admin/conversations?limit=:n
+ *   ADMIN view: every `user`-kind conversation for this agent,
+ *   regardless of owner (the owner-scoped list above filters by
+ *   `ownerUserId`; admins need the whole picture). Keyed only by the
+ *   runtime `agents.id` resolved from the slug. Joins the owning user
+ *   so the admin can see who each conversation belongs to, and counts
+ *   messages in one grouped query (no N+1).
+ *
+ *   Returns [] (not 404) when the agent has no runtime row yet — a
+ *   brand-new builder agent simply has no conversations.
+ */
+router.get('/:slug/admin/conversations', async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const limit = Math.min(Number(req.query.limit) || 200, 500);
+    // Optional: scope to a single owner (internal users.id) — powers the
+    // Users tab → "view conversations" drill-down.
+    const userIdFilter = req.query.userId ? Number(req.query.userId) : null;
+    const d = drizzle();
+    const [agentRow] = await d.select().from(agents).where(eq(agents.urlSlug, slug)).limit(1);
+    if (!agentRow) return res.json({ conversations: [] });
+
+    const rows = await d.select({ conv: conversations, user: users })
+      .from(conversations)
+      .leftJoin(users, eq(conversations.userId, users.id))
+      .where(and(
+        eq(conversations.agentId, agentRow.id),
+        eq(conversations.kind, 'user'),
+        ...(userIdFilter ? [eq(conversations.userId, userIdFilter)] : []),
+      ))
+      .orderBy(desc(conversations.updatedAt))
+      .limit(limit);
+
+    // Message counts for the listed conversations, grouped in one query.
+    const ids = rows.map(r => r.conv.id);
+    const counts = {};
+    if (ids.length > 0) {
+      const countRows = await d.select({
+        conversationId: messages.conversationId,
+        n: sql`count(*)`.mapWith(Number),
+      })
+        .from(messages)
+        .where(inArray(messages.conversationId, ids))
+        .groupBy(messages.conversationId);
+      for (const c of countRows) counts[c.conversationId] = c.n;
+    }
+
+    res.json({ conversations: rows.map(({ conv, user }) => ({
+      id: conv.id,
+      name: (conv.metadata && conv.metadata.name) || null,
+      createdAt: conv.createdAt,
+      updatedAt: conv.updatedAt,
+      messageCount: counts[conv.id] || 0,
+      currentCrewId: (conv.metadata && conv.metadata.currentCrewId) || null,
+      // Owner identity — `ownerUserId` is the external id the builder
+      // mints client-side; `userId` is the internal serial.
+      userId: conv.userId,
+      ownerUserId: user ? user.externalId : null,
+      ownerName: user ? (user.name || null) : null,
+    })) });
+  } catch (err) {
+    console.error('[builder] GET admin conversations failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
