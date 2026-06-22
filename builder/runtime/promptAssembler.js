@@ -557,6 +557,21 @@ function assemblePrompt({
     name => resolveFieldInline(name, fieldValueOf),
     /* inline */ true,
   );
+  // {{fieldname:NAME}} — literal field NAME (not value). Useful when
+  // the author wants to mention the field's name in prose without
+  // using the wrong `{{field:…}}` form (which substitutes the value).
+  // Resolves through the same `fieldsForDc` pool the DC tokens use,
+  // so it covers agent + crew-scoped fields. Unknown names stay
+  // literal (token survives in the prompt) so typos surface loudly.
+  template = substituteParameterised(
+    template,
+    'fieldname',
+    name => {
+      const field = (fieldsForDc || []).find(f => f && f.name === name);
+      return field ? field.name : null;
+    },
+    /* inline */ true,
+  );
   template = substituteParameterised(
     template,
     'param',

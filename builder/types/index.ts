@@ -74,6 +74,14 @@ export interface FieldDef {
    * not surfaced under a named group.
    */
   domain?: string;
+  /**
+   * Free-text author note. Builder-side ONLY — the runtime never
+   * reads it, never injects it into a prompt, never sends it to the
+   * LLM. Just a place for the user to write down what this field
+   * means in their head. Useful when the field name is terse and
+   * the "how to extract" is about extraction mechanics, not meaning.
+   */
+  definition?: string;
 }
 
 // ─── Parameters (static agent-wide values) ────────────────────────
