@@ -184,6 +184,73 @@ function resolveSnippetInline(name, snippets, brain) {
   return typeof snip.content === 'string' ? snip.content : '';
 }
 
+/**
+ * Resolve the `{{tag:NAME}}` family against the agent's field pool.
+ * Three shapes share the same prefix:
+ *
+ *   {{tag:NAME}}           — block: labeled list of "field — howToExtract"
+ *                            for every field tagged NAME. Used to say
+ *                            "pay attention to these fields" in a prompt.
+ *   {{tag:NAME:values}}    — inline: "field_a: <value>, field_b: <value>"
+ *                            pairs. Skips fields with null/undefined
+ *                            current values. Always includes the field
+ *                            name so the values can't be misread.
+ *   {{tag:NAME:names}}     — inline: "field_a, field_b" bare comma-
+ *                            separated names. The variables themselves.
+ *
+ * Unknown tag (no field carries it) → `''` so the token collapses
+ * cleanly. Unknown shape (typo on the suffix) → `null` so the original
+ * token survives and the author sees the typo.
+ *
+ * `rawName` is whatever followed `tag:` in the token. The resolver
+ * splits on `:` to separate tag name from the optional shape suffix.
+ */
+function resolveTagToken(rawName, { fieldsForDc, fieldValueOf }) {
+  if (!rawName) return '';
+  const segments = String(rawName).split(':');
+  const tagName = segments[0];
+  const shape   = segments[1] || null; // 'values' | 'names' | null
+  if (!tagName) return '';
+
+  const pool = Array.isArray(fieldsForDc) ? fieldsForDc : [];
+  const tagged = pool.filter(f =>
+    f && Array.isArray(f.tags) && f.tags.includes(tagName),
+  );
+  if (tagged.length === 0) return '';
+
+  if (shape === null) {
+    // Block form: schema-style "field — howToExtract" list. Wrapped
+    // in a labeled header so a Talker prompt knows what it's looking
+    // at. Markdown-flavoured to mirror the enum/domain blocks.
+    const lines = tagged.map(f => {
+      const how = (typeof f.howToExtract === 'string' && f.howToExtract.trim())
+        ? f.howToExtract.trim()
+        : (typeof f.definition === 'string' ? f.definition.trim() : '');
+      return how ? `- ${f.name} — ${how}` : `- ${f.name}`;
+    });
+    return `### tag — ${tagName}\n${lines.join('\n')}`;
+  }
+
+  if (shape === 'values') {
+    if (typeof fieldValueOf !== 'function') return '';
+    const parts = [];
+    for (const f of tagged) {
+      const v = fieldValueOf(f.name);
+      if (v === null || v === undefined) continue;
+      const text = typeof v === 'string' ? v : JSON.stringify(v);
+      parts.push(`${f.name}: ${text}`);
+    }
+    return parts.join(', ');
+  }
+
+  if (shape === 'names') {
+    return tagged.map(f => f.name).join(', ');
+  }
+
+  // Unknown shape — leave the token in place so the typo is visible.
+  return null;
+}
+
 function resolveFieldInline(name, fieldValueOf) {
   if (!fieldValueOf) return '';
   const v = fieldValueOf(name);
@@ -610,6 +677,25 @@ function assemblePrompt({
       fieldValueOf,
       onDcResolved,
     }),
+    /* inline */ false,
+  );
+
+  // Tag aggregate — `{{tag:NAME[:values|:names]}}` walks the agent +
+  // crew field pool, filters by tag membership, and renders one of
+  // three shapes. Inline variants (`:values`, `:names`) run first so
+  // the bare block pass below doesn't try to consume their suffixes.
+  template = template.replace(/\{\{tag:([^:}\s]+):values\}\}/g, (match, name) => {
+    const out = resolveTagToken(`${name}:values`, { fieldsForDc: fieldsForDc || [], fieldValueOf });
+    return out === null || out === undefined ? match : out;
+  });
+  template = template.replace(/\{\{tag:([^:}\s]+):names\}\}/g, (match, name) => {
+    const out = resolveTagToken(`${name}:names`, { fieldsForDc: fieldsForDc || [], fieldValueOf });
+    return out === null || out === undefined ? match : out;
+  });
+  template = substituteParameterised(
+    template,
+    'tag',
+    name => resolveTagToken(name, { fieldsForDc: fieldsForDc || [], fieldValueOf }),
     /* inline */ false,
   );
 

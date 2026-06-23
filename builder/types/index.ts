@@ -82,6 +82,16 @@ export interface FieldDef {
    * the "how to extract" is about extraction mechanics, not meaning.
    */
   definition?: string;
+  /**
+   * Cross-domain grouping tags. Each entry is a name in `agent.tags`.
+   * A field can carry several tags; a tag can be shared across fields
+   * from different domains. The `{{tag:NAME}}` family of tokens walks
+   * the agent's fields filtered by tag membership.
+   *
+   * Lowercased, trimmed, no spaces — same validator as field name.
+   * Order preserved; deduped on save.
+   */
+  tags?: string[];
 }
 
 // ─── Parameters (static agent-wide values) ────────────────────────
@@ -780,7 +790,7 @@ export interface CrewDoc {
 export type AgentBody = Pick<
   AgentDoc,
   'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
-  | 'fields' | 'domains' | 'parameters' | 'enums'
+  | 'fields' | 'domains' | 'tags' | 'parameters' | 'enums'
   | 'cortex' | 'snippets' | 'personas'
 >;
 
@@ -822,6 +832,17 @@ export interface AgentDoc {
    * with `[]`.
    */
   domains?: string[];
+  /**
+   * Declared field tags for this agent. Tags are an orthogonal
+   * grouping to domain — a field keeps its single canonical domain
+   * but can belong to N tags for ad-hoc reference (`{{tag:NAME}}`,
+   * `{{tag:NAME:values}}`, `{{tag:NAME:names}}`). Same UX hint vs
+   * constraint contract as `domains`: at runtime a field's `tags[]`
+   * wins; this list is the authoring vocabulary.
+   *
+   * Optional for back-compat; readers should treat absence as `[]`.
+   */
+  tags?: string[];
   /**
    * Agent-wide static parameters — values that don't change per
    * conversation (e.g. the bank's display name). Reference from any

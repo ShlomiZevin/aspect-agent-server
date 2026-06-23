@@ -153,6 +153,30 @@
       "render": "Agent-level reusable prompt content, inline (bare text). Resolves to the snippet's `content` when its optional filter (if any) matches; otherwise empty string. Empty when the snippet doesn't exist. The snippet substitution runs FIRST in the assembler — so a snippet's content can itself reference `{{field:X}}` / `{{memory}}` / `{{dynamic:Z}}` / etc. and have those resolve on the regular passes. Nested `{{snippet:OTHER}}` references inside snippet content show up as literal text (no recursive expansion in v1).",
       "example": "{{snippet:vibe_acknowledgment}}",
       "picker_group": "Snippets"
+    },
+    {
+      "token": "{{tag:NAME}}",
+      "category": "value",
+      "trigger": "&",
+      "render": "Schema-style labeled block listing every field tagged NAME — one bullet per field with `name — howToExtract`. Wrapped in `### tag — NAME`. Use when a prompt needs to say 'pay attention to these fields' across fields from different domains. Empty when no field carries the tag.",
+      "example": "{{tag:emotional_signals}}",
+      "picker_group": "Tags"
+    },
+    {
+      "token": "{{tag:NAME:values}}",
+      "category": "value",
+      "trigger": "&",
+      "render": "INLINE comma-separated `name: value` pairs of the current memory values for every field tagged NAME. Skips fields with null/undefined values. The field name is always included so values can't be misread.",
+      "example": "Current signals — {{tag:emotional_signals:values}}.",
+      "picker_group": "Tags"
+    },
+    {
+      "token": "{{tag:NAME:names}}",
+      "category": "value",
+      "trigger": "&",
+      "render": "INLINE comma-separated bare field names tagged NAME — the variables themselves, no values. Useful when referencing the set of variables in prose.",
+      "example": "Watch: {{tag:emotional_signals:names}}.",
+      "picker_group": "Tags"
     }
   ],
   "extractor_only": [

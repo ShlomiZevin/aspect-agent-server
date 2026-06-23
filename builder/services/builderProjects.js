@@ -147,6 +147,7 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       defaultCrewId:   agentBody.defaultCrewId,
       fields:          Array.isArray(agentBody.fields)          ? agentBody.fields          : [],
       domains:         Array.isArray(agentBody.domains)         ? agentBody.domains         : [],
+      tags:            Array.isArray(agentBody.tags)            ? agentBody.tags            : [],
       parameters:      Array.isArray(agentBody.parameters)      ? agentBody.parameters      : [],
       enums:           Array.isArray(agentBody.enums)           ? agentBody.enums           : [],
       snippets:        Array.isArray(agentBody.snippets)        ? agentBody.snippets        : [],
