@@ -260,6 +260,51 @@ class GCSService {
   }
 
   /**
+   * Get metadata (incl. md5Hash, size, updated) for a file in GCS.
+   * Returns null if the file does not exist.
+   * @param {string} filePath - Full path to file in GCS
+   * @returns {Promise<{md5Hash:string,size:string,updated:string}|null>}
+   */
+  async getFileMetadata(filePath) {
+    const file = this.storage.bucket(this.bucketName).file(filePath);
+    const [exists] = await file.exists();
+    if (!exists) return null;
+    const [meta] = await file.getMetadata();
+    return { md5Hash: meta.md5Hash, size: meta.size, updated: meta.updated };
+  }
+
+  /**
+   * Upload a readable stream to GCS (no local disk — for very large files).
+   * Resolves with the uploaded object's metadata.
+   * @param {NodeJS.ReadableStream} sourceStream - Readable source (e.g. a Drive download stream)
+   * @param {string} destPath - Full destination path in GCS (e.g. 'zer4u/מכירות.csv')
+   * @param {Object} [options]
+   * @param {string} [options.contentType] - Content-Type to set on the object
+   * @returns {Promise<{md5Hash:string,size:string}>}
+   */
+  uploadStream(sourceStream, destPath, options = {}) {
+    return new Promise((resolve, reject) => {
+      const file = this.storage.bucket(this.bucketName).file(destPath);
+      const writeStream = file.createWriteStream({
+        resumable: true,
+        contentType: options.contentType || 'text/csv',
+      });
+      sourceStream.on('error', reject);
+      writeStream.on('error', reject);
+      writeStream.on('finish', async () => {
+        try {
+          const [meta] = await file.getMetadata();
+          console.log(`⬆️  Uploaded ${destPath} (${meta.size} bytes)`);
+          resolve({ md5Hash: meta.md5Hash, size: meta.size });
+        } catch (err) {
+          reject(err);
+        }
+      });
+      sourceStream.pipe(writeStream);
+    });
+  }
+
+  /**
    * Download file to local disk (for very large files)
    * @param {string} filePath - Full path to file in GCS
    * @param {string} destination - Local path to save

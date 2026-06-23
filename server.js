@@ -3682,6 +3682,36 @@ app.post('/api/admin/data-loader/:schema/ensure-indexed', async (req, res) => {
   }
 });
 
+// POST /api/admin/data-loader/:schema/drive-sync — mirror the client's Drive folder into GCS.
+// Cloud Scheduler calls this daily (~05:00 IL), BEFORE the import crons (07-11h) pick up the
+// fresh files. ?dryRun=true returns the plan synchronously; live runs fire-and-forget so a
+// multi-GB upload never blocks the HTTP request / Scheduler.
+app.post('/api/admin/data-loader/:schema/drive-sync', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const driveToGcs = require('./services/drive-to-gcs.service');
+    if (!driveToGcs.CLIENTS[schema]) {
+      return res.status(404).json({ error: `No Drive sync configured for: ${schema}` });
+    }
+    const dryRun = req.query.dryRun === 'true' || req.body?.dryRun === true;
+    if (dryRun) {
+      const report = await driveToGcs.syncClient(schema, { dryRun: true });
+      return res.json(report);
+    }
+    driveToGcs.syncClient(schema, { dryRun: false })
+      .then(r => console.log(`[drive-sync] ${schema} complete:`, JSON.stringify({
+        uploaded: r.uploaded.map(u => u.target), unchanged: r.unchanged.length,
+        skipped: r.skipped.length, unmapped: r.unmapped, missingCanonical: r.missingCanonical,
+        failed: r.failed,
+      })))
+      .catch(e => console.error(`[drive-sync] ${schema} crashed:`, e.message));
+    res.json({ status: 'started', schema });
+  } catch (err) {
+    console.error('[drive-sync] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/admin/data-loader/:schema/reload — backward compat: both phases
 app.post('/api/admin/data-loader/:schema/reload', async (req, res) => {
   try {
