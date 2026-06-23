@@ -1,3 +1,10 @@
+// Prefer IPv4 when resolving hostnames. Some googleapis hosts (www.googleapis.com,
+// iamcredentials.googleapis.com) became unreachable over IPv6 from Cloud Run
+// ("Premature close" on every OAuth/token fetch — breaking Drive sync, DynamicKB,
+// billing), while storage.googleapis.com + the metadata server kept working.
+// Forcing IPv4 ordering routes these calls over the path that works.
+require('dns').setDefaultResultOrder('ipv4first');
+
 // Load environment-specific .env file
 const path = require('path');
 const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env';
