@@ -76,6 +76,18 @@ const DRIVE_IMPERSONATE_SA = process.env.DRIVE_SYNC_SA
   || 'storage-admin@aspect-agents.iam.gserviceaccount.com';
 
 async function getDriveClient() {
+  // Preferred (Cloud Run): a service-account key JSON in DRIVE_SYNC_SA_KEY.
+  // GoogleAuth signs a JWT locally and exchanges it at oauth2.googleapis.com/token
+  // — the same path billing/DynamicKB use — so it does NOT depend on the
+  // iamcredentials endpoint (which impersonation needs). The SA must be shared
+  // (Viewer) on the client Drive folders.
+  const inlineKey = process.env.DRIVE_SYNC_SA_KEY;
+  if (inlineKey) {
+    const credentials = JSON.parse(inlineKey);
+    const auth = new google.auth.GoogleAuth({ credentials, scopes: DRIVE_SCOPES });
+    return google.drive({ version: 'v3', auth });
+  }
+
   // Local dev: a service-account key file mints the Drive scope directly.
   const keyFilePath = process.env.GOOGLE_APPLICATION_CREDENTIALS
     || path.join(__dirname, '..', 'storage-service-account-api-key.json');
@@ -84,9 +96,8 @@ async function getDriveClient() {
     return google.drive({ version: 'v3', auth });
   }
 
-  // Cloud Run: no key file in the image. Impersonate the Drive-shared SA so the
-  // generated token carries drive.readonly (requires the runtime SA to have
-  // roles/iam.serviceAccountTokenCreator on DRIVE_IMPERSONATE_SA).
+  // Last resort: impersonate the Drive-shared SA via iamcredentials (requires the
+  // runtime SA to have roles/iam.serviceAccountTokenCreator on DRIVE_IMPERSONATE_SA).
   const { Impersonated } = require('google-auth-library');
   const sourceClient = await new google.auth.GoogleAuth({
     scopes: ['https://www.googleapis.com/auth/cloud-platform'],
