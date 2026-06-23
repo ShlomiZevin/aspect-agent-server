@@ -151,11 +151,63 @@ function resetSystemFields(memory, trigger) {
   }
 }
 
+/**
+ * Generalised companion to `harvestSystemFieldWrites` — same scan,
+ * but against the agent's user-declared fields. If a plugin's parsed
+ * JSON output contains a key whose name matches a declared `FieldDef`
+ * in the agent or current-crew scope, emit a memory write at that
+ * field's `domain`.
+ *
+ * Lets any plugin (Thinker most usefully) double as a quiet extractor:
+ *   - keys NOT matching a field → handled by the plugin as usual
+ *     (e.g. Thinker writes them to `thinking[domain]`)
+ *   - keys matching a field → also written to `memory[domain]` by this
+ *     harvest, so a follow-up addon can read the value via
+ *     `{{field:NAME}}`.
+ *
+ * Caller passes the full field pool (agent.fields + crew.fields).
+ * `alreadyWrittenNames` is the set of names the plugin already wrote
+ * to the memory section — skipped here so explicit plugin writes win
+ * if both fire (e.g. Field Extractor's targeted writes).
+ *
+ * No type coercion — the value is stored as-is. The system harvest
+ * coerces because system fields have a canonical type contract; user
+ * fields don't have one strict enough to safely coerce at this layer.
+ */
+function harvestDeclaredFieldWrites(parsedOutput, fieldPool, alreadyWrittenNames) {
+  if (!parsedOutput || typeof parsedOutput !== 'object' || Array.isArray(parsedOutput)) {
+    return [];
+  }
+  if (!Array.isArray(fieldPool) || fieldPool.length === 0) return [];
+  const skip = alreadyWrittenNames instanceof Set
+    ? alreadyWrittenNames
+    : new Set(Array.isArray(alreadyWrittenNames) ? alreadyWrittenNames : []);
+  const seen = new Set();
+  const out = [];
+  for (const def of fieldPool) {
+    if (!def || typeof def.name !== 'string' || !def.name) continue;
+    if (skip.has(def.name)) continue;
+    if (seen.has(def.name)) continue; // crew-scoped + agent-scoped same name → take first
+    if (!Object.prototype.hasOwnProperty.call(parsedOutput, def.name)) continue;
+    const value = parsedOutput[def.name];
+    if (value === null || value === undefined) continue;
+    seen.add(def.name);
+    out.push({
+      kind:   'memory',
+      domain: (typeof def.domain === 'string' && def.domain.trim()) ? def.domain.trim() : null,
+      field:  def.name,
+      value,
+    });
+  }
+  return out;
+}
+
 module.exports = {
   SYSTEM_FIELDS,
   isSystemFieldName,
   findSystemField,
   coerceSystemFieldValue,
   harvestSystemFieldWrites,
+  harvestDeclaredFieldWrites,
   resetSystemFields,
 };

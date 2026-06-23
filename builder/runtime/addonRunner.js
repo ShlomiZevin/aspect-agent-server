@@ -403,10 +403,29 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
   // happens to also write a system-named field (legacy or hand-rolled
   // shape), the harvest pass overrides with the canonical type-coerced
   // value.
-  const { harvestSystemFieldWrites } = require('./systemFields');
+  const { harvestSystemFieldWrites, harvestDeclaredFieldWrites } = require('./systemFields');
   const pluginWrites = Array.isArray(result.memoryWrites) ? result.memoryWrites : [];
+  // Names the plugin already wrote to the regular memory section.
+  // The declared-field harvest skips them so a Field Extractor's
+  // targeted writes aren't shadowed by an opportunistic harvest of
+  // the same key. Thinking/summary writes don't compete with memory.
+  const explicitMemoryNames = new Set();
+  for (const w of pluginWrites) {
+    if (!w || typeof w !== 'object') continue;
+    if (w.kind && w.kind !== 'memory') continue;
+    if (typeof w.field === 'string' && w.field) explicitMemoryNames.add(w.field);
+  }
   const systemWrites = harvestSystemFieldWrites(result.parsedOutput);
-  const memoryWrites = [...pluginWrites, ...systemWrites];
+  // Auto-fill any declared field whose name appears as a key in the
+  // parsed output. Lets a Thinker (or any json-emitting addon) double
+  // as a quiet extractor: the LLM emits `{ moveOn: true, mood: 'sad' }`
+  // and `mood` lands in memory automatically if it's a declared field.
+  const declaredWrites = harvestDeclaredFieldWrites(
+    result.parsedOutput,
+    fieldPool,
+    explicitMemoryNames,
+  );
+  const memoryWrites = [...pluginWrites, ...systemWrites, ...declaredWrites];
   if (memoryWrites.length > 0) {
     builderMemory.applyWrites(memory, memoryWrites);
   }
