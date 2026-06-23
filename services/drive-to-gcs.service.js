@@ -68,15 +68,36 @@ function hexToBase64(hex) {
   return Buffer.from(hex, 'hex').toString('base64');
 }
 
-function getDriveClient() {
+// SA that is shared (Viewer) on the client Drive folders. On Cloud Run the
+// runtime (compute) SA cannot mint a drive.readonly token via the metadata
+// server — drive.readonly is a restricted scope — so we impersonate this SA,
+// which yields a JWT-based token that can carry the Drive scope.
+const DRIVE_IMPERSONATE_SA = process.env.DRIVE_SYNC_SA
+  || 'storage-admin@aspect-agents.iam.gserviceaccount.com';
+
+async function getDriveClient() {
+  // Local dev: a service-account key file mints the Drive scope directly.
   const keyFilePath = process.env.GOOGLE_APPLICATION_CREDENTIALS
     || path.join(__dirname, '..', 'storage-service-account-api-key.json');
+  if (fs.existsSync(keyFilePath)) {
+    const auth = new google.auth.GoogleAuth({ keyFile: keyFilePath, scopes: DRIVE_SCOPES });
+    return google.drive({ version: 'v3', auth });
+  }
 
-  const auth = fs.existsSync(keyFilePath)
-    ? new google.auth.GoogleAuth({ keyFile: keyFilePath, scopes: DRIVE_SCOPES })
-    : new google.auth.GoogleAuth({ scopes: DRIVE_SCOPES }); // ADC fallback (Cloud Run runtime SA)
-
-  return google.drive({ version: 'v3', auth });
+  // Cloud Run: no key file in the image. Impersonate the Drive-shared SA so the
+  // generated token carries drive.readonly (requires the runtime SA to have
+  // roles/iam.serviceAccountTokenCreator on DRIVE_IMPERSONATE_SA).
+  const { Impersonated } = require('google-auth-library');
+  const sourceClient = await new google.auth.GoogleAuth({
+    scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+  }).getClient();
+  const authClient = new Impersonated({
+    sourceClient,
+    targetPrincipal: DRIVE_IMPERSONATE_SA,
+    targetScopes: DRIVE_SCOPES,
+    lifetime: 3600,
+  });
+  return google.drive({ version: 'v3', auth: authClient });
 }
 
 /** List all non-folder files in a Drive folder (handles pagination + shared drives). */
@@ -135,7 +156,7 @@ async function syncClient(client, opts = {}) {
 
   log(`[drive-sync] ${client}: starting (${dryRun ? 'DRY RUN' : 'LIVE'}) folder=${cfg.folderId} -> ${cfg.gcsPrefix}`);
 
-  const drive = getDriveClient();
+  const drive = await getDriveClient();
   const driveFiles = (await listDriveFiles(drive, cfg.folderId))
     .filter(f => /\.csv$/i.test(f.name));
   log(`[drive-sync] ${client}: ${driveFiles.length} CSV file(s) in Drive`);
