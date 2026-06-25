@@ -78,6 +78,32 @@ function mvs(schema) {
         { name: 'idx_mv_sales_daily_date', col: 'transaction_date' },
       ],
     },
+
+    // ── mv_parts_dim — ONE row per part (deduped product dimension) ──────────
+    // `parts` has ~16-50 rows per `part` value (one per size), so joining it raw
+    // to sales fans measures out 16-50x. This MV collapses parts to one row per
+    // `part` carrying only the PART-CONSTANT attributes (model / color / gender /
+    // shoe_type / season / family — size/sku/barcode are size-level and excluded).
+    // Attribute breakdowns JOIN this small (~tens-of-thousands rows) dim instead
+    // of running DISTINCT ON over the multi-million-row parts table every query.
+    {
+      name: 'mv_parts_dim',
+      sql: `
+        SELECT DISTINCT ON (part)
+          part, model_code, model_name, model_color_code, model_color_name,
+          color, color_code, shoe_type, marketing_shoe_type, product_line,
+          gender, collection, season, budget_line,
+          family_code, family_description, family_type, family_type_description,
+          supplier_code, supplier_name, item_status, quality, variety,
+          consumer_price, consumer_price_inc_vat
+        FROM ${schema}.parts
+        WHERE part IS NOT NULL AND part <> ''
+        ORDER BY part
+      `,
+      indexes: [
+        { name: 'idx_mv_parts_dim_part', col: 'part' },
+      ],
+    },
   ];
 }
 

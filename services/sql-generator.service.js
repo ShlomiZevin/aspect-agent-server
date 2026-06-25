@@ -932,15 +932,13 @@ for plain "total revenue this year/month/week" use mv_sales_daily (smaller/faste
 - Stores: \`JOIN tevanaot.sites si ON s.warhs = si.warhs\` — store = \`si.store_name\` (fallback \`si.warehouse_name\`). sites is unique per warhs — safe to join directly.
 - Customers: \`JOIN tevanaot.customers c ON s.cust = c.cust\`.
 - Products: **\`parts\` has MANY rows per \`part\` value (one per size), so \`part\` is NOT unique.** JOINing mv_sales (or an aggregate of it) directly to \`parts\` and SUM-ing AFTER the join multiplies every measure by the size-row count — a 16–50x over-count (we have seen "billions of ₪" / millions of units vs a real total in the tens of thousands). NEVER write \`... JOIN tevanaot.parts p ON a.part = p.part ... SUM(a.qty)\`.
-  Instead aggregate mv_sales by \`part\` FIRST, then join a DE-DUPLICATED parts subquery (one row per part):
-  \`JOIN (SELECT DISTINCT ON (part) part, model_code, model_name, model_color_name, color, gender, shoe_type, collection, season, family_description, sku, barcode FROM tevanaot.parts ORDER BY part) p ON a.part = p.part\`.
-  model / color / gender / shoe_type / season / family are constant within a \`part\`, so DISTINCT ON is exact (no double counting).
+  Instead aggregate mv_sales by \`part\` FIRST, then JOIN the pre-deduplicated dimension **\`tevanaot.mv_parts_dim\`** (already exactly ONE row per \`part\`, indexed on part): \`JOIN tevanaot.mv_parts_dim p ON a.part = p.part\`. It carries the part-constant attributes (model_code, model_name, model_color_name, color, gender, shoe_type, collection, season, family_description, supplier_name, consumer_price, …) — NOT size/sku/barcode (those are size-level). Use mv_parts_dim for ALL attribute rollups; never raw \`parts\` for SUM-after-join.
 
 ### RULE 6 — "model" vs "item" grain
 \`part\` is the model-COLOR grain (a model has several colors → several parts; each part also has several size-rows in \`parts\`).
-- "top MODELS" → roll up to the model: aggregate mv_sales by part, join the de-duplicated parts, then \`GROUP BY model_code, model_name\` and SUM. (Listing parts directly repeats the same model once per color.)
-- "top items / SKUs" → keep part grain, show \`model_color_name\`.
-- "sales by color / gender / shoe_type / season / family" → aggregate by part, join the de-duplicated parts, GROUP BY the attribute, SUM. NEVER SUM over a raw parts join (fan-out).
+- "top MODELS" → roll up to the model: aggregate mv_sales by part, join \`tevanaot.mv_parts_dim\`, then \`GROUP BY model_code, model_name\` and SUM. (Listing parts directly repeats the same model once per color.)
+- "top items / SKUs" → keep part grain, show \`model_color_name\` (from mv_parts_dim).
+- "sales by color / gender / shoe_type / season / family" → aggregate by part, join \`tevanaot.mv_parts_dim\`, GROUP BY the attribute, SUM. NEVER SUM over a raw \`parts\` join (fan-out).
 
 ### RULE 7 — Inventory (resolve the BRANCH-PART key with split_part)
 \`inventory.branch_part_key\` = 'BRANCH-PART' (e.g. '17-8538'). Resolve:
@@ -967,11 +965,10 @@ WITH agg AS (
   WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
     AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
   GROUP BY part
-),
-dim AS (SELECT DISTINCT ON (part) part, model_code, model_name FROM tevanaot.parts ORDER BY part)
+)
 SELECT d.model_name, SUM(a.qty) AS units, SUM(a.revenue) AS revenue
 FROM agg a
-JOIN dim d ON a.part = d.part
+JOIN tevanaot.mv_parts_dim d ON a.part = d.part
 GROUP BY d.model_code, d.model_name
 ORDER BY units DESC
 LIMIT 10
@@ -985,11 +982,10 @@ WITH agg AS (
   WHERE transaction_date >= DATE_TRUNC('year', CURRENT_DATE)
     AND transaction_date <  DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'
   GROUP BY part
-),
-dim AS (SELECT DISTINCT ON (part) part, gender FROM tevanaot.parts ORDER BY part)
+)
 SELECT COALESCE(d.gender, '(unknown)') AS gender, SUM(a.qty) AS units, SUM(a.revenue) AS revenue
 FROM agg a
-JOIN dim d ON a.part = d.part
+JOIN tevanaot.mv_parts_dim d ON a.part = d.part
 GROUP BY d.gender
 ORDER BY units DESC
 \`\`\`
