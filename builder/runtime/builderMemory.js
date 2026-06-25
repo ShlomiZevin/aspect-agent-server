@@ -49,11 +49,16 @@ const GENERAL_KEY = '_general';
 const SECTION_MEMORY = 'memory';
 const SECTION_THINKING = 'thinking';
 const SECTION_SUMMARY = 'summary';
+/** Retrieval = KB Retriever output slots. Flat `{ [name]: string }`,
+ *  EPHEMERAL — recomputed (replaced/cleared) every turn the retriever
+ *  runs, never accumulated. Read by the `{{kb-retrieve:NAME}}` token.
+ *  See docs/guides/KB_V2_RETRIEVER.md. */
+const SECTION_RETRIEVAL = 'retrieval';
 /** Sections that follow the `{ [domain]: { [field]: value } }` shape.
  *  Summary breaks the pattern — its writes are flat `{ [name]: entry }` —
  *  so it has its own write path and is NOT in this list. */
 const DOMAIN_SECTIONS = [SECTION_MEMORY, SECTION_THINKING];
-const SECTIONS = [SECTION_MEMORY, SECTION_THINKING, SECTION_SUMMARY];
+const SECTIONS = [SECTION_MEMORY, SECTION_THINKING, SECTION_SUMMARY, SECTION_RETRIEVAL];
 
 function domainKey(domain) {
   return domain && String(domain).trim() ? String(domain) : GENERAL_KEY;
@@ -81,20 +86,23 @@ function sectionKey(kind) {
  */
 function normalizeBlob(raw) {
   const empty = () => ({
-    [SECTION_MEMORY]:   {},
-    [SECTION_THINKING]: {},
-    [SECTION_SUMMARY]:  {},
-    runCounts:          {},
+    [SECTION_MEMORY]:    {},
+    [SECTION_THINKING]:  {},
+    [SECTION_SUMMARY]:   {},
+    [SECTION_RETRIEVAL]: {},
+    runCounts:           {},
   });
   if (!raw || typeof raw !== 'object') return empty();
   if (Object.prototype.hasOwnProperty.call(raw, SECTION_MEMORY) ||
       Object.prototype.hasOwnProperty.call(raw, SECTION_THINKING) ||
-      Object.prototype.hasOwnProperty.call(raw, SECTION_SUMMARY)) {
+      Object.prototype.hasOwnProperty.call(raw, SECTION_SUMMARY) ||
+      Object.prototype.hasOwnProperty.call(raw, SECTION_RETRIEVAL)) {
     return {
-      [SECTION_MEMORY]:   raw[SECTION_MEMORY]   && typeof raw[SECTION_MEMORY]   === 'object' ? raw[SECTION_MEMORY]   : {},
-      [SECTION_THINKING]: raw[SECTION_THINKING] && typeof raw[SECTION_THINKING] === 'object' ? raw[SECTION_THINKING] : {},
-      [SECTION_SUMMARY]:  raw[SECTION_SUMMARY]  && typeof raw[SECTION_SUMMARY]  === 'object' ? raw[SECTION_SUMMARY]  : {},
-      runCounts:          raw.runCounts && typeof raw.runCounts === 'object' ? raw.runCounts : {},
+      [SECTION_MEMORY]:    raw[SECTION_MEMORY]    && typeof raw[SECTION_MEMORY]    === 'object' ? raw[SECTION_MEMORY]    : {},
+      [SECTION_THINKING]:  raw[SECTION_THINKING]  && typeof raw[SECTION_THINKING]  === 'object' ? raw[SECTION_THINKING]  : {},
+      [SECTION_SUMMARY]:   raw[SECTION_SUMMARY]   && typeof raw[SECTION_SUMMARY]   === 'object' ? raw[SECTION_SUMMARY]   : {},
+      [SECTION_RETRIEVAL]: raw[SECTION_RETRIEVAL] && typeof raw[SECTION_RETRIEVAL] === 'object' ? raw[SECTION_RETRIEVAL] : {},
+      runCounts:           raw.runCounts && typeof raw.runCounts === 'object' ? raw.runCounts : {},
     };
   }
   // Legacy shape: domains at the root → treat as memory only.
@@ -163,6 +171,18 @@ async function saveMemory(userId, conversationId, blob) {
  */
 function applyWrites(blob, writes) {
   for (const w of writes) {
+    // Retrieval: flat, ephemeral slots keyed by name (KB Retriever).
+    //   { kind:'retrieval', name, value }       → set slot
+    //   { kind:'retrieval', name, clear:true }  → drop slot
+    if (w.kind === 'retrieval') {
+      if (!blob[SECTION_RETRIEVAL]) blob[SECTION_RETRIEVAL] = {};
+      if (!w.name) continue;
+      if (w.clear === true) { delete blob[SECTION_RETRIEVAL][w.name]; continue; }
+      if (w.value === null || w.value === undefined) continue;
+      blob[SECTION_RETRIEVAL][w.name] = w.value;
+      continue;
+    }
+
     const sec = sectionKey(w.kind);
     if (!blob[sec]) blob[sec] = {};
 
@@ -192,6 +212,14 @@ function applyWrites(blob, writes) {
     blob[sec][dk][w.field] = w.value;
   }
   return blob;
+}
+
+/** Read a KB Retriever slot by name. Returns undefined when nothing was
+ *  written (caller / token resolver supplies the empty sentinel). */
+function getRetrieval(blob, name) {
+  const sec = blob?.[SECTION_RETRIEVAL];
+  if (!sec || typeof name !== 'string' || !name) return undefined;
+  return sec[name];
 }
 
 /** Read a summary entry by name. Returns undefined when the slot is
@@ -311,11 +339,13 @@ module.exports = {
   normalizeBlob,
   getSummary,
   listSummarizerNames,
+  getRetrieval,
   NAMESPACE,
   GENERAL_KEY,
   SECTION_MEMORY,
   SECTION_THINKING,
   SECTION_SUMMARY,
+  SECTION_RETRIEVAL,
   DOMAIN_SECTIONS,
   SECTIONS,
 };

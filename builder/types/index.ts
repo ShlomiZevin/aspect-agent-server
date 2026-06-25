@@ -432,6 +432,66 @@ export interface SummarizerConfig {
   name: string;
 }
 
+/**
+ * KB Retriever — adaptive RAG retrieval as a chain step. Two
+ * independent axes, each Simple or LLM: Trigger (when to fire) and
+ * Query (what to ask). Searches the selected KBs (Pinecone namespaces),
+ * writes the formatted result (or the empty-sentinel) to a named
+ * EPHEMERAL slot, injected into downstream prompts via `{{kb:NAME}}`.
+ * Recomputed every turn, never persisted. See
+ * `docs/guides/KB_V2_RETRIEVER.md`.
+ */
+export interface KbRetrieverConfig {
+  /** User-editable addon label (shown on the chain card). Empty → the
+   *  plugin's display name, like every other addon. */
+  name: string;
+  /** Where the result is written — the token to inject downstream is
+   *  `{{kb:DOMAIN}}`. (Mirrors Thinker's name/domain split.) */
+  domain: string;
+  /** Pinecone namespaces (KBs) to search. All selected are searched. */
+  kbNamespaces: string[];
+  /** When to fire. */
+  trigger: {
+    mode: 'always' | 'llm';
+    /** LLM-mode planner prompt — returns fire / skip. Full prompt. */
+    prompt: string;
+    model: ModelRef;
+    /** LLM-mode: how much conversation the decider sees. */
+    history: HistoryMode;
+    /** Locked output-format contract appended to the prompt at runtime
+     *  (the decider MUST answer a clear yes/no). Visible + fixed in the
+     *  UI; editable only behind a danger gate — a bad contract silently
+     *  breaks the yes/no parse. */
+    outputContract: string;
+  };
+  /** What to ask. */
+  query: {
+    mode: 'history' | 'llm';
+    /** history mode: how many trailing messages to embed (default 1). */
+    n: number;
+    /** LLM-mode rewrite prompt — returns the query string. Full prompt. */
+    prompt: string;
+    model: ModelRef;
+    /** LLM-mode: how much conversation the rewriter sees. */
+    history: HistoryMode;
+    /** Locked output-format contract appended at runtime (the rewriter
+     *  MUST return only the query text). Same danger-gated UI as the
+     *  trigger contract. */
+    outputContract: string;
+  };
+  /** Retrieval knobs (same as the admin Test panel). */
+  topK: number;
+  minScore: number;
+  maxTokens: number;
+  /** 'text' = chunk text only; 'structured' = chunks + relevance scores. */
+  format: 'text' | 'structured';
+  /** What `{{kb:NAME}}` renders when nothing was retrieved. */
+  emptyText: string;
+  /** On a turn that retrieves nothing: `clear` (write sentinel) or
+   *  `keep` (leave the previous result). */
+  onNoRetrieval: 'clear' | 'keep';
+}
+
 // ─── Brain blob (runtime — written by addons, read by assembler) ───
 
 /**

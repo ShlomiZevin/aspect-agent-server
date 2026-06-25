@@ -194,6 +194,9 @@ async function runOnce({
   const thinkingValuesByDomain = (domain) => builderMemory.valuesForDomain(memory, domain, 'thinking');
   const memoryDomainList       = ()       => builderMemory.listDomainsWithValues(memory, 'memory');
   const thinkingDomainList     = ()       => builderMemory.listDomainsWithValues(memory, 'thinking');
+  // KB Retriever slots — read by the {{kb-retrieve:NAME}} token. Closes
+  // over the live blob so a Retriever upstream this turn is visible.
+  const retrievalValueOf       = (name)   => builderMemory.getRetrieval(memory, name);
 
   // ── 3. Build the shared per-turn execution context. ──
   // `addonRunner` and `offlineDispatcher` both consume this shape.
@@ -229,6 +232,7 @@ async function runOnce({
     memoryDomainList,
     thinkingValuesByDomain,
     thinkingDomainList,
+    retrievalValueOf,
     fieldValueOf,
     drizzle,
     convRow,

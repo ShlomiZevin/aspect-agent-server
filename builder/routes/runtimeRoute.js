@@ -266,9 +266,12 @@ router.get('/:slug/conversations/:convId/memory', async (req, res) => {
     const builderMemory = require('../runtime/builderMemory');
     const blob = await builderMemory.loadMemory(userId, Number(convId));
     res.json({
-      memory:   blob.memory,
-      thinking: blob.thinking,
-      summary:  blob.summary || {},
+      memory:    blob.memory,
+      thinking:  blob.thinking,
+      summary:   blob.summary || {},
+      // Ephemeral KB Retriever slots ({{kb:NAME}} injection text) — the
+      // Live Brain panel renders these under "Knowledge".
+      retrieval: blob.retrieval || {},
     });
   } catch (err) {
     console.error('[builder] GET memory failed:', err);

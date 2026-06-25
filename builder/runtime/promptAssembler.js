@@ -507,6 +507,7 @@ function assemblePrompt({
   memoryDomainList,
   thinkingValuesByDomain,
   thinkingDomainList,
+  retrievalValueOf,
   fieldValueOf,
   extractorFields,
   parameters,
@@ -697,6 +698,24 @@ function assemblePrompt({
     'tag',
     name => resolveTagToken(name, { fieldsForDc: fieldsForDc || [], fieldValueOf }),
     /* inline */ false,
+  );
+
+  // KB Retriever injection — `{{kb-retrieve:NAME}}` renders the slot a
+  // KB Retriever wrote upstream this turn (chunks, or its configured
+  // empty-sentinel). Never blank: a missing/empty slot falls back to a
+  // generic sentinel so prompts like "answer only from {{kb-retrieve:x}}"
+  // stay coherent. See docs/guides/KB_V2_RETRIEVER.md.
+  const retrievalReader = retrievalValueOf || (() => undefined);
+  template = substituteParameterised(
+    template,
+    'kb',
+    name => {
+      const v = retrievalReader(name);
+      return (v && String(v).trim())
+        ? String(v)
+        : 'No relevant information was found in the knowledge base.';
+    },
+    /* inline */ true,
   );
 
   return template.replace(/\n{3,}/g, '\n\n').trim();

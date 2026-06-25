@@ -1,0 +1,42 @@
+{
+  "pluginId": "kb-retriever",
+  "displayName": "KB Retriever",
+  "description": "Search a knowledge base and inject the results into prompts via {{kb:NAME}}.",
+  "purpose": "Adaptive RAG retrieval as a chain step. Two independent axes — Trigger (when: always | LLM decides) and Query (what: last-N history | LLM rewrite). Searches the selected KBs, writes the result to a named slot, and is injected via {{kb:NAME}}. Recomputed every turn, never persisted. See docs/guides/KB_V2_RETRIEVER.md.",
+  "icon": "📚",
+  "color": "#0ea5e9",
+  "defaultLane": "main",
+  "fieldMode": "none",
+  "speaks": false,
+  "allowedOutputTypes": ["json-to-memory"],
+  "defaultOutputType": "json-to-memory",
+  "defaultContext": { "history": { "mode": "all" } },
+  "defaultPromptTemplate": "",
+  "hideStandardSections": { "context": true, "output": true },
+  "defaultConfig": {
+    "name": "",
+    "domain": "knowledge",
+    "kbNamespaces": [],
+    "trigger": {
+      "mode": "always",
+      "prompt": "Decide whether the knowledge base should be searched to answer the latest user message.",
+      "model": { "providerId": "openai", "modelId": "gpt-4o-mini" },
+      "history": { "mode": "last_n", "n": 5 },
+      "outputContract": "Answer with ONLY one English word — \"yes\" or \"no\". No punctuation, no explanation."
+    },
+    "query": {
+      "mode": "history",
+      "n": 1,
+      "prompt": "Rewrite the conversation into a single, standalone search query for a knowledge base. Resolve pronouns and references.",
+      "model": { "providerId": "openai", "modelId": "gpt-4o-mini" },
+      "history": { "mode": "all" },
+      "outputContract": "Output ONLY the search query text, in the user's language. No quotes, no preamble, no explanation."
+    },
+    "topK": 5,
+    "minScore": 0.3,
+    "maxTokens": 3000,
+    "format": "text",
+    "emptyText": "No relevant information was found in the knowledge base.",
+    "onNoRetrieval": "clear"
+  }
+}
