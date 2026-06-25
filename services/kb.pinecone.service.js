@@ -160,6 +160,14 @@ function getNamespace(kbId) {
 async function indexFile({ kbId, namespace: nsOverride, fileId, fileName, fileType, agentId, chunks, embeddings }) {
   init();
   const namespace = nsOverride || getNamespace(kbId);
+
+  // Nothing to index (e.g. a scanned PDF with no text layer). Skip the
+  // upsert — Pinecone rejects an empty batch with a cryptic error.
+  if (!chunks || chunks.length === 0 || !embeddings || embeddings.length === 0) {
+    console.warn(`⚠️ indexFile: no chunks for "${fileName}" — skipping upsert`);
+    return { vectorCount: 0, namespace };
+  }
+
   const nsObj = namespace === '__default__' ? pineconeIndex.namespace('') : pineconeIndex.namespace(namespace);
 
   const vectors = chunks.map((chunk, i) => ({
@@ -178,10 +186,11 @@ async function indexFile({ kbId, namespace: nsOverride, fileId, fileName, fileTy
     },
   }));
 
-  // Upsert in batches
+  // Upsert in batches. Pinecone SDK v7 takes an options object
+  // ({ records }) — older versions accepted a bare array.
   for (let i = 0; i < vectors.length; i += UPSERT_BATCH_SIZE) {
     const batch = vectors.slice(i, i + UPSERT_BATCH_SIZE);
-    await nsObj.upsert(batch);
+    await nsObj.upsert({ records: batch });
   }
 
   console.log(`📌 Indexed ${vectors.length} vectors for file "${fileName}" in namespace "${namespace}"`);
@@ -199,7 +208,9 @@ async function deleteFile(namespaceOrKbId, fileId) {
   const nsName = typeof namespaceOrKbId === 'number' ? getNamespace(namespaceOrKbId) : namespaceOrKbId;
   const ns = nsName === '__default__' ? pineconeIndex.namespace('') : pineconeIndex.namespace(nsName);
 
-  await ns.deleteMany({ fileId });
+  // SDK v7: delete-by-metadata needs a `filter` wrapper (bare `{ fileId }`
+  // throws "Either `ids` or `filter` must be provided").
+  await ns.deleteMany({ filter: { fileId } });
   console.log(`🗑️ Deleted vectors for file ${fileId} from namespace "${nsName}"`);
 }
 
@@ -212,6 +223,20 @@ async function deleteNamespace(kbId) {
   init();
   const namespace = getNamespace(kbId);
   const ns = pineconeIndex.namespace(namespace);
+  await ns.deleteAll();
+  console.log(`🗑️ Deleted entire namespace "${namespace}"`);
+}
+
+/**
+ * Delete an entire namespace by its RAW name (free-form KB names like
+ * "lybi-kb", not the `kb-{id}` convention). Used by the V2 KB
+ * workbench's "delete knowledge base" action.
+ * @param {string} namespace
+ * @returns {Promise<void>}
+ */
+async function deleteNamespaceByName(namespace) {
+  init();
+  const ns = namespace === '__default__' ? pineconeIndex.namespace('') : pineconeIndex.namespace(namespace);
   await ns.deleteAll();
   console.log(`🗑️ Deleted entire namespace "${namespace}"`);
 }
@@ -372,6 +397,7 @@ module.exports = {
   indexFile,
   deleteFile,
   deleteNamespace,
+  deleteNamespaceByName,
   getIndexStats,
   listVectors,
   query,

@@ -136,6 +136,12 @@ function chunkText(text, options = {}) {
       });
     }
 
+    // Reached the end of the text — stop. Without this, once `end` pins
+    // to text.length the next-start math (`end - overlap`) stays behind
+    // `start`, so `start` crawls forward 1 char at a time and emits ~`overlap`
+    // shrinking duplicate micro-chunks (the "201 tiny chunks" bug).
+    if (end >= text.length) break;
+
     // Move start forward by (end - overlap), but at least 1 char to avoid infinite loops
     start = Math.max(start + 1, end - chunkOverlap);
   }

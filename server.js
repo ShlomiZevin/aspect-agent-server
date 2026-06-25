@@ -5406,6 +5406,17 @@ const pineconeService = require('./services/kb.pinecone.service');
 const { libraryFiles } = require('./db/schema');
 const { eq, and: drizzleAnd, desc: drizzleDesc } = require('drizzle-orm');
 
+/**
+ * Multer decodes multipart filenames as latin1, which mangles UTF-8
+ * names (Hebrew, Arabic, accents…) into mojibake — e.g. "הסכם.docx"
+ * becomes "×××¡×.docx". Re-decode the bytes as UTF-8 so the real name
+ * flows through to the preview title, the DB, and Pinecone metadata.
+ */
+function fixUploadName(name) {
+  try { return Buffer.from(name, 'latin1').toString('utf8'); }
+  catch { return name; }
+}
+
 // Connection status (no API call — just checks env vars)
 app.get('/api/pinecone/status', (req, res) => {
   res.json(pineconeService.getConnectionStatus());
@@ -5461,6 +5472,7 @@ app.post('/api/pinecone/indexes/:name/activate', async (req, res) => {
 app.post('/api/pinecone/preview-chunks', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    req.file.originalname = fixUploadName(req.file.originalname);
     const chunkSize = parseInt(req.body.chunkSize) || 1000;
     const chunkOverlap = parseInt(req.body.chunkOverlap) || 200;
 
@@ -5488,6 +5500,7 @@ app.post('/api/pinecone/preview-chunks', upload.single('file'), async (req, res)
 app.post('/api/pinecone/preview-embeddings', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    req.file.originalname = fixUploadName(req.file.originalname);
     const chunkSize = parseInt(req.body.chunkSize) || 1000;
     const chunkOverlap = parseInt(req.body.chunkOverlap) || 200;
 
@@ -5518,6 +5531,7 @@ app.post('/api/pinecone/preview-embeddings', upload.single('file'), async (req, 
 app.post('/api/pinecone/index-file', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    req.file.originalname = fixUploadName(req.file.originalname);
     const { kbId, agentId } = req.body;
     if (!kbId) return res.status(400).json({ error: 'kbId is required' });
 
@@ -5579,10 +5593,22 @@ app.post('/api/pinecone/index-bulk', upload.array('files', 200), async (req, res
 
     for (const file of req.files) {
       try {
+        file.originalname = fixUploadName(file.originalname);
         const { chunks } = await chunkerService.processFile(
           file.buffer, file.originalname, file.mimetype,
           { chunkSize, chunkOverlap }
         );
+
+        console.log(`📄 [index] "${file.originalname}" → ${chunks.length} chunks (size ${chunkSize}/${chunkOverlap})`);
+
+        if (chunks.length === 0) {
+          const ext = (file.originalname.split('.').pop() || '').toLowerCase();
+          throw new Error(
+            ext === 'pdf'
+              ? 'No text could be extracted — this looks like a scanned/image PDF (no text layer). OCR is needed to index it.'
+              : 'No text could be extracted from this file.'
+          );
+        }
 
         const { embeddings, totalTokens, cost } = await embeddingService.embedTexts(chunks.map(c => c.text));
         const fileId = Date.now() + Math.floor(Math.random() * 10000);
@@ -5625,6 +5651,7 @@ app.post('/api/pinecone/index-bulk', upload.array('files', 200), async (req, res
           status: 'success',
         });
       } catch (fileErr) {
+        console.error(`❌ Bulk index — file "${file.originalname}" failed:`, fileErr.message, fileErr.stack);
         failedFiles.push({ fileName: file.originalname, error: fileErr.message });
         results.push({
           fileName: file.originalname,
@@ -5699,6 +5726,30 @@ app.delete('/api/pinecone/namespace/:kbId', async (req, res) => {
   }
 });
 
+// Delete an entire knowledge base by its raw namespace name (V2 workbench):
+// wipes its vectors AND its DB file rows so the two stay in sync.
+app.delete('/api/pinecone/kb/:namespace', async (req, res) => {
+  try {
+    const ns = req.params.namespace;
+    // Vectors first. An empty/never-indexed namespace 404s on deleteAll —
+    // that's fine, treat it as already-clean.
+    try {
+      await pineconeService.deleteNamespaceByName(ns);
+    } catch (pineErr) {
+      console.warn(`⚠️ deleteKB vectors note for "${ns}":`, pineErr.message);
+    }
+    // DB file rows for this namespace.
+    const drizzle = db.getDrizzle();
+    if (drizzle) {
+      await drizzle.delete(libraryFiles).where(eq(libraryFiles.namespace, ns));
+    }
+    res.json({ success: true, message: `Deleted knowledge base "${ns}"` });
+  } catch (err) {
+    console.error('❌ Delete KB error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Query Pinecone (retrieval tester) — accepts namespace names or KB IDs
 app.post('/api/pinecone/query', async (req, res) => {
   try {
@@ -5743,6 +5794,31 @@ app.get('/api/library/files', async (req, res) => {
     res.json({ files, source: 'db' });
   } catch (err) {
     console.error('❌ List library files error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Aggregated per-namespace stats (file count, chunks, embedding cost) for
+// the active index — powers the KB rail's summary line.
+app.get('/api/library/stats', async (req, res) => {
+  try {
+    const drizzle = db.getDrizzle();
+    if (!drizzle) return res.json({ stats: [] });
+    const { sql } = require('drizzle-orm');
+    const idx = req.query.indexName || process.env.PINECONE_INDEX_NAME || 'default';
+    const rows = await drizzle
+      .select({
+        namespace: libraryFiles.namespace,
+        fileCount: sql`count(*)::int`,
+        chunkCount: sql`coalesce(sum(${libraryFiles.chunkCount}), 0)::int`,
+        cost: sql`coalesce(sum(${libraryFiles.embeddingCost}), 0)::float`,
+      })
+      .from(libraryFiles)
+      .where(eq(libraryFiles.indexName, idx))
+      .groupBy(libraryFiles.namespace);
+    res.json({ stats: rows });
+  } catch (err) {
+    console.error('❌ Library stats error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
