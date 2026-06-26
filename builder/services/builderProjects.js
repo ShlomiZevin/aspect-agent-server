@@ -27,10 +27,16 @@ const {
   builderAgentVersions,
   builderCrews,
   builderCrewVersions,
+  kbLinks,
 } = require('../../db/schema');
 
 function drizzle() {
   return db.getDrizzle();
+}
+
+/** Generate a server-side id with the same shape the client's uid() uses. */
+function genId(prefix) {
+  return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
 }
 
 /**
@@ -755,10 +761,160 @@ async function resolveRunnable({
   };
 }
 
+/**
+ * Duplicate a project (its single agent + all crews) into a fresh copy
+ * with new ids and a new slug. Copies ONLY the ACTIVE version of the
+ * agent and of each crew, each becoming the new entity's v1 (active +
+ * viewing). The new agent lands in `workspaceId` (defaults to the
+ * source's) and is live (not archived).
+ *
+ * Crews are new DB rows, so every crew-id reference inside the copied
+ * JSON is remapped to the new crew ids:
+ *   - agentBody.defaultCrewId
+ *   - Transition Router addon `config.target` (crew id)
+ *
+ * Field / enum / snippet ids and addon instanceIds are kept as-is —
+ * they're internal JSON keys, consistent within the copy. KB namespace
+ * references (`addon.config.kbNamespaces`) ride along in the JSON, so
+ * the clone points at the same knowledge.
+ */
+async function duplicateProject({ projectId, newSlug, newName, workspaceId }) {
+  const d = drizzle();
+  const slug = (newSlug || '').trim();
+  const name = (newName || '').trim();
+  if (!slug) { const e = new Error('New slug is required'); e.code = 'bad_input'; throw e; }
+  if (!name) { const e = new Error('New name is required'); e.code = 'bad_input'; throw e; }
+
+  // Global slug uniqueness — same rule as rename (lookup is by slug alone).
+  const clash = await d.select({ id: builderAgents.id }).from(builderAgents)
+    .where(eq(builderAgents.slug, slug)).limit(1);
+  if (clash.length > 0) {
+    const e = new Error(`The URL "/${slug}" is already used by another agent.`);
+    e.code = 'slug_taken';
+    throw e;
+  }
+
+  // ── Load the source (project + its agent + active bodies + crews) ──
+  const [srcProject] = await d.select().from(builderProjects)
+    .where(eq(builderProjects.id, projectId)).limit(1);
+  if (!srcProject) { const e = new Error('Project not found'); e.code = 'not_found'; throw e; }
+
+  const [srcAgent] = await d.select().from(builderAgents)
+    .where(eq(builderAgents.projectId, projectId)).limit(1);
+  if (!srcAgent) { const e = new Error('Agent not found'); e.code = 'not_found'; throw e; }
+
+  const [srcAgentVer] = await d.select().from(builderAgentVersions)
+    .where(eq(builderAgentVersions.id, srcAgent.activeVersionId)).limit(1);
+  if (!srcAgentVer) { const e = new Error('Agent has no active version'); e.code = 'not_found'; throw e; }
+
+  const srcCrews = await d.select().from(builderCrews)
+    .where(eq(builderCrews.agentId, srcAgent.id));
+
+  // Build crew-id remap + grab each crew's active body up front.
+  const crewIdMap = {};       // oldCrewId -> newCrewId
+  const crewActiveBody = {};  // oldCrewId -> active version body
+  for (const c of srcCrews) {
+    crewIdMap[c.id] = genId('crew');
+    const [cv] = await d.select().from(builderCrewVersions)
+      .where(eq(builderCrewVersions.id, c.activeVersionId)).limit(1);
+    crewActiveBody[c.id] = cv ? cv.body : {};
+  }
+
+  // Remap any crew-id references inside an addon list (Transition Router target).
+  const remapAddons = (addons) => {
+    if (!Array.isArray(addons)) return addons;
+    return addons.map(a => {
+      if (a && a.pluginId === 'transition-router' && a.config && crewIdMap[a.config.target]) {
+        return { ...a, config: { ...a.config, target: crewIdMap[a.config.target] } };
+      }
+      return a;
+    });
+  };
+
+  // ── New ids ──
+  const newProjectId  = genId('project');
+  const newAgentId    = genId('agent');
+  const newAgentVerId = genId('ver');
+
+  // New agent body: clone, then override name/slug + remap crew refs.
+  const agentBody = JSON.parse(JSON.stringify(srcAgentVer.body || {}));
+  agentBody.name = name;
+  agentBody.slug = slug;
+  if (agentBody.defaultCrewId && crewIdMap[agentBody.defaultCrewId]) {
+    agentBody.defaultCrewId = crewIdMap[agentBody.defaultCrewId];
+  }
+  if (Array.isArray(agentBody.cortex)) agentBody.cortex = remapAddons(agentBody.cortex);
+
+  const resolvedWorkspaceId = workspaceId !== undefined
+    ? (workspaceId || null)
+    : (srcAgent.workspaceId || null);
+
+  await d.transaction(async tx => {
+    await tx.insert(builderProjects).values({
+      id: newProjectId,
+      ownerUserId: srcProject.ownerUserId,
+      name,
+      spec: srcProject.spec || '',
+    });
+    await tx.insert(builderAgents).values({
+      id:               newAgentId,
+      projectId:        newProjectId,
+      slug,
+      workspaceId:      resolvedWorkspaceId,
+      archivedAt:       null,
+      activeVersionId:  newAgentVerId,
+      viewingVersionId: newAgentVerId,
+    });
+    await tx.insert(builderAgentVersions).values({
+      id: newAgentVerId,
+      agentId: newAgentId,
+      number: 1,
+      description: 'Duplicated',
+      body: agentBody,
+    });
+
+    for (const c of srcCrews) {
+      const newCrewId    = crewIdMap[c.id];
+      const newCrewVerId = genId('ver');
+      const crewBody = JSON.parse(JSON.stringify(crewActiveBody[c.id] || {}));
+      if (Array.isArray(crewBody.addons)) crewBody.addons = remapAddons(crewBody.addons);
+      await tx.insert(builderCrews).values({
+        id:               newCrewId,
+        agentId:          newAgentId,
+        activeVersionId:  newCrewVerId,
+        viewingVersionId: newCrewVerId,
+      });
+      await tx.insert(builderCrewVersions).values({
+        id: newCrewVerId,
+        crewId: newCrewId,
+        number: 1,
+        description: 'Duplicated',
+        body: crewBody,
+      });
+    }
+
+    // ── KB links ────────────────────────────────────────────────────
+    // Copy the SOURCE agent's KB↔agent visibility links to the NEW agent
+    // so the clone sees the same KBs (Pinecone namespaces) with zero
+    // vector copying — links are by name. Same index_name/namespace,
+    // new agent_id. Best-effort: a fresh agent simply has no links.
+    const srcLinks = await tx.select({ indexName: kbLinks.indexName, namespace: kbLinks.namespace })
+      .from(kbLinks).where(eq(kbLinks.agentId, srcAgent.id));
+    if (srcLinks.length > 0) {
+      await tx.insert(kbLinks)
+        .values(srcLinks.map(l => ({ indexName: l.indexName, namespace: l.namespace, agentId: newAgentId })))
+        .onConflictDoNothing();
+    }
+  });
+
+  return { projectId: newProjectId, agentId: newAgentId, slug, name };
+}
+
 module.exports = {
   hydrateProject,
   listProjects,
   createProject,
+  duplicateProject,
   renameAgent,
   moveAgent,
   setAgentArchived,

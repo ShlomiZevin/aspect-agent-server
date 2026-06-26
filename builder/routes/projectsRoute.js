@@ -96,6 +96,29 @@ router.post('/projects', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/builder/projects/:projectId/duplicate
+ *   Body: { newSlug, newName, workspaceId? }
+ *   Deep-copies the project's agent + crews (active versions only) into
+ *   a fresh project with new ids + slug. Returns { projectId, agentId,
+ *   slug, name }. 409 on a slug already taken.
+ */
+router.post('/projects/:projectId/duplicate', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { newSlug, newName, workspaceId } = req.body || {};
+    const result = await projects.duplicateProject({ projectId, newSlug, newName, workspaceId });
+    res.status(201).json(result);
+  } catch (err) {
+    const status = err.code === 'slug_taken' ? 409
+      : err.code === 'bad_input' ? 400
+      : err.code === 'not_found' ? 404
+      : 500;
+    if (status === 500) console.error('[builder] duplicate project failed:', err);
+    res.status(status).json({ error: err.message, code: err.code });
+  }
+});
+
 // ─── Agent shell mutations (rename / move / archive) ──────────────
 
 /**

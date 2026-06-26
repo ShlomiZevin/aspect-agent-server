@@ -5440,7 +5440,7 @@ app.put('/api/admin/test-runs/config/:agentName', async (req, res) => {
 const chunkerService = require('./services/kb.chunker.service');
 const embeddingService = require('./services/kb.embedding.service');
 const pineconeService = require('./services/kb.pinecone.service');
-const { libraryFiles } = require('./db/schema');
+const { libraryFiles, kbLinks, builderAgents, builderAgentVersions } = require('./db/schema');
 const { eq, and: drizzleAnd, desc: drizzleDesc } = require('drizzle-orm');
 
 /**
@@ -5856,6 +5856,133 @@ app.get('/api/library/stats', async (req, res) => {
     res.json({ stats: rows });
   } catch (err) {
     console.error('❌ Library stats error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── KB↔agent visibility links (many-to-many) ─────────────────────────
+// A KB is a Pinecone namespace (global). These endpoints record which
+// builder agents a namespace is "related to" so the builder shows only
+// the relevant KBs per agent. Pure visibility — no owner, no copies.
+const KB_ACTIVE_INDEX = () => process.env.PINECONE_INDEX_NAME || 'lybi';
+
+// Scoped KB list. Merges Pinecone namespaces (live vector counts) +
+// library_files aggregates (file count / cost) + this agent's links.
+//   scope='linked' (default when agentId given) → only the agent's KBs.
+//   scope='all'                                  → every KB + a `linked` flag.
+app.get('/api/library/kbs', async (req, res) => {
+  try {
+    const drizzle = db.getDrizzle();
+    const idx = req.query.indexName || KB_ACTIVE_INDEX();
+    const agentId = req.query.agentId ? String(req.query.agentId) : null;
+    const scope = req.query.scope === 'all' ? 'all' : (agentId ? 'linked' : 'all');
+
+    // Pinecone namespaces — authoritative existence + live vector counts.
+    let nsStats = [];
+    try {
+      const s = await pineconeService.getIndexStats();
+      nsStats = Array.isArray(s.namespaces) ? s.namespaces : [];
+    } catch (_) { nsStats = []; }
+
+    // DB aggregates per namespace (file count / chunk / cost).
+    const byNs = new Map();
+    if (drizzle) {
+      const { sql } = require('drizzle-orm');
+      const rows = await drizzle.select({
+        namespace:  libraryFiles.namespace,
+        fileCount:  sql`count(*)::int`,
+        chunkCount: sql`coalesce(sum(${libraryFiles.chunkCount}),0)::int`,
+        cost:       sql`coalesce(sum(${libraryFiles.embeddingCost}),0)::float`,
+      }).from(libraryFiles).where(eq(libraryFiles.indexName, idx)).groupBy(libraryFiles.namespace);
+      for (const r of rows) byNs.set(r.namespace, r);
+    }
+
+    // This agent's linked namespaces.
+    const linkedSet = new Set();
+    if (drizzle && agentId) {
+      const links = await drizzle.select({ namespace: kbLinks.namespace })
+        .from(kbLinks).where(drizzleAnd(eq(kbLinks.indexName, idx), eq(kbLinks.agentId, agentId)));
+      for (const l of links) linkedSet.add(l.namespace);
+    }
+
+    // Union of pinecone + db + linked names (a link may point at a
+    // namespace whose vectors are gone — still surface it so it can be
+    // fixed, matching the picker's "missing" handling).
+    const names = new Set([...nsStats.map(n => n.name), ...byNs.keys(), ...linkedSet]);
+    let kbs = Array.from(names).map(name => {
+      const ns = nsStats.find(n => n.name === name);
+      const agg = byNs.get(name) || {};
+      return {
+        namespace:   name,
+        vectorCount: ns ? ns.vectorCount : 0,
+        fileCount:   agg.fileCount || 0,
+        chunkCount:  agg.chunkCount || 0,
+        cost:        agg.cost || 0,
+        linked:      linkedSet.has(name),
+      };
+    });
+    if (scope === 'linked') kbs = kbs.filter(k => k.linked);
+    kbs.sort((a, b) => a.namespace.localeCompare(b.namespace));
+    res.json({ kbs, scope, indexName: idx });
+  } catch (err) {
+    console.error('❌ KB list error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add a KB↔agent link (idempotent).
+app.post('/api/library/links', async (req, res) => {
+  try {
+    const drizzle = db.getDrizzle();
+    if (!drizzle) return res.status(500).json({ error: 'Database not available' });
+    const { agentId, namespace } = req.body || {};
+    const idx = req.body.indexName || KB_ACTIVE_INDEX();
+    if (!agentId || !namespace) return res.status(400).json({ error: 'agentId and namespace are required' });
+    await drizzle.insert(kbLinks).values({ indexName: idx, namespace, agentId }).onConflictDoNothing();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('❌ KB link error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove a KB↔agent link.
+app.delete('/api/library/links', async (req, res) => {
+  try {
+    const drizzle = db.getDrizzle();
+    if (!drizzle) return res.status(500).json({ error: 'Database not available' });
+    const { agentId, namespace } = req.body || {};
+    const idx = req.body.indexName || KB_ACTIVE_INDEX();
+    if (!agentId || !namespace) return res.status(400).json({ error: 'agentId and namespace are required' });
+    await drizzle.delete(kbLinks).where(drizzleAnd(
+      eq(kbLinks.indexName, idx), eq(kbLinks.namespace, namespace), eq(kbLinks.agentId, agentId)));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('❌ KB unlink error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Agents linked to a namespace (with display names) — for the workbench.
+app.get('/api/library/namespace/:namespace/agents', async (req, res) => {
+  try {
+    const drizzle = db.getDrizzle();
+    if (!drizzle) return res.json({ agents: [] });
+    const idx = req.query.indexName || KB_ACTIVE_INDEX();
+    const namespace = req.params.namespace;
+    const links = await drizzle.select({ agentId: kbLinks.agentId })
+      .from(kbLinks).where(drizzleAnd(eq(kbLinks.indexName, idx), eq(kbLinks.namespace, namespace)));
+    const ids = links.map(l => l.agentId);
+    if (ids.length === 0) return res.json({ agents: [] });
+    const { inArray } = require('drizzle-orm');
+    const rows = await drizzle.select({
+      id: builderAgents.id, slug: builderAgents.slug, body: builderAgentVersions.body,
+    }).from(builderAgents)
+      .leftJoin(builderAgentVersions, eq(builderAgentVersions.id, builderAgents.activeVersionId))
+      .where(inArray(builderAgents.id, ids));
+    res.json({ agents: rows.map(a => ({ agentId: a.id, slug: a.slug, name: (a.body && a.body.name) || a.slug })) });
+  } catch (err) {
+    console.error('❌ KB linked-agents error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

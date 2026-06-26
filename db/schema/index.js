@@ -482,5 +482,6 @@ module.exports = {
   builderCrewVersions:    builderSchema.builderCrewVersions,
   addonRuns:              builderSchema.addonRuns,
   repoEntries:            builderSchema.repoEntries,
+  kbLinks:                builderSchema.kbLinks,
   agentLog,
 };

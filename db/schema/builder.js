@@ -19,7 +19,7 @@
  * model rationale.
  */
 
-const { pgTable, text, varchar, jsonb, timestamp, integer, uniqueIndex, index } = require('drizzle-orm/pg-core');
+const { pgTable, text, varchar, jsonb, timestamp, integer, serial, uniqueIndex, index } = require('drizzle-orm/pg-core');
 
 // Top-level project. Just metadata; no JSON body (project-level
 // fields are stable for now: name + spec).
@@ -164,6 +164,25 @@ const repoEntries = pgTable('repo_entries', {
   kindPluginIdx: index('repo_entries_kind_plugin_idx').on(t.kind, t.pluginId),
 }));
 
+// kb_links — KB↔agent visibility links (many-to-many). A KB is a
+// Pinecone namespace (global in the shared index); this table records
+// which builder agents a namespace is "related to" so the builder only
+// surfaces the relevant KBs per agent. Pure visibility — no owner, no
+// shared flag; a KB is visible to an agent iff a link row exists.
+// Duplicating an agent copies its link rows so the clone sees the same
+// KBs without copying any vectors. See KB_V2 docs.
+const kbLinks = pgTable('kb_links', {
+  id:         serial('id').primaryKey(),
+  indexName:  varchar('index_name', { length: 255 }).notNull(),
+  namespace:  varchar('namespace', { length: 255 }).notNull(),
+  agentId:    varchar('agent_id', { length: 64 }).notNull(),
+  createdAt:  timestamp('created_at').defaultNow().notNull(),
+}, t => ({
+  unique:    uniqueIndex('kb_links_unique').on(t.indexName, t.namespace, t.agentId),
+  agentIdx:  index('kb_links_agent_idx').on(t.agentId),
+  nsIdx:     index('kb_links_ns_idx').on(t.indexName, t.namespace),
+}));
+
 module.exports = {
   builderProjects,
   builderWorkspaces,
@@ -173,4 +192,5 @@ module.exports = {
   builderCrewVersions,
   addonRuns,
   repoEntries,
+  kbLinks,
 };
