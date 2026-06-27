@@ -36,6 +36,7 @@ const { conversations, messages } = require('../../db/schema');
 const { resolveRunnable } = require('../services/builderProjects');
 const { logUsage } = require('../../services/usageLogger');
 const builderMemory = require('./builderMemory');
+const { seedPinnedFields } = require('./pinnedFields');
 const { runAddon } = require('./addonRunner');
 const { dispatchOfflineAddons } = require('./offlineDispatcher');
 const modelsService = require('../../services/models.service');
@@ -189,6 +190,19 @@ async function runOnce({
   // resolved against memory field values inside the assembler — no
   // separate brain section.
   const memory = await builderMemory.loadMemory(userId, conversationId);
+  // Seed `source: 'pinned'` fields' defaults into memory BEFORE any
+  // readers (prompt assembler, addon prompts, …) close over the
+  // accessor closures below. Idempotent — only writes when the slot is
+  // empty, so existing conversation memory and the chat-header swap
+  // chip's per-conversation overrides always win.
+  try {
+    const seeded = seedPinnedFields(memory, runnable);
+    if (seeded > 0) {
+      await builderMemory.saveMemory(userId, conversationId, memory);
+    }
+  } catch (err) {
+    console.error('[BuilderRunner] pinned-field seed failed:', err.message);
+  }
   const fieldValueOf           = (name)   => builderMemory.findFieldValue(memory, name, 'memory');
   const memoryValuesByDomain   = (domain) => builderMemory.valuesForDomain(memory, domain, 'memory');
   const thinkingValuesByDomain = (domain) => builderMemory.valuesForDomain(memory, domain, 'thinking');

@@ -655,13 +655,24 @@ function assemblePrompt({
   //
   // We run the inline `:values` pass first so the block pass below
   // can treat any remaining `{{enum:…}}` tokens as block.
-  template = template.replace(/\{\{enum:([^:}\s]+):values\}\}/g, (match, name) => {
+  //
+  // `targetedkb:` is a forward-looking alias — the UI is migrating
+  // toward calling these Targeted KBs. Both prefixes route to the
+  // same resolvers so existing prompts keep working AND new prompts
+  // can use the new vocabulary.
+  template = template.replace(/\{\{(?:enum|targetedkb):([^:}\s]+):values\}\}/g, (match, name) => {
     const out = resolveEnumAggregate(`${name}:values`, { enums: enumsList, onEnumResolved });
     return out === null || out === undefined ? match : out;
   });
   template = substituteParameterised(
     template,
     'enum',
+    name => resolveEnumAggregate(name, { enums: enumsList, onEnumResolved }),
+    /* inline */ false,
+  );
+  template = substituteParameterised(
+    template,
+    'targetedkb',
     name => resolveEnumAggregate(name, { enums: enumsList, onEnumResolved }),
     /* inline */ false,
   );
@@ -715,6 +726,41 @@ function assemblePrompt({
         ? String(v)
         : 'No relevant information was found in the knowledge base.';
     },
+    /* inline */ true,
+  );
+
+  // ── Second pass for inline tokens that may have been INLINED by
+  //    block resolvers above. Concrete case: an enum value's
+  //    umbrellaText / sectionTexts body containing `{{field:foo}}` —
+  //    the first inline pass ran BEFORE enum resolution, so the
+  //    field token sat unresolved inside the body. Now that the body
+  //    is part of `template`, run the inline resolvers again to
+  //    catch it. ──────────────────────────────────────────────────
+  template = substituteParameterised(
+    template,
+    'field',
+    name => resolveFieldInline(name, fieldValueOf),
+    /* inline */ true,
+  );
+  template = substituteParameterised(
+    template,
+    'fieldname',
+    name => {
+      const field = (fieldsForDc || []).find(f => f && f.name === name);
+      return field ? field.name : null;
+    },
+    /* inline */ true,
+  );
+  template = substituteParameterised(
+    template,
+    'param',
+    name => resolveParamInline(name, parameters),
+    /* inline */ true,
+  );
+  template = substituteParameterised(
+    template,
+    'summary',
+    name => resolveSummaryInline(name, summaries),
     /* inline */ true,
   );
 

@@ -34,10 +34,27 @@ export interface ModelRef {
 
 export type FieldType = 'string' | 'int' | 'enum' | 'boolean';
 
-/** Where a field value comes from. */
+/** Where a field value comes from.
+ *
+ *  - 'explicit' — only when the user literally says it (collected at
+ *                 runtime by an extractor).
+ *  - 'inferred' — can be concluded from conversation patterns
+ *                 (collected at runtime by an extractor).
+ *  - 'pinned'   — pre-set at authoring time via `FieldDef.defaultValue`.
+ *                 NOT collected at runtime; the runtime seeds the
+ *                 field's memory slot with `defaultValue` at the start
+ *                 of every turn if no value is already present.
+ *                 Conversation-level overrides (the chat header swap
+ *                 chip, the brain panel value picker) win because the
+ *                 seed only fires when the slot is empty.
+ *                 Used for organizational KB selectors (e.g. which
+ *                 bank the agent is acting as). Only meaningful when
+ *                 `type === 'enum'`; readers should treat a non-enum
+ *                 pinned field as a no-op. */
 export type FieldSource =
-  | 'explicit'   // only when the user literally says it
-  | 'inferred';  // can be concluded from conversation patterns
+  | 'explicit'
+  | 'inferred'
+  | 'pinned';
 
 /**
  * Where the field lives in the JSON.
@@ -92,6 +109,19 @@ export interface FieldDef {
    * Order preserved; deduped on save.
    */
   tags?: string[];
+  /**
+   * Pre-set value used when `source === 'pinned'`. Read at conversation
+   * start: the runtime seeds memory[domain][name] with this value if
+   * the slot is empty. Conversation-level memory writes (e.g. the
+   * builder chat header swap chip) override it because the seed only
+   * fires when the slot is undefined.
+   *
+   * Only meaningful for `type === 'enum'` + `source === 'pinned'`.
+   * For other combinations, readers should treat this as a no-op;
+   * it's optional so the schema stays back-compat with every existing
+   * FieldDef on the wire.
+   */
+  defaultValue?: string;
 }
 
 // ─── Parameters (static agent-wide values) ────────────────────────
