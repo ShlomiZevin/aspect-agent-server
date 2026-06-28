@@ -94,10 +94,15 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
   const viewing = agentVersions.find(v => v.id === agent.viewingVersionId);
   const agentBody = withPersonas(viewing ? viewing.body : {});
 
-  // All crews of this agent.
+  // All crews of this agent — ordered by creation time so the
+  // sidebar is deterministic across users. Without ORDER BY the
+  // result depends on Postgres heap layout, which shifts after
+  // updates / vacuum and made two browsers show different crew
+  // orderings for the same agent.
   const crewRows = await d.select()
     .from(builderCrews)
-    .where(eq(builderCrews.agentId, agent.id));
+    .where(eq(builderCrews.agentId, agent.id))
+    .orderBy(builderCrews.createdAt);
 
   const crews = [];
   for (const c of crewRows) {
@@ -124,14 +129,34 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       persona:      crewBody.persona,
       addons:       migratedAddons,
       fields:       Array.isArray(crewBody.fields) ? crewBody.fields : [],
-      // Version metadata (client format).
-      versions: crewVersions.map(v => ({
-        id:           v.id,
-        number:       v.number,
-        description:  v.description || undefined,
-        createdAt:    v.createdAt.toISOString(),
-        body:         v.body,
-      })),
+      // Version metadata (client format). The dirty calc compares the
+      // working-copy fields above (name / description / spec / persona
+      // / addons / fields) against `versions.find(viewing).body`. If
+      // EITHER side normalises differently from the other, the calc
+      // shows a phantom "Save +N crews" the moment the page loads
+      // without the user touching anything. So we apply the SAME
+      // normalisations + addon migration here that the working-copy
+      // block above applies. Symmetric in, symmetric out → no phantom
+      // dirty.
+      versions: crewVersions.map(v => {
+        const vb = v.body || {};
+        const vbAddons = Array.isArray(vb.addons) ? vb.addons.map(migrateAddonInstance) : [];
+        return {
+          id:           v.id,
+          number:       v.number,
+          description:  v.description || undefined,
+          createdAt:    v.createdAt.toISOString(),
+          body: {
+            ...vb,
+            name:        vb.name        || '',
+            description: vb.description || '',
+            spec:        vb.spec        || '',
+            persona:     vb.persona,
+            addons:      vbAddons,
+            fields:      Array.isArray(vb.fields) ? vb.fields : [],
+          },
+        };
+      }),
       activeVersionId:  c.activeVersionId,
       viewingVersionId: c.viewingVersionId,
     });
