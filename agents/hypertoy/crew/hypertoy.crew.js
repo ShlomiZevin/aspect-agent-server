@@ -127,6 +127,13 @@ When a user asks a business question:
 - When discussing sales, always make sure record_type filtering is applied
 - Suggest follow-up analyses when relevant
 
+## SHOWING TABLES AND ALL ROWS
+
+- When the user asks for "all the rows", "the full list", "a table", "everything", or anything similar, render EVERY row returned in the tool result's \`data\` field as a clean markdown table. Never silently cut a result down to a sample of the first few rows.
+- Each \`fetch_hypertoy_data\` result returns up to 100 rows; the \`data\` field always holds the complete set for that query. Use all of it when the user wants the full table.
+- If the result is capped at 100 rows, say so plainly ("showing the first 100 rows") and offer to narrow the question (e.g. a tighter date range or a top-N) — or note that very large lists are better pulled as a full export.
+- Only summarize instead of listing when the user actually asked an aggregate/summary question (totals, averages, top-N, trends).
+
 ## EXAMPLES — pass a CLEAN business-level question
 
 Do NOT leak SQL or table terminology into the question (no "from facts", "where record_type", "joining X on Y", column names, schema-internal record types). The data layer chooses the right table or view. Paraphrase what the user wants in plain English.
@@ -144,7 +151,9 @@ User: "אילו סניפים מובילים במכירות?"
 → Call fetch_hypertoy_data("top stores by total sales this year")`,
 
       model: process.env.HYPERTOY_CREW_MODEL || 'gpt-4o',
-      maxTokens: 4096,
+      // Higher cap so a full table of up to 100 rows can be rendered without the
+      // model running out of output budget and truncating the list mid-table.
+      maxTokens: 8192,
       fieldsToCollect: [],
       transitionTo: null,
       transitionSystemPrompt: null,
@@ -235,29 +244,28 @@ User: "אילו סניפים מובילים במכירות?"
   _summarizeData(data, columns) {
     if (!data || data.length === 0) return 'No data found.';
 
-    const MAX = 20;
-    let summary = 'Found ' + data.length + ' records.\n\n';
+    // NOTE: the full result set is already returned to the model in the `data`
+    // field of the tool result. This summary must NOT re-dump a truncated slice
+    // of rows — doing that used to prime the model to answer with only the first
+    // ~20 rows even when the user asked for the whole table. Instead we state the
+    // row count, point the model at `data`, and give cheap numeric totals so
+    // summary-style questions don't require re-reading every row.
+    let summary = 'Found ' + data.length + ' record' + (data.length === 1 ? '' : 's') + '.\n';
+    summary += 'The COMPLETE result set (all ' + data.length + ' rows) is in the `data` field of this tool result. '
+      + 'If the user asked for a table, a list, or "all the rows", render EVERY one of these ' + data.length + ' rows — '
+      + 'do not show only a sample or truncate. For aggregate/summary questions, lead with the key numbers instead.\n';
 
-    const display = data.slice(0, MAX);
-    summary += data.length > MAX
-      ? 'First ' + MAX + ' of ' + data.length + ' records:\n'
-      : 'All records:\n';
-    summary += JSON.stringify(display, null, 2);
-
-    if (data.length > MAX) {
-      summary += '\n\n... and ' + (data.length - MAX) + ' more records.';
-      const numericCols = Object.keys(data[0] || {}).filter(k => {
-        const v = data[0][k];
-        return typeof v === 'number' || (!isNaN(parseFloat(v)) && isFinite(v));
-      });
-      if (numericCols.length > 0) {
-        summary += '\n\nNumeric summaries:\n';
-        for (const col of numericCols.slice(0, 3)) {
-          const vals = data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
-          if (vals.length > 0) {
-            const sum = vals.reduce((a, b) => a + b, 0);
-            summary += '- ' + col + ': Sum=' + sum.toLocaleString() + ', Avg=' + (sum / vals.length).toFixed(2) + '\n';
-          }
+    const numericCols = Object.keys(data[0] || {}).filter(k => {
+      const v = data[0][k];
+      return typeof v === 'number' || (v != null && !isNaN(parseFloat(v)) && isFinite(v));
+    });
+    if (numericCols.length > 0) {
+      summary += '\nNumeric totals across all ' + data.length + ' rows:\n';
+      for (const col of numericCols.slice(0, 5)) {
+        const vals = data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
+        if (vals.length > 0) {
+          const sum = vals.reduce((a, b) => a + b, 0);
+          summary += '- ' + col + ': Sum=' + sum.toLocaleString() + ', Avg=' + (sum / vals.length).toFixed(2) + '\n';
         }
       }
     }
