@@ -68,10 +68,23 @@ async function buildSchemasFromHeaders(gcsFiles, emitLog) {
 
 // ── Phase 1: Import ───────────────────────────────────────────────────────────
 
-async function loadHyperToy(targetSchema, emitLog) {
+async function loadHyperToy(targetSchema, emitLog, options = {}) {
   let filesLoaded = 0;
   let totalRows = 0;
   const fileResults = [];
+
+  // Import window: keep only the last N months of fact data. 0 = load all.
+  // Resolve from the per-schema option (DB override) or HYPERTOY_IMPORT_MONTHS;
+  // do NOT fall through to loadAllCSVFiles' ZER4U_IMPORT_MONTHS default, which
+  // would silently truncate Hyper Toy to zer4u's window.
+  const importMonths = options.importMonths != null
+    ? options.importMonths
+    : (parseInt(process.env.HYPERTOY_IMPORT_MONTHS || '0', 10) || 0);
+  if (importMonths > 0) {
+    emitLog('scanning', `Import window: keeping last ${importMonths} month(s) of data (relative to latest date)`);
+  } else {
+    emitLog('scanning', 'Import window: loading all available data (no date filter)');
+  }
 
   emitLog('scanning', 'Listing CSV files from GCS...');
   const gcsFiles = await gcsService.listCSVFiles(GCS_FOLDER);
@@ -117,7 +130,18 @@ async function loadHyperToy(targetSchema, emitLog) {
     }
   };
 
-  const { qualityReport } = await loadAllCSVFiles(targetSchema, onProgress, schemas) || {};
+  const { qualityReport, skippedReport } = await loadAllCSVFiles(targetSchema, onProgress, schemas, { importMonths }) || {};
+
+  if (importMonths > 0) {
+    const totalSkipped = Object.values(skippedReport || {}).reduce((s, n) => s + n, 0);
+    if (totalSkipped > 0) {
+      const detail = Object.entries(skippedReport)
+        .map(([file, n]) => `${file}: ${n.toLocaleString()}`).join(', ');
+      emitLog('loading_data', `Date filter: skipped ${totalSkipped.toLocaleString()} rows older than the ${importMonths}-month window (${detail})`);
+    } else {
+      emitLog('loading_data', `Date filter active (${importMonths} months) but no rows fell outside the window`);
+    }
+  }
 
   const tablesWithIssues = Object.keys(qualityReport || {}).length;
   if (tablesWithIssues > 0) {
