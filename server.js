@@ -2010,6 +2010,21 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             thinkingService.addProcessingStep(conversationId, chunk.result.description);
           }
 
+          // Surface the full structured query result as a 'data_table' step so the
+          // UI can show a sortable/filterable viewer + Excel export over the
+          // COMPLETE row set (not just the preview the model writes in text).
+          // Streams live and persists, so it also works after a conversation reload.
+          if (chunk.type === 'function_result' && Array.isArray(chunk.result?.data) && chunk.result.data.length > 0) {
+            const r = chunk.result;
+            const rowCount = r.rowCount ?? r.data.length;
+            thinkingService.addStep(
+              conversationId,
+              'data_table',
+              'Data table: ' + rowCount + ' rows',
+              { columns: r.columns, rows: r.data, rowCount, sql: r.sql, question: r.question }
+            );
+          }
+
           // Handle file search results - show which KB files were referenced
           if (chunk.type === 'file_search_results' && chunk.files?.length > 0) {
             const topFiles = chunk.files.slice(0, 3);
@@ -2257,6 +2272,21 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
           // Handle function result with description - add as thinking step
           if (chunk.type === 'function_result' && chunk.result?.description) {
             thinkingService.addProcessingStep(conversationId, chunk.result.description);
+          }
+
+          // Surface the full structured query result as a 'data_table' step so the
+          // UI can show a sortable/filterable viewer + Excel export over the
+          // COMPLETE row set (not just the preview the model writes in text).
+          // Streams live and persists, so it also works after a conversation reload.
+          if (chunk.type === 'function_result' && Array.isArray(chunk.result?.data) && chunk.result.data.length > 0) {
+            const r = chunk.result;
+            const rowCount = r.rowCount ?? r.data.length;
+            thinkingService.addStep(
+              conversationId,
+              'data_table',
+              'Data table: ' + rowCount + ' rows',
+              { columns: r.columns, rows: r.data, rowCount, sql: r.sql, question: r.question }
+            );
           }
 
           // Send function call events as special SSE messages

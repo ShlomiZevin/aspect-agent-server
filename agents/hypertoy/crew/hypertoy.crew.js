@@ -225,26 +225,6 @@ User: "אילו סניפים מובילים במכירות?"
         };
       }
 
-      // Surface the FULL structured result to the client as a 'data_table' step,
-      // independent of how many rows the talker writes in text. The UI uses this
-      // to offer a sortable/filterable table viewer + Excel export over the
-      // COMPLETE result set. It streams live and is persisted as a thinking step,
-      // so it also works after a conversation reload.
-      if (this._externalConversationId && Array.isArray(result.data) && result.data.length > 0) {
-        thinkingService.addStep(
-          this._externalConversationId,
-          'data_table',
-          'Data table: ' + result.rowCount + ' row' + (result.rowCount === 1 ? '' : 's'),
-          {
-            columns: result.columns,
-            rows: result.data,
-            rowCount: result.rowCount,
-            sql: result.sql,
-            question,
-          }
-        );
-      }
-
       return {
         success: true,
         question,
