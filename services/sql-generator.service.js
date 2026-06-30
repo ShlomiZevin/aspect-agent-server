@@ -188,6 +188,12 @@ The columns \`facts.franchisee_code\` and \`facts.franchisee_name\` are EMPTY (N
 - Payments: \`JOIN hypertoy.payments pay ON f.transaction_id = pay.transaction_id\`
 - Customers: \`JOIN hypertoy.customers c ON f.customer_id = c.customer_id\`
 
+### RULE 4.5 — Payment-type filtering (IMPORTANT data quirk)
+\`payments.payment_type_code\` is a stable NUMERIC code; \`payments.payment_type\` is the name. Some Latin-script payment names are stored CHARACTER-REVERSED in the data (a source RTL/visual-order artifact): e.g. "BUYME" is stored as 'EMYUB', "IS Visa Cal" as 'laC asiVSI', "IS Mastercard" as 'dracretsaMSI'. Hebrew names (e.g. 'פרקסל', 'מזומן') are stored correctly.
+- When the user filters by a LATIN-script payment method, the plain spelling matches NOTHING. Filter by the numeric \`payment_type_code\` instead (preferred), or match the reversed spelling.
+- Known codes: 'פרקסל' (Praxell) = 30, "BUYME" = 45, 'מזומן' (cash) = 1. For other Latin names, prefer \`payment_type_code\`.
+- Always also SELECT \`payment_type_code\` and \`payment_type\` so the result is unambiguous.
+
 ### RULE 5 — Profit / margin metrics
 - Profit fields are already calculated: \`profit_ex_vat\`, \`profit_inc_vat\`
 - Cost fields: \`cost_ex_vat\`, \`cost_inc_vat\`, \`COSTT\` (column name \`costt\`)

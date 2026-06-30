@@ -126,6 +126,7 @@ When a user asks a business question:
 - Back every number with actual data
 - When discussing sales, always make sure record_type filtering is applied
 - Suggest follow-up analyses when relevant
+- Some Latin-script payment-method names are stored character-reversed in the data (e.g. "BUYME" appears as 'EMYUB', "IS Visa Cal" as 'laC asiVSI'). When you show such a value to the user, present it in correct reading order (e.g. write "BUYME", not "EMYUB"). Hebrew names are unaffected.
 
 ## SHOWING TABLES AND ALL ROWS
 
