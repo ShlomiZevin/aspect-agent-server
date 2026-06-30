@@ -3,7 +3,7 @@
  * Wires the hypertoy reloader into DataReloadService (admin dashboard).
  */
 
-const { loadHyperToy, indexHyperToy, getHyperToyDataInfo } = require('../../scripts/reload-hypertoy');
+const { loadHyperToy, indexHyperToy, getHyperToyDataInfo, getHyperToyDataRange } = require('../../scripts/reload-hypertoy');
 const { getPool } = require('../../services/db.hypertoy');
 
 const DISABLED = process.env.HYPERTOY_RELOAD_ENABLED !== 'true';
@@ -18,6 +18,7 @@ function register(dataReloadService) {
     indexFn:         DISABLED ? disabledFn : indexHyperToy,
     gcsFolderPrefix: 'hyper-toy/',
     dataInfoFn:      getHyperToyDataInfo,
+    dataRangeFn:     getHyperToyDataRange,
     pool:            getPool(),
   });
 }

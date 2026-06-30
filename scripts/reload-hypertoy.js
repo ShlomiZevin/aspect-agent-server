@@ -142,18 +142,41 @@ async function indexHyperToy(targetSchema, emitLog) {
 
 // ── Data info ─────────────────────────────────────────────────────────────────
 
+// Returns the exact last sales date as 'YYYY-MM-DD'. transaction_date is a DATE
+// column, so there is no hour component to report. Used both for the data-info
+// endpoint and to persist agents.data_updated_at after a reload.
 async function getHyperToyDataInfo() {
   const pool = getPool();
   try {
     const result = await pool.query(
-      `SELECT TO_CHAR(MAX("transaction_date"), 'YYYY-MM') AS last_month
+      `SELECT TO_CHAR(MAX("transaction_date"), 'YYYY-MM-DD') AS last_date
        FROM hypertoy.facts
        WHERE "record_type" = 'מכירות'`
     );
-    return result.rows[0]?.last_month || null;
+    return result.rows[0]?.last_date || null;
   } catch {
     return null;
   }
 }
 
-module.exports = { loadHyperToy, indexHyperToy, getHyperToyDataInfo };
+// Returns the full sales-data coverage window as { first, last } in 'YYYY-MM-DD'.
+// Powers the "Data from … through …" status bar so the customer can see exactly
+// how far back the data reaches (Shlomi 2026-06-23 — only "through" was shown).
+async function getHyperToyDataRange() {
+  const pool = getPool();
+  try {
+    const result = await pool.query(
+      `SELECT TO_CHAR(MIN("transaction_date"), 'YYYY-MM-DD') AS first_date,
+              TO_CHAR(MAX("transaction_date"), 'YYYY-MM-DD') AS last_date
+       FROM hypertoy.facts
+       WHERE "record_type" = 'מכירות'`
+    );
+    const row = result.rows[0];
+    if (!row?.first_date && !row?.last_date) return null;
+    return { first: row.first_date || null, last: row.last_date || null };
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { loadHyperToy, indexHyperToy, getHyperToyDataInfo, getHyperToyDataRange };

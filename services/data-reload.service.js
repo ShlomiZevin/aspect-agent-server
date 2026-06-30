@@ -364,8 +364,11 @@ class DataReloadService {
   }
 
   /**
-   * Returns data freshness info: last successful run + last data date.
+   * Returns data freshness info: last successful run + data coverage window.
    * lastDataDate comes from the reloader's dataInfoFn (schema-specific).
+   * firstDataDate (and a consistent lastDataDate) come from the optional
+   * dataRangeFn when a reloader provides one — it returns { first, last } so the
+   * UI can show how far back the data reaches, not just how recent it is.
    */
   async getDataInfo(schemaName) {
     const runResult = await this.db.query(
@@ -379,8 +382,21 @@ class DataReloadService {
     const lastRun = runResult.rows[0] || null;
 
     const reloader = this.reloaders[schemaName];
+    let firstDataDate = null;
     let lastDataDate = null;
-    if (reloader?.dataInfoFn) {
+
+    if (reloader?.dataRangeFn) {
+      try {
+        const range = await reloader.dataRangeFn(reloader.pool || this.db);
+        firstDataDate = range?.first || null;
+        lastDataDate = range?.last || null;
+      } catch {
+        // dataRangeFn is optional and best-effort
+      }
+    }
+
+    // Fall back to dataInfoFn for the end date when no range fn is available.
+    if (lastDataDate == null && reloader?.dataInfoFn) {
       try {
         lastDataDate = await reloader.dataInfoFn(reloader.pool || this.db);
       } catch {
@@ -388,7 +404,7 @@ class DataReloadService {
       }
     }
 
-    return { lastRun, lastDataDate };
+    return { lastRun, firstDataDate, lastDataDate };
   }
 
   /** Returns GCS source files for this schema. */
