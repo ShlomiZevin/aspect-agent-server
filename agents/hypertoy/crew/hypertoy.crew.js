@@ -150,7 +150,10 @@ User: "מה מרווח הרווח שלנו?"
 User: "אילו סניפים מובילים במכירות?"
 → Call fetch_hypertoy_data("top stores by total sales this year")`,
 
-      model: process.env.HYPERTOY_CREW_MODEL || 'gpt-4o',
+      // Talker model. Upgraded from gpt-4o to GPT-5 chat (the model the project
+      // already uses for its strongest conversational crews) for better answers
+      // and less hallucination. The SQL is generated separately by Claude Sonnet.
+      model: process.env.HYPERTOY_CREW_MODEL || 'gpt-5-chat-latest',
       // Higher cap so a full table of up to 100 rows can be rendered without the
       // model running out of output budget and truncating the list mid-table.
       maxTokens: 8192,
