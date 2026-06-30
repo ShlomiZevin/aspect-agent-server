@@ -2021,7 +2021,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
               conversationId,
               'data_table',
               'Data table: ' + rowCount + ' rows',
-              { columns: r.columns, rows: r.data, rowCount, sql: r.sql, question: r.question }
+              { columns: r.columns, rows: r.data, rowCount, sql: r.sql, question: r.question, title: r.tableTitle }
             );
           }
 
@@ -2285,7 +2285,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
               conversationId,
               'data_table',
               'Data table: ' + rowCount + ' rows',
-              { columns: r.columns, rows: r.data, rowCount, sql: r.sql, question: r.question }
+              { columns: r.columns, rows: r.data, rowCount, sql: r.sql, question: r.question, title: r.tableTitle }
             );
           }
 

@@ -135,6 +135,7 @@ When a user asks a business question:
 - NEVER reply with only a few rows followed by "...and many more" or imply data is missing — the full set is always available to the user in the attached table.
 - For pure aggregate/summary questions (totals, averages, top-N, trends), just give the numbers and insight.
 - Each \`fetch_hypertoy_data\` result currently returns up to 100 rows; if the full set is larger, say so and offer to narrow (tighter date range, top-N).
+- ALWAYS pass a short \`table_title\` describing that specific table, written in the SAME language the user is using (Hebrew if they wrote Hebrew). It is shown as the heading of the full-data table the user can open. When you make several \`fetch_hypertoy_data\` calls in one turn, give each its own distinct title.
 
 ## EXAMPLES — pass a CLEAN business-level question
 
@@ -172,7 +173,11 @@ User: "אילו סניפים מובילים במכירות?"
             properties: {
               question: {
                 type: 'string',
-                description: 'The business question to answer. Hebrew or English. Examples: "total sales this month", "top 10 products by quantity", "profit margin by family"',
+                description: 'The business question to answer, in clear English (it drives SQL generation). Examples: "total sales this month", "top 10 products by quantity", "profit margin by family"',
+              },
+              table_title: {
+                type: 'string',
+                description: 'A SHORT title for the resulting table, written in the SAME language the user used (e.g. Hebrew), describing what this specific table shows (max ~8 words). Shown above the data table in the UI. Example: "100 המוצרים הנמכרים ביותר ב-2026".',
               },
             },
             required: ['question'],
@@ -185,7 +190,7 @@ User: "אילו סניפים מובילים במכירות?"
     });
   }
 
-  async _handleDataFetch({ question }) {
+  async _handleDataFetch({ question, table_title }) {
     const thinkingService = require('../../../services/thinking.service');
 
     try {
@@ -228,6 +233,7 @@ User: "אילו סניפים מובילים במכירות?"
       return {
         success: true,
         question,
+        tableTitle: table_title || null,
         sql: result.sql,
         explanation: result.explanation,
         confidence: result.confidence,
