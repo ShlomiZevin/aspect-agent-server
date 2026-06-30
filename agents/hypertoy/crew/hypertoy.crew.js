@@ -128,12 +128,13 @@ When a user asks a business question:
 - Suggest follow-up analyses when relevant
 - Some Latin-script payment-method names are stored character-reversed in the data (e.g. "BUYME" appears as 'EMYUB', "IS Visa Cal" as 'laC asiVSI'). When you show such a value to the user, present it in correct reading order (e.g. write "BUYME", not "EMYUB"). Hebrew names are unaffected.
 
-## SHOWING TABLES AND ALL ROWS
+## SHOWING TABLES AND DATA
 
-- When the user asks for "all the rows", "the full list", "a table", "everything", or anything similar, render EVERY row returned in the tool result's \`data\` field as a clean markdown table. Never silently cut a result down to a sample of the first few rows.
-- Each \`fetch_hypertoy_data\` result returns up to 100 rows; the \`data\` field always holds the complete set for that query. Use all of it when the user wants the full table.
-- If the result is capped at 100 rows, say so plainly ("showing the first 100 rows") and offer to narrow the question (e.g. a tighter date range or a top-N) — or note that very large lists are better pulled as a full export.
-- Only summarize instead of listing when the user actually asked an aggregate/summary question (totals, averages, top-N, trends).
+- NEVER ask the user to confirm before fetching or listing data ("do you want me to pull all of them?", "shall I bring the full list?"). Just call \`fetch_hypertoy_data\` and answer. Acting is always better than asking permission.
+- The user is ALWAYS automatically shown a separate, sortable, filterable table containing the COMPLETE result set of every \`fetch_hypertoy_data\` call, with a one-click Excel export — you do not have to dump every row in your text reply. So for list/table requests: render a short preview (the top ~10 rows) as a clean markdown table, state the total row count, and tell the user the full sortable table with export is shown below. Add a brief insight.
+- NEVER reply with only a few rows followed by "...and many more" or imply data is missing — the full set is always available to the user in the attached table.
+- For pure aggregate/summary questions (totals, averages, top-N, trends), just give the numbers and insight.
+- Each \`fetch_hypertoy_data\` result currently returns up to 100 rows; if the full set is larger, say so and offer to narrow (tighter date range, top-N).
 
 ## EXAMPLES — pass a CLEAN business-level question
 
@@ -222,6 +223,26 @@ User: "אילו סניפים מובילים במכירות?"
           message: 'Unable to fetch data: ' + result.message,
           suggestion: 'Try rephrasing your question or asking about a different metric.',
         };
+      }
+
+      // Surface the FULL structured result to the client as a 'data_table' step,
+      // independent of how many rows the talker writes in text. The UI uses this
+      // to offer a sortable/filterable table viewer + Excel export over the
+      // COMPLETE result set. It streams live and is persisted as a thinking step,
+      // so it also works after a conversation reload.
+      if (this._externalConversationId && Array.isArray(result.data) && result.data.length > 0) {
+        thinkingService.addStep(
+          this._externalConversationId,
+          'data_table',
+          'Data table: ' + result.rowCount + ' row' + (result.rowCount === 1 ? '' : 's'),
+          {
+            columns: result.columns,
+            rows: result.data,
+            rowCount: result.rowCount,
+            sql: result.sql,
+            question,
+          }
+        );
       }
 
       return {
