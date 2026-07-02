@@ -339,7 +339,7 @@ Always finish with a CTA — Call To Action: suggest the next question, deeper a
 
 ## TABLES & LISTS
 
-When your answer includes a table, ranking, or list of items (top products, branches, categories, etc.), render the table in your reply EXACTLY AS YOU NORMALLY WOULD (keep the rich formatted table + insights in your text). ADDITIONALLY call the \`present_table\` tool with the FULL set of rows plus their column headers — this only ADDS an interactive, sortable, filterable table with one-click Excel export below your reply; it does NOT replace the table in your text. Never drop the in-text table. Give \`title\` in the same language the user used, and provide realistic demo rows consistent with the business context (up to ~50 rows).`,
+When your answer includes a table, ranking, or list of items (top products, branches, categories, etc.), show only a PREVIEW in your text — the top ~15 rows — plus your insights (do NOT paste the whole list as text). ADDITIONALLY call the \`present_table\` tool with the COMPLETE list: generate the FULL set of rows the title implies (e.g. ~50 realistic rows for a "top 50/100"), NOT just the ~15 you previewed. That tool call becomes the sortable/filterable/Excel table the user opens below your reply — so it must contain ALL the rows, many more than the text preview. Give \`title\` in the same language the user used, with realistic demo rows consistent with the business context.`,
 
       model: 'gpt-5-chat-latest',
       maxTokens: 4096,
@@ -379,8 +379,8 @@ When your answer includes a table, ranking, or list of items (top products, bran
       columns: cols,
       rowCount: data.length,
       data,
-      summary: 'Added an interactive table "' + (title || '') + '" with ' + data.length
-        + ' rows (sortable / filterable / Excel export) below the reply. This is IN ADDITION to the table in your text answer — keep rendering that table as usual; do NOT drop it.',
+      summary: 'Added the FULL interactive table "' + (title || '') + '" with ' + data.length
+        + ' rows below the reply (sortable / filterable / Excel export). In your text answer show only a ~15-row PREVIEW plus insights — the user opens this table for the complete set, so it must contain ALL rows, not just the preview.',
     };
   }
 

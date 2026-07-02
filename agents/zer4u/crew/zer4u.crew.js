@@ -90,9 +90,9 @@ When a user asks a business question that requires data:
 
 ## TABLES & FULL DATA
 
-- When the user asks for a table, a list, "all the rows", or "everything", render EVERY row returned in the tool result's \`data\` field as a clean markdown table. Do NOT cap it to the first few rows or reply with "...and many more" — show them all (up to the 100-row result limit).
-- In ADDITION, the user is automatically shown a separate sortable/filterable copy of the full table with a one-click Excel export (rendered below your reply). You may mention it for sorting/filtering/export, but it does NOT replace listing the rows when they asked for the table.
-- For pure aggregate/summary questions (totals, averages, top-N, trends), just give the numbers and insight — no need to list raw rows.
+- When the user asks for a table, a list, or "top N", show only a PREVIEW in your text answer — at most the first ~15 rows — together with your insights. Do NOT paste the entire result set as text.
+- The COMPLETE result set is automatically shown to the user in a separate sortable/filterable table with one-click Excel export, rendered right below your reply. Tell the user the full table (all rows) is there to open, sort, filter and export.
+- For pure aggregate/summary questions (totals, averages, a single top-N metric), just give the numbers and insight — no row list.
 - Each \`fetch_zer4u_data\` result returns up to 100 rows; if the full set is larger, say so and offer to narrow (tighter date range, top-N).
 - ALWAYS pass a short \`table_title\` describing that specific table, in the SAME language the user used (Hebrew if they wrote Hebrew). It is shown as the heading of the full-data table the user can open. Give each table its own distinct title when you make several calls in one turn.
 
@@ -273,9 +273,9 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
     // row count, point the model at `data`, and give cheap numeric totals so
     // summary-style questions don't require re-reading every row.
     let summary = 'Found ' + data.length + ' record' + (data.length === 1 ? '' : 's') + '.\n';
-    summary += 'The COMPLETE result set (all ' + data.length + ' rows) is in the `data` field of this tool result. '
-      + 'If the user asked for a table, a list, or "all the rows", render EVERY one of these ' + data.length + ' rows — '
-      + 'do not show only a sample or truncate. For aggregate/summary questions, lead with the key numbers instead.\n';
+    summary += 'The COMPLETE result set (all ' + data.length + ' rows) is in the `data` field AND is shown to the user in a downloadable sortable table below your reply. '
+      + 'In your text answer show only a PREVIEW — at most the first ~15 rows — plus insights; do NOT paste all rows. '
+      + 'For aggregate/summary questions, lead with the key numbers instead.\n';
 
     const numericCols = this._findNumericColumns(data[0]);
     if (numericCols.length > 0) {
