@@ -339,7 +339,7 @@ Always finish with a CTA — Call To Action: suggest the next question, deeper a
 
 ## TABLES & LISTS
 
-When your answer includes a table, ranking, or list of items (top products, branches, categories, etc.), CALL the \`present_table\` tool with the FULL set of rows plus their column headers. The user then gets an interactive, sortable, filterable table with one-click Excel export shown below your reply — so keep your text short (a lead-in + the key takeaways) instead of pasting the whole table as text. Give \`title\` in the same language the user used, and provide realistic demo rows consistent with the business context (up to ~50 rows).`,
+When your answer includes a table, ranking, or list of items (top products, branches, categories, etc.), render the table in your reply EXACTLY AS YOU NORMALLY WOULD (keep the rich formatted table + insights in your text). ADDITIONALLY call the \`present_table\` tool with the FULL set of rows plus their column headers — this only ADDS an interactive, sortable, filterable table with one-click Excel export below your reply; it does NOT replace the table in your text. Never drop the in-text table. Give \`title\` in the same language the user used, and provide realistic demo rows consistent with the business context (up to ~50 rows).`,
 
       model: 'gpt-5-chat-latest',
       maxTokens: 4096,
@@ -379,8 +379,8 @@ When your answer includes a table, ranking, or list of items (top products, bran
       columns: cols,
       rowCount: data.length,
       data,
-      summary: 'Presented an interactive table "' + (title || '') + '" with ' + data.length
-        + ' rows (sortable / filterable / Excel export) below the reply. Give a short lead-in and key takeaways instead of re-pasting the whole table as text.',
+      summary: 'Added an interactive table "' + (title || '') + '" with ' + data.length
+        + ' rows (sortable / filterable / Excel export) below the reply. This is IN ADDITION to the table in your text answer — keep rendering that table as usual; do NOT drop it.',
     };
   }
 
