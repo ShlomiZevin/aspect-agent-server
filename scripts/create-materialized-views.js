@@ -120,7 +120,7 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
         }
       }
 
-      const TOTAL = 11;
+      const TOTAL = 12;
       const tasks = [];       // run in parallel (light MVs)
       const heavyTasks = [];  // run after parallel group (heavy MVs needing more work_mem)
 
@@ -487,6 +487,47 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
           await c.query(`
             CREATE INDEX IF NOT EXISTS idx_mv_sales_by_city_revenue
             ON ${s}.mv_sales_by_city (total_revenue DESC)
+          `);
+        }));
+      }
+
+      // 12. Sales by product CATEGORY + month (item_group = the BI category "קבוצת פריט").
+      // WHY: category questions ("how much chocolate did we sell?") must group by the real
+      // category field, NOT a name text-match. A name-match on item_name both MISSES most of
+      // the category (real chocolates rarely contain the word "שוקולד" in their name — e.g.
+      // Max/Lindt/brand names) and WRONGLY INCLUDES other groups (chocolate *liqueur* lives in
+      // "יין ומשקאות"/"משקאות", gift packages in "חבילות שי"). For Jan-2026 the name-match gave
+      // ~14.8K but item_group='שוקולד' is ~863K — a ~60x error. This MV is the category source.
+      const miss12 = missing(['sales.item_code', 'items.item_code', 'items.item_group',
+        'sales.date', 'sales.quantity', 'sales.revenue']);
+      if (miss12) {
+        log(`[12/${TOTAL}] SKIP mv_sales_by_category_month — missing columns: ${miss12.join(', ')}`);
+        skipped++;
+      } else {
+        tasks.push(makeView('mv_sales_by_category_month', 12, TOTAL, async (c) => {
+          await c.query(`DROP MATERIALIZED VIEW IF EXISTS ${s}.mv_sales_by_category_month CASCADE`);
+          await c.query(`
+            CREATE MATERIALIZED VIEW ${s}.mv_sales_by_category_month AS
+            SELECT
+              i.${col(r, 'items.item_group')} AS category,
+              TO_CHAR(${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}), 'YYYY-MM') AS year_month,
+              EXTRACT(YEAR  FROM ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}))::integer AS sale_year,
+              EXTRACT(MONTH FROM ${s}.parse_date_ddmmyyyy(s.${col(r, 'sales.date')}))::integer AS sale_month,
+              SUM(s.${col(r, 'sales.quantity')}::numeric) AS total_quantity,
+              ${REV('s')} AS total_revenue
+            FROM ${s}.sales s
+            LEFT JOIN ${s}.items i ON s.${col(r, 'sales.item_code')} = i.${col(r, 'items.item_code')}
+            WHERE s.${col(r, 'sales.date')} IS NOT NULL
+              AND s.${col(r, 'sales.revenue')} IS NOT NULL
+            GROUP BY i.${col(r, 'items.item_group')}, year_month, sale_year, sale_month
+          `);
+          await c.query(`
+            CREATE INDEX IF NOT EXISTS idx_mv_sales_by_category_month_year
+            ON ${s}.mv_sales_by_category_month (sale_year)
+          `);
+          await c.query(`
+            CREATE INDEX IF NOT EXISTS idx_mv_sales_by_category_month_cat
+            ON ${s}.mv_sales_by_category_month (category)
           `);
         }));
       }
