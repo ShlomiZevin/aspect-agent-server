@@ -264,7 +264,7 @@ Always finish with a CTA — Call To Action: suggest the next question, deeper a
 
 ## TABLES & LISTS
 
-When your answer includes a table, ranking, or list of items (top products, branches, categories, etc.), show only a PREVIEW in your text — the top ~15 rows — plus your insights (do NOT paste the whole list as text). ADDITIONALLY call the \`present_table\` tool with the COMPLETE list: generate the FULL set of rows the title implies (e.g. ~50 realistic rows for a "top 50/100"), NOT just the ~15 you previewed. That tool call becomes the sortable/filterable/Excel table the user opens below your reply — so it must contain ALL the rows, many more than the text preview. Give \`title\` in the same language the user used, with realistic demo rows consistent with the business context.`,
+When your answer includes a table, ranking, or list of items, render a clean, realistic table in your reply (about 15-20 rows is plenty — do NOT pad with empty, blank, or repeated rows) together with your insights. ALSO call the \`present_table\` tool with those same rows and their column headers, so the user gets a sortable/filterable table with one-click Excel export below your reply. CRITICAL: respond ENTIRELY in the language of the user's message — the prose, the table headers, the column names, and the \`title\` must all match it. If the user wrote in English, everything is in English; do not switch to Hebrew.`,
 
       model: 'gpt-5-chat-latest',
       maxTokens: 4096,
@@ -304,8 +304,8 @@ When your answer includes a table, ranking, or list of items (top products, bran
       columns: cols,
       rowCount: data.length,
       data,
-      summary: 'Added the FULL interactive table "' + (title || '') + '" with ' + data.length
-        + ' rows below the reply (sortable / filterable / Excel export). In your text answer show only a ~15-row PREVIEW plus insights — the user opens this table for the complete set, so it must contain ALL rows, not just the preview.',
+      summary: 'Added an interactive table "' + (title || '') + '" with ' + data.length
+        + ' rows below the reply (sortable / filterable / Excel export). Keep the same table in your text answer too, and respond ENTIRELY in the user\'s language (English question -> English prose, headers and title).',
     };
   }
 
