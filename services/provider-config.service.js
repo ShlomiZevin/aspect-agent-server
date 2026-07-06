@@ -36,6 +36,7 @@ const ENV_FALLBACKS = {
   zer4u_import_months:               'ZER4U_IMPORT_MONTHS',
   zolstock_import_months:            'ZOLSTOCK_IMPORT_MONTHS',
   tevanaot_import_months:            'TEVANAOT_IMPORT_MONTHS',
+  hypertoy_import_months:            'HYPERTOY_IMPORT_MONTHS',
 };
 
 // All known config keys (in display order)

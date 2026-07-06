@@ -335,14 +335,53 @@ Always respond as if you have real-time access to this data. Be creative with va
 
 Always answer in the language you were asked in. When asked in Hebrew, use ₪ / ש"ח for all monetary values.
 
-Always finish with a CTA — Call To Action: suggest the next question, deeper analysis, or actionable next step the user should take.`,
+Always finish with a CTA — Call To Action: suggest the next question, deeper analysis, or actionable next step the user should take.
+
+## TABLES & LISTS
+
+When your answer includes a table, ranking, or list of items, render a clean, realistic table in your reply (about 15-20 rows is plenty — do NOT pad with empty, blank, or repeated rows) together with your insights. ALSO call the \`present_table\` tool with those same rows and their column headers, so the user gets a sortable/filterable table with one-click Excel export below your reply. CRITICAL: respond ENTIRELY in the language of the user's message — the prose, the table headers, the column names, and the \`title\` must all match it. If the user wrote in English, everything is in English; do not switch to Hebrew.`,
 
       model: 'gpt-5-chat-latest',
-      maxTokens: 2048,
-      tools: [],
+      maxTokens: 4096,
+      tools: [
+        {
+          name: 'present_table',
+          description: 'Render a data table for the user as a sortable, filterable, Excel-exportable view. Call this whenever your answer includes a table, ranking, or list of items. Pass the FULL set of rows you want to show (up to ~50) so the user can open and export the complete table below your reply.',
+          parameters: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Short heading for the table, in the SAME language the user used. Example: "Top 100 Best-Selling Products, January 2026".' },
+              columns: { type: 'array', items: { type: 'string' }, description: 'Column headers in display order.' },
+              rows: { type: 'array', items: { type: 'object' }, description: 'The table rows. Each row is an object keyed by the exact column names in `columns`. Provide every row you want shown (up to ~50).' },
+            },
+            required: ['title', 'columns', 'rows'],
+          },
+          handler: async (params) => this._presentTable(params),
+        },
+      ],
       knowledgeBase: { enabled: false },
       collectFields: []
     });
+  }
+
+  // Render a table for the user as a sortable/filterable/Excel-exportable view.
+  // Demo crews have no database — the model supplies the (demo) rows here, and the
+  // server surfaces them as a `data_table` step (same path as the BI agents' real
+  // query results), so the full-table viewer works on every Aspect tab.
+  _presentTable({ title, columns, rows }) {
+    const data = Array.isArray(rows) ? rows.filter(r => r && typeof r === 'object') : [];
+    const cols = Array.isArray(columns) && columns.length
+      ? columns
+      : (data[0] ? Object.keys(data[0]) : []);
+    return {
+      success: true,
+      tableTitle: title || null,
+      columns: cols,
+      rowCount: data.length,
+      data,
+      summary: 'Added an interactive table "' + (title || '') + '" with ' + data.length
+        + ' rows below the reply (sortable / filterable / Excel export). Keep the same table in your text answer too, and respond ENTIRELY in the user\'s language (English question -> English prose, headers and title).',
+    };
   }
 
   async buildContext(params) {

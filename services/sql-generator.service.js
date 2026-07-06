@@ -188,6 +188,12 @@ The columns \`facts.franchisee_code\` and \`facts.franchisee_name\` are EMPTY (N
 - Payments: \`JOIN hypertoy.payments pay ON f.transaction_id = pay.transaction_id\`
 - Customers: \`JOIN hypertoy.customers c ON f.customer_id = c.customer_id\`
 
+### RULE 4.5 — Payment-type filtering (IMPORTANT data quirk)
+\`payments.payment_type_code\` is a stable NUMERIC code; \`payments.payment_type\` is the name. Some Latin-script payment names are stored CHARACTER-REVERSED in the data (a source RTL/visual-order artifact): e.g. "BUYME" is stored as 'EMYUB', "IS Visa Cal" as 'laC asiVSI', "IS Mastercard" as 'dracretsaMSI'. Hebrew names (e.g. 'פרקסל', 'מזומן') are stored correctly.
+- When the user filters by a LATIN-script payment method, the plain spelling matches NOTHING. Filter by the numeric \`payment_type_code\` instead (preferred), or match the reversed spelling.
+- Known codes: 'פרקסל' (Praxell) = 30, "BUYME" = 45, 'מזומן' (cash) = 1. For other Latin names, prefer \`payment_type_code\`.
+- Always also SELECT \`payment_type_code\` and \`payment_type\` so the result is unambiguous.
+
 ### RULE 5 — Profit / margin metrics
 - Profit fields are already calculated: \`profit_ex_vat\`, \`profit_inc_vat\`
 - Cost fields: \`cost_ex_vat\`, \`cost_inc_vat\`, \`COSTT\` (column name \`costt\`)
@@ -736,6 +742,7 @@ ORDER BY sm.year_month DESC, pct_of_target DESC
 18. **Concepts the data does NOT support — answer in words, do NOT emit guessing SQL** (emitting SQL here only produces "column does not exist" / timeouts):
     - **Payment method / payment type**: not tracked — there is no payment-method column. Tell the user.
     - **Discount totals**: discount lives only in non-ASCII text columns with no materialized view and cannot be reliably aggregated — tell the user discount totals aren't available.
+19. **Product CATEGORY questions ("how much <category> did we sell?", "sales by category", "top categories") — group by the real category, NEVER by the product name.** The BI category is \`items.item_group\` ("קבוצת פריט"). Do NOT answer category questions with \`item_name ILIKE '%word%'\` — a name match both misses most of the category (real products rarely contain the category word in their name — e.g. chocolates are branded "Max"/"Lindt", not literally "שוקולד") and wrongly pulls in other categories (chocolate *liqueur* is in "יין ומשקאות"/"משקאות", gift packages in "חבילות שי"). Use the pre-aggregated \`${schemaName}.mv_sales_by_category_month\` (columns: \`category\`, \`year_month\`, \`sale_year\`, \`sale_month\`, \`total_quantity\`, \`total_revenue\`) — remember every row is a per-period aggregate, so \`SUM(total_revenue)\`/\`SUM(total_quantity)\` with \`GROUP BY category\` (rule 14). Match the user's term to the closest \`category\` value; the actual category names are Hebrew, e.g. שוקולד (chocolate), פרחים (flowers), מתנות (gifts), זרים מוכנים (ready bouquets), יין ומשקאות (wine & drinks), עציצים (potted plants), חבילות שי (gift packages). If the user names a category you can't confidently map, query \`SELECT DISTINCT category FROM ${schemaName}.mv_sales_by_category_month\` and pick the closest, or list the options back to the user. Only fall back to an \`item_name\` filter when the user explicitly asks about a specific NAMED product, not a category.
 
 ## Important Examples
 
@@ -758,6 +765,18 @@ WHERE sale_year = EXTRACT(YEAR FROM CURRENT_DATE)::int
 GROUP BY year_month
 ORDER BY year_month
 
+**CORRECT** (how much of a category sold in a period — group by item_group via the category MV, NEVER name-match):
+SELECT SUM(total_revenue) AS total_revenue, SUM(total_quantity) AS total_quantity
+FROM ${schemaName}.mv_sales_by_category_month
+WHERE category = 'שוקולד' AND sale_year = 2026 AND sale_month = 1
+
+**CORRECT** (top categories this year):
+SELECT category, SUM(total_revenue) AS total_revenue
+FROM ${schemaName}.mv_sales_by_category_month
+WHERE sale_year = EXTRACT(YEAR FROM CURRENT_DATE)::int
+GROUP BY category
+ORDER BY total_revenue DESC
+
 **PREFER materialized views for aggregations** — they are pre-computed and much faster:
 - \`${schemaName}.mv_sales_by_month\` — monthly totals (use for monthly/period questions)
 - \`${schemaName}.mv_sales_by_year\` — annual totals
@@ -765,6 +784,7 @@ ORDER BY year_month
 - \`${schemaName}.mv_sales_by_store_month\` — store + month breakdown
 - \`${schemaName}.mv_sales_by_product\` — per-product totals (ALL-TIME only, NO date column — do NOT use when year/period is specified)
 - \`${schemaName}.mv_sales_by_product_month\` — product + month breakdown (USE THIS for year/period-filtered product queries like "top products this year")
+- \`${schemaName}.mv_sales_by_category_month\` — product CATEGORY (item_group) + month breakdown (USE THIS for ALL category questions: "how much chocolate", "sales by category", "top categories" — NEVER name-match categories)
 - \`${schemaName}.mv_sales_by_store_product\` — store + product all-time (USE THIS for top-N products per store)
 - \`${schemaName}.mv_sales_by_customer\` — per-customer totals (all-time)
 - \`${schemaName}.mv_sales_by_city\` — sales by customer city (USE THIS for geographic/city revenue breakdown)

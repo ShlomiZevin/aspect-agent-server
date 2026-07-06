@@ -111,10 +111,20 @@ User: "איזה סניף מוביל במכירות?"
 → Call fetch_newdeli_data("top branches by total revenue all time")
 
 User: "מה שיא שעת הזמן?"
-→ Call fetch_newdeli_data("order count by hour of day")`,
+→ Call fetch_newdeli_data("order count by hour of day")
+
+## TABLES & FULL DATA
+
+- When the user asks for a table, a list, or "top N", show only a PREVIEW in your text answer — at most the first ~15 rows — together with your insights. Do NOT paste the entire result set as text.
+- The COMPLETE result set is automatically shown to the user in a separate sortable/filterable table with one-click Excel export, rendered right below your reply. Tell the user the full table (all rows) is there to open, sort, filter and export.
+- For pure aggregate/summary questions (totals, averages, a single top-N metric), just give the numbers and insight — no row list.
+- Each \`fetch_newdeli_data\` result returns up to 100 rows; if the full set is larger, say so and offer to narrow (tighter date range, top-N).
+- ALWAYS pass a short \`table_title\` describing that specific table, in the SAME language the user used (Hebrew if they wrote Hebrew). It is shown as the heading of the full-data table the user can open. Give each table its own distinct title when you make several calls in one turn.`,
 
       model: process.env.NEWDELI_CREW_MODEL || 'gpt-4o',
-      maxTokens: 4096,
+      // Higher cap so a full table of up to 100 rows can be rendered without the
+      // model running out of output budget and truncating the list mid-table.
+      maxTokens: 8192,
       fieldsToCollect: [],
       transitionTo: null,
       transitionSystemPrompt: null,
@@ -130,6 +140,10 @@ User: "מה שיא שעת הזמן?"
                 type: 'string',
                 description: 'The business question to answer. Hebrew or English. Examples: "total revenue this month", "top 5 branches by orders", "order type breakdown"',
               },
+              table_title: {
+                type: 'string',
+                description: 'A SHORT title for the resulting table, in the SAME language the user used (e.g. Hebrew), describing what this specific table shows (max ~8 words). Shown above the full-data table in the UI. Example: "100 המוצרים הנמכרים ביותר ב-2026".',
+              },
             },
             required: ['question'],
           },
@@ -141,7 +155,7 @@ User: "מה שיא שעת הזמן?"
     });
   }
 
-  async _handleDataFetch({ question }) {
+  async _handleDataFetch({ question, table_title }) {
     const thinkingService = require('../../../services/thinking.service');
 
     try {
@@ -184,6 +198,7 @@ User: "מה שיא שעת הזמן?"
       return {
         success: true,
         question,
+        tableTitle: table_title || null,
         sql: result.sql,
         explanation: result.explanation,
         confidence: result.confidence,
@@ -205,29 +220,27 @@ User: "מה שיא שעת הזמן?"
   _summarizeData(data, columns) {
     if (!data || data.length === 0) return 'No data found.';
 
-    const MAX = 20;
-    let summary = 'Found ' + data.length + ' records.\n\n';
+    // NOTE: the full result set is already returned to the model in the `data`
+    // field of the tool result. This summary must NOT re-dump a truncated slice
+    // of rows — doing that primes the model to answer with only the first ~20
+    // rows even when the user asked for the whole table. Instead we state the
+    // row count, point the model at `data`, and give cheap numeric totals.
+    let summary = 'Found ' + data.length + ' record' + (data.length === 1 ? '' : 's') + '.\n';
+    summary += 'The COMPLETE result set (all ' + data.length + ' rows) is in the `data` field AND is shown to the user in a downloadable sortable table below your reply. '
+      + 'In your text answer show only a PREVIEW — at most the first ~15 rows — plus insights; do NOT paste all rows. '
+      + 'For aggregate/summary questions, lead with the key numbers instead.\n';
 
-    const display = data.slice(0, MAX);
-    summary += data.length > MAX
-      ? 'First ' + MAX + ' of ' + data.length + ' records:\n'
-      : 'All records:\n';
-    summary += JSON.stringify(display, null, 2);
-
-    if (data.length > MAX) {
-      summary += '\n\n... and ' + (data.length - MAX) + ' more records.';
-      const numericCols = Object.keys(data[0] || {}).filter(k => {
-        const v = data[0][k];
-        return typeof v === 'number' || (!isNaN(parseFloat(v)) && isFinite(v));
-      });
-      if (numericCols.length > 0) {
-        summary += '\n\nNumeric summaries:\n';
-        for (const col of numericCols.slice(0, 3)) {
-          const vals = data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
-          if (vals.length > 0) {
-            const sum = vals.reduce((a, b) => a + b, 0);
-            summary += '- ' + col + ': Sum=' + sum.toLocaleString() + ', Avg=' + (sum / vals.length).toFixed(2) + '\n';
-          }
+    const numericCols = Object.keys(data[0] || {}).filter(k => {
+      const v = data[0][k];
+      return typeof v === 'number' || (v != null && !isNaN(parseFloat(v)) && isFinite(v));
+    });
+    if (numericCols.length > 0) {
+      summary += '\nNumeric totals across all ' + data.length + ' rows:\n';
+      for (const col of numericCols.slice(0, 5)) {
+        const vals = data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
+        if (vals.length > 0) {
+          const sum = vals.reduce((a, b) => a + b, 0);
+          summary += '- ' + col + ': Sum=' + sum.toLocaleString() + ', Avg=' + (sum / vals.length).toFixed(2) + '\n';
         }
       }
     }

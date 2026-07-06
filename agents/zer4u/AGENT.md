@@ -86,6 +86,7 @@ Error Handling:
 | `mv_sales_by_store` | All-time store totals |
 | `mv_sales_by_customer` | Customer spending / top customers |
 | `mv_sales_by_product` | Product performance / top products |
+| `mv_sales_by_category_month` | Product **category** (item_group) by month — for "how much <category>" / "sales by category" (never name-match a category) |
 
 **Performance Rules:**
 - NEVER aggregate directly on the 9.4M sales table without date filters

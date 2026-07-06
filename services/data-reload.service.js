@@ -364,8 +364,11 @@ class DataReloadService {
   }
 
   /**
-   * Returns data freshness info: last successful run + last data date.
+   * Returns data freshness info: last successful run + data coverage window.
    * lastDataDate comes from the reloader's dataInfoFn (schema-specific).
+   * firstDataDate (and a consistent lastDataDate) come from the optional
+   * dataRangeFn when a reloader provides one — it returns { first, last } so the
+   * UI can show how far back the data reaches, not just how recent it is.
    */
   async getDataInfo(schemaName) {
     const runResult = await this.db.query(
@@ -379,8 +382,21 @@ class DataReloadService {
     const lastRun = runResult.rows[0] || null;
 
     const reloader = this.reloaders[schemaName];
+    let firstDataDate = null;
     let lastDataDate = null;
-    if (reloader?.dataInfoFn) {
+
+    if (reloader?.dataRangeFn) {
+      try {
+        const range = await reloader.dataRangeFn(reloader.pool || this.db);
+        firstDataDate = range?.first || null;
+        lastDataDate = range?.last || null;
+      } catch {
+        // dataRangeFn is optional and best-effort
+      }
+    }
+
+    // Fall back to dataInfoFn for the end date when no range fn is available.
+    if (lastDataDate == null && reloader?.dataInfoFn) {
       try {
         lastDataDate = await reloader.dataInfoFn(reloader.pool || this.db);
       } catch {
@@ -388,7 +404,7 @@ class DataReloadService {
       }
     }
 
-    return { lastRun, lastDataDate };
+    return { lastRun, firstDataDate, lastDataDate };
   }
 
   /** Returns GCS source files for this schema. */
@@ -507,12 +523,7 @@ class DataReloadService {
         // most likely died at the ~instant swap. Re-running indexFn would redo
         // 15+ min of DROP+CREATE MV work AND risk the same mid-swap kill. So when
         // already built, skip the rebuild and just complete the swap.
-        const built = (await dbForCheck.query(
-          `SELECT (
-             EXISTS(SELECT 1 FROM pg_matviews WHERE schemaname = $1)
-             AND NOT EXISTS(SELECT 1 FROM pg_matviews WHERE schemaname = $1 AND ispopulated = false)
-           ) AS built`, [shadowSchema]
-        )).rows[0].built;
+        const built = await this._isShadowBuilt(schemaName, shadowSchema, dbForCheck);
 
         if (built) {
           emitLog('swapping', `Shadow ${shadowSchema} already built — skipping rebuild, completing swap only...`);
@@ -601,6 +612,63 @@ class DataReloadService {
   }
 
   /**
+   * Is the freshly-loaded shadow schema fully built and ready for the atomic swap?
+   *
+   * MV-based schemas (zer4u/thestock/newdeli/zolstock): "built" = the shadow's
+   * materialized views are all present and populated — the index/MV phase does
+   * this right before the swap. Unchanged from the original check.
+   *
+   * Index-only schemas (e.g. hypertoy, ~2M rows, plain indexes and no MVs): there
+   * are no MVs to look for, so "built" = every valid index on the live schema also
+   * exists and is valid on the shadow. Without this branch the MV check is always
+   * false for such schemas, so self-heal never completes their swap and every
+   * import needs a manual "Create Indexes" re-run.
+   *
+   * Conservative: requires shadow ⊇ live valid indexes, so it can only delay an
+   * auto-swap, never swap an unfinished shadow. A freshly-imported shadow with no
+   * indexes is correctly NOT "built".
+   */
+  async _isShadowBuilt(liveSchema, shadowSchema, pool) {
+    const res = await pool.query(
+      `WITH live_mv AS (
+         SELECT count(*) AS n FROM pg_matviews WHERE schemaname = $1
+       ),
+       shadow_mv AS (
+         SELECT count(*) AS n FROM pg_matviews WHERE schemaname = $2
+       ),
+       shadow_mv_unpop AS (
+         SELECT count(*) AS n FROM pg_matviews WHERE schemaname = $2 AND ispopulated = false
+       ),
+       live_idx AS (
+         SELECT c.relname
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           JOIN pg_index   i ON i.indexrelid = c.oid
+          WHERE n.nspname = $1 AND i.indisvalid AND i.indisready
+       ),
+       shadow_idx AS (
+         SELECT c.relname
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           JOIN pg_index   i ON i.indexrelid = c.oid
+          WHERE n.nspname = $2 AND i.indisvalid AND i.indisready
+       )
+       SELECT CASE
+         WHEN (SELECT n FROM live_mv) > 0 THEN
+           (SELECT n FROM shadow_mv) > 0 AND (SELECT n FROM shadow_mv_unpop) = 0
+         ELSE
+           (SELECT count(*) FROM live_idx) > 0
+           AND NOT EXISTS (
+             SELECT 1 FROM live_idx l
+              WHERE l.relname NOT IN (SELECT relname FROM shadow_idx)
+           )
+       END AS built`,
+      [liveSchema, shadowSchema]
+    );
+    return res.rows[0].built;
+  }
+
+  /**
    * Periodic self-heal sweep. The indexing worker can be killed by the platform
    * right after the MVs finish but before the swap runs (the swap is the very
    * last step). This timer calls ensureSwapped for every registered schema, so a
@@ -647,25 +715,23 @@ class DataReloadService {
 
     const pool = reloader.pool || this.db;
     const shadow = `${schemaName}_new`;
-    let chk;
+    let hasShadow;
     try {
-      chk = await pool.query(`
-        SELECT
-          EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1) AS has_shadow,
-          -- "built" = the shadow's materialized views are all in place and populated,
-          -- which the indexing phase does right before the swap. Must NOT hardcode a
-          -- single MV name: zer4u/newdeli use mv_sales_by_month, but thestock/hypertoy/
-          -- zolstock use mv_sales_daily* — hardcoding broke self-heal for them.
-          (
-            EXISTS(SELECT 1 FROM pg_matviews WHERE schemaname = $1)
-            AND NOT EXISTS(SELECT 1 FROM pg_matviews WHERE schemaname = $1 AND ispopulated = false)
-          ) AS built
-      `, [shadow]);
+      hasShadow = (await pool.query(
+        `SELECT 1 FROM information_schema.schemata WHERE schema_name = $1`, [shadow]
+      )).rowCount > 0;
     } catch (e) {
       return { action: 'skipped', reason: `check failed: ${e.message}` };
     }
-    if (!chk.rows[0].has_shadow) return { action: 'skipped', reason: 'no shadow schema' };
-    if (!chk.rows[0].built) return { action: 'skipped', reason: 'shadow not fully built yet' };
+    if (!hasShadow) return { action: 'skipped', reason: 'no shadow schema' };
+
+    let built;
+    try {
+      built = await this._isShadowBuilt(schemaName, shadow, pool);
+    } catch (e) {
+      return { action: 'skipped', reason: `built check failed: ${e.message}` };
+    }
+    if (!built) return { action: 'skipped', reason: 'shadow not fully built yet' };
 
     // The index run that built this shadow but stalled at the swap is the most
     // recent 'running' run. Re-use its id and finish it as 'completed' — its work

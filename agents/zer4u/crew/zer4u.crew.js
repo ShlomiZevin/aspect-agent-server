@@ -88,6 +88,14 @@ When a user asks a business question that requires data:
 - If the user asks for amounts *including* VAT (כולל מע"מ), explain that the data is reported before VAT (ללא מע"מ) and that you cannot add VAT unless they confirm the rate.
 - Never present a money figure without making the VAT basis clear.
 
+## TABLES & FULL DATA
+
+- When the user asks for a table, a list, or "top N", show only a PREVIEW in your text answer — at most the first ~15 rows — together with your insights. Do NOT paste the entire result set as text.
+- The COMPLETE result set is automatically shown to the user in a separate sortable/filterable table with one-click Excel export, rendered right below your reply. Tell the user the full table (all rows) is there to open, sort, filter and export.
+- For pure aggregate/summary questions (totals, averages, a single top-N metric), just give the numbers and insight — no row list.
+- Each \`fetch_zer4u_data\` result returns up to 100 rows; if the full set is larger, say so and offer to narrow (tighter date range, top-N).
+- ALWAYS pass a short \`table_title\` describing that specific table, in the SAME language the user used (Hebrew if they wrote Hebrew). It is shown as the heading of the full-data table the user can open. Give each table its own distinct title when you make several calls in one turn.
+
 ## EXAMPLES
 
 User: "מה היו המכירות הכוללות החודש?"
@@ -100,7 +108,9 @@ User: "מה מצב המלאי?"
 You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה מצב המלאי הנוכחי..."`,
 
       model: process.env.ZER4U_CREW_MODEL || 'gpt-4o',
-      maxTokens: 4096,
+      // Higher cap so a full table of up to 100 rows can be rendered without the
+      // model running out of output budget and truncating the list mid-table.
+      maxTokens: 8192,
 
       fieldsToCollect: [],
 
@@ -117,6 +127,10 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
               question: {
                 type: 'string',
                 description: 'The business question to answer. Can be in Hebrew or English. Examples: "total sales last month", "top 10 customers", "inventory levels"'
+              },
+              table_title: {
+                type: 'string',
+                description: 'A SHORT title for the resulting table, in the SAME language the user used (e.g. Hebrew), describing what this specific table shows (max ~8 words). Shown above the full-data table in the UI. Example: "100 המוצרים הנמכרים ביותר ב-2026".'
               }
             },
             required: ['question']
@@ -135,7 +149,7 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
    * Handle data fetch tool call
    */
   async handleDataFetch(params) {
-    const { question } = params;
+    const { question, table_title } = params;
     const thinkingService = require('../../../services/thinking.service');
 
     try {
@@ -182,6 +196,7 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
       return {
         success: true,
         question,
+        tableTitle: table_title || null,
         sql: result.sql,
         explanation: result.explanation,
         confidence: result.confidence,
@@ -251,27 +266,25 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
   _summarizeData(data, columns) {
     if (!data || data.length === 0) return 'No data found.';
 
-    const MAX_DISPLAY = 20;
-    let summary = `Found ${data.length} records.\n\n`;
+    // NOTE: the full result set is already returned to the model in the `data`
+    // field of the tool result. This summary must NOT re-dump a truncated slice
+    // of rows — doing that used to prime the model to answer with only the first
+    // ~20 rows even when the user asked for the whole table. Instead we state the
+    // row count, point the model at `data`, and give cheap numeric totals so
+    // summary-style questions don't require re-reading every row.
+    let summary = 'Found ' + data.length + ' record' + (data.length === 1 ? '' : 's') + '.\n';
+    summary += 'The COMPLETE result set (all ' + data.length + ' rows) is in the `data` field AND is shown to the user in a downloadable sortable table below your reply. '
+      + 'In your text answer show only a PREVIEW — at most the first ~15 rows — plus insights; do NOT paste all rows. '
+      + 'For aggregate/summary questions, lead with the key numbers instead.\n';
 
-    const displayData = data.slice(0, MAX_DISPLAY);
-    summary += data.length > MAX_DISPLAY
-      ? `First ${MAX_DISPLAY} of ${data.length} records:\n`
-      : 'All records:\n';
-    summary += JSON.stringify(displayData, null, 2);
-
-    if (data.length > MAX_DISPLAY) {
-      summary += `\n\n... and ${data.length - MAX_DISPLAY} more records.`;
-
-      const numericCols = this._findNumericColumns(data[0]);
-      if (numericCols.length > 0) {
-        summary += '\n\nNumeric summaries:\n';
-        for (const col of numericCols.slice(0, 3)) {
-          const values = data.map(row => parseFloat(row[col])).filter(v => !isNaN(v));
-          if (values.length > 0) {
-            const sum = values.reduce((a, b) => a + b, 0);
-            summary += `- ${col}: Sum=${sum.toLocaleString()}, Avg=${(sum / values.length).toFixed(2)}, Min=${Math.min(...values)}, Max=${Math.max(...values)}\n`;
-          }
+    const numericCols = this._findNumericColumns(data[0]);
+    if (numericCols.length > 0) {
+      summary += '\nNumeric totals across all ' + data.length + ' rows:\n';
+      for (const col of numericCols.slice(0, 5)) {
+        const values = data.map(row => parseFloat(row[col])).filter(v => !isNaN(v));
+        if (values.length > 0) {
+          const sum = values.reduce((a, b) => a + b, 0);
+          summary += `- ${col}: Sum=${sum.toLocaleString()}, Avg=${(sum / values.length).toFixed(2)}\n`;
         }
       }
     }
