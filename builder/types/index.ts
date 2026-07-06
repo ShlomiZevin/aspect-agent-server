@@ -617,6 +617,20 @@ export interface EnumValueDef {
    *  as a single `### value` block under a wrapping `## name` header
    *  (see assembler for the exact template). */
   sectionTexts?: Record<string, string>;
+  /** Per-value master switch. When explicitly `false`, this value is
+   *  invisible to prompts and to the extractor: it drops out of
+   *  `{{enum:NAME}}` / `{{enum:NAME:SECTION}}` aggregates, out of the
+   *  `{{enum:NAME:values}}` inline list, out of the extractor's
+   *  `values=[…]` schema line, and out of `{{enum_values}}`. A `{{dc:…}}`
+   *  lookup whose live memory value equals this value resolves as
+   *  no-match ('').
+   *
+   *  The KB is NOT disabled — other values keep working. Purpose:
+   *  narrow the options without deleting (phasing out, gating by
+   *  business rule, or hiding a stub value that isn't ready). Missing
+   *  is treated as enabled so pre-flag values stay on without a
+   *  migration. */
+  enabled?: boolean;
 }
 
 export interface EnumTypeDef {
