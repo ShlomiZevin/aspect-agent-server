@@ -81,12 +81,16 @@ class AdminService {
 
     if (agentName) {
       const agentSlug = agentName.toLowerCase();
+      // Two ways to belong to an agent: you've talked to it, OR you were
+      // created for it (tenant = agent slug — the V2 builder admin's
+      // "Add user" flow for customer chat access). The OR keeps freshly
+      // created users visible before their first conversation.
       conditions.push(
-        sql`${users.id} IN (
+        sql`(${users.id} IN (
           SELECT DISTINCT c.user_id FROM conversations c
           JOIN agents a ON a.id = c.agent_id
           WHERE LOWER(a.url_slug) = ${agentSlug} OR LOWER(a.name) = ${agentSlug}
-        )`
+        ) OR LOWER(COALESCE(${users.tenant}, '')) = ${agentSlug})`
       );
     }
 
