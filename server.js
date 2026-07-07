@@ -3007,14 +3007,11 @@ app.post('/api/dynamic-kb/import/doc', upload.single('file'), async (req, res) =
 });
 
 // Re-run a previously-generated SQL query for a BI schema. 'data_table'
-// thinking steps no longer persist their row set to the DB (see
-// thinking.service.js#endContext — only sql/columns/rowCount are saved, to
-// keep that table's footprint tiny regardless of query size). The live
-// session already has the full rows via SSE, so this endpoint only matters
-// for opening the popup on an OLDER conversation (after a reload) — the
-// client calls it with the stored {schema, sql} and gets a fresh, complete
-// result back. Whitelisted BI schemas only; SELECT-only, same forbidden-
-// keyword guard as DataQueryService.
+// thinking steps never carry the row set (see thinking.service.js and the
+// data_table step in the SSE handler above) — only sql/columns/rowCount ever
+// leave the server, live or historical, so the popup and the Excel export
+// both always re-fetch the complete result here. Whitelisted BI schemas
+// only; SELECT-only, same forbidden-keyword guard as DataQueryService.
 const RERUN_POOL_GETTERS = {
   zer4u: () => require('./services/db.zer4u').getPool(),
   hypertoy: () => require('./services/db.hypertoy').getPool(),
@@ -3024,35 +3021,36 @@ const RERUN_POOL_GETTERS = {
   tevanaot: () => require('./services/db.tevanaot').getPool(),
 };
 
+async function runBiSql(schema, sql) {
+  const getPool = RERUN_POOL_GETTERS[schema];
+  if (!getPool) throw Object.assign(new Error('Unknown or unsupported schema: ' + schema), { status: 400 });
+  if (typeof sql !== 'string' || !sql.trim()) throw Object.assign(new Error('sql is required'), { status: 400 });
+
+  const forbidden = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE', 'ALTER', 'CREATE'];
+  const upperSql = sql.toUpperCase();
+  for (const kw of forbidden) {
+    if (upperSql.includes(kw)) throw Object.assign(new Error('SQL contains forbidden keyword: ' + kw), { status: 400 });
+  }
+
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('SET statement_timeout = ' + parseInt(process.env.QUERY_TIMEOUT_MS || '15000', 10));
+    const result = await client.query(sql);
+    return { columns: result.fields.map(f => f.name), rows: result.rows, rowCount: result.rows.length };
+  } finally {
+    client.release();
+  }
+}
+
 app.post('/api/data-query/rerun', async (req, res) => {
   try {
     const { schema, sql } = req.body || {};
-    const getPool = RERUN_POOL_GETTERS[schema];
-    if (!getPool) return res.status(400).json({ error: 'Unknown or unsupported schema: ' + schema });
-    if (typeof sql !== 'string' || !sql.trim()) return res.status(400).json({ error: 'sql is required' });
-
-    const forbidden = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE', 'ALTER', 'CREATE'];
-    const upperSql = sql.toUpperCase();
-    for (const kw of forbidden) {
-      if (upperSql.includes(kw)) return res.status(400).json({ error: 'SQL contains forbidden keyword: ' + kw });
-    }
-
-    const pool = getPool();
-    const client = await pool.connect();
-    try {
-      await client.query('SET statement_timeout = ' + parseInt(process.env.QUERY_TIMEOUT_MS || '15000', 10));
-      const result = await client.query(sql);
-      res.json({
-        columns: result.fields.map(f => f.name),
-        rows: result.rows,
-        rowCount: result.rows.length,
-      });
-    } finally {
-      client.release();
-    }
+    const result = await runBiSql(schema, sql);
+    res.json(result);
   } catch (err) {
     console.error('❌ Data query rerun error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -3061,12 +3059,22 @@ app.post('/api/data-query/rerun', async (req, res) => {
 // Excel number-format string (same decimals/₪ rule as table-format.service.js
 // uses for the chat preview and popup), so the file looks identical to what
 // the user saw in the app but stays summable/filterable in Excel.
-app.post('/api/data-query/export-excel', (req, res) => {
+//
+// Takes {schema, sql} and re-runs the query itself — same as /rerun — rather
+// than accepting a client-supplied `rows` array. A 100k+ row table serialized
+// to JSON and POSTed back from the browser is tens of MB; that request hit
+// the same Cloud Run/GFE response-size ceiling as the live SSE data_table bug
+// (observed in prod: 500s with requestSize ~29MB and "Response size was too
+// large" warnings). Re-querying server-side keeps this endpoint's payload
+// sizes small in both directions regardless of row count.
+app.post('/api/data-query/export-excel', async (req, res) => {
   try {
-    const { displayColumns, rows, title } = req.body || {};
-    if (!Array.isArray(displayColumns) || displayColumns.length === 0 || !Array.isArray(rows)) {
-      return res.status(400).json({ error: 'displayColumns (non-empty array) and rows (array) are required' });
+    const { schema, sql, displayColumns, title } = req.body || {};
+    if (!Array.isArray(displayColumns) || displayColumns.length === 0) {
+      return res.status(400).json({ error: 'displayColumns (non-empty array) is required' });
     }
+
+    const { rows } = await runBiSql(schema, sql);
 
     const XLSX = require('xlsx');
     const header = displayColumns.map(c => c.label);
@@ -3116,7 +3124,7 @@ app.post('/api/data-query/export-excel', (req, res) => {
     res.send(buffer);
   } catch (err) {
     console.error('❌ Excel export error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
