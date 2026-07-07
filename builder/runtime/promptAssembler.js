@@ -298,8 +298,14 @@ function buildFieldsSchemaBlock(fields, enums) {
     const props = [`type=${f.type}`];
     if (f.type === 'enum') {
       const enumDef = findEnumById(enums, f.enumType);
+      // Skip values with `enabled === false` — same narrowing the
+      // aggregate resolver applies. The extractor should never be
+      // asked to classify to a value the author has hidden.
       const vals = enumDef && Array.isArray(enumDef.values)
-        ? enumDef.values.map(v => v && v.value).filter(Boolean)
+        ? enumDef.values
+            .filter(v => v && v.enabled !== false)
+            .map(v => v && v.value)
+            .filter(Boolean)
         : [];
       if (vals.length > 0) {
         props.push(`values=[${vals.join(', ')}]`);
@@ -355,7 +361,13 @@ function resolveEnumAggregate(rawName, { enums, onEnumResolved }) {
   const enumDef = findEnumByName(enums, enumName);
   if (!enumDef) return null;
 
-  const values = Array.isArray(enumDef.values) ? enumDef.values : [];
+  // Filter out values with `enabled === false` — the per-value master
+  // switch. Applied ONCE here so every downstream branch (`:values`
+  // inline list, umbrella aggregate, section aggregate) sees the same
+  // narrowed set. Undefined `enabled` counts as on, so pre-flag KBs
+  // behave identically to before.
+  const allValues = Array.isArray(enumDef.values) ? enumDef.values : [];
+  const values = allValues.filter(v => !v || v.enabled !== false);
 
   // Reserved: `{{enum:NAME:values}}` → comma-separated values list.
   // Rendered inline (no headers, no block whitespace) so it slots into
@@ -452,6 +464,12 @@ function resolveDcInline(rawName, { enums, fieldsForDc, fieldValueOf, onDcResolv
 
   let text = '';
   if (!matchedValue) {
+    if (onDcResolved) onDcResolved({ fieldName, section: sectionPart, matched: null, text: '' });
+    return '';
+  }
+  // Disabled value: memory holds it, but no prompt content should
+  // reference it. Treat as no-match so the token cleanly collapses.
+  if (matchedValue.enabled === false) {
     if (onDcResolved) onDcResolved({ fieldName, section: sectionPart, matched: null, text: '' });
     return '';
   }
@@ -582,6 +600,7 @@ function assemblePrompt({
     const enumDef = findEnumById(enumsList, thisField.enumType);
     if (enumDef && Array.isArray(enumDef.values)) {
       enumValuesText = enumDef.values
+        .filter(v => v && v.enabled !== false)  // Skip disabled values.
         .map(v => v && v.value)
         .filter(Boolean)
         .join(', ');

@@ -2,14 +2,17 @@
  * Builds the prompt context for brainstorm Alfred.
  *
  * Two pieces:
- *   1. A static-ish system prompt — Alfred's identity + the (P5.1)
- *      no-tools brainstorming policy.
- *   2. A human-readable summary of the current ProjectDoc — NO raw
- *      JSON, NO instanceIds, NO schema keys. Decision 58 in
- *      BUILDER_V2_ALFRED.md.
+ *   1. A static-ish system prompt — Alfred's identity, the addon
+ *      catalogue (from builder/addons/*.addon.json), and the prompt
+ *      placeholder vocabulary (from builder/promptPlaceholders.json).
+ *   2. The CURRENT AGENT AS RAW JSON — the full working copy (crews,
+ *      addons with their configs and prompts, fields, enums, snippets,
+ *      personas, parameters, cortex). Version snapshot bodies are the
+ *      only thing stripped (metadata stays) to keep tokens sane.
  *
- * Patch-generator Alfred (P5.2) will live in a sibling file and DOES
- * see the raw JSON. This file is brainstorm-only.
+ * Alfred sees everything the builder sees, so he can answer any
+ * question about the agent ("what are my extractors?", "show me all
+ * prompts", …) without lossy intermediate formatting.
  */
 
 const fs = require('fs');
@@ -175,11 +178,16 @@ const STATIC_SYSTEM_PROMPT = [
   'You are Alfred — an AI helper that sits inside the Aspect agent builder.',
   '',
   'You help the user design and refine the agent they\'re building: brainstorm',
-  'personas, propose crews, sketch field schemas, talk through transitions and',
-  'edge cases. You see the current state of the project as a plain-English',
-  'summary (not raw schema). Reason and reply in that same plain-English',
-  'vocabulary: agents, crews, fields, addons (talkers, field extractors,',
-  'transition routers).',
+  'personas, propose crews, sketch field schemas, write and improve prompts,',
+  'talk through transitions and edge cases — and actually make the changes',
+  'when asked (see "Applying changes" below).',
+  '',
+  'You see the CURRENT AGENT as raw JSON on every turn — the full working',
+  'copy: every crew, every addon with its complete config (including the',
+  'prompts), fields, enums, snippets, personas, parameters, and the',
+  'agent-level cortex. Answer any question about the agent directly from',
+  'that JSON — what extractors exist, what a prompt says, which crew',
+  'transitions where, which fields feed which addon, and so on.',
   '',
   '# Rules of engagement',
   '- Speak the user\'s language. If they write in Hebrew, reply in Hebrew.',
@@ -190,15 +198,29 @@ const STATIC_SYSTEM_PROMPT = [
   '  Extractor), JSON keys, code samples. Those are part of the agent\'s',
   '  structure and must stay copy-pasteable. The prose around them follows',
   '  the user\'s language.',
-  '- Talk in plain human vocabulary about the agent — never describe the',
-  '  current state with raw JSON or internal ids; use the agent / crew /',
-  '  field / addon names.',
-  '- Don\'t pretend you applied changes. You can\'t — yet. Discuss the change',
-  '  with the user; they\'ll save edits manually for now.',
-  '- For small edits (renaming, tweaking a Talker prompt, fixing a typo),',
-  '  tell the user the easiest path is to do it themselves in the builder UI',
-  '  — just hand over the new text. Mention they can use the "Validate & Log"',
-  '  button next to Save when the change is significant.',
+  '- Talk to the user in human vocabulary — agent / crew / field / addon',
+  '  NAMES, not internal ids (`addon_x7f2…`). Show raw JSON only when the',
+  '  user asks for it or when quoting an exact config value is the answer.',
+  '',
+  '# Applying changes',
+  '- You don\'t mutate the agent directly from chat. When the user has',
+  '  agreed on concrete changes, point them to the ✨ Apply button above',
+  '  this chat: it consolidates what was agreed in this conversation,',
+  '  generates the updated agent/crew JSON, and lands it in the builder as',
+  '  a reviewable draft they then Save. So converge on precise, concrete',
+  '  wording — that\'s what Apply executes.',
+  '- For tiny edits (renaming, fixing a typo), doing it by hand in the UI',
+  '  can be faster — hand over the exact new text and say where it goes.',
+  '  Mention the "Validate & Log" button next to Save for significant',
+  '  manual changes.',
+  '',
+  '# Knowledge bases (KB)',
+  '- KB management — creating knowledge bases, uploading and processing',
+  '  files — happens in the Admin app, outside this builder. You can\'t',
+  '  change it; send the user there.',
+  '- HOW the agent reads a KB is fully in your scope: the KB Retriever',
+  '  addon (which namespaces to search, trigger mode, query mode, topK,',
+  '  where the result lands and its `{{kb:NAME}}` injection token).',
   '- Be terse. The builder UI is already noisy; don\'t pad answers.',
   '- If the user is just thinking out loud, think out loud with them. No',
   '  need to converge on a proposal every turn.',
@@ -261,169 +283,57 @@ const SYSTEM_PROMPT = [
   PLACEHOLDER_REFERENCE,
 ].filter(Boolean).join('\n\n');
 
-/** Format one field for the Alfred context dump. Enum-typed fields
- *  resolve their values via the agent's enum bible (`agent.enums`) —
- *  the values list lives there, not inline on the field. */
-function fmtField(f, agentEnums) {
-  const bits = [f.type];
-  if (f.type === 'enum' && f.enumType && Array.isArray(agentEnums)) {
-    const enumDef = agentEnums.find(e => e && e.id === f.enumType);
-    const vals = enumDef && Array.isArray(enumDef.values)
-      ? enumDef.values.map(v => v && v.value).filter(Boolean)
-      : [];
-    if (vals.length > 0) bits[0] = `enum ${enumDef.name}: ${vals.join('/')}`;
-    else                 bits[0] = `enum (${enumDef ? enumDef.name : 'unbound'})`;
-  }
-  bits.push(f.source);
-  const head = `- ${f.name} (${bits.join(', ')})`;
-  const desc = (f.howToExtract || '').trim();
-  return desc ? `${head}: ${desc}` : head;
-}
-
-/** Format the agent's enum bible as a compact briefing for Alfred. One
- *  block per enum: name + values + section schema + value-level umbrella
- *  / section bodies (truncated if very long). */
-function fmtEnumBible(enums) {
-  if (!Array.isArray(enums) || enums.length === 0) return '';
-  const lines = ['Enums (bible):'];
-  for (const e of enums) {
-    if (!e || !e.name) continue;
-    const sectionNames = (Array.isArray(e.sections) ? e.sections : [])
-      .map(s => s && s.name).filter(Boolean);
-    lines.push(`  ${e.name} {`);
-    if (sectionNames.length > 0) lines.push(`    sections: ${sectionNames.join(', ')}`);
-    for (const v of (Array.isArray(e.values) ? e.values : [])) {
-      if (!v || !v.value) continue;
-      lines.push(`    - ${v.value}`);
-      const umb = (v.umbrellaText || '').trim();
-      if (umb) lines.push(`        umbrella: ${truncate1Line(umb)}`);
-      for (const sec of sectionNames) {
-        const body = (v.sectionTexts && v.sectionTexts[sec] || '').trim();
-        if (body) lines.push(`        ${sec}: ${truncate1Line(body)}`);
-      }
-    }
-    lines.push('  }');
-  }
-  return lines.join('\n');
-}
-
-function truncate1Line(s) {
-  const oneLine = s.replace(/\s+/g, ' ').trim();
-  return oneLine.length > 140 ? oneLine.slice(0, 140) + '…' : oneLine;
-}
-
-function fmtAddon(a, crewFieldsById, agentFieldsById) {
-  const pluginLabel = ({
-    talker: 'Talker',
-    'field-extractor': 'Field Extractor',
-    'transition-router': 'Transition Router',
-  })[a.pluginId] || a.pluginId;
-
-  if (a.pluginId === 'field-extractor') {
-    const name = (a.config && a.config.name) ? `"${a.config.name}"` : '';
-    const fieldIds = (a.config && Array.isArray(a.config.extractsFields)) ? a.config.extractsFields : [];
-    const fieldNames = fieldIds
-      .map(id => (crewFieldsById[id] || agentFieldsById[id])?.name)
-      .filter(Boolean);
-    const extractsLine = fieldNames.length > 0
-      ? `  (extracts: ${fieldNames.join(', ')})`
-      : '  (extracts: nothing yet)';
-    return `${pluginLabel}${name ? ' ' + name : ''}${extractsLine}`;
-  }
-  return pluginLabel;
-}
-
 /**
- * Render a multi-line block of free-text (a spec or persona) under a
- * heading with consistent indentation. No truncation — the user wrote
- * this and Alfred should see it verbatim.
+ * Strip version snapshot BODIES from an agent/crew doc — they duplicate
+ * the working copy at every save point and would blow up the context.
+ * Version metadata (id / number / description / createdAt) stays so
+ * Alfred knows the history exists.
  */
-function fmtBlock(heading, text, indent) {
-  const lines = [`${indent}${heading}:`];
-  const body = String(text).split(/\r?\n/);
-  for (const line of body) {
-    lines.push(`${indent}  ${line}`);
+function stripVersionBodies(entity) {
+  if (!entity || typeof entity !== 'object') return entity;
+  const out = { ...entity };
+  if (Array.isArray(out.versions)) {
+    out.versions = out.versions.map(v => ({
+      id: v.id,
+      number: v.number,
+      ...(v.description ? { description: v.description } : {}),
+      createdAt: v.createdAt,
+    }));
   }
-  return lines.join('\n');
-}
-
-function fmtCrew(crew, agent) {
-  const lines = [];
-  const isDefault = agent.defaultCrewId === crew.id;
-  lines.push(`  ${crew.name || '(unnamed crew)'}${isDefault ? '  (default)' : ''}`);
-  if (crew.description) lines.push(`    Description: ${crew.description}`);
-  if (crew.spec)        lines.push(fmtBlock('Spec', crew.spec, '    '));
-  if (crew.persona)     lines.push(fmtBlock('Persona', crew.persona, '    '));
-
-  const crewFieldsById  = Object.fromEntries((crew.fields  || []).map(f => [f.id, f]));
-  const agentFieldsById = Object.fromEntries((agent.fields || []).map(f => [f.id, f]));
-
-  const mainAddons = (crew.addons || []).filter(a => (a.lane || 'main') === 'main' && a.enabled !== false);
-  if (mainAddons.length > 0) {
-    lines.push('    Addons (main lane):');
-    mainAddons.forEach((a, i) => {
-      lines.push(`      ${i + 1}. ${fmtAddon(a, crewFieldsById, agentFieldsById)}`);
-    });
-  } else {
-    lines.push('    Addons: none yet');
-  }
-
-  if ((crew.fields || []).length > 0) {
-    lines.push('    Crew fields:');
-    crew.fields.forEach(f => lines.push('      ' + fmtField(f, agent.enums).replace(/^- /, '')));
-  }
-  return lines.join('\n');
-}
-
-function fmtAgent(agent) {
-  const lines = [];
-  lines.push(`Agent: ${agent.name || agent.slug}  (slug: ${agent.slug})`);
-  if (agent.persona) lines.push(fmtBlock('Persona', agent.persona, '  '));
-  if (agent.spec)    lines.push(fmtBlock('Spec', agent.spec, '  '));
-
-  if ((agent.fields || []).length > 0) {
-    lines.push('');
-    lines.push('  Agent fields:');
-    agent.fields.forEach(f => lines.push('    ' + fmtField(f, agent.enums).replace(/^- /, '')));
-  }
-
-  if (Array.isArray(agent.enums) && agent.enums.length > 0) {
-    lines.push('');
-    const bible = fmtEnumBible(agent.enums);
-    if (bible) lines.push('  ' + bible.split('\n').join('\n  '));
-  }
-
-  if ((agent.crews || []).length > 0) {
-    lines.push('');
-    lines.push('  Crews:');
-    agent.crews.forEach(c => lines.push(fmtCrew(c, agent)));
-  } else {
-    lines.push('');
-    lines.push('  Crews: none yet');
-  }
-  return lines.join('\n');
-}
-
-function fmtProject(project) {
-  const lines = [];
-  lines.push(`Project: ${project.name || '(unnamed)'}`);
-  if (project.spec) lines.push(fmtBlock('Spec', project.spec, '  '));
-  lines.push('');
-  (project.agents || []).forEach(a => lines.push(fmtAgent(a)));
-  return lines.join('\n');
+  return out;
 }
 
 /**
- * Produce the human-readable summary for the current project (by
- * slug + owner). Returns the string Alfred will see — or a short
- * placeholder if the project doesn't exist yet.
+ * Produce the per-turn context block: the CURRENT AGENT as raw JSON
+ * (working copy — what the builder UI edits), with version snapshot
+ * bodies stripped. This is exactly what the builder sees, so Alfred
+ * can answer any question about the agent without a lossy summary
+ * in between.
  */
 async function buildProjectSummary({ agentSlug, ownerUserId }) {
   const project = await hydrateProject({ agentSlug, ownerUserId });
   if (!project) {
     return `No project found for slug "${agentSlug}". The user hasn't bootstrapped the builder yet.`;
   }
-  return fmtProject(project);
+
+  const lines = [`Project: ${project.name || '(unnamed)'}`];
+  if (project.spec) lines.push(`Project spec: ${project.spec}`);
+
+  for (const agent of project.agents || []) {
+    const slim = stripVersionBodies(agent);
+    if (Array.isArray(slim.crews)) {
+      slim.crews = slim.crews.map(stripVersionBodies);
+    }
+    lines.push(
+      '',
+      `## Agent "${agent.name || agent.slug}" — full JSON (working copy; version bodies omitted)`,
+      '```json',
+      JSON.stringify(slim, null, 2),
+      '```',
+    );
+  }
+
+  return lines.join('\n');
 }
 
 module.exports = {

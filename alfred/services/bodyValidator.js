@@ -43,8 +43,12 @@ const KNOWN_PLUGINS  = loadKnownPlugins();
 const VALID_LANES    = new Set(['main', 'background', 'offline']);
 const VALID_OUTPUTS  = new Set(['text-to-user', 'json-to-memory', 'transition']);
 const VALID_FIELD_TYPES   = new Set(['string', 'int', 'enum', 'boolean']);
-const VALID_FIELD_SOURCES = new Set(['explicit', 'inferred']);
-const VALID_HISTORY_MODES = new Set(['none', 'last_n', 'full']);
+const VALID_FIELD_SOURCES = new Set(['explicit', 'inferred', 'pinned']);
+// Mirrors the HistoryMode union in builder/types/index.ts —
+// `full` is the legacy alias for `all`.
+const VALID_HISTORY_MODES = new Set([
+  'none', 'all', 'full', 'last_n', 'since_transition', 'since_summarizer',
+]);
 
 function isObject(x) {
   return x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -90,18 +94,33 @@ function checkAddonInstance(addon, path, errors, knownFieldIds) {
   if (!isObject(addon.context))
     pushErr(errors, `${path}.context`, 'required object');
   else {
-    if (!isObject(addon.context.history) || !VALID_HISTORY_MODES.has(addon.context.history.mode))
+    const hist = addon.context.history;
+    if (!isObject(hist) || !VALID_HISTORY_MODES.has(hist.mode)) {
       pushErr(errors, `${path}.context.history.mode`, `must be one of ${[...VALID_HISTORY_MODES].join(', ')}`);
+    } else {
+      if (hist.mode === 'last_n' && typeof hist.n !== 'number')
+        pushErr(errors, `${path}.context.history.n`, 'required number when mode is last_n');
+      if (hist.mode === 'since_summarizer' && (typeof hist.summarizerName !== 'string' || !hist.summarizerName))
+        pushErr(errors, `${path}.context.history.summarizerName`, 'required string when mode is since_summarizer');
+    }
     // Phase B: persona / memoryReads / thinkingReads were dropped — the
-    // promptTemplate now owns placement. Only `history` (runtime data,
-    // not template text) and optional `triggeredReads` remain.
-    if ('triggeredReads' in addon.context && !Array.isArray(addon.context.triggeredReads))
-      pushErr(errors, `${path}.context.triggeredReads`, 'when present must be an array');
+    // prompt now owns placement via {{...}} tokens. `context` carries
+    // runtime knobs only: history + optional trigger (offline lane) +
+    // optional filter (run gate).
+    if ('trigger' in addon.context && addon.context.trigger !== undefined && !isObject(addon.context.trigger))
+      pushErr(errors, `${path}.context.trigger`, 'when present must be an object');
+    if ('filter' in addon.context && addon.context.filter !== undefined) {
+      const f = addon.context.filter;
+      if (!isObject(f) || !Array.isArray(f.conditions))
+        pushErr(errors, `${path}.context.filter`, 'when present must be an object with a conditions array');
+    }
   }
   if (!VALID_OUTPUTS.has(addon.outputType))
     pushErr(errors, `${path}.outputType`, `must be one of ${[...VALID_OUTPUTS].join(', ')}`);
-  if (typeof addon.promptTemplate !== 'string' || addon.promptTemplate.length === 0)
-    pushErr(errors, `${path}.promptTemplate`, 'required non-empty string');
+  // Empty is legitimate for non-LLM plugins (transition-router,
+  // kb-retriever) — their descriptors ship an empty template.
+  if (typeof addon.promptTemplate !== 'string')
+    pushErr(errors, `${path}.promptTemplate`, 'required string (may be empty)');
 
   // Per-plugin invariants.
   if (addon.pluginId === 'field-extractor') {

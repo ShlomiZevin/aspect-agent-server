@@ -1,16 +1,18 @@
 /**
  * Brainstorm Alfred — Claude Sonnet 4.6 streaming with tool use.
  *
- * Streams text tokens through an `emit` callback. When the model
- * decides it needs more info than the static project summary
- * provides (e.g. "what did we change last week?"), it calls a tool
- * — currently just `read_change_log`. Tool calls round-trip through
- * the streaming loop without breaking the token stream.
+ * Streams text tokens through an `emit` callback. Alfred sees the
+ * current agent JSON on every turn; when he needs more (change
+ * history, an addon's runtime source), he calls a tool —
+ * `read_change_log` / `read_addon_code`. Tool calls round-trip
+ * through the streaming loop without breaking the token stream.
  *
  * Caller (alfredRoute) handles SSE plumbing; this module owns the
  * LLM interaction and produces the assistant text.
  */
 
+const fs = require('fs');
+const path = require('path');
 const claudeService = require('../../services/llm.claude');
 const { logUsage } = require('../../services/usageLogger');
 const { SYSTEM_PROMPT, buildProjectSummary } = require('./alfredContext');
@@ -25,6 +27,34 @@ const MAX_TOKENS      = 4096;
 const MAX_TOOL_ITERATIONS = 4; // safety: cap recursion so a misbehaving model can't loop forever
 
 // ─── Tool definitions ────────────────────────────────────────────
+
+/**
+ * pluginId → { descriptorPath, sourcePath }. Built once at module load
+ * by scanning builder/addons/*.addon.json — the same files the addon
+ * catalogue and the patch generator read, so the tool automatically
+ * covers every installed plugin. The runtime implementation lives at
+ * builder/plugins/<base>/addon.<base>.js (same basename convention).
+ */
+const ADDON_CODE_PATHS = (() => {
+  const map = {};
+  const addonsDir = path.join(__dirname, '..', '..', 'builder', 'addons');
+  try {
+    for (const f of fs.readdirSync(addonsDir).filter(f => f.endsWith('.addon.json'))) {
+      try {
+        const desc = JSON.parse(fs.readFileSync(path.join(addonsDir, f), 'utf8'));
+        if (!desc.pluginId) continue;
+        const base = f.replace(/\.addon\.json$/, '');
+        map[desc.pluginId] = {
+          descriptorPath: path.join(addonsDir, f),
+          sourcePath: path.join(__dirname, '..', '..', 'builder', 'plugins', base, `addon.${base}.js`),
+        };
+      } catch { /* skip unparseable descriptor */ }
+    }
+  } catch (err) {
+    console.warn('[alfred] failed to scan addon descriptors for read_addon_code:', err.message);
+  }
+  return map;
+})();
 
 const TOOLS = [
   {
@@ -41,6 +71,25 @@ const TOOLS = [
           description: 'Max entries to return. Default 20, max 100.',
         },
       },
+    },
+  },
+  {
+    name: 'read_addon_code',
+    description:
+      'Read an addon plugin\'s full descriptor (defaults) and its server-side runtime ' +
+      'implementation source code. Use when the agent JSON isn\'t enough — e.g. the user ' +
+      'asks exactly HOW an addon behaves at runtime (when it fires, how its output is ' +
+      'parsed, what its config knobs really do). ' +
+      `Available pluginIds: ${Object.keys(ADDON_CODE_PATHS).join(', ') || '(none found)'}.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        pluginId: {
+          type: 'string',
+          description: 'The plugin id, e.g. "field-extractor", "kb-retriever", "talker".',
+        },
+      },
+      required: ['pluginId'],
     },
   },
 ];
@@ -62,6 +111,27 @@ async function runTool(name, input, ctx) {
     const limit = Math.min(Math.max(Number(input?.limit) || 20, 1), 100);
     const rows = await changeLog.listForAgent(ctx.agentId, limit);
     return formatChangeLogForLLM(rows);
+  }
+  if (name === 'read_addon_code') {
+    const pluginId = String(input?.pluginId || '').trim();
+    const paths = ADDON_CODE_PATHS[pluginId];
+    if (!paths) {
+      return `Unknown pluginId "${pluginId}". Available: ${Object.keys(ADDON_CODE_PATHS).join(', ')}.`;
+    }
+    const parts = [];
+    try {
+      parts.push(`## Descriptor (defaults) — ${path.basename(paths.descriptorPath)}`);
+      parts.push('```json\n' + fs.readFileSync(paths.descriptorPath, 'utf8').trim() + '\n```');
+    } catch (err) {
+      parts.push(`(descriptor unreadable: ${err.message})`);
+    }
+    try {
+      parts.push(`## Runtime implementation — ${path.basename(paths.sourcePath)}`);
+      parts.push('```js\n' + fs.readFileSync(paths.sourcePath, 'utf8').trim() + '\n```');
+    } catch (err) {
+      parts.push(`(runtime source unreadable: ${err.message})`);
+    }
+    return parts.join('\n\n');
   }
   return `Unknown tool: ${name}`;
 }

@@ -10,6 +10,8 @@
     "*":  "enum bible — aggregate-by-section across every value of an enum, OR live-value lookup for an enum-typed field",
     "%":  "summary (whole section or single summarizer slot — written by offline-lane Summarizer addons)",
     "+":  "snippet (agent-level reusable prompt content, optionally gated by an AddonFilter)",
+    "&":  "tags (fields grouped by tag — schema block, current values, or bare names)",
+    "~":  "kb retrieval (the named slot a KB Retriever addon wrote this turn)",
     "{{": "unified picker — every placeholder from every category in one list. Use when you don't remember which sigil opens what.",
     "/":  "alias for `{{` — same unified picker, single-keystroke trigger. Common pattern in command-bar UIs."
   },
@@ -177,6 +179,14 @@
       "render": "INLINE comma-separated bare field names tagged NAME — the variables themselves, no values. Useful when referencing the set of variables in prose.",
       "example": "Watch: {{tag:emotional_signals:names}}.",
       "picker_group": "Tags"
+    },
+    {
+      "token": "{{kb:NAME}}",
+      "category": "value",
+      "trigger": "~",
+      "render": "The text a KB Retriever addon wrote to its named slot (`config.domain`) earlier this turn — retrieved KB chunks (or the retriever's configured empty-sentinel). Never blank: a missing/empty slot renders a generic 'no relevant information' sentinel so prompts like 'answer only from {{kb:docs}}' stay coherent. Ephemeral — recomputed every turn, never persisted.",
+      "example": "Answer using only this knowledge:\n{{kb:docs}}",
+      "picker_group": "KB retrieval"
     }
   ],
   "extractor_only": [
