@@ -4,6 +4,10 @@ package-lock.json
 .env
 .env.production*
 .env.cloudsql
+# Catch every other local env variant (backups, dumps) — all hold secrets
+.env.*
+!.env.*.template
+!.env.*.example
 node_modules/
 *.log
 .DS_Store

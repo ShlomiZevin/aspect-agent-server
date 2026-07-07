@@ -133,6 +133,11 @@ app.use('/api/builder', require('./builder/routes/projectsRoute'));
 // version: 'viewing'). See docs/guides/BUILDER_V2_RUNTIME_PLAN.md.
 app.use('/api/agents', require('./builder/routes/runtimeRoute'));
 
+// ─── Aspect BI ─────────────────────────────────────────────────────
+// Standalone Qlik-style BI layer over customer data schemas (hypertoy
+// first). Independent of the agent/crew system — see bi/routes/bi.routes.js.
+app.use('/api/bi', require('./bi/routes/bi.routes'));
+
 // ========== MODELS REGISTRY ==========
 // Single source of truth for the LLM models the platform supports.
 // Server-hardcoded today (services/models.service.js); the client
