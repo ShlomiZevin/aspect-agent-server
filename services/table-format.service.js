@@ -27,6 +27,13 @@ const MONEY_KEY_RE = /sale|revenue|cost|profit|price|amount|value|vat|ils/i;
 // it overrides the money heuristic below.
 const PERCENT_KEY_RE = /pct|percent/i;
 
+// Statistical columns (e.g. "revenue_z_score", "revenue_deviation",
+// "qty_stddev") are unitless/derived numbers, not currency, even though their
+// name embeds a money word like "revenue" — a column named "revenue_z_score"
+// is a z-score, not an amount of money. Checked alongside PERCENT_KEY_RE so
+// neither the ₪ prefix nor thousands-only-integer formatting misfires on them.
+const STATS_KEY_RE = /z[_-]?score|deviation|std[_-]?dev|variance/i;
+
 // Numeric-LOOKING columns that are actually identifiers/codes/date-parts, not
 // quantities — must never get thousands separators or be summed (a SKU like
 // "44471" must render as "44471", not "44,471", and summing part numbers is
@@ -113,6 +120,7 @@ function buildDisplayColumns(columns, rows, hebrew = false) {
       decimals = allIntegers ? 0 : 2;
     }
     const isPercent = allNumeric && PERCENT_KEY_RE.test(key);
+    const isStat = allNumeric && STATS_KEY_RE.test(key);
     return {
       key,
       // Semantic type (isIdLike/allNumeric/isMoney/isPercent) is always decided
@@ -120,7 +128,7 @@ function buildDisplayColumns(columns, rows, hebrew = false) {
       // so formatting stays correct even when the label is translated below.
       label: prettifyLabel(key, hebrew),
       decimals,                                    // null = plain text / identifier column
-      isMoney: allNumeric && !isPercent && MONEY_KEY_RE.test(key),
+      isMoney: allNumeric && !isPercent && !isStat && MONEY_KEY_RE.test(key),
       isPercent,
     };
   });
