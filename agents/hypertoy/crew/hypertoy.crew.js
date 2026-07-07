@@ -131,10 +131,14 @@ When a user asks a business question:
 ## SHOWING TABLES AND DATA
 
 - NEVER ask the user to confirm before fetching or listing data ("do you want me to pull all of them?", "shall I bring the full list?"). Just call \`fetch_hypertoy_data\` and answer. Acting is always better than asking permission.
-- When the user asks for a table, a list, "all the rows", or "everything", render EVERY row returned in the tool result's \`data\` field as a clean markdown table. Do NOT cap it to a sample of the first few rows, and NEVER reply with only a few rows followed by "...and many more" — show them all (up to the 100-row result limit).
-- In ADDITION, the user is always shown a separate sortable/filterable copy of the full table with a one-click Excel export (rendered automatically below your reply) — you can mention it for sorting/filtering/export, but it does NOT replace listing the rows in your answer when they asked for the table.
-- For pure aggregate/summary questions (totals, averages, top-N, trends), just give the numbers and insight — no need to list raw rows.
-- Each \`fetch_hypertoy_data\` result currently returns up to 100 rows; if the full set is larger, say so and offer to narrow (tighter date range, top-N).
+- **This also applies when the question is complex or has an ambiguous time period/comparison.** For "which branches are at risk of missing their monthly target", "which club drove the biggest growth this month vs last", "find anomalies vs the recent average", etc. — do NOT ask the user to pick the exact comparison period or scope first. Pick a sensible default yourself (e.g. "this month vs the immediately preceding month", "last 7 days vs the average of the 8 weeks before that"), call \`fetch_hypertoy_data\` with that framing, answer with the real data, and only THEN mention what default you used and offer to redo it with a different period if asked. A confident data-backed answer with a stated assumption is always better than a question back to the user. Do NOT invent a specific numeric risk/anomaly threshold (e.g. "below 80% counts as at risk") — that is a business decision only Shlomi/the client can set. Instead compute the actual pace-adjusted shortfall (see below) and rank/sort by it, describing magnitude in real terms ("X% behind pace", "₪Y short"), not against a threshold you made up.
+- **"At risk of missing a monthly target" mid-month is a PACE comparison, not a flat percentage of the full target.** If today is day 7 of a 31-day month, a branch that reached 10% of its full monthly target is NOT necessarily behind — compare it to the PRORATED target for elapsed days (target × days-elapsed ÷ days-in-month), not the full month's target. Comparing month-to-date actuals against the full month's target will flag nearly every branch as "failing" for the first three weeks of any month — that is a methodology bug, not a real finding.
+- When comparing "this month" to "last month" (or any in-progress current period to a completed prior one), if today is not the last day of the month, the current period is PARTIAL — comparing its month-to-date total against the prior period's FULL total will make almost everything look like a decline, which is misleading. Either compare the equivalent day-of-month range in both periods (e.g. first 7 days of this month vs first 7 days of last month), or say explicitly that the current month is still in progress and these are partial-month figures.
+- **NEVER claim a table/export exists unless YOU JUST called \`fetch_hypertoy_data\` THIS turn and got a result back.** If you (or an earlier turn) asked the user a clarifying question ("do you want more fields too?") and they reply "yes" / "all" / "sure" / anything short, that reply is NOT data — you MUST call \`fetch_hypertoy_data\` again in this turn with the clarified question before saying anything about a table. Saying "the full table is shown below" without a fresh tool call in the same turn is a hallucination — there will be no table, and the user will see a broken promise.
+- The tool result's \`summary\` field already contains a FULLY FORMATTED markdown table — either the COMPLETE result (20 rows or fewer) or a 20-row preview (when there are more). When the user asked for a table, a list, "all the rows", or "everything", paste that table into your reply EXACTLY as given. Do NOT retype it, reorder its columns, translate its headers, or reformat its numbers yourself — it must look identical to the table/export the user can open below; any mismatch is a bug.
+- If the result has MORE than 20 rows, the user is automatically shown a separate paginated table with a full Excel export of every row (not just the 20 in your preview), rendered below your reply — mention it explicitly ("see the full table below for all N rows"). For 20 rows or fewer there is no separate viewer — the table you pasted already IS the complete data.
+- For pure aggregate/summary questions (totals, averages, top-N, trends), you may skip the table and just give the numbers and insight.
+- \`fetch_hypertoy_data\` returns the complete matching result set (practically unlimited); it is not artificially truncated.
 - ALWAYS pass a short \`table_title\` describing that specific table, written in the SAME language the user is using (Hebrew if they wrote Hebrew). It is shown as the heading of the full-data table the user can open. When you make several \`fetch_hypertoy_data\` calls in one turn, give each its own distinct title.
 
 ## EXAMPLES — pass a CLEAN business-level question
@@ -157,8 +161,6 @@ User: "אילו סניפים מובילים במכירות?"
       // already uses for its strongest conversational crews) for better answers
       // and less hallucination. The SQL is generated separately by Claude Sonnet.
       model: process.env.HYPERTOY_CREW_MODEL || 'gpt-5-chat-latest',
-      // Higher cap so a full table of up to 100 rows can be rendered without the
-      // model running out of output budget and truncating the list mid-table.
       maxTokens: 8192,
       fieldsToCollect: [],
       transitionTo: null,
@@ -192,12 +194,12 @@ User: "אילו סניפים מובילים במכירות?"
 
   async _handleDataFetch({ question, table_title }) {
     const thinkingService = require('../../../services/thinking.service');
+    const tableFormatService = require('../../../services/table-format.service');
 
     try {
       console.log('Hyper Toy data fetch: "' + question + '"');
 
       const result = await dataQueryService.queryByQuestion(question, 'hypertoy', {
-        maxRows: 100,
         agentName: 'hypertoy',
         llmAgentName: this._agentName,
         conversationId: this._externalConversationId,
@@ -230,18 +232,7 @@ User: "אילו סניפים מובילים במכירות?"
         };
       }
 
-      return {
-        success: true,
-        question,
-        tableTitle: table_title || null,
-        sql: result.sql,
-        explanation: result.explanation,
-        confidence: result.confidence,
-        rowCount: result.rowCount,
-        data: result.data,
-        columns: result.columns,
-        summary: this._summarizeData(result.data, result.columns),
-      };
+      return tableFormatService.buildFetchResult({ question, tableTitle: table_title, schema: 'hypertoy', result });
     } catch (err) {
       console.error('Hyper Toy data fetch failed:', err);
       return {
@@ -250,38 +241,6 @@ User: "אילו סניפים מובילים במכירות?"
         suggestion: 'There was an error fetching the data. Please try a different question.',
       };
     }
-  }
-
-  _summarizeData(data, columns) {
-    if (!data || data.length === 0) return 'No data found.';
-
-    // NOTE: the full result set is already returned to the model in the `data`
-    // field of the tool result. This summary must NOT re-dump a truncated slice
-    // of rows — doing that used to prime the model to answer with only the first
-    // ~20 rows even when the user asked for the whole table. Instead we state the
-    // row count, point the model at `data`, and give cheap numeric totals so
-    // summary-style questions don't require re-reading every row.
-    let summary = 'Found ' + data.length + ' record' + (data.length === 1 ? '' : 's') + '.\n';
-    summary += 'The COMPLETE result set (all ' + data.length + ' rows) is in the `data` field of this tool result. '
-      + 'If the user asked for a table, a list, or "all the rows", render EVERY one of these ' + data.length + ' rows — '
-      + 'do not show only a sample or truncate. For aggregate/summary questions, lead with the key numbers instead.\n';
-
-    const numericCols = Object.keys(data[0] || {}).filter(k => {
-      const v = data[0][k];
-      return typeof v === 'number' || (v != null && !isNaN(parseFloat(v)) && isFinite(v));
-    });
-    if (numericCols.length > 0) {
-      summary += '\nNumeric totals across all ' + data.length + ' rows:\n';
-      for (const col of numericCols.slice(0, 5)) {
-        const vals = data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
-        if (vals.length > 0) {
-          const sum = vals.reduce((a, b) => a + b, 0);
-          summary += '- ' + col + ': Sum=' + sum.toLocaleString() + ', Avg=' + (sum / vals.length).toFixed(2) + '\n';
-        }
-      }
-    }
-
-    return summary;
   }
 }
 

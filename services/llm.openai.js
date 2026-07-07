@@ -3,6 +3,19 @@ const functionRegistry = require('./function-registry');
 const conversationService = require('./conversation.service');
 const providerConfigService = require('./provider-config.service');
 
+// Some tool handlers (BI crews' fetch_*_data — see table-format.service.js)
+// attach a `_fullData` field carrying the COMPLETE row set purely so server.js
+// can build the data_table popup/export step from the SAME raw result object.
+// That field must never reach the model itself: a large result (thousands of
+// rows) serialized into the tool output overflows the model's context and
+// causes the call to fail outright. Strip it right before stringifying for
+// the API; the unstripped object is still yielded as-is for the SSE consumer.
+function stripInternalFields(result) {
+  if (!result || typeof result !== 'object' || result._fullData === undefined) return result;
+  const { _fullData, ...rest } = result;
+  return rest;
+}
+
 /**
  * OpenAI service using Responses API with Prompt ID
  * Migrated from Assistants API (deprecated August 2026)
@@ -197,7 +210,7 @@ class OpenAIService {
               toolResults.push({
                 type: 'function_call_output',
                 call_id: funcItem.call_id,
-                output: JSON.stringify(result)
+                output: JSON.stringify(stripInternalFields(result))
               });
             } catch (error) {
               console.error(`❌ Function call failed: ${funcItem.name}`, error.message);
@@ -364,7 +377,7 @@ class OpenAIService {
               toolResults.push({
                 type: 'function_call_output',
                 call_id: funcCall.call_id,
-                output: JSON.stringify(result)
+                output: JSON.stringify(stripInternalFields(result))
               });
             } catch (error) {
               console.error(`❌ Function call failed: ${funcCall.name}`, error.message);
@@ -662,7 +675,7 @@ class OpenAIService {
               currentInput.push({
                 type: 'function_call_output',
                 call_id: funcCall.call_id,
-                output: JSON.stringify(result)
+                output: JSON.stringify(stripInternalFields(result))
               });
             } catch (error) {
               console.error(`❌ Function call failed: ${funcCall.name}`, error.message);
@@ -878,7 +891,7 @@ class OpenAIService {
               toolResults.push({
                 type: 'function_call_output',
                 call_id: funcCall.call_id,
-                output: JSON.stringify(result)
+                output: JSON.stringify(stripInternalFields(result))
               });
             } catch (error) {
               console.error(`❌ Function call failed: ${funcCall.name}`, error.message);

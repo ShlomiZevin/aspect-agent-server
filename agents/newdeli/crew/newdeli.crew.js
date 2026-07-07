@@ -115,15 +115,17 @@ User: "מה שיא שעת הזמן?"
 
 ## TABLES & FULL DATA
 
-- When the user asks for a table, a list, or "top N", show only a PREVIEW in your text answer — at most the first ~15 rows — together with your insights. Do NOT paste the entire result set as text.
-- The COMPLETE result set is automatically shown to the user in a separate sortable/filterable table with one-click Excel export, rendered right below your reply. Tell the user the full table (all rows) is there to open, sort, filter and export.
-- For pure aggregate/summary questions (totals, averages, a single top-N metric), just give the numbers and insight — no row list.
-- Each \`fetch_newdeli_data\` result returns up to 100 rows; if the full set is larger, say so and offer to narrow (tighter date range, top-N).
-- ALWAYS pass a short \`table_title\` describing that specific table, in the SAME language the user used (Hebrew if they wrote Hebrew). It is shown as the heading of the full-data table the user can open. Give each table its own distinct title when you make several calls in one turn.`,
+- The tool result's \`summary\` field already contains a FULLY FORMATTED markdown table — either the COMPLETE result (20 rows or fewer) or a 20-row preview (when there are more). When the user asks for a table, a list, or "top N", paste that table into your reply EXACTLY as given. Do NOT retype it, reorder its columns, translate its headers, or reformat its numbers yourself — it must look identical to the table/export the user can open below; any mismatch is a bug.
+- If the result has MORE than 20 rows, the user is automatically shown a separate paginated table with a full Excel export of every row (not just the 20 in your preview), rendered right below your reply. Tell the user the full table (all rows) is there to open, sort/paginate and export. For 20 rows or fewer there is no separate viewer — the table you pasted already IS the complete data.
+- For pure aggregate/summary questions (totals, averages, a single top-N metric), you may skip the table and just give the numbers and insight.
+- \`fetch_newdeli_data\` returns the complete matching result set (practically unlimited, not row-capped).
+- ALWAYS pass a short \`table_title\` describing that specific table, in the SAME language the user used (Hebrew if they wrote Hebrew). It is shown as the heading of the full-data table the user can open. Give each table its own distinct title when you make several calls in one turn.
+- **NEVER claim a table/export exists unless YOU JUST called \`fetch_newdeli_data\` THIS turn and got a result back.** If you (or an earlier turn) asked the user a clarifying question and they reply "yes" / "all" / "sure" / anything short, that reply is NOT data — call \`fetch_newdeli_data\` again in this turn with the clarified question before saying anything about a table. Saying "the full table is shown below" without a fresh tool call in the same turn is a hallucination.`,
 
-      model: process.env.NEWDELI_CREW_MODEL || 'gpt-4o',
-      // Higher cap so a full table of up to 100 rows can be rendered without the
-      // model running out of output budget and truncating the list mid-table.
+      // gpt-4o unreliably followed the "paste the formatted table verbatim"
+      // instruction — gpt-5-chat-latest complies consistently (same switch
+      // already proven out for hypertoy, see project memory).
+      model: process.env.NEWDELI_CREW_MODEL || 'gpt-5-chat-latest',
       maxTokens: 8192,
       fieldsToCollect: [],
       transitionTo: null,
@@ -157,12 +159,12 @@ User: "מה שיא שעת הזמן?"
 
   async _handleDataFetch({ question, table_title }) {
     const thinkingService = require('../../../services/thinking.service');
+    const tableFormatService = require('../../../services/table-format.service');
 
     try {
       console.log('New Deli data fetch: "' + question + '"');
 
       const result = await dataQueryService.queryByQuestion(question, 'newdeli', {
-        maxRows: 100,
         agentName: 'newdeli',
         llmAgentName: this._agentName,
         conversationId: this._externalConversationId,
@@ -195,18 +197,7 @@ User: "מה שיא שעת הזמן?"
         };
       }
 
-      return {
-        success: true,
-        question,
-        tableTitle: table_title || null,
-        sql: result.sql,
-        explanation: result.explanation,
-        confidence: result.confidence,
-        rowCount: result.rowCount,
-        data: result.data,
-        columns: result.columns,
-        summary: this._summarizeData(result.data, result.columns),
-      };
+      return tableFormatService.buildFetchResult({ question, tableTitle: table_title, schema: 'newdeli', result });
     } catch (err) {
       console.error('New Deli data fetch failed:', err);
       return {
@@ -215,37 +206,6 @@ User: "מה שיא שעת הזמן?"
         suggestion: 'There was an error fetching the data. Please try a different question.',
       };
     }
-  }
-
-  _summarizeData(data, columns) {
-    if (!data || data.length === 0) return 'No data found.';
-
-    // NOTE: the full result set is already returned to the model in the `data`
-    // field of the tool result. This summary must NOT re-dump a truncated slice
-    // of rows — doing that primes the model to answer with only the first ~20
-    // rows even when the user asked for the whole table. Instead we state the
-    // row count, point the model at `data`, and give cheap numeric totals.
-    let summary = 'Found ' + data.length + ' record' + (data.length === 1 ? '' : 's') + '.\n';
-    summary += 'The COMPLETE result set (all ' + data.length + ' rows) is in the `data` field AND is shown to the user in a downloadable sortable table below your reply. '
-      + 'In your text answer show only a PREVIEW — at most the first ~15 rows — plus insights; do NOT paste all rows. '
-      + 'For aggregate/summary questions, lead with the key numbers instead.\n';
-
-    const numericCols = Object.keys(data[0] || {}).filter(k => {
-      const v = data[0][k];
-      return typeof v === 'number' || (v != null && !isNaN(parseFloat(v)) && isFinite(v));
-    });
-    if (numericCols.length > 0) {
-      summary += '\nNumeric totals across all ' + data.length + ' rows:\n';
-      for (const col of numericCols.slice(0, 5)) {
-        const vals = data.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
-        if (vals.length > 0) {
-          const sum = vals.reduce((a, b) => a + b, 0);
-          summary += '- ' + col + ': Sum=' + sum.toLocaleString() + ', Avg=' + (sum / vals.length).toFixed(2) + '\n';
-        }
-      }
-    }
-
-    return summary;
   }
 }
 

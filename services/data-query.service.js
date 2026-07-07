@@ -33,7 +33,12 @@ class DataQueryService {
    * @param {string} question - Natural language question
    * @param {string} customerSchema - Customer schema name (e.g., 'zer4u')
    * @param {Object} options
-   * @param {number} options.maxRows - Hard row cap applied after generation (default: 100)
+   * @param {number} options.maxRows - Safety-valve row cap applied only when the generated SQL
+   *   has no LIMIT of its own (default: 20000). This is not a business limit — callers should not
+   *   need to pass a low value just to keep chat replies short; that's the crew's job when it
+   *   decides how much of `data` to write out in prose. The full `data` array (up to this cap)
+   *   always flows through to the data_table viewer/Excel export, so that surface never truncates
+   *   in practice.
    * @param {number} options.timeout - Statement timeout in ms (default: QUERY_TIMEOUT_MS)
    * @param {string} options.agentName - Schema-level agent identifier for slow-query logging (e.g., 'zer4u')
    * @param {string} options.llmAgentName - Canonical agent name for LLM usage logging (e.g., 'Zer4U' from agent config)
@@ -43,7 +48,7 @@ class DataQueryService {
    */
   async queryByQuestion(question, customerSchema, options = {}) {
     const {
-      maxRows = 100,
+      maxRows = 1000000,
       timeout = QUERY_TIMEOUT_MS,
       agentName = customerSchema,
       llmAgentName,

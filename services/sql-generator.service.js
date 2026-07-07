@@ -123,7 +123,7 @@ Generate a PostgreSQL query that answers the user's question based on the schema
 5. **Safety**: Never generate DROP, DELETE, UPDATE, INSERT, or other destructive operations
 6. **Column Names**: Column names with spaces or Hebrew characters MUST be quoted with double quotes
 7. **Aggregations**: Use appropriate GROUP BY, ORDER BY, and aggregate functions
-8. **Limits**: Add LIMIT clause for queries that might return many rows (default: 100)
+8. **Limits**: Add a LIMIT ONLY when the user explicitly asked for a specific count ("top 10", "the 5 highest", "first 20"). For "all", "every", "the full list", "don't limit", or any plain unqualified listing question — DO NOT add a LIMIT yourself, no matter how large the table is (not even a "safety" LIMIT 500/1000/5000). This applies even to the biggest tables listed below. The application enforces its own upstream safety cap after your query runs, so row count is never your problem to solve — a query with no LIMIT clause at all is the CORRECT answer for these questions, not a risk to protect against.
 ${this._getSchemaSpecificRules(schemaName)}
 ${this._buildAntiPatternsSection(antiPatterns)}
 ## Output Format
@@ -181,6 +181,17 @@ A bare \`SELECT COUNT(*) FROM hypertoy.facts\` returns the mixed count (sales + 
 ### RULE 3.7 — Franchisee attribution
 The columns \`facts.franchisee_code\` and \`facts.franchisee_name\` are EMPTY (NULL) in this dataset — do NOT GROUP BY them. Sister-brand and franchisee attribution is encoded in \`facts.register_name\` (קופה — e.g. 'קופת סניף פיראט אילת') and the corresponding \`facts.warehouse_code\` → \`warehouses.warehouse_name\` (e.g. 'פיראט סינימה'). For franchisee questions, group by \`warehouse_code\` joined to \`warehouses.warehouse_name\` and detect sister brand by string match on the warehouse name (e.g. \`warehouse_name LIKE '%פיראט%'\`).
 
+### RULE 3.8 — ANY "this month vs last month" comparison mid-month needs PACE-adjustment, not raw totals
+This applies broadly — target-vs-actual, WOLT growth, club growth, any "this month compared to last month" question — not just targets. If today is not the last day of the month, "this month" is a PARTIAL period (e.g. 7 of 31 days) while "last month" in the data is a COMPLETE period. Comparing a partial-month total against a full-month total will show a "decline" almost everywhere even when the branch/metric is doing FINE — that is a methodology artifact, not a real finding, and answering "no growth anywhere" from that comparison is WRONG.
+Fix it one of two ways:
+1. **Equivalent-days comparison (preferred for "vs last month" questions):** compare the SAME day-of-month range in both periods — e.g. \`transaction_date BETWEEN DATE_TRUNC('month', CURRENT_DATE) AND CURRENT_DATE\` (this month to date) vs \`transaction_date BETWEEN DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month' AND DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1 month' + (CURRENT_DATE - DATE_TRUNC('month', CURRENT_DATE))\` (the first N days of last month, same N).
+2. **Proration (for target vs actual):**
+\`\`\`sql
+sales_target * EXTRACT(DAY FROM CURRENT_DATE)
+  / EXTRACT(DAY FROM (DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month - 1 day')) AS prorated_target
+\`\`\`
+Do NOT invent an arbitrary cutoff like "below 80% of the full target" — that is a business decision for the client to set, not something to assume. Rank/sort by the pace gap and let the numbers speak for themselves. If a fair (equivalent-days or prorated) comparison genuinely shows no growth anywhere, that's a real answer — but reaching it via a partial-vs-full-month comparison is not.
+
 ### RULE 4 — JOINs
 - Products: \`JOIN hypertoy.products p ON f.part = p.part\`
 - Warehouses: \`JOIN hypertoy.warehouses w ON f.warehouse_code = w.warehouse_code\`
@@ -193,6 +204,12 @@ The columns \`facts.franchisee_code\` and \`facts.franchisee_name\` are EMPTY (N
 - When the user filters by a LATIN-script payment method, the plain spelling matches NOTHING. Filter by the numeric \`payment_type_code\` instead (preferred), or match the reversed spelling.
 - Known codes: 'פרקסל' (Praxell) = 30, "BUYME" = 45, 'מזומן' (cash) = 1. For other Latin names, prefer \`payment_type_code\`.
 - Always also SELECT \`payment_type_code\` and \`payment_type\` so the result is unambiguous.
+
+### RULE 4.6 — "מועדון" has TWO distinct meanings here — never use \`customer_id IS NOT NULL\` for either
+NEVER use \`facts.customer_id IS NOT NULL\` as a stand-in for loyalty/club membership — virtually every row in \`facts\` already has a non-null \`customer_id\`, so that condition is always true and produces a meaningless, degenerate 0%-or-100%-everywhere result. There are two different questions that both use the word "מועדון" — pick the right one:
+1. **"Which מועדון/club drove growth" — a specific named partner club, categorical** (e.g. "פרקסל" (Praxell), "הייטקזון" (Hi-TechZone)): this means \`hypertoy.payments.payment_type\`. JOIN \`facts\` to \`payments\` on \`transaction_id\`, GROUP BY \`payment_type\` (and \`payment_type_code\` per RULE 4.5, since some names are character-reversed). "Which club drove the most growth" = compare SUM(sales) per payment_type between two periods, per warehouse/branch.
+2. **"לקוחות מועדון" / "club member conversion rate" — is a customer a loyalty-program member at all** (not which partner club): use \`facts.loyalty_count > 0\` on the transaction as the loyalty-engagement signal. "Club conversion rate at a branch" = COUNT(transactions WHERE loyalty_count > 0) ÷ COUNT(all transactions) at that branch, or the equivalent on revenue.
+If genuinely unsure which of the two the user means, prefer whichever produces a non-degenerate (varying, not flat 0%/100% everywhere) result — a flat result across every branch is itself a signal you picked the wrong field, so try the other one before answering.
 
 ### RULE 5 — Profit / margin metrics
 - Profit fields are already calculated: \`profit_ex_vat\`, \`profit_inc_vat\`
@@ -393,8 +410,8 @@ Unlike Hyper Toy, \`thestock.facts\` does NOT carry cost or profit columns. To c
 
 **CRITICAL — always filter out 0/NULL on BOTH sides being compared.** Products sold by only one brand have 0 cost on the other side, producing meaningless "gaps". For "biggest cost gaps Stock vs Hyper Toy": \`WHERE standard_cost_ils > 0 AND standard_cost_ils_hypertoy > 0\`.
 
-### RULE 7 — Always LIMIT on large tables
-\`facts\` (40M), \`payments\` (9.8M), \`customers\` (1.07M), \`inventory_c100\` (901K) must always be aggregated or LIMITed.
+### RULE 7 — Aggregate or LIMIT on large tables, UNLESS the user explicitly asked for "all"/"every"/"the full list"
+\`facts\` (40M), \`payments\` (9.8M), \`customers\` (1.07M), \`inventory_c100\` (901K) are huge — for open-ended analytical questions (revenue, trends, breakdowns) aggregate or add your own LIMIT so you don't scan the whole table row-by-row for no reason. But if the user explicitly asked to list all/every row (e.g. "list all customers", "give me the full customer list") — do NOT add a LIMIT; see the global Limits rule above, it overrides this one for that case.
 
 ### RULE 8 — Pre-aggregate before JOIN for top-N queries (CRITICAL)
 For any "top-N products / stores / cashiers / customers" question, do NOT JOIN \`facts\` to a dimension table inside the GROUP BY. The 15-second query timeout will fire because the JOIN materializes millions of intermediate rows.

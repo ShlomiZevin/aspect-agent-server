@@ -10,7 +10,16 @@
  */
 
 require('dotenv').config();
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+// Postgres DATE columns (OID 1082) are parsed by `pg` into JS Date objects
+// anchored to the SERVER's local timezone (e.g. local midnight). Formatting
+// that back out via .toISOString()/UTC shifts the calendar date by a day in
+// any non-UTC timezone — a DATE column has no time-of-day to begin with, so
+// there's no "correct" instant to construct. Keep it as the plain
+// "YYYY-MM-DD" string Postgres already sends over the wire; every consumer
+// (chat table, popup, Excel export) just uses the string as-is.
+types.setTypeParser(1082, (val) => val);
 
 let _pool = null;
 
