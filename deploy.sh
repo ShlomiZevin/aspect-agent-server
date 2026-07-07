@@ -83,7 +83,7 @@ gcloud run deploy $SERVICE_NAME \
   --min-instances 1 \
   --max-instances 3 \
   --cpu 2 \
-  --memory 2Gi \
+  --memory 4Gi \
   --timeout 3600 \
   --no-cpu-throttling \
   --set-cloudsql-instances $CLOUD_SQL_INSTANCES \
