@@ -3067,6 +3067,14 @@ app.post('/api/data-query/rerun', async (req, res) => {
 // (observed in prod: 500s with requestSize ~29MB and "Response size was too
 // large" warnings). Re-querying server-side keeps this endpoint's payload
 // sizes small in both directions regardless of row count.
+//
+// NOTE: for the very largest tables (100k+ rows) the resulting .xlsx buffer
+// can still hit the same response-size ceiling on the way back out — the
+// file itself is one buffered, non-chunked HTTP response. Deliberately NOT
+// capped/truncated here: the client always gets the complete result or a
+// clear failure, never a silently partial file. If this becomes a real
+// problem for a specific huge table, revisit with the user rather than
+// truncating silently.
 app.post('/api/data-query/export-excel', async (req, res) => {
   try {
     const { schema, sql, displayColumns, title } = req.body || {};
