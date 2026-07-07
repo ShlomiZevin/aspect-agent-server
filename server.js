@@ -2025,6 +2025,19 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
           // when the result is JSON.stringified for the model's tool output).
           // Only created when bigger than the chat preview — small results are
           // shown in full in the chat text itself, no popup needed for those.
+          //
+          // IMPORTANT: never put the actual row array in this step's metadata.
+          // addStep() fires sendCallback() synchronously, i.e. it writes this
+          // payload straight onto the live SSE response. For large tables
+          // (100k+ rows) that single chunk is big enough that Cloud Run/GFE
+          // truncates the response (observed in prod logs: "Response size was
+          // too large" / "Truncated response body... implies the request timed
+          // out or the app exited before the response was finished"), which
+          // kills the whole turn — the client gets a 500 and an empty reply.
+          // Only sql/schema/columns go out live; the popup always re-fetches
+          // the rows on demand via POST /api/data-query/rerun (same path
+          // already used for reopened historical conversations), so this is a
+          // small, constant-size event regardless of row count.
           if (chunk.type === 'function_result' && Array.isArray(chunk.result?._fullData) && chunk.result._fullData.length > 0) {
             const r = chunk.result;
             const rowCount = r.rowCount ?? r._fullData.length;
@@ -2037,7 +2050,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
                 conversationId,
                 'data_table',
                 'Data table: ' + rowCount + ' rows',
-                { columns: r.columns, displayColumns, rows: r._fullData, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema }
+                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema }
               );
             }
           }
@@ -2312,7 +2325,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
                 conversationId,
                 'data_table',
                 'Data table: ' + rowCount + ' rows',
-                { columns: r.columns, displayColumns, rows: r._fullData, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema }
+                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema }
               );
             }
           }
