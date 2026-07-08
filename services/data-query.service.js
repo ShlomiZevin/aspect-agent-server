@@ -82,15 +82,19 @@ class DataQueryService {
         sql = generated.sql;
         explanation = generated.explanation;
         confidence = generated.confidence;
+        // Log the raw SQL BEFORE validation — otherwise a validation rejection
+        // (e.g. the forbidden-keyword guard) leaves no trace of what was
+        // actually generated, in either the console or the slow-query DB row,
+        // making false positives there un-debuggable after the fact.
+        console.log(`   [attempt ${attempt}] Generated SQL (confidence: ${confidence}): ${sql}`);
         // Safety guard: sql-generator validates too, but enforce here as the last line of defence
         this._validateSQL(sql);
         // Ensure the query can't return more rows than the caller allows
         sql = this._enforceLimit(sql, maxRows);
-        console.log(`   [attempt ${attempt}] Generated SQL (confidence: ${confidence}): ${sql}`);
       } catch (error) {
         const duration = Date.now() - startTime;
         slowQueryService.logSlowQuery({
-          agentName, schemaName: customerSchema, question, sql: '',
+          agentName, schemaName: customerSchema, question, sql: sql ?? '',
           durationMs: duration, queryType: 'error', errorMessage: error.message,
         }).catch(() => {});
         return { error: true, timeout: false, message: error.message, sql: null, explanation: null, confidence: null, data: [], rowCount: 0 };
