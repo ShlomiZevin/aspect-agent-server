@@ -215,6 +215,17 @@ Include the raw values, the deviation, the z_score, and the pct_change in the re
 - When the user filters by a LATIN-script payment method, the plain spelling matches NOTHING. Filter by the numeric \`payment_type_code\` instead (preferred), or match the reversed spelling.
 - Known codes: 'פרקסל' (Praxell) = 30, "BUYME" = 45, 'מזומן' (cash) = 1. For other Latin names, prefer \`payment_type_code\`.
 - Always also SELECT \`payment_type_code\` and \`payment_type\` so the result is unambiguous.
+- For DISPLAY, don't just pass the raw \`payment_type\` through — the reversed spelling looks broken/unprofessional in a client-facing answer. Un-reverse the known bad codes with a CASE expression, e.g.:
+\`\`\`sql
+CASE payment_type_code
+  WHEN '17' THEN 'IS Mastercard'
+  WHEN '18' THEN 'IS Visa Cal'
+  WHEN '45' THEN 'BUYME'
+  WHEN '47' THEN 'PowerCard'
+  ELSE payment_type
+END AS payment_type
+\`\`\`
+(codes 10/11/13/29/30/31/32/33/41/42/44/48/49/555/etc. and Hebrew names are already correct as stored — do not reverse those.)
 
 ### RULE 4.6 — "מועדון" has TWO distinct meanings here — never use \`customer_id IS NOT NULL\` for either
 NEVER use \`facts.customer_id IS NOT NULL\` as a stand-in for loyalty/club membership — virtually every row in \`facts\` already has a non-null \`customer_id\`, so that condition is always true and produces a meaningless, degenerate 0%-or-100%-everywhere result. There are two different questions that both use the word "מועדון" — pick the right one:
