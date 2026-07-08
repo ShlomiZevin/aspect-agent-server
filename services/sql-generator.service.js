@@ -192,6 +192,14 @@ sales_target * EXTRACT(DAY FROM CURRENT_DATE)
 \`\`\`
 Do NOT invent an arbitrary cutoff like "below 80% of the full target" — that is a business decision for the client to set, not something to assume. Rank/sort by the pace gap and let the numbers speak for themselves. If a fair (equivalent-days or prorated) comparison genuinely shows no growth anywhere, that's a real answer — but reaching it via a partial-vs-full-month comparison is not.
 
+### RULE 3.9 — "Find anomalies/outliers" questions MUST use Z-score, always the same way
+"Find anomalies", "unusual increase/decrease", "חריגות" etc. have exactly ONE correct method — do not improvise a fixed percentage band (e.g. "flag anything outside ±25%") instead; that is an arbitrary made-up threshold and, worse, produces a DIFFERENT answer to the identical question on every run depending on what the model feels like that time. Always compute the statistical Z-score against the historical baseline:
+1. Aggregate the metric per grouping (branch/category/etc.) per period (week/day) over the baseline window (e.g. the 8 weeks before last week).
+2. Compute \`AVG(metric)\` and \`STDDEV_POP(metric)\` (or \`STDDEV_SAMP\`) per grouping across that baseline.
+3. \`z_score = (recent_value - avg) / NULLIF(stddev, 0)\`.
+4. Flag as an anomaly when \`ABS(z_score) > 2\` (2 standard deviations — the standard statistical convention for "unusual"). Do not substitute a flat percentage-change threshold for this.
+Include the raw values, the deviation, the z_score, and the pct_change in the result so the reasoning is auditable — never just assert "no anomalies found" without the underlying numbers to back it up.
+
 ### RULE 4 — JOINs
 - Products: \`JOIN hypertoy.products p ON f.part = p.part\`
 - Warehouses: \`JOIN hypertoy.warehouses w ON f.warehouse_code = w.warehouse_code\`
