@@ -225,6 +225,19 @@ class ThinkingService {
 
           // Save all steps
           for (const step of context.steps) {
+            // 'data_table' steps carry the COMPLETE row set live over SSE
+            // (already sent above, in addStep) so the popup/export work
+            // instantly in the current session — but that array must NOT be
+            // written to the DB, or a single big query balloons this table
+            // forever (queries can now return up to 1M rows). Persist just
+            // the SQL + metadata; the client re-runs the query on demand via
+            // POST /api/data-query/rerun when opening an OLD conversation.
+            let metadata = step.metadata;
+            if (step.stepType === 'data_table' && metadata && 'rows' in metadata) {
+              const { rows, ...rest } = metadata;
+              metadata = rest;
+            }
+
             const [saved] = await this.drizzle
               .insert(thinkingSteps)
               .values({
@@ -233,7 +246,7 @@ class ThinkingService {
                 stepType: step.stepType,
                 stepDescription: step.stepDescription,
                 stepOrder: step.stepOrder,
-                metadata: step.metadata
+                metadata
               })
               .returning();
 

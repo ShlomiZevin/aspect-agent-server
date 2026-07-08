@@ -19,6 +19,7 @@ const conversationService = require('./services/conversation.service');
 const kbService = require('./services/kb.service');
 const storageService = require('./services/storage.service');
 const thinkingService = require('./services/thinking.service');
+const tableFormatService = require('./services/table-format.service');
 const feedbackService = require('./services/feedback.service');
 const crewService = require('./crew/services/crew.service');
 const dispatcherService = require('./crew/services/dispatcher.service');
@@ -2015,19 +2016,43 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             thinkingService.addProcessingStep(conversationId, chunk.result.description);
           }
 
-          // Surface the full structured query result as a 'data_table' step so the
-          // UI can show a sortable/filterable viewer + Excel export over the
-          // COMPLETE row set (not just the preview the model writes in text).
-          // Streams live and persists, so it also works after a conversation reload.
-          if (chunk.type === 'function_result' && Array.isArray(chunk.result?.data) && chunk.result.data.length > 0) {
+          // Surface the COMPLETE structured query result as a 'data_table' step
+          // so the UI can show a paginated viewer + Excel export over every
+          // row — not just the ≤20-row preview the model writes in text (or
+          // even sees: `chunk.result.data` is capped for the model's context by
+          // llm.openai.js#stripInternalFields, but `_fullData` on this SAME raw
+          // event object is untouched, since that stripping only happens later
+          // when the result is JSON.stringified for the model's tool output).
+          // Only created when bigger than the chat preview — small results are
+          // shown in full in the chat text itself, no popup needed for those.
+          //
+          // IMPORTANT: never put the actual row array in this step's metadata.
+          // addStep() fires sendCallback() synchronously, i.e. it writes this
+          // payload straight onto the live SSE response. For large tables
+          // (100k+ rows) that single chunk is big enough that Cloud Run/GFE
+          // truncates the response (observed in prod logs: "Response size was
+          // too large" / "Truncated response body... implies the request timed
+          // out or the app exited before the response was finished"), which
+          // kills the whole turn — the client gets a 500 and an empty reply.
+          // Only sql/schema/columns go out live; the popup always re-fetches
+          // the rows on demand via POST /api/data-query/rerun (same path
+          // already used for reopened historical conversations), so this is a
+          // small, constant-size event regardless of row count.
+          if (chunk.type === 'function_result' && Array.isArray(chunk.result?._fullData) && chunk.result._fullData.length > 0) {
             const r = chunk.result;
-            const rowCount = r.rowCount ?? r.data.length;
-            thinkingService.addStep(
-              conversationId,
-              'data_table',
-              'Data table: ' + rowCount + ' rows',
-              { columns: r.columns, rows: r.data, rowCount, sql: r.sql, question: r.question, title: r.tableTitle }
-            );
+            const rowCount = r.rowCount ?? r._fullData.length;
+            const hasViewer = r.hasViewer ?? (rowCount > tableFormatService.PREVIEW_ROW_LIMIT);
+            if (hasViewer) {
+              const displayColumns = r.displayColumns?.length
+                ? r.displayColumns
+                : tableFormatService.buildDisplayColumns(r.columns, r._fullData, tableFormatService.isHebrewText(r.tableTitle) || tableFormatService.isHebrewText(r.question));
+              thinkingService.addStep(
+                conversationId,
+                'data_table',
+                'Data table: ' + rowCount + ' rows',
+                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema }
+              );
+            }
           }
 
           // Handle file search results - show which KB files were referenced
@@ -2279,19 +2304,30 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             thinkingService.addProcessingStep(conversationId, chunk.result.description);
           }
 
-          // Surface the full structured query result as a 'data_table' step so the
-          // UI can show a sortable/filterable viewer + Excel export over the
-          // COMPLETE row set (not just the preview the model writes in text).
-          // Streams live and persists, so it also works after a conversation reload.
-          if (chunk.type === 'function_result' && Array.isArray(chunk.result?.data) && chunk.result.data.length > 0) {
+          // Surface the COMPLETE structured query result as a 'data_table' step
+          // so the UI can show a paginated viewer + Excel export over every
+          // row — not just the ≤20-row preview the model writes in text (or
+          // even sees: `chunk.result.data` is capped for the model's context by
+          // llm.openai.js#stripInternalFields, but `_fullData` on this SAME raw
+          // event object is untouched, since that stripping only happens later
+          // when the result is JSON.stringified for the model's tool output).
+          // Only created when bigger than the chat preview — small results are
+          // shown in full in the chat text itself, no popup needed for those.
+          if (chunk.type === 'function_result' && Array.isArray(chunk.result?._fullData) && chunk.result._fullData.length > 0) {
             const r = chunk.result;
-            const rowCount = r.rowCount ?? r.data.length;
-            thinkingService.addStep(
-              conversationId,
-              'data_table',
-              'Data table: ' + rowCount + ' rows',
-              { columns: r.columns, rows: r.data, rowCount, sql: r.sql, question: r.question, title: r.tableTitle }
-            );
+            const rowCount = r.rowCount ?? r._fullData.length;
+            const hasViewer = r.hasViewer ?? (rowCount > tableFormatService.PREVIEW_ROW_LIMIT);
+            if (hasViewer) {
+              const displayColumns = r.displayColumns?.length
+                ? r.displayColumns
+                : tableFormatService.buildDisplayColumns(r.columns, r._fullData, tableFormatService.isHebrewText(r.tableTitle) || tableFormatService.isHebrewText(r.question));
+              thinkingService.addStep(
+                conversationId,
+                'data_table',
+                'Data table: ' + rowCount + ' rows',
+                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema }
+              );
+            }
           }
 
           // Send function call events as special SSE messages
@@ -2967,6 +3003,139 @@ app.post('/api/dynamic-kb/import/doc', upload.single('file'), async (req, res) =
   } catch (err) {
     console.error('❌ [DynamicKB] Doc import error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Re-run a previously-generated SQL query for a BI schema. 'data_table'
+// thinking steps never carry the row set (see thinking.service.js and the
+// data_table step in the SSE handler above) — only sql/columns/rowCount ever
+// leave the server, live or historical, so the popup and the Excel export
+// both always re-fetch the complete result here. Whitelisted BI schemas
+// only; SELECT-only, same forbidden-keyword guard as DataQueryService.
+const RERUN_POOL_GETTERS = {
+  zer4u: () => require('./services/db.zer4u').getPool(),
+  hypertoy: () => require('./services/db.hypertoy').getPool(),
+  thestock: () => require('./services/db.thestock').getPool(),
+  newdeli: () => require('./services/db.newdeli').getPool(),
+  zolstock: () => require('./services/db.zolstock').getPool(),
+  tevanaot: () => require('./services/db.tevanaot').getPool(),
+};
+
+async function runBiSql(schema, sql) {
+  const getPool = RERUN_POOL_GETTERS[schema];
+  if (!getPool) throw Object.assign(new Error('Unknown or unsupported schema: ' + schema), { status: 400 });
+  if (typeof sql !== 'string' || !sql.trim()) throw Object.assign(new Error('sql is required'), { status: 400 });
+
+  // Word-boundary match — a raw substring check would false-positive on
+  // legitimate identifiers like `created_at` (contains "CREATE") or
+  // `dropoff_rate` (contains "DROP") and reject a perfectly valid SELECT.
+  const forbidden = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE', 'ALTER', 'CREATE'];
+  const upperSql = sql.toUpperCase();
+  for (const kw of forbidden) {
+    if (new RegExp(`\\b${kw}\\b`).test(upperSql)) throw Object.assign(new Error('SQL contains forbidden keyword: ' + kw), { status: 400 });
+  }
+
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('SET statement_timeout = ' + parseInt(process.env.QUERY_TIMEOUT_MS || '15000', 10));
+    const result = await client.query(sql);
+    return { columns: result.fields.map(f => f.name), rows: result.rows, rowCount: result.rows.length };
+  } finally {
+    client.release();
+  }
+}
+
+app.post('/api/data-query/rerun', async (req, res) => {
+  try {
+    const { schema, sql } = req.body || {};
+    const result = await runBiSql(schema, sql);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Data query rerun error:', err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Export a query-result table (from the chat data_table viewer) to a real
+// .xlsx file — not CSV. Numeric columns keep their real numeric type with an
+// Excel number-format string (same decimals/₪ rule as table-format.service.js
+// uses for the chat preview and popup), so the file looks identical to what
+// the user saw in the app but stays summable/filterable in Excel.
+//
+// Takes {schema, sql} and re-runs the query itself — same as /rerun — rather
+// than accepting a client-supplied `rows` array. A 100k+ row table serialized
+// to JSON and POSTed back from the browser is tens of MB; that request hit
+// the same Cloud Run/GFE response-size ceiling as the live SSE data_table bug
+// (observed in prod: 500s with requestSize ~29MB and "Response size was too
+// large" warnings). Re-querying server-side keeps this endpoint's payload
+// sizes small in both directions regardless of row count.
+//
+// NOTE: for the very largest tables (100k+ rows) the resulting .xlsx buffer
+// can still hit the same response-size ceiling on the way back out — the
+// file itself is one buffered, non-chunked HTTP response. Deliberately NOT
+// capped/truncated here: the client always gets the complete result or a
+// clear failure, never a silently partial file. If this becomes a real
+// problem for a specific huge table, revisit with the user rather than
+// truncating silently.
+app.post('/api/data-query/export-excel', async (req, res) => {
+  try {
+    const { schema, sql, displayColumns, title } = req.body || {};
+    if (!Array.isArray(displayColumns) || displayColumns.length === 0) {
+      return res.status(400).json({ error: 'displayColumns (non-empty array) is required' });
+    }
+
+    const { rows } = await runBiSql(schema, sql);
+
+    const XLSX = require('xlsx');
+    const header = displayColumns.map(c => c.label);
+    const aoa = [header];
+    for (const row of rows) {
+      aoa.push(displayColumns.map(c => {
+        const v = row[c.key];
+        if (v == null || v === '') return '';
+        if (c.decimals != null) {
+          const n = parseFloat(v);
+          return isNaN(n) ? String(v) : n; // keep as a real number, not a formatted string
+        }
+        return String(v);
+      }));
+    }
+
+    const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+
+    // Apply the number format per column to every data cell so Excel displays
+    // e.g. 91,864.17 / ₪91,864.17 while the underlying cell value stays numeric.
+    displayColumns.forEach((col, colIdx) => {
+      if (col.decimals == null) return;
+      // Note: percent values here are already whole-number percentages (e.g.
+      // 75.3 meaning 75.3%), not fractions — use a literal "%" suffix format
+      // (quoted) rather than Excel's built-in 0.00% code, which would
+      // multiply the raw value by 100 again and show "7530%".
+      const fmt = col.isPercent
+        ? (col.decimals === 0 ? '0"%"' : '0.00"%"')
+        : col.isMoney
+          ? (col.decimals === 0 ? '"₪"#,##0' : '"₪"#,##0.00')
+          : (col.decimals === 0 ? '#,##0' : '#,##0.00');
+      for (let r = 1; r <= rows.length; r++) {
+        const addr = XLSX.utils.encode_cell({ r, c: colIdx });
+        const cell = worksheet[addr];
+        if (cell && cell.t === 'n') cell.z = fmt;
+      }
+    });
+
+    const workbook = XLSX.utils.book_new();
+    const sheetName = String(title || 'Data').substring(0, 31).replace(/[\\/?*[\]:]/g, ' ').trim() || 'Data';
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    const filename = 'table-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.xlsx';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + filename + '"');
+    res.send(buffer);
+  } catch (err) {
+    console.error('❌ Excel export error:', err.message);
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
