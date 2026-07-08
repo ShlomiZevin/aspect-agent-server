@@ -280,6 +280,35 @@ export interface AddonInstance<TConfig = unknown> {
   /** Lane this instance runs in. Set per-instance by the user. */
   lane: AddonLane;
   enabled: boolean;
+  /**
+   * Parallel-step marker (Blocking lane only). The blocking chain is a
+   * sequence of STEPS; each step is a set of addons that run
+   * concurrently, and steps run one after another with a barrier
+   * between them. Storage stays the flat, ordered `addons[]` array —
+   * steps are DERIVED by walking it: a maximal run of adjacent addons
+   * where every addon after the first has `joinsPreviousStep === true`
+   * collapses into a single step.
+   *
+   *   A (false) · B (false) · C (true) · D (true) · Talker (false)
+   *   → step[A] · step[B, C, D] · step[Talker]
+   *
+   * The link between two adjacent cards is thus typed: a barrier (the
+   * default `→`) when the right card is `false`/absent, or a parallel
+   * join (`‖`) when it's `true`. Semantics inside a step:
+   *   - execution order is meaningless (Promise.all); the UI drops the
+   *     sequence arrow between members accordingly.
+   *   - members read the SAME pre-step memory snapshot; they can't see
+   *     each other's writes this turn (barrier is between steps, not
+   *     within). Wiring an intra-step dependency is the author's
+   *     responsibility to avoid.
+   *
+   * Normalization (enforced on load + edit): the FIRST addon of a lane
+   * is always `false` (can't join nothing); a Talker is always `false`
+   * (a reply sink is its own step). Absent is treated as `false`, so
+   * every pre-flag crew keeps its exact sequential behavior with no
+   * migration. Ignored outside the Blocking (`main`) lane.
+   */
+  joinsPreviousStep?: boolean;
   /** Plugin-defined config blob. */
   config: TConfig;
   /** Universal reading knobs (history / persona / memory). */
