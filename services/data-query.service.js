@@ -236,10 +236,16 @@ class DataQueryService {
 
   /** @private — rejects any SQL that contains DDL/DML keywords */
   _validateSQL(sql) {
+    // Word-boundary match, not a raw substring check — `upper.includes('CREATE')`
+    // used to false-positive on any query selecting a `created_at` column
+    // (contains "CREATE"), `updated_at` (contains "UPDATE"), or an alias like
+    // `dropoff_rate`/`drop_pct` (contains "DROP"), rejecting perfectly valid
+    // SELECTs. \b anchors require an actual word-break around the keyword, so
+    // real DDL/DML ("CREATE TABLE", "DROP INDEX") still matches.
     const forbidden = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE', 'ALTER', 'CREATE'];
     const upper = sql.toUpperCase();
     for (const kw of forbidden) {
-      if (upper.includes(kw)) throw new Error(`SQL contains forbidden keyword: ${kw}`);
+      if (new RegExp(`\\b${kw}\\b`).test(upper)) throw new Error(`SQL contains forbidden keyword: ${kw}`);
     }
   }
 

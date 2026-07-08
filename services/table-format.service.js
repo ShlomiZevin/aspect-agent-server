@@ -218,16 +218,19 @@ function buildFetchResult({ question, tableTitle, schema, result }) {
     if (!hasViewer) {
       summary = 'Found ' + rowCount + ' record' + (rowCount === 1 ? '' : 's') + '. Below is the COMPLETE '
         + 'result, ALREADY formatted as a markdown table (correct columns, order, labels, number formatting). '
-        + 'Paste it into your reply EXACTLY as given — do not retype, reorder, retranslate or reformat it '
-        + 'yourself. For pure aggregate/summary questions you may skip the table and just give the numbers.\n\n'
+        + 'Paste it into your reply EXACTLY as given — do not retype, reorder, retranslate, reformat, or add '
+        + 'any row of your own (including a "..." or "more rows" row — there are none, this table is already '
+        + 'complete). For pure aggregate/summary questions you may skip the table and just give the numbers.\n\n'
         + previewTable + '\n';
     } else {
       summary = 'Found ' + rowCount + ' records. Below is a formatted PREVIEW of the first ' + PREVIEW_ROW_LIMIT
         + ' rows, ALREADY formatted as a markdown table (correct columns, order, labels, number formatting). '
-        + 'Paste it into your reply EXACTLY as given — do not retype, reorder, retranslate or reformat it '
-        + 'yourself. After it, tell the user the complete ' + rowCount + '-row set is available to view/export '
-        + 'below (every row is included there, it is not truncated). For pure aggregate/summary questions you '
-        + 'may skip the table and just give the numbers.\n\n' + previewTable + '\n';
+        + 'Paste it into your reply EXACTLY as given — do not retype, reorder, retranslate, reformat, or append '
+        + 'any row of your own to the table (including a "..." row to signal truncation) — end the table at the '
+        + 'last real row. State the truncation in your own sentence AFTER the table instead: tell the user the '
+        + 'complete ' + rowCount + '-row set is available to view/export below (every row is included there, it '
+        + 'is not truncated). For pure aggregate/summary questions you may skip the table and just give the '
+        + 'numbers.\n\n' + previewTable + '\n';
     }
     summary += buildNumericTotalsText(displayColumns, data);
   }

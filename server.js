@@ -3026,10 +3026,13 @@ async function runBiSql(schema, sql) {
   if (!getPool) throw Object.assign(new Error('Unknown or unsupported schema: ' + schema), { status: 400 });
   if (typeof sql !== 'string' || !sql.trim()) throw Object.assign(new Error('sql is required'), { status: 400 });
 
+  // Word-boundary match — a raw substring check would false-positive on
+  // legitimate identifiers like `created_at` (contains "CREATE") or
+  // `dropoff_rate` (contains "DROP") and reject a perfectly valid SELECT.
   const forbidden = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE', 'ALTER', 'CREATE'];
   const upperSql = sql.toUpperCase();
   for (const kw of forbidden) {
-    if (upperSql.includes(kw)) throw Object.assign(new Error('SQL contains forbidden keyword: ' + kw), { status: 400 });
+    if (new RegExp(`\\b${kw}\\b`).test(upperSql)) throw Object.assign(new Error('SQL contains forbidden keyword: ' + kw), { status: 400 });
   }
 
   const pool = getPool();
