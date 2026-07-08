@@ -63,6 +63,46 @@ function resolveModelLabel(modelRef) {
 require('../plugins');
 
 /**
+ * Partition an ordered blocking-lane addon array into STEPS.
+ *
+ * A step is a set of addons that run concurrently; steps run in
+ * sequence with a barrier between them. Storage is the flat, ordered
+ * array — the step boundaries are derived here from each addon's
+ * `joinsPreviousStep` link bit:
+ *
+ *   - `joinsPreviousStep === true` → this addon shares the PREVIOUS
+ *     addon's step (the link is a parallel join `‖`).
+ *   - otherwise → this addon starts a NEW step (the link is a
+ *     barrier `→`). This is the default, so an array with no flags
+ *     yields one addon per step = the original sequential behavior.
+ *
+ * Defensive normalization (mirrors the editor's rules so a
+ * hand-edited body can't produce a nonsense chain):
+ *   - the FIRST addon always starts a new step (can't join nothing).
+ *   - a Talker always starts a new step (a reply sink is its own
+ *     step; it can never be a parallel member).
+ *
+ * @param {Array} addons — blocking-lane instances, in authored order
+ * @returns {Array<Array>} steps, each an array of instances
+ */
+function deriveSteps(addons) {
+  const steps = [];
+  for (const inst of Array.isArray(addons) ? addons : []) {
+    const isTalker = inst && inst.pluginId === 'talker';
+    const joins = inst
+      && inst.joinsPreviousStep === true
+      && !isTalker
+      && steps.length > 0;
+    if (joins) {
+      steps[steps.length - 1].push(inst);
+    } else {
+      steps.push([inst]);
+    }
+  }
+  return steps;
+}
+
+/**
  * Run one turn end-to-end.
  *
  * @param {object} args
@@ -176,11 +216,27 @@ async function runOnce({
   // filter here keeps a hand-edited body from spawning a forbidden one.
   const RESTRICTED_AT_AGENT = new Set(['talker', 'transition-router']);
   const agentCortex = Array.isArray(runnable.agent.body?.cortex) ? runnable.agent.body.cortex : [];
+  const crewAddons  = Array.isArray(runnable.crew.body?.addons) ? runnable.crew.body.addons : [];
   const allAddons   = [
     ...agentCortex.filter(a => !RESTRICTED_AT_AGENT.has(a?.pluginId)),
-    ...(Array.isArray(runnable.crew.body?.addons) ? runnable.crew.body.addons : []),
+    ...crewAddons,
   ];
-  const blockingAddons = allAddons.filter(a => a.lane === 'main' && a.enabled !== false);
+  // Build the blocking chain as two SEGMENTS with a hard barrier at the
+  // agent-cortex → crew-chain seam. A parallel step must never span the
+  // two scopes: agent cortex is "pre-crew" work, and the author edits
+  // the two chains on separate canvases, so they can't see (or intend)
+  // a cross-scope group. Concretely: the FIRST crew blocking addon
+  // always starts its own step, even if it carries a stale
+  // `joinsPreviousStep: true` (e.g. the addon it used to run parallel
+  // with was deleted). Without this, that stale flag would merge the
+  // crew addon into the agent cortex's last step.
+  const agentBlocking = agentCortex
+    .filter(a => !RESTRICTED_AT_AGENT.has(a?.pluginId))
+    .filter(a => a.lane === 'main' && a.enabled !== false);
+  const crewBlocking = crewAddons
+    .filter(a => a.lane === 'main' && a.enabled !== false)
+    .map((a, i) => (i === 0 && a.joinsPreviousStep ? { ...a, joinsPreviousStep: false } : a));
+  const blockingAddons = [...agentBlocking, ...crewBlocking];
 
   // ── 2. Load accumulated brain state + accessors for the prompt. ──
   //
@@ -283,19 +339,46 @@ async function runOnce({
     let chainText = '';
     let chainTransition = false;
     let cascadeTo = null;
-    for (const instance of blockingForChain) {
-      const { result, didTransition, broke } = await runAddon({ ctx, instance });
-      if (didTransition) {
-        chainTransition = true;
-        const fireImmediately = result?.transition?.fireImmediately !== false;
-        if (fireImmediately && result?.transition?.to) {
-          cascadeTo = result.transition.to;
+
+    // Partition into steps, then run each step's addons concurrently.
+    // A step of one addon (the default for an un-grouped chain) is
+    // exactly the old sequential behavior — Promise.all over a
+    // single-element array awaits that one addon. So this refactor is
+    // a strict superset: no flags → identical to before.
+    const steps = deriveSteps(blockingForChain);
+    for (const step of steps) {
+      // addonRunner stays the single source of truth for how ONE
+      // addon executes. Same-step addons all close over the same
+      // `ctx`/`memory`: they read the same pre-step snapshot and merge
+      // their writes in-place (distinct fields don't collide; a shared
+      // field is last-writer-wins, which the author is responsible for
+      // not wiring). The barrier lives BETWEEN steps — the next step
+      // starts only after every addon in this one has resolved.
+      const results = await Promise.all(
+        step.map(instance => runAddon({ ctx, instance })),
+      );
+
+      // Aggregate in authored (array) order so cascade-target and
+      // reply-text resolution stay deterministic ("last writer wins"
+      // by the order the author laid the cards out). A break from any
+      // member stops the chain AFTER this step completes — every
+      // member of a parallel step has already run by the time we see
+      // the break, which is the correct barrier semantics.
+      let stepBroke = false;
+      for (const { result, didTransition, broke } of results) {
+        if (didTransition) {
+          chainTransition = true;
+          const fireImmediately = result?.transition?.fireImmediately !== false;
+          if (fireImmediately && result?.transition?.to) {
+            cascadeTo = result.transition.to;
+          }
         }
+        if (result && typeof result.assistantText === 'string' && result.assistantText) {
+          chainText = result.assistantText;
+        }
+        if (broke) stepBroke = true;
       }
-      if (result && typeof result.assistantText === 'string' && result.assistantText) {
-        chainText = result.assistantText;
-      }
-      if (broke) break;
+      if (stepBroke) break;
     }
     return { chainText, chainTransition, cascadeTo };
   }
@@ -422,4 +505,4 @@ async function runOnce({
   return { assistantText, totalMs: Date.now() - totalStart };
 }
 
-module.exports = { runOnce };
+module.exports = { runOnce, deriveSteps };

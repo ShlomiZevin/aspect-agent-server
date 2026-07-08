@@ -89,6 +89,9 @@ function checkAddonInstance(addon, path, errors, knownFieldIds) {
     pushErr(errors, `${path}.lane`, `must be one of ${[...VALID_LANES].join(', ')}`);
   if (typeof addon.enabled !== 'boolean')
     pushErr(errors, `${path}.enabled`, 'required boolean');
+  if ('joinsPreviousStep' in addon && addon.joinsPreviousStep !== undefined
+      && typeof addon.joinsPreviousStep !== 'boolean')
+    pushErr(errors, `${path}.joinsPreviousStep`, 'when present must be a boolean');
   if (!isObject(addon.config))
     pushErr(errors, `${path}.config`, 'required object');
   if (!isObject(addon.context))
