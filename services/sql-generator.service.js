@@ -121,7 +121,7 @@ Generate a PostgreSQL query that answers the user's question based on the schema
 3. **Clarity**: Prefer readable queries with proper aliases and formatting
 4. **Performance**: Use appropriate JOINs, WHERE clauses, and LIMIT when needed
 5. **Safety**: Never generate DROP, DELETE, UPDATE, INSERT, or other destructive operations
-6. **Column Names**: Column names with spaces or Hebrew characters MUST be quoted with double quotes
+6. **Column Names**: EXISTING source column names with spaces or Hebrew characters MUST be quoted with double quotes. But for an ALIAS you invent yourself (\`AS ...\`), always use snake_case with NO spaces — e.g. \`AS transaction_count_drop\`, never \`AS "transaction count drop"\`. This matters beyond style: a quoted alias that echoes the user's own wording (e.g. "transaction drop", "sales drop") can accidentally contain a forbidden DDL/DML word (DROP, CREATE, ALTER, ...) as a stand-alone word, which trips the query-safety guard and rejects an otherwise-valid SELECT. snake_case never has this problem, since the guard only matches whole words.
 7. **Aggregations**: Use appropriate GROUP BY, ORDER BY, and aggregate functions
 8. **Limits**: Add a LIMIT ONLY when the user explicitly asked for a specific count ("top 10", "the 5 highest", "first 20"). For "all", "every", "the full list", "don't limit", or any plain unqualified listing question — DO NOT add a LIMIT yourself, no matter how large the table is (not even a "safety" LIMIT 500/1000/5000). This applies even to the biggest tables listed below. The application enforces its own upstream safety cap after your query runs, so row count is never your problem to solve — a query with no LIMIT clause at all is the CORRECT answer for these questions, not a risk to protect against.
 ${this._getSchemaSpecificRules(schemaName)}
@@ -181,6 +181,9 @@ A bare \`SELECT COUNT(*) FROM hypertoy.facts\` returns the mixed count (sales + 
 ### RULE 3.7 — Franchisee attribution
 The columns \`facts.franchisee_code\` and \`facts.franchisee_name\` are EMPTY (NULL) in this dataset — do NOT GROUP BY them. Sister-brand and franchisee attribution is encoded in \`facts.register_name\` (קופה — e.g. 'קופת סניף פיראט אילת') and the corresponding \`facts.warehouse_code\` → \`warehouses.warehouse_name\` (e.g. 'פיראט סינימה'). For franchisee questions, group by \`warehouse_code\` joined to \`warehouses.warehouse_name\` and detect sister brand by string match on the warehouse name (e.g. \`warehouse_name LIKE '%פיראט%'\`).
 
+### RULE 3.71 — \`facts.campaign_name\` is NOT a human-readable name
+Despite the column name, every value of \`facts.campaign_name\` in this dataset is a plain number stored as text (e.g. "0", "0.29", "50.00", "1160.88") — there is no campaigns lookup table and no descriptive campaign label exists anywhere in this schema. When a question asks to break down by "campaign name", do NOT present this column to the user as if it were a name/label (that misleads them into thinking it's descriptive text) — group by \`campaign_code\` and \`campaign_name\` together, but label the second column honestly (e.g. "campaign value/threshold"), and mention that no descriptive campaign name exists in the data. A blank/empty \`campaign_code\` means "no campaign applied" — call it out as such rather than leaving it as an unlabeled blank row.
+
 ### RULE 3.8 — ANY "this month vs last month" comparison mid-month needs PACE-adjustment, not raw totals
 This applies broadly — target-vs-actual, WOLT growth, club growth, any "this month compared to last month" question — not just targets. If today is not the last day of the month, "this month" is a PARTIAL period (e.g. 7 of 31 days) while "last month" in the data is a COMPLETE period. Comparing a partial-month total against a full-month total will show a "decline" almost everywhere even when the branch/metric is doing FINE — that is a methodology artifact, not a real finding, and answering "no growth anywhere" from that comparison is WRONG.
 Fix it one of two ways:
@@ -212,12 +215,24 @@ Include the raw values, the deviation, the z_score, and the pct_change in the re
 - When the user filters by a LATIN-script payment method, the plain spelling matches NOTHING. Filter by the numeric \`payment_type_code\` instead (preferred), or match the reversed spelling.
 - Known codes: 'פרקסל' (Praxell) = 30, "BUYME" = 45, 'מזומן' (cash) = 1. For other Latin names, prefer \`payment_type_code\`.
 - Always also SELECT \`payment_type_code\` and \`payment_type\` so the result is unambiguous.
+- For DISPLAY, don't just pass the raw \`payment_type\` through — the reversed spelling looks broken/unprofessional in a client-facing answer. Un-reverse the known bad codes with a CASE expression, e.g.:
+\`\`\`sql
+CASE payment_type_code
+  WHEN '17' THEN 'IS Mastercard'
+  WHEN '18' THEN 'IS Visa Cal'
+  WHEN '45' THEN 'BUYME'
+  WHEN '47' THEN 'PowerCard'
+  ELSE payment_type
+END AS payment_type
+\`\`\`
+(codes 10/11/13/29/30/31/32/33/41/42/44/48/49/555/etc. and Hebrew names are already correct as stored — do not reverse those.)
 
 ### RULE 4.6 — "מועדון" has TWO distinct meanings here — never use \`customer_id IS NOT NULL\` for either
 NEVER use \`facts.customer_id IS NOT NULL\` as a stand-in for loyalty/club membership — virtually every row in \`facts\` already has a non-null \`customer_id\`, so that condition is always true and produces a meaningless, degenerate 0%-or-100%-everywhere result. There are two different questions that both use the word "מועדון" — pick the right one:
 1. **"Which מועדון/club drove growth" — a specific named partner club, categorical** (e.g. "פרקסל" (Praxell), "הייטקזון" (Hi-TechZone)): this means \`hypertoy.payments.payment_type\`. JOIN \`facts\` to \`payments\` on \`transaction_id\`, GROUP BY \`payment_type\` (and \`payment_type_code\` per RULE 4.5, since some names are character-reversed). "Which club drove the most growth" = compare SUM(sales) per payment_type between two periods, per warehouse/branch.
 2. **"לקוחות מועדון" / "club member conversion rate" — is a customer a loyalty-program member at all** (not which partner club): use \`facts.loyalty_count > 0\` on the transaction as the loyalty-engagement signal. "Club conversion rate at a branch" = COUNT(transactions WHERE loyalty_count > 0) ÷ COUNT(all transactions) at that branch, or the equivalent on revenue. When comparing branches by conversion rate, ALSO include each branch's average transaction value (SUM(sales_ex_vat) / COUNT(*)) and total revenue/turnover — a conversion-rate ranking without these is only half the requested comparison.
 If genuinely unsure which of the two the user means, prefer whichever produces a non-degenerate (varying, not flat 0%/100% everywhere) result — a flat result across every branch is itself a signal you picked the wrong field, so try the other one before answering.
+3. **"How many customers joined/signed up for the club" — a NEW-enrollment count**: this schema has NO enrollment-date or signup-event field anywhere (checked \`facts\` and \`products\` — there is no "club registration" SKU/item, and \`loyalty_count\` only marks a transaction as loyalty-linked, it does not distinguish a brand-new member from a long-time one). Do NOT invent a specific item/SKU code for "club signup" — that field does not exist and guessing one produces a fabricated result. The closest real proxy is \`COUNT(DISTINCT customer_id) WHERE loyalty_count > 0\` for the period (customers with at least one loyalty-linked transaction), but you MUST tell the user this counts ACTIVE loyalty customers that period, not verified new sign-ups, since true enrollment date isn't tracked in this data.
 
 ### RULE 5 — Profit / margin metrics
 - Profit fields are already calculated: \`profit_ex_vat\`, \`profit_inc_vat\`
