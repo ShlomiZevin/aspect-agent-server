@@ -5,7 +5,43 @@
 > [LYBI_LIVE_CHAT_PLAN.md](./LYBI_LIVE_CHAT_PLAN.md) (the customer chat that
 > hosts the panel).
 >
-> **Status:** design agreed, not built. Deliberately minimal — v1 only.
+> **Status:** **Phase 1 built (client)** — 2026-07. The authoring screen,
+> the `agent.liveBrain` config (versioned on the agent body), the built-in
+> renderers, and a live preview are in the builder. Runtime (Phase 2) and
+> the customer-surface render (Phase 3) are not wired yet.
+
+## Final decisions (v1)
+
+- **Where:** a separate URL inside the builder — **`/:agent/builder/live-brain`**
+  (same agent JSON + same components, so `bind` sees your fields and the
+  prompt editor's `/` tokens + field-rename cascade work). Not a separate app.
+- **Scope:** agent-level, applies to all crews. Crew-level override/append is later.
+- **Sources:** `bind` (a token) and `prompt` (a non-blocking addon that computes),
+  authored with the same `MentionTextarea` + `ModelPicker` as every other addon.
+- **Rich content:** a **built-in renderer library** — `text` · `markdown` ·
+  `keyvalue` · `goals` · `bars` · `donut`. Each has a FIXED data shape, so a
+  prompt source is just told to return that shape. **Custom HTML / a design
+  builder + a saved-designs Repository are deferred** (the "how do we know what
+  to return" problem is dodged entirely by fixed shapes).
+- **Storage:** `agent.liveBrain` inside the versioned agent body. Free field
+  sharing, drafts, versions, publish-to-active. Nothing external. Runtime output
+  (`brain.panels` + `addon_runs`) is per-conversation like all addon output.
+- **Run visibility:** shown in the Live Brain builder's **run inspector**, next
+  to the customer preview — **never** in the chat transcript.
+- **Naming:** customer-facing stays "Live Brain"; the builder's debug snapshot
+  → "Brain Inspector" (rename deferred).
+
+### Phase 1 — what shipped
+- `LiveBrainDef` / `BrainPanel` / `PanelSource` / `PanelRender` on `AgentDoc`
+  (+ `AgentBody`), synced client-side. `bodyOfAgent` snapshots `liveBrain` only
+  when it has panels, so existing agents never read as dirty.
+- `updateAgent` accepts `liveBrain`; edits autosave + version like any agent edit.
+- `LiveBrainScreen` at the route above + a "Live Brain" chip in `AgentSetupArea`.
+- Six built-in renderers + a live preview (sample data) + a run-inspector placeholder.
+
+> The sections below are the original design brief; the rich-HTML
+> template machinery in them is the **deferred** path, kept for reference.
+> v1 ships the built-in renderers instead.
 
 ---
 

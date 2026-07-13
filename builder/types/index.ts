@@ -924,8 +924,86 @@ export type AgentBody = Pick<
   AgentDoc,
   'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
   | 'fields' | 'domains' | 'tags' | 'parameters' | 'enums'
-  | 'cortex' | 'snippets' | 'personas'
+  | 'cortex' | 'snippets' | 'personas' | 'liveBrain'
 >;
+
+// ─── Live Brain ────────────────────────────────────────────────────
+// The customer-facing "brain" panel shown beside the chat at
+// `/:agent/live`. Authored on the `/:agent/builder/live-brain` screen.
+// Agent-level (applies to all crews) and part of the versioned agent
+// body. See docs/guides/BUILDER_V2_LIVE_BRAIN.md.
+
+/**
+ * How a Live Brain panel draws its resolved content. Each render type
+ * has a FIXED, known data shape — so a `prompt` source is simply told to
+ * return that shape, and a `bind` source maps an existing value to it.
+ * (Custom HTML / a design builder + a saved-designs repository come
+ * later — v1 ships this built-in set.)
+ */
+export type PanelRender =
+  | 'text' | 'keyvalue' | 'goals' | 'bars' | 'donut';
+
+/**
+ * A TEXT panel — the author writes free text and drops in live values
+ * with `{{...}}` tokens (`{{field:strategy}}`, `{{memory:profile}}`,
+ * `{{summary:main}}`). Resolved by plain token substitution; NOT sent to
+ * an LLM. Use the `text` render type with this. Markdown is supported in
+ * the text (bold / lists / tables), so this is also the "rich text" path.
+ */
+export interface PanelTextSource {
+  kind: 'text';
+  text: string;
+}
+
+/**
+ * A PROMPT panel — a dedicated non-blocking Live-Brain addon computes the
+ * content with an LLM. Reuses the SAME authoring pieces as a regular
+ * addon: prompt + model, History (how much conversation it sees), a
+ * cadence trigger, and the standard run filter (cap + conditions with
+ * enum-value completion). It returns the shape the chosen render type
+ * expects (text, or the render's JSON — see the render library).
+ */
+export interface PanelPromptSource {
+  kind: 'prompt';
+  prompt: string;
+  model: ModelRef;
+  /**
+   * How much conversation the addon sees. Same options as an addon's
+   * History. Depth matters for a brain — default is several messages,
+   * never just the last one.
+   */
+  history: HistoryMode;
+  /** Cadence — how often it runs (non-blocking, off the reply path). */
+  trigger: OfflineTrigger;
+}
+
+export type PanelSource = PanelTextSource | PanelPromptSource;
+
+export interface BrainPanel {
+  id: ID;
+  /**
+   * Header text shown as the panel's title in the brain. Free text — the
+   * author can paste an emoji, a label, or both (there's no separate icon
+   * field).
+   */
+  title: string;
+  render: PanelRender;
+  source: PanelSource;
+  /**
+   * Optional run/show gate — the SAME shape + UI as an addon's filter
+   * (cap + conditions). Belongs to the panel, not the source: it decides
+   * when the panel applies regardless of whether it's `text` or `prompt`.
+   */
+  filter?: AddonFilter;
+}
+
+/**
+ * Agent-level Live Brain configuration. Optional for back-compat;
+ * readers treat absence as `{ panels: [] }`.
+ */
+export interface LiveBrainDef {
+  panels: BrainPanel[];
+}
 
 export interface AgentVersion {
   id: ID;
@@ -1032,6 +1110,16 @@ export interface AgentDoc {
    * Optional for back-compat; readers should treat absence as `[]`.
    */
   personas?: PersonaDef[];
+  /**
+   * Agent-level Live Brain — the customer-facing brain panel shown
+   * beside the chat at `/:agent/live`. Authored on the
+   * `/:agent/builder/live-brain` screen. Part of the versioned agent
+   * body (so every version implies its own Live Brain setup).
+   *
+   * Optional for back-compat; readers should treat absence as
+   * `{ panels: [] }`.
+   */
+  liveBrain?: LiveBrainDef;
   /**
    * The crews that belong to this agent. NOT part of the agent
    * version body — crews are their own versioned entities and live

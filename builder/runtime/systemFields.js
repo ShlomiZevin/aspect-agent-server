@@ -40,19 +40,16 @@
  *   user-declared domains.
  */
 
-/** @type {SystemFieldDef[]} */
-const SYSTEM_FIELDS = [
-  {
-    name:        'move_on',
-    type:        'boolean',
-    lifetime:    'crew-transition',
-    description:
-      'Set to true when the current crew has done its job and the user is ready to ' +
-      'hand off. Reset automatically the moment a Transition Router fires, so the ' +
-      'next crew starts with a clean slate.',
-    domain:      '_system',
-  },
-];
+/**
+ * @type {SystemFieldDef[]}
+ *
+ * Currently empty. `move_on` was retired — no live agent relied on the
+ * auto-harvest + transition-reset behavior, and it lingered confusingly
+ * in the condition/autocomplete pickers. The machinery below (harvest,
+ * reset, reserved-name checks) stays intact and simply no-ops on an
+ * empty registry, so re-adding a system field is a one-entry change.
+ */
+const SYSTEM_FIELDS = [];
 
 const SYSTEM_FIELD_BY_NAME = Object.fromEntries(
   SYSTEM_FIELDS.map(f => [f.name, f]),
