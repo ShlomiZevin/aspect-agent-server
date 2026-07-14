@@ -74,10 +74,21 @@ async function buildSchemasFromHeaders(gcsFiles, emitLog) {
 
 // ── Phase 1: Import ───────────────────────────────────────────────────────────
 
-async function loadTheStock(targetSchema, emitLog) {
+async function loadTheStock(targetSchema, emitLog, options = {}) {
   let filesLoaded = 0;
   let totalRows = 0;
   const fileResults = [];
+
+  // Import window: keep only the last N months of fact data (0 = load all).
+  // loadAllCSVFiles applies this automatically to any table with a DATE column.
+  const importMonths = options.importMonths != null
+    ? options.importMonths
+    : (parseInt(process.env.THESTOCK_IMPORT_MONTHS || '0', 10) || 0);
+  if (importMonths > 0) {
+    emitLog('scanning', `Import window: keeping last ${importMonths} month(s) of data (relative to latest date)`);
+  } else {
+    emitLog('scanning', 'Import window: loading all available data (no date filter)');
+  }
 
   emitLog('scanning', 'Listing CSV files from GCS...');
   const gcsFiles = await gcsService.listCSVFiles(await getGcsFolder('thestock', GCS_FOLDER_DEFAULT));
@@ -123,7 +134,7 @@ async function loadTheStock(targetSchema, emitLog) {
     }
   };
 
-  const { qualityReport } = await loadAllCSVFiles(targetSchema, onProgress, schemas) || {};
+  const { qualityReport } = await loadAllCSVFiles(targetSchema, onProgress, schemas, { importMonths }) || {};
 
   const tablesWithIssues = Object.keys(qualityReport || {}).length;
   if (tablesWithIssues > 0) {

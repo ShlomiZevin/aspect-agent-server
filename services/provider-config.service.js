@@ -37,6 +37,8 @@ const ENV_FALLBACKS = {
   zolstock_import_months:            'ZOLSTOCK_IMPORT_MONTHS',
   tevanaot_import_months:            'TEVANAOT_IMPORT_MONTHS',
   hypertoy_import_months:            'HYPERTOY_IMPORT_MONTHS',
+  newdeli_import_months:             'NEWDELI_IMPORT_MONTHS',
+  thestock_import_months:            'THESTOCK_IMPORT_MONTHS',
   // Data Loader — per-schema kill switch, checked on every load/index call
   // (see services/reload-guard.js). Edited from the Data Loader Configuration tab.
   zer4u_reload_enabled:              'ZER4U_RELOAD_ENABLED',
