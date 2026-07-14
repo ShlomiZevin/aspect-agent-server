@@ -3783,15 +3783,22 @@ app.get('/api/admin/data-loader/:schema/settings', async (req, res) => {
     }
     const info = await providerConfigService.describe(`${schema}_import_months`);
     const importMonths = info.value != null ? (parseInt(info.value, 10) || 0) : 0;
+    const reloadInfo = await providerConfigService.describe(`${schema}_reload_enabled`);
     // `supported` is false for schemas whose loader doesn't honor the date filter yet.
-    res.json({ supported: info.supported, importMonths, source: info.source });
+    res.json({
+      supported: info.supported,
+      importMonths,
+      source: info.source,
+      reloadEnabled: reloadInfo.value === 'true',
+      reloadEnabledSource: reloadInfo.source,
+    });
   } catch (err) {
     console.error('❌ data-loader settings get error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /api/admin/data-loader/:schema/settings — set/clear the import window
+// PUT /api/admin/data-loader/:schema/settings — set/clear the import window and/or reload-enabled flag
 app.put('/api/admin/data-loader/:schema/settings', async (req, res) => {
   try {
     const { schema } = req.params;
@@ -3799,23 +3806,34 @@ app.put('/api/admin/data-loader/:schema/settings', async (req, res) => {
     if (!dataReloadService?.reloaders[schema]) {
       return res.status(404).json({ error: `Unknown schema: ${schema}` });
     }
-    const key = `${schema}_import_months`;
-    const raw = req.body?.importMonths;
-    const months = raw === '' || raw == null ? null : parseInt(raw, 10);
-    if (months !== null && (!Number.isFinite(months) || months < 0)) {
-      return res.status(400).json({ error: 'importMonths must be a non-negative integer' });
+
+    if (req.body?.importMonths !== undefined) {
+      const key = `${schema}_import_months`;
+      const raw = req.body.importMonths;
+      const months = raw === '' || raw == null ? null : parseInt(raw, 10);
+      if (months !== null && (!Number.isFinite(months) || months < 0)) {
+        return res.status(400).json({ error: 'importMonths must be a non-negative integer' });
+      }
+      // null/empty → remove DB override (fall back to env). Otherwise store the value.
+      if (months === null) {
+        await providerConfigService.delete(key);
+      } else {
+        await providerConfigService.set(key, String(months));
+      }
     }
-    // null/empty → remove DB override (fall back to env). Otherwise store the value.
-    if (months === null) {
-      await providerConfigService.delete(key);
-    } else {
-      await providerConfigService.set(key, String(months));
+
+    if (req.body?.reloadEnabled !== undefined) {
+      await providerConfigService.set(`${schema}_reload_enabled`, req.body.reloadEnabled ? 'true' : 'false');
     }
-    const info = await providerConfigService.describe(key);
+
+    const info = await providerConfigService.describe(`${schema}_import_months`);
+    const reloadInfo = await providerConfigService.describe(`${schema}_reload_enabled`);
     res.json({
       supported: info.supported,
       importMonths: info.value != null ? (parseInt(info.value, 10) || 0) : 0,
       source: info.source,
+      reloadEnabled: reloadInfo.value === 'true',
+      reloadEnabledSource: reloadInfo.source,
     });
   } catch (err) {
     console.error('❌ data-loader settings put error:', err.message);

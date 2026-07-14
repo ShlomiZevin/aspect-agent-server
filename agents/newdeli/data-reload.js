@@ -5,17 +5,12 @@
 
 const { loadNewDeli, indexNewDeli, getNewDeliDataInfo } = require('../../scripts/reload-newdeli');
 const { getPool } = require('../../services/db.newdeli');
-
-const DISABLED = process.env.NEWDELI_RELOAD_ENABLED !== 'true';
-
-const disabledFn = async () => {
-  throw new Error('New Deli reload is disabled. Set NEWDELI_RELOAD_ENABLED=true to enable.');
-};
+const { guardReloadFn } = require('../../services/reload-guard');
 
 function register(dataReloadService) {
   dataReloadService.registerReloader('newdeli', {
-    loadFn:          DISABLED ? disabledFn : loadNewDeli,
-    indexFn:         DISABLED ? disabledFn : indexNewDeli,
+    loadFn:          guardReloadFn('newdeli', 'New Deli', loadNewDeli),
+    indexFn:         guardReloadFn('newdeli', 'New Deli', indexNewDeli),
     gcsFolderPrefix: 'newdeli/csv/',
     dataInfoFn:      getNewDeliDataInfo,
     pool:            getPool(),

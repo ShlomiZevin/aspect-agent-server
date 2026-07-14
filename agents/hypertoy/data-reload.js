@@ -5,17 +5,12 @@
 
 const { loadHyperToy, indexHyperToy, getHyperToyDataInfo, getHyperToyDataRange } = require('../../scripts/reload-hypertoy');
 const { getPool } = require('../../services/db.hypertoy');
-
-const DISABLED = process.env.HYPERTOY_RELOAD_ENABLED !== 'true';
-
-const disabledFn = async () => {
-  throw new Error('Hyper Toy reload is disabled. Set HYPERTOY_RELOAD_ENABLED=true to enable.');
-};
+const { guardReloadFn } = require('../../services/reload-guard');
 
 function register(dataReloadService) {
   dataReloadService.registerReloader('hypertoy', {
-    loadFn:          DISABLED ? disabledFn : loadHyperToy,
-    indexFn:         DISABLED ? disabledFn : indexHyperToy,
+    loadFn:          guardReloadFn('hypertoy', 'Hyper Toy', loadHyperToy),
+    indexFn:         guardReloadFn('hypertoy', 'Hyper Toy', indexHyperToy),
     gcsFolderPrefix: 'hyper-toy/',
     dataInfoFn:      getHyperToyDataInfo,
     dataRangeFn:     getHyperToyDataRange,
