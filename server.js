@@ -3415,6 +3415,7 @@ app.get('/api/agents/:agentName/feedback/stats', async (req, res) => {
 const slowQueryService = require('./services/slow-query.service');
 const optimizationJobService = require('./services/optimization-job.service');
 const cloudRunLogsService = require('./services/cloud-run-logs.service');
+const schedulerService = require('./services/scheduler.service');
 
 // List slow queries
 app.get('/api/admin/slow-queries', async (req, res) => {
@@ -4037,6 +4038,35 @@ app.get('/api/admin/data-loader/:schema/runs/:id/log', async (req, res) => {
     res.json({ logs });
   } catch (err) {
     console.error('❌ data-loader run log error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== DATA-LOADER SCHEDULER (Cloud Scheduler admin) ==========
+
+// GET /api/admin/scheduler/jobs — list the data-loader Cloud Scheduler jobs
+app.get('/api/admin/scheduler/jobs', async (req, res) => {
+  try {
+    const jobs = await schedulerService.listJobs();
+    res.json({ jobs });
+  } catch (err) {
+    console.error('❌ scheduler listJobs error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/admin/scheduler/jobs/:name — retime and/or pause/resume a job
+app.patch('/api/admin/scheduler/jobs/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const { schedule, paused } = req.body;
+    let job = null;
+    if (schedule) job = await schedulerService.updateSchedule(name, schedule);
+    if (paused !== undefined) job = await schedulerService.setPaused(name, paused);
+    if (!job) return res.status(400).json({ error: 'schedule or paused is required' });
+    res.json({ job });
+  } catch (err) {
+    console.error('❌ scheduler updateJob error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
