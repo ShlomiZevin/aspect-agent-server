@@ -16,8 +16,9 @@ const { buildColumnLookup } = require('./column-aliases-newdeli');
 const { createSchema } = require('./create-newdeli-schema');
 const { loadAllCSVFiles } = require('./load-csv-to-db-copy');
 const { createIndexes } = require('./create-newdeli-indexes');
+const { getGcsFolder } = require('../services/gcs-folder.service');
 
-const GCS_FOLDER = 'newdeli/csv/';
+const GCS_FOLDER_DEFAULT = 'newdeli/csv/';
 
 const FILE_TO_TABLE = {
   'Facts_CSV.csv':             'facts',
@@ -80,7 +81,7 @@ async function loadNewDeli(targetSchema, emitLog) {
   const fileResults = [];
 
   emitLog('scanning', 'Listing CSV files from GCS...');
-  const gcsFiles = await gcsService.listCSVFiles(GCS_FOLDER);
+  const gcsFiles = await gcsService.listCSVFiles(await getGcsFolder('newdeli', GCS_FOLDER_DEFAULT));
   const validFiles = gcsFiles.filter(f => FILE_TO_TABLE[f.basename]);
   emitLog('scanning', `Found ${validFiles.length} CSV files — reading headers...`);
 

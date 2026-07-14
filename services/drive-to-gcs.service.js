@@ -2,6 +2,7 @@ const { google } = require('googleapis');
 const path = require('path');
 const fs = require('fs');
 const gcsService = require('./gcs.service');
+const providerConfigService = require('./provider-config.service');
 
 /**
  * Drive -> GCS sync service
@@ -158,8 +159,20 @@ async function buildCanonicalMap(gcsPrefix) {
  * @returns {Promise<Object>} report
  */
 async function syncClient(client, opts = {}) {
-  const cfg = CLIENTS[client];
-  if (!cfg) throw new Error(`Unknown client '${client}'. Known: ${Object.keys(CLIENTS).join(', ')}`);
+  const base = CLIENTS[client];
+  if (!base) throw new Error(`Unknown client '${client}'. Known: ${Object.keys(CLIENTS).join(', ')}`);
+
+  // folderId / gcsPrefix are DB-overridable from the Data Loader Configuration
+  // tab; mode / skipStems stay as coded (not user-facing settings).
+  const [folderIdOverride, gcsPrefixOverride] = await Promise.all([
+    providerConfigService.get(`${client}_drive_folder_id`),
+    providerConfigService.get(`${client}_gcs_folder`),
+  ]);
+  const cfg = {
+    ...base,
+    folderId: folderIdOverride || base.folderId,
+    gcsPrefix: gcsPrefixOverride || base.gcsPrefix,
+  };
 
   const dryRun = !!opts.dryRun;
   const log = opts.log || console.log;

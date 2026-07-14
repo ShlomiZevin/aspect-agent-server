@@ -3783,14 +3783,20 @@ app.get('/api/admin/data-loader/:schema/settings', async (req, res) => {
     }
     const info = await providerConfigService.describe(`${schema}_import_months`);
     const importMonths = info.value != null ? (parseInt(info.value, 10) || 0) : 0;
-    const reloadInfo = await providerConfigService.describe(`${schema}_reload_enabled`);
+    const gcsInfo = await providerConfigService.describe(`${schema}_gcs_folder`);
+    const driveInfo = await providerConfigService.describe(`${schema}_drive_folder_id`);
     // `supported` is false for schemas whose loader doesn't honor the date filter yet.
     res.json({
       supported: info.supported,
       importMonths,
       source: info.source,
-      reloadEnabled: reloadInfo.value === 'true',
-      reloadEnabledSource: reloadInfo.source,
+      // Fall back to the reloader's hardcoded default when no DB override is set yet,
+      // so the UI always shows the folder actually in effect (see gcs-folder.service.js).
+      gcsFolder: gcsInfo.value || dataReloadService.reloaders[schema].gcsFolderPrefix,
+      gcsFolderSource: gcsInfo.source,
+      driveFolderIdSupported: driveInfo.supported,
+      driveFolderId: driveInfo.value || require('./services/drive-to-gcs.service').CLIENTS[schema]?.folderId || null,
+      driveFolderIdSource: driveInfo.source,
     });
   } catch (err) {
     console.error('❌ data-loader settings get error:', err.message);
@@ -3798,7 +3804,7 @@ app.get('/api/admin/data-loader/:schema/settings', async (req, res) => {
   }
 });
 
-// PUT /api/admin/data-loader/:schema/settings — set/clear the import window and/or reload-enabled flag
+// PUT /api/admin/data-loader/:schema/settings — set/clear the import window, GCS folder, and/or Drive folder ID
 app.put('/api/admin/data-loader/:schema/settings', async (req, res) => {
   try {
     const { schema } = req.params;
@@ -3822,18 +3828,30 @@ app.put('/api/admin/data-loader/:schema/settings', async (req, res) => {
       }
     }
 
-    if (req.body?.reloadEnabled !== undefined) {
-      await providerConfigService.set(`${schema}_reload_enabled`, req.body.reloadEnabled ? 'true' : 'false');
+    if (req.body?.gcsFolder !== undefined) {
+      const folder = String(req.body.gcsFolder || '').trim();
+      if (!folder) return res.status(400).json({ error: 'gcsFolder cannot be empty' });
+      await providerConfigService.set(`${schema}_gcs_folder`, folder.endsWith('/') ? folder : `${folder}/`);
+    }
+
+    if (req.body?.driveFolderId !== undefined) {
+      const folderId = String(req.body.driveFolderId || '').trim();
+      if (!folderId) return res.status(400).json({ error: 'driveFolderId cannot be empty' });
+      await providerConfigService.set(`${schema}_drive_folder_id`, folderId);
     }
 
     const info = await providerConfigService.describe(`${schema}_import_months`);
-    const reloadInfo = await providerConfigService.describe(`${schema}_reload_enabled`);
+    const gcsInfo = await providerConfigService.describe(`${schema}_gcs_folder`);
+    const driveInfo = await providerConfigService.describe(`${schema}_drive_folder_id`);
     res.json({
       supported: info.supported,
       importMonths: info.value != null ? (parseInt(info.value, 10) || 0) : 0,
       source: info.source,
-      reloadEnabled: reloadInfo.value === 'true',
-      reloadEnabledSource: reloadInfo.source,
+      gcsFolder: gcsInfo.value || dataReloadService.reloaders[schema].gcsFolderPrefix,
+      gcsFolderSource: gcsInfo.source,
+      driveFolderIdSupported: driveInfo.supported,
+      driveFolderId: driveInfo.value || require('./services/drive-to-gcs.service').CLIENTS[schema]?.folderId || null,
+      driveFolderIdSource: driveInfo.source,
     });
   } catch (err) {
     console.error('❌ data-loader settings put error:', err.message);

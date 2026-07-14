@@ -27,8 +27,9 @@ const { createSchema } = require('./create-zolstock-schema');
 const { loadAllCSVFiles } = require('./load-csv-to-db-copy');
 const { createIndexes } = require('./create-zolstock-indexes');
 const { createMVs } = require('./create-zolstock-mvs');
+const { getGcsFolder } = require('../services/gcs-folder.service');
 
-const GCS_FOLDER = 'zolstock/';
+const GCS_FOLDER_DEFAULT = 'zolstock/';
 
 const FILE_TO_TABLE = {
   'Facts_ZolStock_CSV.csv': 'facts',
@@ -94,7 +95,7 @@ async function loadZolStock(targetSchema, emitLog, options = {}) {
   }
 
   emitLog('scanning', 'Listing CSV files from GCS...');
-  const gcsFiles = await gcsService.listCSVFiles(GCS_FOLDER);
+  const gcsFiles = await gcsService.listCSVFiles(await getGcsFolder('zolstock', GCS_FOLDER_DEFAULT));
   const validFiles = gcsFiles.filter(f => FILE_TO_TABLE[f.basename]);
   emitLog('scanning', `Found ${validFiles.length} CSV files — reading headers...`);
 

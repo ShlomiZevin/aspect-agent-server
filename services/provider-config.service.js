@@ -45,6 +45,19 @@ const ENV_FALLBACKS = {
   hypertoy_reload_enabled:           'HYPERTOY_RELOAD_ENABLED',
   zolstock_reload_enabled:           'ZOLSTOCK_RELOAD_ENABLED',
   tevanaot_reload_enabled:           'TEVANAOT_RELOAD_ENABLED',
+  // GCS folder each schema's loader reads CSVs from (services/gcs-folder.service.js).
+  // No real env var backs these today - the fallback names are just for
+  // consistency with the rest of this map; the actual default lives in each
+  // scripts/reload-*.js as a literal, passed in by the caller.
+  zer4u_gcs_folder:                  'ZER4U_GCS_FOLDER',
+  newdeli_gcs_folder:                'NEWDELI_GCS_FOLDER',
+  thestock_gcs_folder:               'THESTOCK_GCS_FOLDER',
+  hypertoy_gcs_folder:               'HYPERTOY_GCS_FOLDER',
+  zolstock_gcs_folder:               'ZOLSTOCK_GCS_FOLDER',
+  tevanaot_gcs_folder:               'TEVANAOT_GCS_FOLDER',
+  // Google Drive source folder ID for the two clients with Drive->GCS sync.
+  zer4u_drive_folder_id:             'ZER4U_DRIVE_FOLDER_ID',
+  hypertoy_drive_folder_id:          'HYPERTOY_DRIVE_FOLDER_ID',
 };
 
 // All known config keys (in display order)

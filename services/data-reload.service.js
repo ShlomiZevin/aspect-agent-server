@@ -11,6 +11,7 @@
 
 const gcsService = require('./gcs.service');
 const providerConfigService = require('./provider-config.service');
+const { getGcsFolder } = require('./gcs-folder.service');
 
 class DataReloadService {
   constructor(db) {
@@ -411,7 +412,8 @@ class DataReloadService {
   async getSourceFiles(schemaName) {
     const reloader = this.reloaders[schemaName];
     if (!reloader) throw { code: 404, message: `No reloader for schema: ${schemaName}` };
-    return await gcsService.listCSVFiles(reloader.gcsFolderPrefix);
+    const folder = await getGcsFolder(schemaName, reloader.gcsFolderPrefix);
+    return await gcsService.listCSVFiles(folder);
   }
 
   /**
