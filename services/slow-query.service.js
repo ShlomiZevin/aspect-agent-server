@@ -18,6 +18,9 @@ class SlowQueryService {
       password: process.env.DB_PASSWORD,
       max: 5,
     });
+    this.pool.on('error', (err) => {
+      console.error('[slow-query.service] Unexpected pool error:', err.message);
+    });
   }
 
   get threshold() {

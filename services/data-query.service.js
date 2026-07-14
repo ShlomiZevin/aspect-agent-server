@@ -17,14 +17,21 @@ const TABLE_RE  = /^[a-z0-9_]+$/i;
  */
 class DataQueryService {
   constructor(pool = null) {
-    this.pool = pool || new Pool({
-      host:     process.env.DB_HOST,
-      port:     process.env.DB_PORT,
-      database: process.env.DB_NAME,
-      user:     process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      max: 5
-    });
+    if (pool) {
+      this.pool = pool;
+    } else {
+      this.pool = new Pool({
+        host:     process.env.DB_HOST,
+        port:     process.env.DB_PORT,
+        database: process.env.DB_NAME,
+        user:     process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        max: 5
+      });
+      this.pool.on('error', (err) => {
+        console.error('[data-query.service] Unexpected pool error:', err.message);
+      });
+    }
   }
 
   /**

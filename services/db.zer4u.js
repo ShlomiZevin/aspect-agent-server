@@ -50,6 +50,13 @@ function getPool(options = {}) {
   const label = isUnixSocket ? `socket:${host}/${database}` : `${host}:${port}/${database}`;
   console.log(`[db.zer4u] Pool created → ${label}`);
 
+  // Idle clients can be killed by the DB side (schema-swap reload, Cloud SQL
+  // restart, admin command) — without this handler that surfaces as an
+  // unhandled 'error' event on the pool and crashes the whole process.
+  _pool.on('error', (err) => {
+    console.error('[db.zer4u] Unexpected pool error (connection killed?):', err.message);
+  });
+
   return _pool;
 }
 

@@ -21,6 +21,9 @@ const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD
 });
+pool.on('error', (err) => {
+  console.error('[sql-helper.service] Unexpected pool error:', err.message);
+});
 
 /**
  * Translate a natural language question to SQL query

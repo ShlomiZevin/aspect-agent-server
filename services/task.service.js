@@ -1,6 +1,6 @@
 const db = require('./db.pg');
 const { tasks, taskAssignees } = require('../db/schema');
-const { eq, desc, and, ilike } = require('drizzle-orm');
+const { eq, desc, and, ilike, isNotNull, getTableColumns } = require('drizzle-orm');
 const notificationsService = require('./notifications.service');
 const boardEventsService = require('./boardEvents.service');
 
@@ -324,9 +324,18 @@ class TaskService {
     if (!this.drizzle) this.initialize();
     if (!identity) return [];
 
-    const allTasks = await this.drizzle.select().from(tasks).orderBy(desc(tasks.deployedAt));
-    return allTasks.filter(t => {
-      if (!t.deployedAt) return false;
+    // Deliberately excludes `description` (can hold pasted base64 images, up to
+    // several hundred KB per task) and filters deployedAt in SQL instead of
+    // fetching every task - this endpoint is polled every 10s per open tab, and
+    // a full-table SELECT * was slow enough to hit the statement timeout.
+    const { description, ...rest } = getTableColumns(tasks);
+    const deployedTasks = await this.drizzle
+      .select(rest)
+      .from(tasks)
+      .where(isNotNull(tasks.deployedAt))
+      .orderBy(desc(tasks.deployedAt));
+
+    return deployedTasks.filter(t => {
       const reviewedBy = t.deployedReviewedBy || [];
       return !reviewedBy.includes(identity);
     });
