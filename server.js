@@ -3415,7 +3415,8 @@ app.get('/api/agents/:agentName/feedback/stats', async (req, res) => {
 const slowQueryService = require('./services/slow-query.service');
 const optimizationJobService = require('./services/optimization-job.service');
 const cloudRunLogsService = require('./services/cloud-run-logs.service');
-const schedulerService = require('./services/scheduler.service');
+const scheduleConfigService = require('./services/schedule-config.service');
+const schedulerTickService = require('./services/scheduler-tick.service');
 
 // List slow queries
 app.get('/api/admin/slow-queries', async (req, res) => {
@@ -4086,48 +4087,64 @@ app.get('/api/admin/data-loader/:schema/runs/:id/log', async (req, res) => {
 
 // ========== DATA-LOADER SCHEDULER (Cloud Scheduler admin) ==========
 
-// GET /api/admin/scheduler/jobs — list the data-loader Cloud Scheduler jobs
-app.get('/api/admin/scheduler/jobs', async (req, res) => {
+// POST /api/admin/scheduler/tick — the ONE Cloud Scheduler job (every minute)
+// hits this. Reads every schema's schedule from schedule-config.service and
+// dispatches ensureLoaded/syncClient/ensureIndexed as needed. Replaces the
+// old one-Cloud-Scheduler-job-per-task-per-schema design.
+app.post('/api/admin/scheduler/tick', async (req, res) => {
   try {
-    const jobs = await schedulerService.listJobs();
-    res.json({ jobs });
+    const dataReloadService = req.app.get('dataReloadService');
+    const driveToGcs = require('./services/drive-to-gcs.service');
+    const result = await schedulerTickService.runTick({ dataReloadService, driveToGcs });
+    res.json(result);
   } catch (err) {
-    console.error('❌ scheduler listJobs error:', err.message);
+    console.error('❌ scheduler tick error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/admin/scheduler/jobs — create a new data-loader cron job (e.g. turning
-// on Drive sync for a schema that didn't have a job for it yet)
-app.post('/api/admin/scheduler/jobs', async (req, res) => {
+// GET /api/admin/scheduler/schedules — every schema's import/drive-sync schedule
+// in one call, for the Settings > Schedule reference tab.
+app.get('/api/admin/scheduler/schedules', async (req, res) => {
   try {
-    const { name, schedule, uri, paused } = req.body;
-    if (!name || !schedule || !uri) {
-      return res.status(400).json({ error: 'name, schedule, and uri are required' });
-    }
-    if (!uri.includes('/api/admin/data-loader/')) {
-      return res.status(400).json({ error: 'uri must target a data-loader endpoint' });
-    }
-    const job = await schedulerService.createJob(name, schedule, uri, { paused: paused !== false });
-    res.json({ job });
+    const schedules = await scheduleConfigService.getAllSchedules();
+    res.json({ schedules });
   } catch (err) {
-    console.error('❌ scheduler createJob error:', err.message);
+    console.error('❌ scheduler getAllSchedules error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// PATCH /api/admin/scheduler/jobs/:name — retime and/or pause/resume a job
-app.patch('/api/admin/scheduler/jobs/:name', async (req, res) => {
+// GET /api/admin/data-loader/:schema/schedule — this schema's import + drive-sync schedule
+app.get('/api/admin/data-loader/:schema/schedule', async (req, res) => {
   try {
-    const { name } = req.params;
-    const { schedule, paused } = req.body;
-    let job = null;
-    if (schedule) job = await schedulerService.updateSchedule(name, schedule);
-    if (paused !== undefined) job = await schedulerService.setPaused(name, paused);
-    if (!job) return res.status(400).json({ error: 'schedule or paused is required' });
-    res.json({ job });
+    const { schema } = req.params;
+    const [importSchedule, driveSyncSchedule] = await Promise.all([
+      scheduleConfigService.getSchedule(schema, 'import'),
+      scheduleConfigService.getSchedule(schema, 'drive_sync'),
+    ]);
+    res.json({ importSchedule, driveSyncSchedule });
   } catch (err) {
-    console.error('❌ scheduler updateJob error:', err.message);
+    console.error('❌ data-loader schedule get error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/admin/data-loader/:schema/schedule — set this schema's import or drive-sync schedule
+app.put('/api/admin/data-loader/:schema/schedule', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const { jobType, enabled, hour, minute } = req.body;
+    if (jobType !== 'import' && jobType !== 'drive_sync') {
+      return res.status(400).json({ error: "jobType must be 'import' or 'drive_sync'" });
+    }
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+      return res.status(400).json({ error: 'hour (0-23) and minute (0-59) are required integers' });
+    }
+    const schedule = await scheduleConfigService.setSchedule(schema, jobType, { enabled: !!enabled, hour, minute });
+    res.json({ schedule });
+  } catch (err) {
+    console.error('❌ data-loader schedule put error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
