@@ -3938,7 +3938,8 @@ app.post('/api/admin/data-loader/:schema/drive-sync', async (req, res) => {
   try {
     const { schema } = req.params;
     const driveToGcs = require('./services/drive-to-gcs.service');
-    if (!driveToGcs.CLIENTS[schema]) {
+    const cfg = await driveToGcs.resolveClientConfig(schema);
+    if (!cfg?.folderId) {
       return res.status(404).json({ error: `No Drive sync configured for: ${schema}` });
     }
     const dryRun = req.query.dryRun === 'true' || req.body?.dryRun === true;
@@ -4087,6 +4088,25 @@ app.get('/api/admin/scheduler/jobs', async (req, res) => {
     res.json({ jobs });
   } catch (err) {
     console.error('❌ scheduler listJobs error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/scheduler/jobs — create a new data-loader cron job (e.g. turning
+// on Drive sync for a schema that didn't have a job for it yet)
+app.post('/api/admin/scheduler/jobs', async (req, res) => {
+  try {
+    const { name, schedule, uri, paused } = req.body;
+    if (!name || !schedule || !uri) {
+      return res.status(400).json({ error: 'name, schedule, and uri are required' });
+    }
+    if (!uri.includes('/api/admin/data-loader/')) {
+      return res.status(400).json({ error: 'uri must target a data-loader endpoint' });
+    }
+    const job = await schedulerService.createJob(name, schedule, uri, { paused: paused !== false });
+    res.json({ job });
+  } catch (err) {
+    console.error('❌ scheduler createJob error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

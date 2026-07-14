@@ -57,9 +57,15 @@ const ENV_FALLBACKS = {
   hypertoy_gcs_folder:               'HYPERTOY_GCS_FOLDER',
   zolstock_gcs_folder:               'ZOLSTOCK_GCS_FOLDER',
   tevanaot_gcs_folder:               'TEVANAOT_GCS_FOLDER',
-  // Google Drive source folder ID for the two clients with Drive->GCS sync.
+  // Google Drive source folder ID - optional per schema. Only zer4u/hypertoy
+  // have one configured today, but the field/mechanism is available to every
+  // schema; setting it is what turns on Drive sync for that client.
   zer4u_drive_folder_id:             'ZER4U_DRIVE_FOLDER_ID',
+  newdeli_drive_folder_id:           'NEWDELI_DRIVE_FOLDER_ID',
+  thestock_drive_folder_id:          'THESTOCK_DRIVE_FOLDER_ID',
   hypertoy_drive_folder_id:          'HYPERTOY_DRIVE_FOLDER_ID',
+  zolstock_drive_folder_id:          'ZOLSTOCK_DRIVE_FOLDER_ID',
+  tevanaot_drive_folder_id:          'TEVANAOT_DRIVE_FOLDER_ID',
 };
 
 // All known config keys (in display order)

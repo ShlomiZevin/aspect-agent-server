@@ -151,28 +151,42 @@ async function buildCanonicalMap(gcsPrefix) {
 }
 
 /**
+ * Resolves the effective sync config for a client: the coded CLIENTS entry
+ * if one exists (folderId/gcsPrefix DB-overridable, mode/skipStems fixed),
+ * or - for any other schema that's had a Drive folder ID set from the Data
+ * Loader Configuration tab - a generic passthrough config. Returns null if
+ * the client is unknown AND has no configured folder ID (Drive sync simply
+ * isn't turned on for it).
+ */
+async function resolveClientConfig(client) {
+  const base = CLIENTS[client];
+  const [folderIdOverride, gcsPrefixOverride] = await Promise.all([
+    providerConfigService.get(`${client}_drive_folder_id`),
+    providerConfigService.get(`${client}_gcs_folder`),
+  ]);
+
+  if (!base && !folderIdOverride) return null;
+
+  const effective = base || { mode: 'passthrough', skipStems: new Set(), folderId: null, gcsPrefix: null };
+  return {
+    ...effective,
+    folderId: folderIdOverride || effective.folderId,
+    gcsPrefix: gcsPrefixOverride || effective.gcsPrefix,
+  };
+}
+
+/**
  * Sync one client's Drive folder into GCS.
- * @param {string} client - 'zer4u' | 'hypertoy'
+ * @param {string} client - schema name
  * @param {Object} [opts]
  * @param {boolean} [opts.dryRun] - plan only, upload nothing
  * @param {(line:string)=>void} [opts.log] - progress sink (default console.log)
  * @returns {Promise<Object>} report
  */
 async function syncClient(client, opts = {}) {
-  const base = CLIENTS[client];
-  if (!base) throw new Error(`Unknown client '${client}'. Known: ${Object.keys(CLIENTS).join(', ')}`);
-
-  // folderId / gcsPrefix are DB-overridable from the Data Loader Configuration
-  // tab; mode / skipStems stay as coded (not user-facing settings).
-  const [folderIdOverride, gcsPrefixOverride] = await Promise.all([
-    providerConfigService.get(`${client}_drive_folder_id`),
-    providerConfigService.get(`${client}_gcs_folder`),
-  ]);
-  const cfg = {
-    ...base,
-    folderId: folderIdOverride || base.folderId,
-    gcsPrefix: gcsPrefixOverride || base.gcsPrefix,
-  };
+  const cfg = await resolveClientConfig(client);
+  if (!cfg) throw new Error(`No Drive sync configured for '${client}' - set a Drive folder ID first.`);
+  if (!cfg.folderId) throw new Error(`No Drive folder ID set for '${client}' yet.`);
 
   const dryRun = !!opts.dryRun;
   const log = opts.log || console.log;
@@ -269,4 +283,4 @@ async function syncClient(client, opts = {}) {
   return report;
 }
 
-module.exports = { syncClient, CLIENTS, normalizeStem };
+module.exports = { syncClient, resolveClientConfig, CLIENTS, normalizeStem };

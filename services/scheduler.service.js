@@ -73,4 +73,33 @@ async function setPaused(name, paused) {
   return toApiShape(updated);
 }
 
-module.exports = { listJobs, updateSchedule, setPaused };
+/**
+ * Creates a new HTTP job hitting one of our own data-loader endpoints.
+ * Used to turn on a capability (e.g. Drive sync) for a schema that didn't
+ * have a Cloud Scheduler job for it yet. Created paused by default so
+ * setting it up never silently starts firing before someone confirms it.
+ */
+async function createJob(name, schedule, uri, { paused = true } = {}) {
+  const [created] = await getClient().createJob({
+    parent: parent(),
+    job: {
+      name: jobName(name),
+      schedule,
+      timeZone: 'Asia/Jerusalem',
+      httpTarget: {
+        uri,
+        httpMethod: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: Buffer.from('{}'),
+      },
+      attemptDeadline: { seconds: 60 },
+    },
+  });
+  if (paused) {
+    const [pausedJob] = await getClient().pauseJob({ name: created.name });
+    return toApiShape(pausedJob);
+  }
+  return toApiShape(created);
+}
+
+module.exports = { listJobs, updateSchedule, setPaused, createJob };
