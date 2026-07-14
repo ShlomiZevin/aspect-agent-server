@@ -3836,8 +3836,13 @@ app.put('/api/admin/data-loader/:schema/settings', async (req, res) => {
 
     if (req.body?.driveFolderId !== undefined) {
       const folderId = String(req.body.driveFolderId || '').trim();
-      if (!folderId) return res.status(400).json({ error: 'driveFolderId cannot be empty' });
-      await providerConfigService.set(`${schema}_drive_folder_id`, folderId);
+      // Empty clears the override (falls back to the coded default, if any -
+      // e.g. zer4u/hypertoy still resolve to their hardcoded folder ID).
+      if (folderId) {
+        await providerConfigService.set(`${schema}_drive_folder_id`, folderId);
+      } else {
+        await providerConfigService.delete(`${schema}_drive_folder_id`);
+      }
     }
 
     const info = await providerConfigService.describe(`${schema}_import_months`);
