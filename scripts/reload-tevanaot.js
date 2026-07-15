@@ -22,8 +22,9 @@ const { createSchema } = require('./create-tevanaot-schema');
 const { loadAllCSVFiles } = require('./load-csv-to-db-copy');
 const { createIndexes } = require('./create-tevanaot-indexes');
 const { createMVs } = require('./create-tevanaot-mvs');
+const { getGcsFolder } = require('../services/gcs-folder.service');
 
-const GCS_FOLDER = 'tevanaot/';
+const GCS_FOLDER_DEFAULT = 'tevanaot/';
 
 // Map each GCS CSV basename to its DB table. Names are kept exactly as exported
 // (Teva_Naot_Israel_* prefix). LINK_TABLE / Calendar / CalendarGroupA-B /
@@ -101,7 +102,7 @@ async function loadTevaNaot(targetSchema, emitLog, options = {}) {
   }
 
   emitLog('scanning', 'Listing CSV files from GCS...');
-  const gcsFiles = await gcsService.listCSVFiles(GCS_FOLDER);
+  const gcsFiles = await gcsService.listCSVFiles(await getGcsFolder('tevanaot', GCS_FOLDER_DEFAULT));
   const validFiles = gcsFiles.filter(f => FILE_TO_TABLE[f.basename]);
   emitLog('scanning', `Found ${validFiles.length} mapped CSV files — reading headers...`);
 

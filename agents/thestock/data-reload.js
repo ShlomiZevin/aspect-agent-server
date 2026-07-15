@@ -5,17 +5,12 @@
 
 const { loadTheStock, indexTheStock, getTheStockDataInfo } = require('../../scripts/reload-thestock');
 const { getPool } = require('../../services/db.thestock');
-
-const DISABLED = process.env.THESTOCK_RELOAD_ENABLED !== 'true';
-
-const disabledFn = async () => {
-  throw new Error('The Stock reload is disabled. Set THESTOCK_RELOAD_ENABLED=true to enable.');
-};
+const { guardReloadFn } = require('../../services/reload-guard');
 
 function register(dataReloadService) {
   dataReloadService.registerReloader('thestock', {
-    loadFn:          DISABLED ? disabledFn : loadTheStock,
-    indexFn:         DISABLED ? disabledFn : indexTheStock,
+    loadFn:          guardReloadFn('thestock', 'The Stock', loadTheStock),
+    indexFn:         guardReloadFn('thestock', 'The Stock', indexTheStock),
     gcsFolderPrefix: 'thestock/',
     dataInfoFn:      getTheStockDataInfo,
     pool:            getPool(),

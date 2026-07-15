@@ -17,8 +17,9 @@ const { createSchema } = require('./create-thestock-schema');
 const { loadAllCSVFiles } = require('./load-csv-to-db-copy');
 const { createIndexes } = require('./create-thestock-indexes');
 const { createMVs } = require('./create-thestock-mvs');
+const { getGcsFolder } = require('../services/gcs-folder.service');
 
-const GCS_FOLDER = 'thestock/';
+const GCS_FOLDER_DEFAULT = 'thestock/';
 
 const FILE_TO_TABLE = {
   'Fact_CSV.csv':              'facts',
@@ -73,13 +74,24 @@ async function buildSchemasFromHeaders(gcsFiles, emitLog) {
 
 // ── Phase 1: Import ───────────────────────────────────────────────────────────
 
-async function loadTheStock(targetSchema, emitLog) {
+async function loadTheStock(targetSchema, emitLog, options = {}) {
   let filesLoaded = 0;
   let totalRows = 0;
   const fileResults = [];
 
+  // Import window: keep only the last N months of fact data (0 = load all).
+  // loadAllCSVFiles applies this automatically to any table with a DATE column.
+  const importMonths = options.importMonths != null
+    ? options.importMonths
+    : (parseInt(process.env.THESTOCK_IMPORT_MONTHS || '0', 10) || 0);
+  if (importMonths > 0) {
+    emitLog('scanning', `Import window: keeping last ${importMonths} month(s) of data (relative to latest date)`);
+  } else {
+    emitLog('scanning', 'Import window: loading all available data (no date filter)');
+  }
+
   emitLog('scanning', 'Listing CSV files from GCS...');
-  const gcsFiles = await gcsService.listCSVFiles(GCS_FOLDER);
+  const gcsFiles = await gcsService.listCSVFiles(await getGcsFolder('thestock', GCS_FOLDER_DEFAULT));
   const validFiles = gcsFiles.filter(f => FILE_TO_TABLE[f.basename]);
   emitLog('scanning', `Found ${validFiles.length} CSV files — reading headers...`);
 
@@ -122,7 +134,7 @@ async function loadTheStock(targetSchema, emitLog) {
     }
   };
 
-  const { qualityReport } = await loadAllCSVFiles(targetSchema, onProgress, schemas) || {};
+  const { qualityReport } = await loadAllCSVFiles(targetSchema, onProgress, schemas, { importMonths }) || {};
 
   const tablesWithIssues = Object.keys(qualityReport || {}).length;
   if (tablesWithIssues > 0) {

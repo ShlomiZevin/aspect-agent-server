@@ -3415,6 +3415,8 @@ app.get('/api/agents/:agentName/feedback/stats', async (req, res) => {
 const slowQueryService = require('./services/slow-query.service');
 const optimizationJobService = require('./services/optimization-job.service');
 const cloudRunLogsService = require('./services/cloud-run-logs.service');
+const scheduleConfigService = require('./services/schedule-config.service');
+const schedulerTickService = require('./services/scheduler-tick.service');
 
 // List slow queries
 app.get('/api/admin/slow-queries', async (req, res) => {
@@ -3782,15 +3784,28 @@ app.get('/api/admin/data-loader/:schema/settings', async (req, res) => {
     }
     const info = await providerConfigService.describe(`${schema}_import_months`);
     const importMonths = info.value != null ? (parseInt(info.value, 10) || 0) : 0;
+    const gcsInfo = await providerConfigService.describe(`${schema}_gcs_folder`);
+    const driveInfo = await providerConfigService.describe(`${schema}_drive_folder_id`);
     // `supported` is false for schemas whose loader doesn't honor the date filter yet.
-    res.json({ supported: info.supported, importMonths, source: info.source });
+    res.json({
+      supported: info.supported,
+      importMonths,
+      source: info.source,
+      // Fall back to the reloader's hardcoded default when no DB override is set yet,
+      // so the UI always shows the folder actually in effect (see gcs-folder.service.js).
+      gcsFolder: gcsInfo.value || dataReloadService.reloaders[schema].gcsFolderPrefix,
+      gcsFolderSource: gcsInfo.source,
+      driveFolderIdSupported: driveInfo.supported,
+      driveFolderId: driveInfo.value || require('./services/drive-to-gcs.service').CLIENTS[schema]?.folderId || null,
+      driveFolderIdSource: driveInfo.source,
+    });
   } catch (err) {
     console.error('❌ data-loader settings get error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /api/admin/data-loader/:schema/settings — set/clear the import window
+// PUT /api/admin/data-loader/:schema/settings — set/clear the import window, GCS folder, and/or Drive folder ID
 app.put('/api/admin/data-loader/:schema/settings', async (req, res) => {
   try {
     const { schema } = req.params;
@@ -3798,23 +3813,51 @@ app.put('/api/admin/data-loader/:schema/settings', async (req, res) => {
     if (!dataReloadService?.reloaders[schema]) {
       return res.status(404).json({ error: `Unknown schema: ${schema}` });
     }
-    const key = `${schema}_import_months`;
-    const raw = req.body?.importMonths;
-    const months = raw === '' || raw == null ? null : parseInt(raw, 10);
-    if (months !== null && (!Number.isFinite(months) || months < 0)) {
-      return res.status(400).json({ error: 'importMonths must be a non-negative integer' });
+
+    if (req.body?.importMonths !== undefined) {
+      const key = `${schema}_import_months`;
+      const raw = req.body.importMonths;
+      const months = raw === '' || raw == null ? null : parseInt(raw, 10);
+      if (months !== null && (!Number.isFinite(months) || months < 0)) {
+        return res.status(400).json({ error: 'importMonths must be a non-negative integer' });
+      }
+      // null/empty → remove DB override (fall back to env). Otherwise store the value.
+      if (months === null) {
+        await providerConfigService.delete(key);
+      } else {
+        await providerConfigService.set(key, String(months));
+      }
     }
-    // null/empty → remove DB override (fall back to env). Otherwise store the value.
-    if (months === null) {
-      await providerConfigService.delete(key);
-    } else {
-      await providerConfigService.set(key, String(months));
+
+    if (req.body?.gcsFolder !== undefined) {
+      const folder = String(req.body.gcsFolder || '').trim();
+      if (!folder) return res.status(400).json({ error: 'gcsFolder cannot be empty' });
+      await providerConfigService.set(`${schema}_gcs_folder`, folder.endsWith('/') ? folder : `${folder}/`);
     }
-    const info = await providerConfigService.describe(key);
+
+    if (req.body?.driveFolderId !== undefined) {
+      const folderId = String(req.body.driveFolderId || '').trim();
+      // Empty clears the override (falls back to the coded default, if any -
+      // e.g. zer4u/hypertoy still resolve to their hardcoded folder ID).
+      if (folderId) {
+        await providerConfigService.set(`${schema}_drive_folder_id`, folderId);
+      } else {
+        await providerConfigService.delete(`${schema}_drive_folder_id`);
+      }
+    }
+
+    const info = await providerConfigService.describe(`${schema}_import_months`);
+    const gcsInfo = await providerConfigService.describe(`${schema}_gcs_folder`);
+    const driveInfo = await providerConfigService.describe(`${schema}_drive_folder_id`);
     res.json({
       supported: info.supported,
       importMonths: info.value != null ? (parseInt(info.value, 10) || 0) : 0,
       source: info.source,
+      gcsFolder: gcsInfo.value || dataReloadService.reloaders[schema].gcsFolderPrefix,
+      gcsFolderSource: gcsInfo.source,
+      driveFolderIdSupported: driveInfo.supported,
+      driveFolderId: driveInfo.value || require('./services/drive-to-gcs.service').CLIENTS[schema]?.folderId || null,
+      driveFolderIdSource: driveInfo.source,
     });
   } catch (err) {
     console.error('❌ data-loader settings put error:', err.message);
@@ -3901,7 +3944,8 @@ app.post('/api/admin/data-loader/:schema/drive-sync', async (req, res) => {
   try {
     const { schema } = req.params;
     const driveToGcs = require('./services/drive-to-gcs.service');
-    if (!driveToGcs.CLIENTS[schema]) {
+    const cfg = await driveToGcs.resolveClientConfig(schema);
+    if (!cfg?.folderId) {
       return res.status(404).json({ error: `No Drive sync configured for: ${schema}` });
     }
     const dryRun = req.query.dryRun === 'true' || req.body?.dryRun === true;
@@ -4037,6 +4081,70 @@ app.get('/api/admin/data-loader/:schema/runs/:id/log', async (req, res) => {
     res.json({ logs });
   } catch (err) {
     console.error('❌ data-loader run log error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== DATA-LOADER SCHEDULER (Cloud Scheduler admin) ==========
+
+// POST /api/admin/scheduler/tick — the ONE Cloud Scheduler job (every minute)
+// hits this. Reads every schema's schedule from schedule-config.service and
+// dispatches ensureLoaded/syncClient/ensureIndexed as needed. Replaces the
+// old one-Cloud-Scheduler-job-per-task-per-schema design.
+app.post('/api/admin/scheduler/tick', async (req, res) => {
+  try {
+    const dataReloadService = req.app.get('dataReloadService');
+    const driveToGcs = require('./services/drive-to-gcs.service');
+    const result = await schedulerTickService.runTick({ dataReloadService, driveToGcs });
+    res.json(result);
+  } catch (err) {
+    console.error('❌ scheduler tick error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/scheduler/schedules — every schema's import/drive-sync schedule
+// in one call, for the Settings > Schedule reference tab.
+app.get('/api/admin/scheduler/schedules', async (req, res) => {
+  try {
+    const schedules = await scheduleConfigService.getAllSchedules();
+    res.json({ schedules });
+  } catch (err) {
+    console.error('❌ scheduler getAllSchedules error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/data-loader/:schema/schedule — this schema's import + drive-sync schedule
+app.get('/api/admin/data-loader/:schema/schedule', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const [importSchedule, driveSyncSchedule] = await Promise.all([
+      scheduleConfigService.getSchedule(schema, 'import'),
+      scheduleConfigService.getSchedule(schema, 'drive_sync'),
+    ]);
+    res.json({ importSchedule, driveSyncSchedule });
+  } catch (err) {
+    console.error('❌ data-loader schedule get error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/admin/data-loader/:schema/schedule — set this schema's import or drive-sync schedule
+app.put('/api/admin/data-loader/:schema/schedule', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const { jobType, enabled, hour, minute } = req.body;
+    if (jobType !== 'import' && jobType !== 'drive_sync') {
+      return res.status(400).json({ error: "jobType must be 'import' or 'drive_sync'" });
+    }
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+      return res.status(400).json({ error: 'hour (0-23) and minute (0-59) are required integers' });
+    }
+    const schedule = await scheduleConfigService.setSchedule(schema, jobType, { enabled: !!enabled, hour, minute });
+    res.json({ schedule });
+  } catch (err) {
+    console.error('❌ data-loader schedule put error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

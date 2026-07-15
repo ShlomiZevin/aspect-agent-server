@@ -9,17 +9,12 @@
 
 const { loadZolStock, indexZolStock, getZolStockDataInfo } = require('../../scripts/reload-zolstock');
 const { getPool } = require('../../services/db.zolstock');
-
-const DISABLED = process.env.ZOLSTOCK_RELOAD_ENABLED !== 'true';
-
-const disabledFn = async () => {
-  throw new Error('Zol Stock reload is disabled. Set ZOLSTOCK_RELOAD_ENABLED=true to enable.');
-};
+const { guardReloadFn } = require('../../services/reload-guard');
 
 function register(dataReloadService) {
   dataReloadService.registerReloader('zolstock', {
-    loadFn:          DISABLED ? disabledFn : loadZolStock,
-    indexFn:         DISABLED ? disabledFn : indexZolStock,
+    loadFn:          guardReloadFn('zolstock', 'Zol Stock', loadZolStock),
+    indexFn:         guardReloadFn('zolstock', 'Zol Stock', indexZolStock),
     gcsFolderPrefix: 'zolstock/',
     dataInfoFn:      getZolStockDataInfo,
     pool:            getPool(),

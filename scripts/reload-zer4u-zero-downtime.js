@@ -17,8 +17,9 @@ const { loadAllCSVFiles } = require('./load-csv-to-db-copy');
 const { createIndexes } = require('./create-zer4u-indexes-v2');
 const { createViews } = require('./create-materialized-views');
 const { buildColumnLookup, normalizeKey } = require('./column-aliases');
+const { getGcsFolder } = require('../services/gcs-folder.service');
 
-const GCS_FOLDER = 'zer4u/';
+const GCS_FOLDER_DEFAULT = 'zer4u/';
 
 // Tables present in the source export but never used by the agent — not in any
 // materialized view, index, column-aliases mapping, or generated query. Skipped
@@ -120,7 +121,7 @@ async function loadZer4u(targetSchema, emitLog, options = {}) {
   }
 
   emitLog('scanning', 'Listing CSV files from GCS...');
-  const allFiles = await gcsService.listCSVFiles(GCS_FOLDER);
+  const allFiles = await gcsService.listCSVFiles(await getGcsFolder('zer4u', GCS_FOLDER_DEFAULT));
   const gcsFiles = allFiles.filter(f => !SKIP_TABLES.has(sanitizeTableName(f.basename)));
   const skippedCount = allFiles.length - gcsFiles.length;
   if (skippedCount > 0) {

@@ -17,6 +17,9 @@ class OptimizationJobService {
       password: process.env.DB_PASSWORD,
       max: 5,
     });
+    this.pool.on('error', (err) => {
+      console.error('[optimization-job.service] Unexpected pool error:', err.message);
+    });
   }
 
   /**

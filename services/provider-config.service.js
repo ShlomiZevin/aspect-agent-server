@@ -37,6 +37,35 @@ const ENV_FALLBACKS = {
   zolstock_import_months:            'ZOLSTOCK_IMPORT_MONTHS',
   tevanaot_import_months:            'TEVANAOT_IMPORT_MONTHS',
   hypertoy_import_months:            'HYPERTOY_IMPORT_MONTHS',
+  newdeli_import_months:             'NEWDELI_IMPORT_MONTHS',
+  thestock_import_months:            'THESTOCK_IMPORT_MONTHS',
+  // Data Loader — per-schema kill switch, checked on every load/index call
+  // (see services/reload-guard.js). Edited from the Data Loader Configuration tab.
+  zer4u_reload_enabled:              'ZER4U_RELOAD_ENABLED',
+  newdeli_reload_enabled:            'NEWDELI_RELOAD_ENABLED',
+  thestock_reload_enabled:           'THESTOCK_RELOAD_ENABLED',
+  hypertoy_reload_enabled:           'HYPERTOY_RELOAD_ENABLED',
+  zolstock_reload_enabled:           'ZOLSTOCK_RELOAD_ENABLED',
+  tevanaot_reload_enabled:           'TEVANAOT_RELOAD_ENABLED',
+  // GCS folder each schema's loader reads CSVs from (services/gcs-folder.service.js).
+  // No real env var backs these today - the fallback names are just for
+  // consistency with the rest of this map; the actual default lives in each
+  // scripts/reload-*.js as a literal, passed in by the caller.
+  zer4u_gcs_folder:                  'ZER4U_GCS_FOLDER',
+  newdeli_gcs_folder:                'NEWDELI_GCS_FOLDER',
+  thestock_gcs_folder:               'THESTOCK_GCS_FOLDER',
+  hypertoy_gcs_folder:               'HYPERTOY_GCS_FOLDER',
+  zolstock_gcs_folder:               'ZOLSTOCK_GCS_FOLDER',
+  tevanaot_gcs_folder:               'TEVANAOT_GCS_FOLDER',
+  // Google Drive source folder ID - optional per schema. Only zer4u/hypertoy
+  // have one configured today, but the field/mechanism is available to every
+  // schema; setting it is what turns on Drive sync for that client.
+  zer4u_drive_folder_id:             'ZER4U_DRIVE_FOLDER_ID',
+  newdeli_drive_folder_id:           'NEWDELI_DRIVE_FOLDER_ID',
+  thestock_drive_folder_id:          'THESTOCK_DRIVE_FOLDER_ID',
+  hypertoy_drive_folder_id:          'HYPERTOY_DRIVE_FOLDER_ID',
+  zolstock_drive_folder_id:          'ZOLSTOCK_DRIVE_FOLDER_ID',
+  tevanaot_drive_folder_id:          'TEVANAOT_DRIVE_FOLDER_ID',
 };
 
 // All known config keys (in display order)

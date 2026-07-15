@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
+    "@google-cloud/scheduler": "^5.4.0",
     "@google-cloud/storage": "^7.19.0",
     "@google/genai": "^1.42.0",
     "@pinecone-database/pinecone": "^7.2.0",

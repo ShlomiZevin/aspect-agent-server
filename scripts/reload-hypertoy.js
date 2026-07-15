@@ -10,8 +10,9 @@ const { buildColumnLookup } = require('./column-aliases-hypertoy');
 const { createSchema } = require('./create-hypertoy-schema');
 const { loadAllCSVFiles } = require('./load-csv-to-db-copy');
 const { createIndexes } = require('./create-hypertoy-indexes');
+const { getGcsFolder } = require('../services/gcs-folder.service');
 
-const GCS_FOLDER = 'hyper-toy/';
+const GCS_FOLDER_DEFAULT = 'hyper-toy/';
 
 const FILE_TO_TABLE = {
   'Fact_CSV.csv':              'facts',
@@ -87,7 +88,7 @@ async function loadHyperToy(targetSchema, emitLog, options = {}) {
   }
 
   emitLog('scanning', 'Listing CSV files from GCS...');
-  const gcsFiles = await gcsService.listCSVFiles(GCS_FOLDER);
+  const gcsFiles = await gcsService.listCSVFiles(await getGcsFolder('hypertoy', GCS_FOLDER_DEFAULT));
   const validFiles = gcsFiles.filter(f => FILE_TO_TABLE[f.basename]);
   emitLog('scanning', `Found ${validFiles.length} CSV files — reading headers...`);
 
