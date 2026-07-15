@@ -912,6 +912,14 @@ export interface CrewDoc {
    * Defaults to the active version when a new crew is created.
    */
   viewingVersionId: ID;
+  /**
+   * The CUSTOMER-facing version, decoupled from `activeVersionId` (the
+   * builder/admin marker). The public runtime (version:'published')
+   * resolves this per-crew, falling back to active→viewing when null,
+   * so live users never see an unpublished draft. Moved only by an
+   * explicit Publish action. `null`/undefined = not published yet.
+   */
+  publishedVersionId?: ID | null;
 }
 
 /**
@@ -1132,6 +1140,13 @@ export interface AgentDoc {
   activeVersionId: ID;
   /** The version currently loaded into the working copy. */
   viewingVersionId: ID;
+  /**
+   * The CUSTOMER-facing version, decoupled from `activeVersionId`. The
+   * public runtime (version:'published') resolves this, falling back to
+   * active→viewing when null. Moved only by an explicit Publish action.
+   * `null`/undefined = not published yet.
+   */
+  publishedVersionId?: ID | null;
 }
 
 /**

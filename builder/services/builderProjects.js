@@ -157,8 +157,9 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
           },
         };
       }),
-      activeVersionId:  c.activeVersionId,
-      viewingVersionId: c.viewingVersionId,
+      activeVersionId:    c.activeVersionId,
+      viewingVersionId:   c.viewingVersionId,
+      publishedVersionId: c.publishedVersionId ?? null,
     });
   }
 
@@ -193,8 +194,9 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
         // agent doesn't read as "dirty" the moment it loads.
         body:         withPersonas(v.body),
       })),
-      activeVersionId:  agent.activeVersionId,
-      viewingVersionId: agent.viewingVersionId,
+      activeVersionId:    agent.activeVersionId,
+      viewingVersionId:   agent.viewingVersionId,
+      publishedVersionId: agent.publishedVersionId ?? null,
     }],
   };
 }
@@ -430,6 +432,19 @@ async function setAgentActive({ agentId, versionId }) {
     .where(eq(builderAgents.id, agentId));
 }
 
+/**
+ * Move the agent's customer-facing `publishedVersionId`. Pass
+ * `versionId: null` to unpublish (falls the runtime back to
+ * active→viewing). Decoupled from active on purpose — publishing is
+ * the deliberate "ship to live users" step.
+ */
+async function setAgentPublished({ agentId, versionId }) {
+  await drizzle()
+    .update(builderAgents)
+    .set({ publishedVersionId: versionId ?? null, updatedAt: new Date() })
+    .where(eq(builderAgents.id, agentId));
+}
+
 async function setAgentViewing({ agentId, versionId }) {
   await drizzle()
     .update(builderAgents)
@@ -468,6 +483,11 @@ async function deleteAgentVersion({ agentId, versionId }) {
     if (agent.viewingVersionId === versionId) {
       const e = new Error('Cannot delete the version you are viewing. Switch to another version first.');
       e.code = 'is_viewing';
+      throw e;
+    }
+    if (agent.publishedVersionId === versionId) {
+      const e = new Error('Cannot delete the published version. Publish another version (or unpublish) first.');
+      e.code = 'is_published';
       throw e;
     }
 
@@ -538,6 +558,14 @@ async function setCrewActive({ crewId, versionId }) {
     .where(eq(builderCrews.id, crewId));
 }
 
+/** Crew counterpart of `setAgentPublished`. `versionId: null` unpublishes. */
+async function setCrewPublished({ crewId, versionId }) {
+  await drizzle()
+    .update(builderCrews)
+    .set({ publishedVersionId: versionId ?? null, updatedAt: new Date() })
+    .where(eq(builderCrews.id, crewId));
+}
+
 async function setCrewViewing({ crewId, versionId }) {
   await drizzle()
     .update(builderCrews)
@@ -572,6 +600,11 @@ async function deleteCrewVersion({ crewId, versionId }) {
     if (crew.viewingVersionId === versionId) {
       const e = new Error('Cannot delete the version you are viewing. Switch to another version first.');
       e.code = 'is_viewing';
+      throw e;
+    }
+    if (crew.publishedVersionId === versionId) {
+      const e = new Error('Cannot delete the published version. Publish another version (or unpublish) first.');
+      e.code = 'is_published';
       throw e;
     }
 
@@ -665,9 +698,29 @@ async function deleteProject({ projectId }) {
 // ─── Resolve the runtime's "what to run" given an agent slug ──────
 
 /**
- * Given an agentSlug + ownerUserId + version mode ('viewing' or
- * 'active'), return the addons to execute and metadata needed for
- * logging. Used by BuilderRunner.
+ * Pick which version pointer to load for a runtime mode, for an agent
+ * or crew shell row (both carry the same three pointers).
+ *
+ *   'viewing'   → the editor working copy (builder preview / test).
+ *   'active'    → the builder/admin marker (no fallback — set explicitly).
+ *   'published' → the CUSTOMER-facing pointer, falling back to
+ *                 active → viewing when nothing has been published yet,
+ *                 so live users never hit an empty agent before the
+ *                 first Publish. This is the v1 `getPublishedPrompt`
+ *                 fallback, mirrored per-entity.
+ */
+function pickVersionId(mode, row) {
+  if (mode === 'published') {
+    return row.publishedVersionId || row.activeVersionId || row.viewingVersionId;
+  }
+  if (mode === 'active') return row.activeVersionId;
+  return row.viewingVersionId;
+}
+
+/**
+ * Given an agentSlug + ownerUserId + version mode ('viewing',
+ * 'active', or 'published'), return the addons to execute and metadata
+ * needed for logging. Used by BuilderRunner.
  */
 async function resolveRunnable({
   agentSlug,
@@ -703,7 +756,7 @@ async function resolveRunnable({
     throw e;
   }
 
-  const agentVersionId = mode === 'active' ? agent.activeVersionId : agent.viewingVersionId;
+  const agentVersionId = pickVersionId(mode, agent);
   if (!agentVersionId) throw new Error('Agent has no version pointer');
 
   const [agentVersion] = await d.select()
@@ -748,7 +801,7 @@ async function resolveRunnable({
   }
   if (!crew) throw new Error(`Crew ${preferredCrewId} not found`);
 
-  const crewVersionId = mode === 'active' ? crew.activeVersionId : crew.viewingVersionId;
+  const crewVersionId = pickVersionId(mode, crew);
   if (!crewVersionId) throw new Error('Crew has no version pointer');
 
   const [crewVersion] = await d.select()
@@ -948,10 +1001,12 @@ module.exports = {
   saveAgentVersion,
   saveAgentVersionAs,
   setAgentActive,
+  setAgentPublished,
   setAgentViewing,
   saveCrewVersion,
   saveCrewVersionAs,
   setCrewActive,
+  setCrewPublished,
   setCrewViewing,
   createCrew,
   deleteCrew,

@@ -41,9 +41,14 @@ const builderWorkspaces = pgTable('builder_workspaces', {
   id:           varchar('id', { length: 64 }).primaryKey(),
   ownerUserId:  varchar('owner_user_id', { length: 64 }),
   name:         text('name').notNull().default(''),
+  // Self-reference for nested folders. null = top level. A workspace
+  // can live inside another workspace to unlimited depth.
+  parentId:     varchar('parent_id', { length: 64 }),
   createdAt:    timestamp('created_at').defaultNow().notNull(),
   updatedAt:    timestamp('updated_at').defaultNow().notNull(),
-});
+}, t => ({
+  parentIdx: index('builder_workspaces_parent_idx').on(t.parentId),
+}));
 
 // Agent shell — identity + version pointers. The body fields
 // (name, slug, spec, persona, defaultCrewId) live in
@@ -60,6 +65,12 @@ const builderAgents = pgTable('builder_agents', {
   archivedAt:       timestamp('archived_at'),
   activeVersionId:  varchar('active_version_id', { length: 64 }),
   viewingVersionId: varchar('viewing_version_id', { length: 64 }),
+  // Customer-facing pointer, decoupled from `activeVersionId` (the
+  // builder/admin marker). The public runtime (version:'published')
+  // resolves this, falling back to active→viewing when null, so
+  // customers never see an unpublished draft. Moved only by an
+  // explicit Publish action.
+  publishedVersionId: varchar('published_version_id', { length: 64 }),
   createdAt:        timestamp('created_at').defaultNow().notNull(),
   updatedAt:        timestamp('updated_at').defaultNow().notNull(),
 }, t => ({
@@ -91,6 +102,10 @@ const builderCrews = pgTable('builder_crews', {
   agentId:          varchar('agent_id', { length: 64 }).notNull(),
   activeVersionId:  varchar('active_version_id', { length: 64 }),
   viewingVersionId: varchar('viewing_version_id', { length: 64 }),
+  // Customer-facing pointer — see builderAgents.publishedVersionId.
+  // Published per-crew so a crew can stay on its live version while
+  // the agent shell or a sibling crew is being iterated.
+  publishedVersionId: varchar('published_version_id', { length: 64 }),
   createdAt:        timestamp('created_at').defaultNow().notNull(),
   updatedAt:        timestamp('updated_at').defaultNow().notNull(),
 }, t => ({

@@ -213,6 +213,23 @@ router.put('/agents/:agentId/active', async (req, res) => {
   }
 });
 
+/**
+ * PUT /api/builder/agents/:agentId/published  Body: { versionId }
+ *   Move the customer-facing pointer. `versionId: null` unpublishes
+ *   (runtime falls back to active→viewing).
+ */
+router.put('/agents/:agentId/published', async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const { versionId = null } = req.body || {};
+    await projects.setAgentPublished({ agentId, versionId });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[builder] PUT agent published failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.put('/agents/:agentId/viewing', async (req, res) => {
   try {
     const { agentId } = req.params;
@@ -238,7 +255,7 @@ router.delete('/agents/:agentId/versions/:versionId', async (req, res) => {
     await projects.deleteAgentVersion({ agentId, versionId });
     res.json({ ok: true });
   } catch (err) {
-    const guard = ['is_active', 'is_viewing', 'last_version'].includes(err.code);
+    const guard = ['is_active', 'is_viewing', 'is_published', 'last_version'].includes(err.code);
     const status = err.code === 'not_found' ? 404 : guard ? 409 : 500;
     if (status === 500) console.error('[builder] DELETE agent version failed:', err);
     res.status(status).json({ error: err.message, code: err.code });
@@ -321,6 +338,22 @@ router.put('/crews/:crewId/active', async (req, res) => {
   }
 });
 
+/**
+ * PUT /api/builder/crews/:crewId/published  Body: { versionId }
+ *   `versionId: null` unpublishes this crew.
+ */
+router.put('/crews/:crewId/published', async (req, res) => {
+  try {
+    const { crewId } = req.params;
+    const { versionId = null } = req.body || {};
+    await projects.setCrewPublished({ crewId, versionId });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[builder] PUT crew published failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.put('/crews/:crewId/viewing', async (req, res) => {
   try {
     const { crewId } = req.params;
@@ -345,7 +378,7 @@ router.delete('/crews/:crewId/versions/:versionId', async (req, res) => {
     await projects.deleteCrewVersion({ crewId, versionId });
     res.json({ ok: true });
   } catch (err) {
-    const guard = ['is_active', 'is_viewing', 'last_version'].includes(err.code);
+    const guard = ['is_active', 'is_viewing', 'is_published', 'last_version'].includes(err.code);
     const status = err.code === 'not_found' ? 404 : guard ? 409 : 500;
     if (status === 500) console.error('[builder] DELETE crew version failed:', err);
     res.status(status).json({ error: err.message, code: err.code });

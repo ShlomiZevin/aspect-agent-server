@@ -63,6 +63,19 @@ function resolveModelLabel(modelRef) {
 require('../plugins');
 
 /**
+ * Map the runtime `version` arg to the resolver `mode`.
+ *   'active'    → builder/admin marker
+ *   'published' → customer-facing pointer (falls back to active→viewing
+ *                 inside resolveRunnable)
+ *   anything else (incl. 'viewing' / undefined) → the editor working copy
+ */
+function versionToMode(version) {
+  if (version === 'active') return 'active';
+  if (version === 'published') return 'published';
+  return 'viewing';
+}
+
+/**
  * Partition an ordered blocking-lane addon array into STEPS.
  *
  * A step is a set of addons that run concurrently; steps run in
@@ -190,7 +203,7 @@ async function runOnce({
   const runnable = await resolveRunnable({
     agentSlug,
     ownerUserId,
-    mode: version === 'active' ? 'active' : 'viewing',
+    mode: versionToMode(version),
     overrideCrewId: currentCrewId,
     overrideAgentBody,
     overrideCrewBody: (currentCrewId && crewBodyOverrides[currentCrewId]) || overrideCrewBody,
@@ -419,7 +432,7 @@ async function runOnce({
       const nextRunnable = await resolveRunnable({
         agentSlug,
         ownerUserId,
-        mode: version === 'active' ? 'active' : 'viewing',
+        mode: versionToMode(version),
         overrideCrewId: cascadeTo,
         overrideAgentBody,
         // Pick this crew's working body from the map so cascades respect

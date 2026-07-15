@@ -1,16 +1,16 @@
 /**
  * Builder V2 — Workspaces routes (`/api/builder/workspaces`).
  *
- * Named folders grouping agents on the builder home page. Mounted
- * under its own prefix so the catch-all projectsRoute doesn't shadow
- * it (same pattern as repoRoute).
+ * Named, NESTABLE folders grouping agents on the builder home page.
+ * Mounted under its own prefix so the catch-all projectsRoute doesn't
+ * shadow it (same pattern as repoRoute).
  *
- *   GET    /                       → list all workspaces
- *   POST   /                       → create { id, ownerUserId?, name }
- *   PATCH  /:id                    → rename { name }
- *   DELETE /:id?cascade=orphan|agents
- *           orphan (default) → agents move to top level
- *           agents           → agents under it are deleted too
+ *   GET    /                         → list all workspaces (with parentId)
+ *   POST   /                         → create { id, ownerUserId?, name, parentId? }
+ *   PATCH  /:id                      → { name? } rename · { parentId? } move
+ *   DELETE /:id?cascade=orphan|hard
+ *           orphan (default) → direct contents move up one level
+ *           hard             → folder + all sub-folders + their agents deleted
  */
 
 const express = require('express');
@@ -30,9 +30,9 @@ router.get('/', async (_req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { id, ownerUserId, name } = req.body || {};
+    const { id, ownerUserId, name, parentId } = req.body || {};
     if (!id) return res.status(400).json({ error: 'Missing id' });
-    const ws = await workspaces.createWorkspace({ id, ownerUserId, name });
+    const ws = await workspaces.createWorkspace({ id, ownerUserId, name, parentId });
     res.status(201).json({ workspace: ws });
   } catch (err) {
     console.error('[builder] POST workspace failed:', err);
@@ -43,8 +43,13 @@ router.post('/', async (req, res) => {
 router.patch('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name } = req.body || {};
-    await workspaces.renameWorkspace({ id, name });
+    const body = req.body || {};
+    if (typeof body.name === 'string') {
+      await workspaces.renameWorkspace({ id, name: body.name });
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'parentId')) {
+      await workspaces.moveWorkspace({ id, parentId: body.parentId || null });
+    }
     res.json({ ok: true });
   } catch (err) {
     const status = err.code === 'bad_input' ? 400 : 500;
@@ -56,7 +61,7 @@ router.patch('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const cascade = req.query.cascade === 'agents' ? 'agents' : 'orphan';
+    const cascade = req.query.cascade === 'hard' ? 'hard' : 'orphan';
     await workspaces.deleteWorkspace({ id, cascade });
     res.json({ ok: true });
   } catch (err) {
