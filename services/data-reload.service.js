@@ -89,6 +89,25 @@ class DataReloadService {
   // ── Public API ───────────────────────────────────────────────────────────────
 
   /**
+   * Is any OTHER schema currently mid-import or mid-indexing? Used to serialize
+   * heavy DB work (import/indexing) across schemas so two schedules landing in
+   * the same tick don't run concurrently and contend for the same aspect-data-db
+   * connections. Drive sync is exempt - it's cheap and doesn't touch this table's
+   * lock, so it's left free to overlap. Uses the same 5h staleness cutoff as the
+   * per-schema checks, so a truly stuck run can't deadlock every other schema
+   * forever - it just stops blocking after 5h and self-heal/cleanup takes over.
+   */
+  async _otherSchemaBusy(schemaName) {
+    const res = await this.db.query(
+      `SELECT id, schema_name FROM public.data_reload_runs
+       WHERE schema_name <> $1 AND status = 'running' AND started_at > NOW() - INTERVAL '5 hours'
+       LIMIT 1`,
+      [schemaName]
+    );
+    return res.rows[0] || null;
+  }
+
+  /**
    * Throws 409 if any operation is currently running for this schema.
    * Checks both in-memory state (fast path) and DB (survives server restarts).
    */
@@ -176,11 +195,15 @@ class DataReloadService {
   }
 
   /**
-   * Idempotent check called by Cloud Scheduler at 07:00, 08:00, 09:00, 10:00, 11:00.
+   * Idempotent check called every minute by the scheduler tick (see
+   * scheduler-tick.service.js) for each schema whose import window is open.
    * Starts import only if:
-   *   1. Nothing is currently running
-   *   2. No completed import exists today (since midnight UTC)
-   * This enables automatic retry: if 07:00 run fails, 08:00 will retry, etc.
+   *   1. Nothing is currently running for this schema
+   *   2. No other schema is currently importing/indexing (serialized - see
+   *      _otherSchemaBusy)
+   *   3. No completed import exists today (Israel calendar day)
+   * This enables automatic retry: if the first tick in the window fails or is
+   * blocked, the next tick retries, for up to 5h.
    * Returns { action: 'started'|'skipped', reason?, runId? }
    */
   async ensureLoaded(schemaName) {
@@ -199,11 +222,16 @@ class DataReloadService {
       return { action: 'skipped', reason: `run #${activeRes.rows[0].id} still running in DB` };
     }
 
+    const otherBusy = await this._otherSchemaBusy(schemaName);
+    if (otherBusy) {
+      return { action: 'skipped', reason: `waiting for ${otherBusy.schema_name} (run #${otherBusy.id}) to finish` };
+    }
+
     const completedTodayRes = await this.db.query(
       `SELECT id FROM public.data_reload_runs
        WHERE schema_name = $1 AND status = 'completed'
          AND total_files IS NOT NULL
-         AND started_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
+         AND started_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Jerusalem') AT TIME ZONE 'Asia/Jerusalem')
        LIMIT 1`,
       [schemaName]
     );
@@ -217,10 +245,14 @@ class DataReloadService {
   }
 
   /**
-   * Idempotent check called by Cloud Scheduler every 15 min.
-   * Starts indexing only if:
-   *   1. Nothing is currently running (in-memory or DB within last 3h)
-   *   2. There is a completed cron import with no run started after it
+   * Idempotent check called every minute by the scheduler tick for every
+   * registered schema (indexing has no schedule of its own - see
+   * scheduler-tick.service.js). Starts indexing only if:
+   *   1. Nothing is currently running for this schema (in-memory or DB within
+   *      the last 5h)
+   *   2. No other schema is currently importing/indexing (serialized - see
+   *      _otherSchemaBusy)
+   *   3. There is a completed import with no index run started after it
    * Returns { action: 'started'|'skipped', reason?, runId? }
    */
   async ensureIndexed(schemaName) {
@@ -244,6 +276,11 @@ class DataReloadService {
     );
     if (activeRes.rows.length > 0) {
       return { action: 'skipped', reason: `run #${activeRes.rows[0].id} still running in DB` };
+    }
+
+    const otherBusy = await this._otherSchemaBusy(schemaName);
+    if (otherBusy) {
+      return { action: 'skipped', reason: `waiting for ${otherBusy.schema_name} (run #${otherBusy.id}) to finish` };
     }
 
     const importRes = await this.db.query(
