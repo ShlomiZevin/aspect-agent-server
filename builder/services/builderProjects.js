@@ -20,7 +20,7 @@
  */
 
 const db = require('../../services/db.pg');
-const { eq, and, desc } = require('drizzle-orm');
+const { eq, and, desc, sql } = require('drizzle-orm');
 const {
   builderProjects,
   builderAgents,
@@ -90,9 +90,14 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
     .where(eq(builderAgentVersions.agentId, agent.id))
     .orderBy(desc(builderAgentVersions.number));
 
-  // Build the working-copy agent fields from the viewing version's body.
-  const viewing = agentVersions.find(v => v.id === agent.viewingVersionId);
-  const agentBody = withPersonas(viewing ? viewing.body : {});
+  // Build the working-copy agent fields from the ACTIVE version — the
+  // editable line. Reopening the builder restores your active work, not
+  // whatever you last previewed. (Working copy == active is the
+  // invariant the client relies on for reload→active.) Falls back to
+  // viewing if the active pointer is somehow unset.
+  const activeAgentVersion = agentVersions.find(v => v.id === agent.activeVersionId)
+    || agentVersions.find(v => v.id === agent.viewingVersionId);
+  const agentBody = withPersonas(activeAgentVersion ? activeAgentVersion.body : {});
 
   // All crews of this agent — ordered by creation time so the
   // sidebar is deterministic across users. Without ORDER BY the
@@ -102,7 +107,9 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
   const crewRows = await d.select()
     .from(builderCrews)
     .where(eq(builderCrews.agentId, agent.id))
-    .orderBy(builderCrews.createdAt);
+    // Author-controlled order first (drag-reorder writes `position`),
+    // then createdAt so un-positioned crews keep a stable order.
+    .orderBy(sql`${builderCrews.position} ASC NULLS LAST`, builderCrews.createdAt);
 
   const crews = [];
   for (const c of crewRows) {
@@ -110,8 +117,10 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       .from(builderCrewVersions)
       .where(eq(builderCrewVersions.crewId, c.id))
       .orderBy(desc(builderCrewVersions.number));
-    const crewViewing = crewVersions.find(v => v.id === c.viewingVersionId);
-    const crewBody = crewViewing ? crewViewing.body : {};
+    // Working copy from the crew's ACTIVE version (see the agent block).
+    const crewActive = crewVersions.find(v => v.id === c.activeVersionId)
+      || crewVersions.find(v => v.id === c.viewingVersionId);
+    const crewBody = crewActive ? crewActive.body : {};
     // Phase B: migrate the addon shapes on read so the client always
     // sees the new template-owns-placement form. Source data may still
     // be in the old structured-context shape; the migration is
@@ -158,7 +167,10 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
         };
       }),
       activeVersionId:    c.activeVersionId,
-      viewingVersionId:   c.viewingVersionId,
+      // Working copy loads from active, so viewing tracks active on
+      // load (the invariant: viewing == active unless mid-preview,
+      // which is transient client-only state).
+      viewingVersionId:   c.activeVersionId ?? c.viewingVersionId,
       publishedVersionId: c.publishedVersionId ?? null,
     });
   }
@@ -195,7 +207,7 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
         body:         withPersonas(v.body),
       })),
       activeVersionId:    agent.activeVersionId,
-      viewingVersionId:   agent.viewingVersionId,
+      viewingVersionId:   agent.activeVersionId ?? agent.viewingVersionId,
       publishedVersionId: agent.publishedVersionId ?? null,
     }],
   };
@@ -564,6 +576,26 @@ async function setCrewPublished({ crewId, versionId }) {
     .update(builderCrews)
     .set({ publishedVersionId: versionId ?? null, updatedAt: new Date() })
     .where(eq(builderCrews.id, crewId));
+}
+
+/**
+ * Persist the author-chosen crew order. `crewIds` is the full ordered
+ * list for the agent; each crew's `position` is set to its index. Only
+ * crews belonging to `agentId` are touched. Purely visual ordering.
+ */
+async function reorderCrews({ agentId, crewIds }) {
+  if (!Array.isArray(crewIds) || crewIds.length === 0) return;
+  const d = drizzle();
+  await d.transaction(async tx => {
+    for (let i = 0; i < crewIds.length; i++) {
+      await tx.update(builderCrews)
+        .set({ position: i, updatedAt: new Date() })
+        .where(and(
+          eq(builderCrews.id, crewIds[i]),
+          eq(builderCrews.agentId, agentId),
+        ));
+    }
+  });
 }
 
 async function setCrewViewing({ crewId, versionId }) {
@@ -1008,6 +1040,7 @@ module.exports = {
   setCrewActive,
   setCrewPublished,
   setCrewViewing,
+  reorderCrews,
   createCrew,
   deleteCrew,
   deleteProject,

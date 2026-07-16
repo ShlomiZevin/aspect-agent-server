@@ -106,6 +106,11 @@ const builderCrews = pgTable('builder_crews', {
   // Published per-crew so a crew can stay on its live version while
   // the agent shell or a sibling crew is being iterated.
   publishedVersionId: varchar('published_version_id', { length: 64 }),
+  // Author-controlled sidebar order. Nullable so existing crews sort
+  // by createdAt until first dragged; hydrate uses `position NULLS
+  // LAST, createdAt`. Purely visual — the starting crew is the agent's
+  // defaultCrewId, and transitions drive the rest.
+  position:         integer('position'),
   createdAt:        timestamp('created_at').defaultNow().notNull(),
   updatedAt:        timestamp('updated_at').defaultNow().notNull(),
 }, t => ({

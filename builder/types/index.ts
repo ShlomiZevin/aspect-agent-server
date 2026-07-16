@@ -667,6 +667,17 @@ export interface EnumTypeDef {
   /** Canonical key used in `{{enum:NAME}}` tokens and in
    *  `FieldDef.enumType` references. Unique per agent. */
   name: string;
+  /**
+   * Set when this enum was auto-created by the field editor's "Choice"
+   * type — a quick one-field value list authored inline on the field
+   * instead of on the Targeted KB page. Purely additive metadata: the
+   * runtime ignores it; the UI uses it to (a) keep the values editable
+   * inline on the owning field, (b) badge the entry on the Targeted KB
+   * page, and (c) delete the enum together with its field (unless
+   * another field has since bound to it). The enum is NOT renamed when
+   * the field renames — rename it on the Targeted KB page anytime.
+   */
+  ownedByFieldId?: ID;
   /** Section NAMES declared on this enum — the address space the
    *  `{{enum:NAME:SECTION}}` and `{{dc:field:SECTION}}` tokens
    *  resolve against. Shared across every value so the aggregate

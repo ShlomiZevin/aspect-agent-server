@@ -284,6 +284,24 @@ router.post('/agents/:agentId/crews', async (req, res) => {
 });
 
 /**
+ * PUT /api/builder/agents/:agentId/crew-order   Body: { crewIds: [...] }
+ *   Persist the author-chosen crew order (drag-reorder in the sidebar).
+ *   Writes `position = index` for each crew. Visual only.
+ */
+router.put('/agents/:agentId/crew-order', async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const { crewIds } = req.body || {};
+    if (!Array.isArray(crewIds)) return res.status(400).json({ error: 'Missing crewIds' });
+    await projects.reorderCrews({ agentId, crewIds });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[builder] PUT crew-order failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * DELETE /api/builder/crews/:crewId
  */
 router.delete('/crews/:crewId', async (req, res) => {
