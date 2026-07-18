@@ -953,14 +953,14 @@ export type AgentBody = Pick<
 // body. See docs/guides/BUILDER_V2_LIVE_BRAIN.md.
 
 /**
- * How a Live Brain panel draws its resolved content. Each render type
- * has a FIXED, known data shape — so a `prompt` source is simply told to
- * return that shape, and a `bind` source maps an existing value to it.
- * (Custom HTML / a design builder + a saved-designs repository come
- * later — v1 ships this built-in set.)
+ * How a Live Brain panel draws its resolved content. Most render types
+ * have a FIXED, known data shape — a `prompt` source is told to return
+ * that shape. `text` and `html` are the two free-form string renders:
+ * `text` renders Markdown; `html` renders sanitized HTML (styled cards,
+ * custom layout — scripts stripped).
  */
 export type PanelRender =
-  | 'text' | 'keyvalue' | 'goals' | 'bars' | 'donut';
+  | 'text' | 'html' | 'keyvalue' | 'goals' | 'bars' | 'donut';
 
 /**
  * A TEXT panel — the author writes free text and drops in live values

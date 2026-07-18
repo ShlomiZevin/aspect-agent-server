@@ -86,9 +86,12 @@ function resolveText(ctx, panel) {
  *  the resolved string as that shape (so a power user can compose JSON
  *  with tokens). */
 function shapeTextEntry(render, resolved) {
-  if (render === 'text' || !render) {
+  // `text` (Markdown) and `html` are free-form string renders — store the
+  // resolved string as-is under the actual render so the client draws it
+  // with the right renderer.
+  if (render === 'text' || render === 'html' || !render) {
     const text = (resolved || '').trim();
-    return text ? { render: 'text', text, ranAt: Date.now() } : null;
+    return text ? { render: render || 'text', text, ranAt: Date.now() } : null;
   }
   const { parsed } = parseOutput('json-to-memory', resolved || '');
   const values = validatePanelValues(render, parsed);

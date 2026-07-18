@@ -35,6 +35,22 @@ const LIVE_BRAIN_PANEL_PLUGIN_ID = 'live-brain-panel';
 const ANALYSIS_DIRECTIVE =
   'Using the conversation above, produce this panel’s content exactly as instructed. Do not reply to the user or continue the conversation — output only the panel content.';
 
+// Baked-in rules for HTML panels so the author doesn't have to spell them
+// out. The panel renders a sanitized HTML *fragment* inside a card that's
+// already on the page — a whole document (<!DOCTYPE>/<html>/<head>) or a
+// <style> block is stripped for safety, and its CSS would leak as text.
+const HTML_FRAGMENT_DIRECTIVE =
+  ' Output a single HTML fragment only — no <!DOCTYPE>, <html>, <head>, <body>, <style>, <script>, and no markdown code fences. Style every element with inline style="…" attributes (a <style> block will NOT apply).';
+
+/** For an HTML panel, drop a ```html … ``` fence the model may wrap the
+ *  fragment in — otherwise Markdown renders it as a literal code block. */
+function stripHtmlFence(s) {
+  return String(s || '')
+    .replace(/^\s*```(?:html)?\s*\n?/i, '')
+    .replace(/\n?```\s*$/i, '')
+    .trim();
+}
+
 async function run(ctx) {
   const {
     instance, prompt, modelString, conversationId,
@@ -45,9 +61,17 @@ async function run(ctx) {
   const cfg = instance.config || {};
   const panelId = instance.instanceId;
   const render = typeof cfg.render === 'string' ? cfg.render : 'text';
-  const structured = render !== 'text';
+  // `text` (Markdown) and `html` are free-form string renders — everything
+  // else has a JSON shape the model must return.
+  const structured = render !== 'text' && render !== 'html';
 
-  const result = await llm.sendOneShot(prompt, ANALYSIS_DIRECTIVE, {
+  // HTML panels get the fragment rules appended so the model returns a
+  // clean inline-styled fragment even if the author didn't spell it out.
+  const directive = render === 'html'
+    ? ANALYSIS_DIRECTIVE + HTML_FRAGMENT_DIRECTIVE
+    : ANALYSIS_DIRECTIVE;
+
+  const result = await llm.sendOneShot(prompt, directive, {
     model:          modelString,
     jsonOutput:     structured,
     historyMessages,
@@ -64,9 +88,11 @@ async function run(ctx) {
   let parseError;
 
   if (!structured) {
-    const text = raw.trim();
+    // HTML: strip a ```html fence the model may wrap the fragment in,
+    // else Markdown renders it as a literal code block instead of a card.
+    const text = render === 'html' ? stripHtmlFence(raw) : raw.trim();
     parsedOutput = { text };
-    entry = text ? { render: 'text', text, ranAt: Date.now() } : null;
+    entry = text ? { render, text, ranAt: Date.now() } : null;
   } else {
     const { parsed, error } = parseOutput('json-to-memory', raw);
     parseError = error || undefined;
