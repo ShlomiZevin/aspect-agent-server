@@ -54,6 +54,13 @@ const SECTION_SUMMARY = 'summary';
  *  runs, never accumulated. Read by the `{{kb-retrieve:NAME}}` token.
  *  See docs/guides/KB_V2_RETRIEVER.md. */
 const SECTION_RETRIEVAL = 'retrieval';
+/** Panels = Live Brain panel outputs. Flat `{ [panelId]: entry }` where
+ *  each entry is `{ render, text?|values?, ranAt }`. Rolling-replace per
+ *  panel; a slot is CLEARED (so the panel hides) when a run produces an
+ *  invalid/empty result. Read by the customer Live Brain surface and the
+ *  builder's brain run inspector. Live-Brain panels are the ONLY writers.
+ *  See docs/guides/BUILDER_V2_LIVE_BRAIN.md. */
+const SECTION_PANELS = 'panels';
 /** Sections that follow the `{ [domain]: { [field]: value } }` shape.
  *  Summary breaks the pattern — its writes are flat `{ [name]: entry }` —
  *  so it has its own write path and is NOT in this list. */
@@ -90,18 +97,21 @@ function normalizeBlob(raw) {
     [SECTION_THINKING]:  {},
     [SECTION_SUMMARY]:   {},
     [SECTION_RETRIEVAL]: {},
+    [SECTION_PANELS]:    {},
     runCounts:           {},
   });
   if (!raw || typeof raw !== 'object') return empty();
   if (Object.prototype.hasOwnProperty.call(raw, SECTION_MEMORY) ||
       Object.prototype.hasOwnProperty.call(raw, SECTION_THINKING) ||
       Object.prototype.hasOwnProperty.call(raw, SECTION_SUMMARY) ||
-      Object.prototype.hasOwnProperty.call(raw, SECTION_RETRIEVAL)) {
+      Object.prototype.hasOwnProperty.call(raw, SECTION_RETRIEVAL) ||
+      Object.prototype.hasOwnProperty.call(raw, SECTION_PANELS)) {
     return {
       [SECTION_MEMORY]:    raw[SECTION_MEMORY]    && typeof raw[SECTION_MEMORY]    === 'object' ? raw[SECTION_MEMORY]    : {},
       [SECTION_THINKING]:  raw[SECTION_THINKING]  && typeof raw[SECTION_THINKING]  === 'object' ? raw[SECTION_THINKING]  : {},
       [SECTION_SUMMARY]:   raw[SECTION_SUMMARY]   && typeof raw[SECTION_SUMMARY]   === 'object' ? raw[SECTION_SUMMARY]   : {},
       [SECTION_RETRIEVAL]: raw[SECTION_RETRIEVAL] && typeof raw[SECTION_RETRIEVAL] === 'object' ? raw[SECTION_RETRIEVAL] : {},
+      [SECTION_PANELS]:    raw[SECTION_PANELS]    && typeof raw[SECTION_PANELS]    === 'object' ? raw[SECTION_PANELS]    : {},
       runCounts:           raw.runCounts && typeof raw.runCounts === 'object' ? raw.runCounts : {},
     };
   }
@@ -183,6 +193,18 @@ function applyWrites(blob, writes) {
       continue;
     }
 
+    // Panels: flat, rolling-replace slots keyed by panel id (Live Brain).
+    //   { kind:'panel', panelId, entry }      → set slot (replace)
+    //   { kind:'panel', panelId, clear:true } → drop slot (panel hides)
+    if (w.kind === 'panel') {
+      if (!blob[SECTION_PANELS]) blob[SECTION_PANELS] = {};
+      if (!w.panelId) continue;
+      if (w.clear === true) { delete blob[SECTION_PANELS][w.panelId]; continue; }
+      if (!w.entry || typeof w.entry !== 'object') continue;
+      blob[SECTION_PANELS][w.panelId] = w.entry;
+      continue;
+    }
+
     const sec = sectionKey(w.kind);
     if (!blob[sec]) blob[sec] = {};
 
@@ -220,6 +242,20 @@ function getRetrieval(blob, name) {
   const sec = blob?.[SECTION_RETRIEVAL];
   if (!sec || typeof name !== 'string' || !name) return undefined;
   return sec[name];
+}
+
+/** Read a Live Brain panel's stored entry by panel id. Returns undefined
+ *  when the panel has no valid value (never ran, or last run was hidden). */
+function getPanel(blob, panelId) {
+  const sec = blob?.[SECTION_PANELS];
+  if (!sec || typeof panelId !== 'string' || !panelId) return undefined;
+  return sec[panelId];
+}
+
+/** The whole panels section — `{ [panelId]: entry }`. Empty object when
+ *  nothing has been written. */
+function listPanels(blob) {
+  return (blob && blob[SECTION_PANELS]) || {};
 }
 
 /** Read a summary entry by name. Returns undefined when the slot is
@@ -340,12 +376,15 @@ module.exports = {
   getSummary,
   listSummarizerNames,
   getRetrieval,
+  getPanel,
+  listPanels,
   NAMESPACE,
   GENERAL_KEY,
   SECTION_MEMORY,
   SECTION_THINKING,
   SECTION_SUMMARY,
   SECTION_RETRIEVAL,
+  SECTION_PANELS,
   DOMAIN_SECTIONS,
   SECTIONS,
 };

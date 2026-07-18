@@ -196,6 +196,10 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       enums:           Array.isArray(agentBody.enums)           ? agentBody.enums           : [],
       snippets:        Array.isArray(agentBody.snippets)        ? agentBody.snippets        : [],
       cortex:          Array.isArray(agentBody.cortex)          ? agentBody.cortex          : [],
+      // Live Brain config — carried through so saved panels survive a
+      // reload. Absent = the agent never used it (working copy treats it
+      // as no panels).
+      liveBrain:       agentBody.liveBrain,
       crews,
       versions: agentVersions.map(v => ({
         id:           v.id,

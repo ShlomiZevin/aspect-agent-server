@@ -8,7 +8,7 @@
 
 const db = require('../../services/db.pg');
 const { addonRuns } = require('../../db/schema');
-const { eq, asc } = require('drizzle-orm');
+const { eq, and, asc, desc } = require('drizzle-orm');
 
 function drizzle() {
   return db.getDrizzle();
@@ -58,6 +58,22 @@ async function runsForMessage(messageId) {
 }
 
 /**
+ * Most-recent runs for one plugin across a whole conversation, newest
+ * first. Powers the Live Brain run inspector (filtered to the
+ * `live-brain-panel` plugin so brain runs stay separate from chat addons).
+ */
+async function recentRunsForConversation(conversationId, pluginId, limit = 40) {
+  return drizzle().select()
+    .from(addonRuns)
+    .where(and(
+      eq(addonRuns.conversationId, Number(conversationId)),
+      eq(addonRuns.pluginId, pluginId),
+    ))
+    .orderBy(desc(addonRuns.startedAt))
+    .limit(limit);
+}
+
+/**
  * Cascade delete for a conversation (used by DELETE conversation).
  */
 async function deleteForConversation(conversationId) {
@@ -76,6 +92,7 @@ async function deleteForMessage(messageId) {
 module.exports = {
   insertRun,
   runsForMessage,
+  recentRunsForConversation,
   deleteForConversation,
   deleteForMessage,
 };

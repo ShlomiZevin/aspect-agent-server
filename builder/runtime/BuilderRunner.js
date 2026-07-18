@@ -39,6 +39,7 @@ const builderMemory = require('./builderMemory');
 const { seedPinnedFields } = require('./pinnedFields');
 const { runAddon } = require('./addonRunner');
 const { dispatchOfflineAddons } = require('./offlineDispatcher');
+const { dispatchLiveBrainPanels } = require('./liveBrainDispatcher');
 const modelsService = require('../../services/models.service');
 
 // Provider-id → display label, pre-indexed so the per-addon resolve
@@ -514,6 +515,11 @@ async function runOnce({
   // the same timeline.
   ctx.historyExcludeFromMessageId = undefined;
   await dispatchOfflineAddons({ ctx, didTransition: anyTransition });
+
+  // ── 7. Compute the Live Brain panels. Same non-blocking phase as the
+  // offline lane (after the reply lands), and after it so panels can read
+  // anything the offline addons just wrote. Never blocks the reply.
+  await dispatchLiveBrainPanels({ ctx, didTransition: anyTransition });
 
   return { assistantText, totalMs: Date.now() - totalStart };
 }

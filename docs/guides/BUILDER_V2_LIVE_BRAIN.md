@@ -5,10 +5,68 @@
 > [LYBI_LIVE_CHAT_PLAN.md](./LYBI_LIVE_CHAT_PLAN.md) (the customer chat that
 > hosts the panel).
 >
-> **Status:** **Phase 1 built (client)** — 2026-07. The authoring screen,
-> the `agent.liveBrain` config (versioned on the agent body), the built-in
-> renderers, and a live preview are in the builder. Runtime (Phase 2) and
-> the customer-surface render (Phase 3) are not wired yet.
+> **Status:** **Phase 1 (authoring UI) + Phase 2 (server runtime) built** —
+> 2026-07. Phase 1: the authoring screen, `agent.liveBrain` config
+> (versioned on the agent body), built-in renderers, live preview. Phase 2:
+> panels now compute during a chat — text panels resolve their tokens every
+> turn, AI panels run on their cadence via the non-blocking addon path and
+> write to `brain.panels`; a bad/misshapen answer clears the slot so the
+> panel hides; runs are tagged `pluginId: 'live-brain-panel'` and logged to
+> `addon_runs` + `llm_usage`. Resolved panels are served by
+> `GET /api/agents/:slug/conversations/:convId/live-brain`.
+> **Phase 3 (render on the customer surface + builder run inspector) is
+> built too.** Everything typechecks / builds / loads; a live end-to-end
+> smoke test (running server + DB + LLM) is the remaining verification.
+
+### Phase 3 — what shipped (client)
+- Customer `/:agent/live`: `SidePanel` (brain) now renders the real panels via
+  `components/BrainPanels.tsx` + `useLiveBrain.ts` — fetches on load, refetches
+  after each turn, has a Refresh button. Runs the same version as the chat
+  (published).
+- Builder `LiveBrainScreen`: the preview shows **live values** (joined by panel
+  id, "● live" chip) for the current preview conversation, plus a **run
+  inspector** (which panel ran · duration · model · input prompt · output),
+  fetched from the endpoints below.
+- `builderApi.ts`: `fetchLiveBrain`, `fetchLiveBrainValues`, `fetchLiveBrainRuns`.
+- Server: `GET .../memory` now also returns raw `panels`; new
+  `GET .../live-brain/runs` (recent `live-brain-panel` runs, newest first).
+
+### Phase 2 — what shipped (server)
+- `builderMemory.js` — new `panels` brain section (flat `{ [panelId]: entry }`),
+  `applyWrites` `kind:'panel'` (set / clear), `getPanel` / `listPanels`.
+- `runtime/panelShapes.js` — strict validator per render type (bad shape → null → hide).
+- `plugins/liveBrainPanel/addon.liveBrainPanel.js` — internal plugin: LLM call →
+  validate → write/clear the slot. No client mirror / no Alfred descriptor.
+- `runtime/liveBrainDispatcher.js` — resolves text panels + cadence-gates AI panels,
+  reusing `promptAssembler`, `offlineTriggerState`, and `addonRunner`.
+- `BuilderRunner.js` — invokes the dispatcher after the offline lane.
+- `runtimeRoute.js` — `GET .../live-brain` (filter → hide, read `brain.panels`).
+
+## Smoke test (quick end-to-end check)
+
+A shallow "does it actually work" run — drive the feature once, top to bottom.
+
+1. **Start it up** — server (`cd aspect-agent-server && npm start`, with LLM API
+   keys set) + client (`cd aspect-react-client && npm run dev`).
+2. **Author 2 panels** — in the builder, open an agent → **Live Brain**. Add:
+   - a **Text** panel (plain text, or a `{{field:…}}` token);
+   - an **AI** panel — render **Bars**, prompt e.g. *"rate the user's mood as
+     calm / anxious / hopeful, 0–100"*, **Runs: every 1 message**.
+   Then **Save → Set Active → Publish**.
+3. **Chat** — in the User Chat (right), send a couple of messages.
+4. **Watch it fill (builder)** — the Live Brain preview flips to **"● live"** and
+   shows real values; the **run inspector** lists the AI run — open it for the
+   input prompt + output.
+5. **Customer view** — open **`/<agent>/live`**, open the brain panel: panels
+   render; send a message → they update; **Refresh** works.
+6. **Usage** — the LLM usage dashboard shows the run tagged **`live-brain-panel`**.
+7. **Negative check** — make an AI panel return junk for its shape → that panel
+   simply **doesn't appear** (the "bad answer hides it" rule).
+
+Two gotchas: the **customer** surface uses the **published** version (so Publish),
+while the builder preview reflects your working copy.
+
+---
 
 ## Final decisions (v1)
 

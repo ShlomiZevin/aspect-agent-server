@@ -272,6 +272,9 @@ router.get('/:slug/conversations/:convId/memory', async (req, res) => {
       // Ephemeral KB Retriever slots ({{kb:NAME}} injection text) — the
       // Live Brain panel renders these under "Knowledge".
       retrieval: blob.retrieval || {},
+      // Live Brain panel outputs, keyed by panel id. Raw (no filter/config
+      // join) — the builder screen joins them with its working-copy config.
+      panels: blob.panels || {},
     });
   } catch (err) {
     console.error('[builder] GET memory failed:', err);
@@ -309,6 +312,86 @@ router.patch('/:slug/conversations/:convId/memory', async (req, res) => {
     });
   } catch (err) {
     console.error('[builder] PATCH memory failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/agents/:slug/conversations/:convId/live-brain
+ *   Resolve the agent's Live Brain panels for this conversation into
+ *   render-ready content. Applies each panel's filter (hidden panels are
+ *   omitted) and returns only panels that currently hold a valid value
+ *   (text resolved from tokens every turn; AI panels computed on their
+ *   cadence). This is what the customer Live Brain + the builder preview
+ *   render.
+ *
+ *   Query: ownerUserId (required), version ('active' default | 'viewing' | 'published').
+ *   Returns { panels: [{ id, title, render, text?|values?, ranAt }] }.
+ */
+router.get('/:slug/conversations/:convId/live-brain', async (req, res) => {
+  try {
+    const { slug, convId } = req.params;
+    const { ownerUserId, version = 'active' } = req.query;
+    if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
+    const userId = await resolveUserId(String(ownerUserId));
+    const builderMemory = require('../runtime/builderMemory');
+    const { resolveRunnable } = require('../services/builderProjects');
+    const { resolvePanelsForClient } = require('../runtime/liveBrainDispatcher');
+
+    const mode = version === 'viewing' ? 'viewing'
+      : version === 'published' ? 'published'
+      : 'active';
+
+    let runnable;
+    try {
+      runnable = await resolveRunnable({ agentSlug: String(slug), ownerUserId: String(ownerUserId), mode });
+    } catch {
+      // Agent not built / no active version yet — nothing to show.
+      return res.json({ panels: [] });
+    }
+
+    const panels = Array.isArray(runnable?.agent?.body?.liveBrain?.panels)
+      ? runnable.agent.body.liveBrain.panels
+      : [];
+    if (panels.length === 0) return res.json({ panels: [] });
+
+    const blob = await builderMemory.loadMemory(userId, Number(convId));
+    // Same resolver the live `brain.snapshot` uses — the initial-load
+    // shape is byte-for-byte what streaming updates deliver.
+    res.json({ panels: resolvePanelsForClient(panels, blob) });
+  } catch (err) {
+    console.error('[builder] GET live-brain failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/agents/:slug/conversations/:convId/live-brain/runs
+ *   Recent Live Brain panel runs for a conversation (newest first),
+ *   filtered to the `live-brain-panel` plugin so the builder's run
+ *   inspector shows brain activity only — never chat addons. Each row's
+ *   `runData` mirrors the addon.output shape (input prompt, output,
+ *   duration, model).
+ */
+router.get('/:slug/conversations/:convId/live-brain/runs', async (req, res) => {
+  try {
+    const { convId } = req.params;
+    const addonRunsStore = require('../runtime/addonRunsStore');
+    const rows = await addonRunsStore.recentRunsForConversation(Number(convId), 'live-brain-panel', 40);
+    res.json({
+      runs: rows.map(r => ({
+        id:         r.id,
+        instanceId: r.instanceId,
+        pluginId:   r.pluginId,
+        status:     r.status,
+        durationMs: r.durationMs,
+        runData:    r.runData,
+        startedAt:  r.startedAt,
+        endedAt:    r.endedAt,
+      })),
+    });
+  } catch (err) {
+    console.error('[builder] GET live-brain runs failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
