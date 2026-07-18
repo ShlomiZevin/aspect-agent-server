@@ -67,13 +67,21 @@ async function resolveUserId(ownerUserId) {
 
 /**
  * POST /api/agents/:slug/conversations
- *   Body: { ownerUserId }
+ *   Body: { ownerUserId, seedMemory?: [{ field, value, domain? }] }
  *   Creates a new conversation row, returns { conversationId }.
+ *
+ *   `seedMemory` (optional) — starting field values the conversation is
+ *   BORN with (builder "enter data before the chat starts", task #765).
+ *   Written through the same brain path the memory PATCH endpoint uses,
+ *   as part of creation — so the very first turn's extractors, DC
+ *   tokens and {{fields_current}} already see them. Mirrors the pinned-
+ *   fields precedent (values existing before the user says anything is
+ *   a runtime concept, owned server-side).
  */
 router.post('/:slug/conversations', async (req, res) => {
   try {
     const { slug } = req.params;
-    const { ownerUserId } = req.body || {};
+    const { ownerUserId, seedMemory } = req.body || {};
     if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
     const agentId = await resolveLegacyAgentId(slug);
     const userId = await resolveUserId(ownerUserId);
@@ -85,6 +93,16 @@ router.post('/:slug/conversations', async (req, res) => {
       kind: 'user',
       metadata: { kind: 'builder-preview', agentSlug: slug },
     }).returning();
+    if (Array.isArray(seedMemory) && seedMemory.length > 0) {
+      const builderMemory = require('../runtime/builderMemory');
+      const blob = await builderMemory.loadMemory(userId, conv.id);
+      for (const s of seedMemory) {
+        if (!s || typeof s.field !== 'string' || !s.field.trim() || s.value === undefined) continue;
+        const domain = typeof s.domain === 'string' && s.domain.trim() ? s.domain.trim() : null;
+        builderMemory.setField(blob, s.field.trim(), s.value, domain, 'memory');
+      }
+      await builderMemory.saveMemory(userId, conv.id, blob);
+    }
     res.json({ conversationId: conv.id });
   } catch (err) {
     console.error('[builder] POST conversation failed:', err);

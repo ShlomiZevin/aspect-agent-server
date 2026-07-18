@@ -192,8 +192,9 @@ export type HistoryMode =
  * on the `offline` lane; ignored on `main` / `background` lanes.
  *
  *  - `every_n_messages` — fire after every N user-message-plus-reply
- *                         pairs (default 8). Counter lives in
- *                         `context_data` per (conversation, instance).
+ *                         pairs (default 1 — every message). Counter
+ *                         lives in `context_data` per (conversation,
+ *                         instance).
  *  - `on_transition`    — fire whenever a crew transition is emitted
  *                         in the same turn.
  *
