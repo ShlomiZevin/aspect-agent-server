@@ -139,6 +139,11 @@ app.use('/api/agents', require('./builder/routes/runtimeRoute'));
 // first). Independent of the agent/crew system — see bi/routes/bi.routes.js.
 app.use('/api/bi', require('./bi/routes/bi.routes'));
 
+// ─── Aspect Intelligence ───────────────────────────────────────────
+// Proactive AI-investigation insights feed. Separate product from /api/bi
+// (ad-hoc queries) — see insights/routes/insights.routes.js.
+app.use('/api/insights', require('./insights/routes/insights.routes'));
+
 // ========== MODELS REGISTRY ==========
 // Single source of truth for the LLM models the platform supports.
 // Server-hardcoded today (services/models.service.js); the client

@@ -14,6 +14,15 @@ node_modules/
 *-service-account*.json
 data/
 !data/*-schema-description.txt
+# The unqualified `data/` rule above matches ANY directory named `data`
+# anywhere in the repo (gitignore treats it as **/data/) — it was meant for
+# the top-level schema-dump directory but was also silently swallowing
+# insights/data/hypertoy.seed.js, a real source file, not runtime output.
+# Only the generated-insights.json runtime cache in that directory should
+# stay ignored.
+!insights/data/
+!insights/data/hypertoy.seed.js
+insights/data/generated-insights.json
 temp/
 app.yaml
 app.flexible.yaml

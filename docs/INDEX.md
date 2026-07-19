@@ -12,6 +12,7 @@ aspect-agent-server/
 │   ├── INDEX.md              ← You are here
 │   ├── guides/               ← How-to guides for building and understanding the platform
 │   ├── features/             ← Documentation of existing features in the system
+│   ├── product/              ← Product-level overview and client dataset reference (business-facing)
 │   ├── setup/                ← Deployment logs, setup instructions, and infrastructure notes
 │   └── reference/            ← Fixes, testing notes, and changelog
 ├── tasks/
@@ -39,6 +40,12 @@ How-to guides for building and understanding the platform. Covers agent building
 
 ### `docs/features/`
 Documentation of existing features in the system. Each file describes what a feature does, how it works, and how to use it.
+
+### `docs/product/`
+Business-facing overview docs — not how-to guides. What Aspect is, its architecture at a glance, and per-client data reference.
+
+- **ASPECT_OVERVIEW.md** — What Aspect is, core idea, architecture building blocks, agent inventory, what's shipped vs. planned, and grounded (code-verified, not market-researched) strengths.
+- **CLIENT_DATASETS.md** — Zer4U and Hyper Toy data: tables, scale, canonical source files, documented data-quality rules, and what questions each dataset can answer.
 
 ### `docs/setup/`
 Deployment logs, setup summaries, and infrastructure setup instructions. Includes Cloud SQL quickstart and deployment history.
