@@ -85,7 +85,7 @@ function resolveText(ctx, panel) {
  *  A `text` render stores the string; a structured render tries to parse
  *  the resolved string as that shape (so a power user can compose JSON
  *  with tokens). */
-function shapeTextEntry(render, resolved) {
+function shapeTextEntry(render, resolved, cfg = {}) {
   // `text` (Markdown) and `html` are free-form string renders — store the
   // resolved string as-is under the actual render so the client draws it
   // with the right renderer.
@@ -94,7 +94,7 @@ function shapeTextEntry(render, resolved) {
     return text ? { render: render || 'text', text, ranAt: Date.now() } : null;
   }
   const { parsed } = parseOutput('json-to-memory', resolved || '');
-  const values = validatePanelValues(render, parsed);
+  const values = validatePanelValues(render, parsed, cfg);
   return values ? { render, values, ranAt: Date.now() } : null;
 }
 
@@ -108,7 +108,18 @@ function toPromptInstance(panel) {
     pluginId:       'live-brain-panel',
     lane:           'offline',
     enabled:        true,
-    config:         { name: panel.title, prompt: src.prompt || '', model: src.model, render: panel.render },
+    config:         {
+      name:      panel.title,
+      prompt:    src.prompt || '',
+      model:     src.model,
+      render:    panel.render,
+      // Predefined structure (author-owned) so the plugin's shape
+      // validator merges it with the LLM's dynamic part.
+      tagMode:   panel.tags?.mode,
+      tagLabels: panel.tags?.labels,
+      // Only feed predefined keys — in generated mode the LLM invents them.
+      fieldKeys: panel.fields?.mode === 'generated' ? undefined : panel.fields?.keys,
+    },
     context:        { history: src.history || { mode: 'last_n', n: 10 }, ...(panel.filter ? { filter: panel.filter } : {}) },
     outputType:     'json-to-memory',
     promptTemplate: '{{prompt}}',
@@ -204,7 +215,11 @@ async function dispatchLiveBrainPanels({ ctx, didTransition }) {
     let resolved = '';
     try {
       resolved = resolveText(ctx, panel);
-      entry = shapeTextEntry(panel.render, resolved);
+      entry = shapeTextEntry(panel.render, resolved, {
+        labels: panel.tags?.labels,
+        mode:   panel.tags?.mode,
+        keys:   panel.fields?.mode === 'generated' ? undefined : panel.fields?.keys,
+      });
     } catch (err) {
       console.error('[liveBrainDispatcher] text panel resolve failed:', err.message);
     }
@@ -261,7 +276,10 @@ async function dispatchLiveBrainPanels({ ctx, didTransition }) {
   //    both lanes so `memory` reflects every write this turn — no
   //    refetch, no polling, no Refresh button. ──
   try {
-    emit('brain.snapshot', { panels: resolvePanelsForClient(panels, memory) });
+    emit('brain.snapshot', {
+      panels: resolvePanelsForClient(panels, memory),
+      frame:  runnable.agent.body?.liveBrain?.frame || null,
+    });
   } catch { /* emit is best-effort */ }
 }
 

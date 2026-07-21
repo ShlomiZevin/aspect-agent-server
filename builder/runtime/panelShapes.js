@@ -1,20 +1,25 @@
 /**
- * panelShapes — validate a Live Brain panel's raw output against the
- * shape its render type expects, returning CLEANED values or null.
+ * panelShapes — turn a Live Brain panel's raw LLM output into CLEANED
+ * render values, or null. Strict: if anything is off (bad JSON, wrong
+ * shape, missing numbers) we return null and the caller simply DOESN'T
+ * show the panel this turn. No fallbacks, no guessing.
  *
- * The rule (per product decision): if anything is off — bad JSON, wrong
- * shape, missing numbers — we return null and the caller simply DOESN'T
- * show the panel that turn. No fallbacks, no guessing. So this module is
- * strict: it only returns a value object when the output genuinely fits.
+ * For `tags` and `fields` the author can PREDEFINE the fixed part; the
+ * `cfg` argument carries it, and the LLM only supplies the dynamic part:
+ *   tags  (predefined) → cfg.labels are the labels; LLM returns { active }
+ *   tags  (generated)  → LLM returns { tags: [...], active }
+ *   fields(predefined) → cfg.keys are the keys;   LLM returns { values: {k:v} }
+ *   fields(no keys)    → LLM returns { pairs: [{k,v}] }
+ *   bars               → LLM returns { bars:  [{label,value}] }
+ *   cards              → LLM returns { cards: [{title,body}] }
  *
- * Each returned object mirrors the `PanelRuntime` shape the client
- * renderer consumes (see LiveBrainScreen/panelRenderers.tsx):
- *   keyvalue → { pairs:  [{ k, v, tag? }] }
- *   goals    → { goals:  [{ label, state, done }] }
- *   bars     → { bars:   [{ label, value, color? }] }   value 0–100
- *   donut    → { donut:  { value, label, items:[{ label, value }] } }
+ * Each returned object mirrors the client `PanelRuntime` shape:
+ *   tags   → { tags: string[], active: string[] }
+ *   fields → { pairs: [{ k, v }] }
+ *   bars   → { bars:  [{ label, value, color? }] }   value 0–100
+ *   cards  → { cards: [{ title, body }] }
  *
- * `text` render is handled by the caller (it's a plain string, not JSON).
+ * `text` / `html` renders are handled by the caller (plain strings).
  */
 
 function toNum(v) {
@@ -34,30 +39,68 @@ function toStr(v) {
 function safeColor(v) {
   return typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v.trim()) ? v.trim() : undefined;
 }
+/** Normalise an `active` value (string | string[]) to a clean string[]. */
+function toActiveList(v) {
+  if (Array.isArray(v)) return v.map(toStr).filter(Boolean);
+  if (v === null || v === undefined || v === '') return [];
+  return [toStr(v)];
+}
 
-function validatePanelValues(render, parsed) {
+/**
+ * @param {string} render
+ * @param {*} parsed  the LLM's parsed JSON (or a token-resolved object)
+ * @param {{labels?:string[], mode?:string, keys?:string[]}} [cfg] predefined config
+ */
+function validatePanelValues(render, parsed, cfg = {}) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
 
   switch (render) {
-    case 'keyvalue': {
-      if (!Array.isArray(parsed.pairs)) return null;
-      const pairs = parsed.pairs
-        .filter(p => p && typeof p === 'object' && p.k !== undefined && p.k !== null)
-        .map(p => ({ k: toStr(p.k), v: toStr(p.v), ...(p.tag ? { tag: true } : {}) }));
+    case 'tags': {
+      const predefined = Array.isArray(cfg.labels) && cfg.labels.length > 0
+        && cfg.mode !== 'generated';
+      let tags;
+      if (predefined) {
+        tags = cfg.labels.map(toStr).filter(Boolean);
+      } else {
+        if (!Array.isArray(parsed.tags)) return null;
+        tags = parsed.tags.map(toStr).filter(Boolean);
+      }
+      if (tags.length === 0) return null;
+      // Keep only active values that actually exist in the label set.
+      const active = toActiveList(parsed.active).filter(a => tags.includes(a));
+      return { tags, active };
+    }
+
+    case 'fields': {
+      const keys = Array.isArray(cfg.keys) ? cfg.keys.map(toStr).filter(Boolean) : [];
+      // Preferred (simple) form is a flat { key: value } object. Also
+      // accept a { values: {...} } wrapper or a { pairs: [...] } array.
+      const flat = parsed.values && typeof parsed.values === 'object' && !Array.isArray(parsed.values)
+        ? parsed.values : parsed;
+      let pairs;
+      if (keys.length > 0) {
+        pairs = keys.map(k => ({ k, v: toStr(flat[k]) }));
+      } else if (Array.isArray(parsed.pairs)) {
+        pairs = parsed.pairs
+          .filter(p => p && typeof p === 'object' && p.k !== undefined && p.k !== null)
+          .map(p => ({ k: toStr(p.k), v: toStr(p.v), ...(p.tag ? { tag: true } : {}) }));
+      } else {
+        pairs = Object.entries(flat)
+          .filter(([, v]) => v === null || ['string', 'number', 'boolean'].includes(typeof v))
+          .map(([k, v]) => ({ k: toStr(k), v: toStr(v) }));
+      }
       return pairs.length ? { pairs } : null;
     }
 
-    case 'goals': {
-      if (!Array.isArray(parsed.goals)) return null;
-      const goals = parsed.goals
-        .filter(g => g && typeof g === 'object' && g.label !== undefined && g.label !== null)
-        .map(g => ({ label: toStr(g.label), state: toStr(g.state || ''), done: !!g.done }));
-      return goals.length ? { goals } : null;
-    }
-
     case 'bars': {
-      if (!Array.isArray(parsed.bars)) return null;
-      const bars = parsed.bars
+      // Preferred (simple) form is a flat { label: number } object. Also
+      // accept a { bars: [{label,value}] } array.
+      const arr = Array.isArray(parsed.bars)
+        ? parsed.bars
+        : Object.entries(parsed)
+            .filter(([, v]) => toNum(v) !== null)
+            .map(([label, value]) => ({ label, value }));
+      const bars = arr
         .map(b => {
           if (!b || typeof b !== 'object') return null;
           const value = toNum(b.value);
@@ -69,21 +112,19 @@ function validatePanelValues(render, parsed) {
       return bars.length ? { bars } : null;
     }
 
-    case 'donut': {
-      const d = parsed.donut && typeof parsed.donut === 'object' && !Array.isArray(parsed.donut)
-        ? parsed.donut : null;
-      if (!d) return null;
-      const value = toNum(d.value);
-      if (value === null) return null;
-      const items = (Array.isArray(d.items) ? d.items : [])
-        .map(it => {
-          if (!it || typeof it !== 'object') return null;
-          const v = toNum(it.value);
-          if (v === null) return null;
-          return { label: toStr(it.label), value: clamp01to100(v) };
-        })
-        .filter(Boolean);
-      return { donut: { value: clamp01to100(value), label: toStr(d.label || ''), items } };
+    case 'cards': {
+      // Preferred (simple) form is a flat { title: body } object. Also
+      // accept a { cards: [{title,body}] } array.
+      const arr = Array.isArray(parsed.cards)
+        ? parsed.cards
+        : Object.entries(parsed)
+            .filter(([, v]) => typeof v === 'string')
+            .map(([title, body]) => ({ title, body }));
+      const cards = arr
+        .filter(c => c && typeof c === 'object' && (c.title !== undefined || c.body !== undefined))
+        .map(c => ({ title: toStr(c.title), body: toStr(c.body) }))
+        .filter(c => c.title || c.body);
+      return cards.length ? { cards } : null;
     }
 
     default:

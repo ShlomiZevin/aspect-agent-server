@@ -954,14 +954,22 @@ export type AgentBody = Pick<
 // body. See docs/guides/BUILDER_V2_LIVE_BRAIN.md.
 
 /**
- * How a Live Brain panel draws its resolved content. Most render types
- * have a FIXED, known data shape — a `prompt` source is told to return
- * that shape. `text` and `html` are the two free-form string renders:
- * `text` renders Markdown; `html` renders sanitized HTML (styled cards,
- * custom layout — scripts stripped).
+ * How a Live Brain panel draws its resolved content. The six templates
+ * (task 754):
+ *   text   — free-form prose (Markdown)
+ *   html   — sanitized HTML (styled cards, custom layout)
+ *   tags   — a row of labels, the active one(s) highlighted
+ *   fields — key→value rows (predefined keys, values fill in)
+ *   bars   — labelled 0–100 fill meters
+ *   cards  — discrete title+body blocks
+ *
+ * `text`/`html` are free strings. `tags`/`fields`/`bars`/`cards` have a
+ * fixed data shape the LLM returns (see the render library). For `tags`
+ * and `fields` the author can PREDEFINE the fixed part (labels / keys) so
+ * the LLM only returns the dynamic part (active / values).
  */
 export type PanelRender =
-  | 'text' | 'html' | 'keyvalue' | 'goals' | 'bars' | 'donut';
+  | 'text' | 'html' | 'tags' | 'fields' | 'bars' | 'cards';
 
 /**
  * A TEXT panel — the author writes free text and drops in live values
@@ -1015,6 +1023,18 @@ export interface BrainPanel {
    * when the panel applies regardless of whether it's `text` or `prompt`.
    */
   filter?: AddonFilter;
+  /**
+   * TAGS render config. `predefined` → the author's `labels` are always
+   * rendered and the LLM returns only which is active; `generated` → the
+   * LLM returns the labels too (author sets nothing).
+   */
+  tags?: { mode: 'predefined' | 'generated'; labels?: string[] };
+  /**
+   * FIELDS render config. `predefined` → the author's `keys` are always
+   * rendered (in order) and the LLM returns the value for each;
+   * `generated` → the LLM returns the whole key/value set itself.
+   */
+  fields?: { mode: 'predefined' | 'generated'; keys?: string[] };
 }
 
 /**
@@ -1023,6 +1043,15 @@ export interface BrainPanel {
  */
 export interface LiveBrainDef {
   panels: BrainPanel[];
+  /**
+   * Presentation frame (task 754) — the wrapper's look, kept SEPARATE
+   * from panel data so it can be restyled without touching the engine.
+   * Optional; defaults: vertical stack, half-screen.
+   */
+  frame?: {
+    arrangement?: 'stack' | 'grid';
+    openMode?: 'half' | 'full';
+  };
 }
 
 export interface AgentVersion {

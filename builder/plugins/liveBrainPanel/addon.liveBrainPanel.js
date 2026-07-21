@@ -96,7 +96,14 @@ async function run(ctx) {
   } else {
     const { parsed, error } = parseOutput('json-to-memory', raw);
     parseError = error || undefined;
-    const values = validatePanelValues(render, parsed);
+    // Predefined config (Tags labels / mode, Fields keys) so the shape
+    // validator can merge the author's fixed part with the LLM's dynamic
+    // part. Carried on instance.config by the dispatcher.
+    const values = validatePanelValues(render, parsed, {
+      labels: cfg.tagLabels,
+      mode:   cfg.tagMode,
+      keys:   cfg.fieldKeys,
+    });
     parsedOutput = values;
     entry = values ? { render, values, ranAt: Date.now() } : null;
   }

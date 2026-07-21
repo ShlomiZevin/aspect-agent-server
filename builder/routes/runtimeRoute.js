@@ -375,8 +375,12 @@ router.get('/:slug/conversations/:convId/live-brain', async (req, res) => {
 
     const blob = await builderMemory.loadMemory(userId, Number(convId));
     // Same resolver the live `brain.snapshot` uses — the initial-load
-    // shape is byte-for-byte what streaming updates deliver.
-    res.json({ panels: resolvePanelsForClient(panels, blob) });
+    // shape is byte-for-byte what streaming updates deliver. `frame` is
+    // the presentation config (arrangement / open mode).
+    res.json({
+      panels: resolvePanelsForClient(panels, blob),
+      frame:  runnable?.agent?.body?.liveBrain?.frame || null,
+    });
   } catch (err) {
     console.error('[builder] GET live-brain failed:', err);
     res.status(500).json({ error: err.message });
