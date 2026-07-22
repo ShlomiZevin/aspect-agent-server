@@ -133,33 +133,36 @@ function toPromptInstance(panel) {
  * value. Shared by the SSE `brain.snapshot` (live) and the `/live-brain`
  * endpoint (initial load / history) so both surfaces agree exactly.
  */
-function resolvePanelsForClient(panels, brain) {
-  const out = [];
-  for (const panel of panels || []) {
-    if (!panel || !panel.id) continue;
+/** Resolve ONE panel into its render-ready value, or null (hidden: filter
+ *  failed, or no valid stored value). The unit shared by the per-panel
+ *  live event, the full-list resolver, and the endpoint. */
+function resolveOnePanel(panel, brain) {
+  if (!panel || !panel.id) return null;
 
-    // Filter → the panel hides when its conditions don't pass.
-    const filter = panel.filter;
-    if (filter && Array.isArray(filter.conditions) && filter.conditions.length > 0) {
-      const evalResult = evaluateConditions(brain, filter.conditions, { instanceId: panel.id });
-      const passes = filter.mode === 'exclude' ? !evalResult.ok : evalResult.ok;
-      if (!passes) continue;
-    }
-
-    // No stored value → never produced a valid result → hidden.
-    const entry = builderMemory.getPanel(brain, panel.id);
-    if (!entry) continue;
-
-    out.push({
-      id:     panel.id,
-      title:  panel.title,
-      render: entry.render || panel.render,
-      ...(entry.text   !== undefined ? { text:   entry.text }   : {}),
-      ...(entry.values !== undefined ? { values: entry.values } : {}),
-      ranAt:  entry.ranAt,
-    });
+  // Filter → the panel hides when its conditions don't pass.
+  const filter = panel.filter;
+  if (filter && Array.isArray(filter.conditions) && filter.conditions.length > 0) {
+    const evalResult = evaluateConditions(brain, filter.conditions, { instanceId: panel.id });
+    const passes = filter.mode === 'exclude' ? !evalResult.ok : evalResult.ok;
+    if (!passes) return null;
   }
-  return out;
+
+  // No stored value → never produced a valid result → hidden.
+  const entry = builderMemory.getPanel(brain, panel.id);
+  if (!entry) return null;
+
+  return {
+    id:     panel.id,
+    title:  panel.title,
+    render: entry.render || panel.render,
+    ...(entry.text   !== undefined ? { text:   entry.text }   : {}),
+    ...(entry.values !== undefined ? { values: entry.values } : {}),
+    ranAt:  entry.ranAt,
+  };
+}
+
+function resolvePanelsForClient(panels, brain) {
+  return (panels || []).map(p => resolveOnePanel(p, brain)).filter(Boolean);
 }
 
 /** Log a TEXT panel's resolution as a run so the builder's run inspector
@@ -206,6 +209,21 @@ async function dispatchLiveBrainPanels({ ctx, didTransition }) {
     : [];
   if (panels.length === 0) return;
 
+  // Per-panel live update: emit each panel the MOMENT its value is ready
+  // (not one batched snapshot at the end), so the client can pop/animate
+  // them one by one. `index` = the panel's position for stable ordering;
+  // `panel: null` clears/hides it.
+  const indexOf = new Map(panels.map((p, i) => [p.id, i]));
+  const emitPanel = (panel) => {
+    try {
+      emit('brain.panel', {
+        panelId: panel.id,
+        index:   indexOf.get(panel.id) ?? 0,
+        panel:   resolveOnePanel(panel, memory),
+      });
+    } catch { /* emit is best-effort */ }
+  };
+
   // ── 1. TEXT panels — resolve tokens now, write to the brain, log it. ──
   const textWrites = [];
   const textLogs = []; // { panel, entry, resolved }
@@ -234,6 +252,8 @@ async function dispatchLiveBrainPanels({ ctx, didTransition }) {
       console.error('[liveBrainDispatcher] text panel memory save failed:', err.message);
     }
     await Promise.all(textLogs.map(t => logTextRun(ctx, t.panel, t.entry, t.resolved)));
+    // Text panels resolve together (no LLM) — emit each now.
+    for (const t of textLogs) emitPanel(t.panel);
   }
 
   // ── 2. AI (prompt) panels — cadence-gated, run via addonRunner. Each
@@ -261,26 +281,18 @@ async function dispatchLiveBrainPanels({ ctx, didTransition }) {
     }
 
     if (dispatches.length > 0) {
+      // Each AI panel emits the MOMENT its own run finishes — so a fast
+      // panel pops in while a slower one is still thinking (panel-by-panel,
+      // not batched behind the slowest).
       await Promise.all(dispatches.map(panel =>
         runAddon({ ctx, instance: toPromptInstance(panel), addonStart: Date.now() })
+          .then(() => emitPanel(panel))
           .catch(err => {
             console.error('[liveBrainDispatcher] unexpected throw from runAddon:', err.message);
           }),
       ));
     }
   }
-
-  // ── 3. Snapshot — ONE render-ready, filter-applied event the client
-  //    swaps its panels to (customer Live Brain + builder preview),
-  //    exactly like a chat message arrives on the stream. Emitted after
-  //    both lanes so `memory` reflects every write this turn — no
-  //    refetch, no polling, no Refresh button. ──
-  try {
-    emit('brain.snapshot', {
-      panels: resolvePanelsForClient(panels, memory),
-      frame:  runnable.agent.body?.liveBrain?.frame || null,
-    });
-  } catch { /* emit is best-effort */ }
 }
 
 module.exports = { dispatchLiveBrainPanels, resolvePanelsForClient };
