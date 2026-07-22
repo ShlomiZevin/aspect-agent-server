@@ -1104,7 +1104,7 @@ RULES:
 - tools.mockResponse should contain realistic example data
 - context should simulate what previous crews would have collected
 - Only include fields that were discussed. Don't invent features.
-- model should be a valid model ID: gpt-4o, gpt-5-chat-latest, claude-sonnet-4-20250514, gemini-2.5-flash, gemini-2.0-flash
+- model should be a valid model ID: gpt-5.6, gpt-5.5, gpt-4o, gpt-5.4-mini, gpt-4o-mini, claude-sonnet-4-6, gemini-2.5-flash, gemini-2.5-pro
 - Do NOT include kbSources — knowledge bases are connected separately through the Config tab using real vector stores.
 - fieldsToCollect: only include if the crew needs to extract specific data from the user
   for a field-based transition (e.g., name, age, account type). Each field needs a name

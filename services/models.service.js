@@ -31,9 +31,14 @@ const MODELS = [
   { id: 'claude-haiku-4-5',  providerId: 'anthropic', name: 'Claude Haiku 4.5',  notes: 'Cheap & fast' },
 
   // ── OpenAI ──
-  { id: 'gpt-5-chat-latest', providerId: 'openai', name: 'GPT-5 (gpt-5-chat-latest)', notes: 'Powerful, expensive' },
-  { id: 'gpt-4o',        providerId: 'openai', name: 'GPT-4o',        notes: 'Balanced — broad capability' },
-  { id: 'gpt-4o-mini',   providerId: 'openai', name: 'GPT-4o mini',   notes: 'Cheap model for fast runs (default extractor)' },
+  { id: 'gpt-5.6',      providerId: 'openai', name: 'GPT-5.6',      notes: '"Sol" — newest, recommended' },
+  { id: 'gpt-5.5',      providerId: 'openai', name: 'GPT-5.5',      notes: 'Strong all-round' },
+  { id: 'gpt-4o',       providerId: 'openai', name: 'GPT-4o',       notes: 'Balanced' },
+  { id: 'gpt-5.4-mini', providerId: 'openai', name: 'GPT-5.4 mini', notes: 'New mini — cheap & fast' },
+  { id: 'gpt-4o-mini',  providerId: 'openai', name: 'GPT-4o mini',  notes: 'Old mini (default extractor)' },
+  // Hidden from pickers — an old ChatGPT snapshot (Aug 2025), kept so
+  // existing agents that reference it keep resolving.
+  { id: 'gpt-5-chat-latest', providerId: 'openai', name: 'GPT-5 chat', notes: 'Legacy', deprecated: true },
 
   // ── Google ──
   { id: 'gemini-2.5-pro',   providerId: 'google', name: 'Gemini 2.5 Pro',   notes: 'Powerful, long context' },
