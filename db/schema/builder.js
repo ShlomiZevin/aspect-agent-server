@@ -41,9 +41,11 @@ const builderWorkspaces = pgTable('builder_workspaces', {
   id:           varchar('id', { length: 64 }).primaryKey(),
   ownerUserId:  varchar('owner_user_id', { length: 64 }),
   name:         text('name').notNull().default(''),
-  // Self-reference for nested folders. null = top level. A workspace
-  // can live inside another workspace to unlimited depth.
+  // Self-reference for nested folders. null = top level.
   parentId:     varchar('parent_id', { length: 64 }),
+  // Typed folder: 'domain' (top-level org, holds projects) or 'project'
+  // (leaf folder that holds agents). Agents may still live anywhere.
+  kind:         varchar('kind', { length: 20 }),
   createdAt:    timestamp('created_at').defaultNow().notNull(),
   updatedAt:    timestamp('updated_at').defaultNow().notNull(),
 }, t => ({

@@ -30,13 +30,14 @@ router.get('/', async (_req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { id, ownerUserId, name, parentId } = req.body || {};
+    const { id, ownerUserId, name, parentId, kind } = req.body || {};
     if (!id) return res.status(400).json({ error: 'Missing id' });
-    const ws = await workspaces.createWorkspace({ id, ownerUserId, name, parentId });
+    const ws = await workspaces.createWorkspace({ id, ownerUserId, name, parentId, kind });
     res.status(201).json({ workspace: ws });
   } catch (err) {
-    console.error('[builder] POST workspace failed:', err);
-    res.status(500).json({ error: err.message });
+    const status = err.code === 'bad_input' ? 400 : err.code === 'not_found' ? 404 : 500;
+    if (status === 500) console.error('[builder] POST workspace failed:', err);
+    res.status(status).json({ error: err.message, code: err.code });
   }
 });
 
