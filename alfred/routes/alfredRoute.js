@@ -380,7 +380,13 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
         const agentFieldIds = Array.isArray(agentBodyContext?.fields)
           ? agentBodyContext.fields.map(f => f.id).filter(Boolean)
           : [];
-        validation = bodyValidator.validateCrewBody(newBody, agentFieldIds);
+        // Enum ids from the (post-patch) agent body so a crew field's
+        // enumType can't dangle — a choice field whose enum never made
+        // it onto the agent fails HERE instead of corrupting the draft.
+        const agentEnumIds = Array.isArray(agentBodyContext?.enums)
+          ? agentBodyContext.enums.map(e => e.id).filter(Boolean)
+          : [];
+        validation = bodyValidator.validateCrewBody(newBody, agentFieldIds, agentEnumIds);
       }
 
       if (!validation.ok) {

@@ -58,7 +58,7 @@ function pushErr(errors, path, msg) {
   errors.push(`${path}: ${msg}`);
 }
 
-function checkFieldDef(field, path, errors) {
+function checkFieldDef(field, path, errors, knownEnumIds) {
   if (!isObject(field)) { pushErr(errors, path, 'must be an object'); return; }
   if (typeof field.id !== 'string' || field.id.length === 0)
     pushErr(errors, `${path}.id`, 'required string');
@@ -76,6 +76,13 @@ function checkFieldDef(field, path, errors) {
     // enum exists), but the runtime will treat the field as unwired.
     if (field.enumType !== undefined && typeof field.enumType !== 'string')
       pushErr(errors, `${path}.enumType`, 'must be a string id when present');
+    // A NON-empty enumType must resolve against the agent's enum bible —
+    // a dangling id renders as "(missing Targeted KB)" in the builder.
+    // `knownEnumIds` is null when the caller has no bible to check
+    // against (skip), a Set otherwise.
+    else if (field.enumType && knownEnumIds && !knownEnumIds.has(field.enumType))
+      pushErr(errors, `${path}.enumType`,
+        `enum id "${field.enumType}" does not exist on agent.enums — bind an existing enum or include the new EnumTypeDef in the agent's enums section`);
   }
 }
 
@@ -214,12 +221,32 @@ function validateAgentBody(body) {
   if (body.defaultCrewId != null && typeof body.defaultCrewId !== 'string')
     pushErr(errors, 'defaultCrewId', 'must be a string id or omitted');
 
+  // Enum bible — light shape check + the id set that fields' enumType
+  // must resolve against.
+  const enumIds = new Set();
+  if ('enums' in body && body.enums !== undefined) {
+    if (!Array.isArray(body.enums)) {
+      pushErr(errors, 'enums', 'when present must be an array');
+    } else {
+      body.enums.forEach((e, i) => {
+        if (!isObject(e)) { pushErr(errors, `enums[${i}]`, 'must be an object'); return; }
+        if (typeof e.id !== 'string' || !e.id) pushErr(errors, `enums[${i}].id`, 'required string');
+        else {
+          if (enumIds.has(e.id)) pushErr(errors, `enums[${i}].id`, `duplicate enum id "${e.id}"`);
+          enumIds.add(e.id);
+        }
+        if (typeof e.name !== 'string' || !e.name) pushErr(errors, `enums[${i}].name`, 'required string');
+        if (!Array.isArray(e.values)) pushErr(errors, `enums[${i}].values`, 'required array');
+      });
+    }
+  }
+
   if (!Array.isArray(body.fields))
     pushErr(errors, 'fields', 'required array (may be empty)');
   else {
     const seenIds = new Set();
     body.fields.forEach((f, i) => {
-      checkFieldDef(f, `fields[${i}]`, errors);
+      checkFieldDef(f, `fields[${i}]`, errors, enumIds);
       if (f && typeof f.id === 'string') {
         if (seenIds.has(f.id)) pushErr(errors, `fields[${i}].id`, `duplicate field id "${f.id}"`);
         seenIds.add(f.id);
@@ -233,7 +260,7 @@ function validateAgentBody(body) {
   return errors.length === 0 ? { ok: true } : { ok: false, errors };
 }
 
-function validateCrewBody(body, agentFieldIds = []) {
+function validateCrewBody(body, agentFieldIds = [], agentEnumIds = null) {
   const errors = [];
   if (!isObject(body)) return { ok: false, errors: ['body: must be an object'] };
 
@@ -244,12 +271,17 @@ function validateCrewBody(body, agentFieldIds = []) {
   if (body.persona != null && typeof body.persona !== 'string')
     pushErr(errors, 'persona', 'must be a string or omitted');
 
+  // Crew fields' enumType resolves against the AGENT's bible (enums
+  // live only on the agent body). Callers pass the id list from the
+  // (post-patch) agent body context; null = no context, skip the check.
+  const knownEnumIds = Array.isArray(agentEnumIds) ? new Set(agentEnumIds) : null;
+
   const crewFieldIds = new Set();
   if (!Array.isArray(body.fields)) {
     pushErr(errors, 'fields', 'required array (may be empty)');
   } else {
     body.fields.forEach((f, i) => {
-      checkFieldDef(f, `fields[${i}]`, errors);
+      checkFieldDef(f, `fields[${i}]`, errors, knownEnumIds);
       if (f && typeof f.id === 'string') {
         if (crewFieldIds.has(f.id)) pushErr(errors, `fields[${i}].id`, `duplicate field id "${f.id}"`);
         crewFieldIds.add(f.id);
