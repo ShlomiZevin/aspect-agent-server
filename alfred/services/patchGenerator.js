@@ -2,18 +2,21 @@
  * Patch generator — Claude call #2 of the Apply flow.
  *
  * Given a current AgentBody/CrewBody + an English "what_to_do"
- * description, returns the FULL new body JSON. Server-side validation
- * happens after this call (bodyValidator.js).
+ * description, the model returns ONLY the top-level sections it
+ * changed (each returned section COMPLETE — e.g. the whole
+ * `parameters[]` array after adding one parameter). The server
+ * merges those sections over the current body here and hands the
+ * full merged body to the caller — so output size scales with the
+ * CHANGE, not with the agent, and untouched sections are preserved
+ * by construction (never retyped by the model). This replaced the
+ * original full-body contract (decision 52) after big Hebrew agents
+ * started truncating at the output-token cap.
  *
  * Output is locked to JSON via Anthropic forced tool_use: the model
- * MUST call the `submit_body` tool, whose `body` input is the new
- * body. The API itself prevents prose / preamble / leaked reasoning
- * — no text-extraction heuristics needed. A `reasoning` field on the
- * tool lets the model surface its thinking for debugging.
- *
- * Decision 52: full new body, not RFC 6902 patches.
- * Decision 55: schema reference is the hand-maintained
- *              docs/guides/BUILDER_V2_SCHEMA.md — embedded verbatim.
+ * MUST call the `submit_changes` tool. The API itself prevents
+ * prose / preamble / leaked reasoning — no text-extraction
+ * heuristics needed. A `reasoning` field on the tool lets the model
+ * surface its thinking for debugging.
  */
 
 const fs = require('fs');
@@ -24,7 +27,43 @@ const { logUsage } = require('../../services/usageLogger');
 
 const MODEL    = 'claude-sonnet-4-6';
 const PROCESS  = 'alfred-apply-patch';
-const MAX_TOKENS = 8192;
+// Output cap. With the section contract most applies use a few hundred
+// tokens; the cap only matters when a single big section (e.g. a long
+// Hebrew enums bible) is itself the change. llm.claude surfaces a clear
+// "truncated" error if it's ever hit.
+const MAX_TOKENS = 16384;
+
+/**
+ * The replaceable top-level sections per entity — mirrors the AgentBody /
+ * CrewBody Picks in builder/types/index.ts. Keep in sync when a new key
+ * joins a body: a key missing here means Alfred can never change it.
+ */
+const AGENT_SECTION_KEYS = [
+  'name', 'slug', 'spec', 'persona', 'defaultCrewId',
+  'fields', 'domains', 'tags', 'parameters', 'enums',
+  'cortex', 'snippets', 'personas', 'liveBrain',
+];
+const CREW_SECTION_KEYS = [
+  'name', 'description', 'spec', 'persona', 'addons', 'fields',
+];
+
+/**
+ * Merge the model's changed sections over the current body. Unknown
+ * keys are ignored (logged) rather than fatal — the validator judges
+ * the merged result anyway.
+ */
+function mergeChanges(entity, currentBody, changes) {
+  const allowed = entity === 'agent' ? AGENT_SECTION_KEYS : CREW_SECTION_KEYS;
+  const applied = [];
+  const ignored = [];
+  const next = { ...currentBody };
+  for (const [key, value] of Object.entries(changes || {})) {
+    if (!allowed.includes(key)) { ignored.push(key); continue; }
+    next[key] = value;
+    applied.push(key);
+  }
+  return { next, applied, ignored };
+}
 
 // Load the canonical TypeScript types file at module load. The
 // server owns this file (see aspect-agent-server/builder/types/
@@ -132,20 +171,32 @@ const SYSTEM_PROMPT = [
   'You receive: (1) a JSON body that represents the current state of an',
   '`agent` or `crew`, (2) an English description of the change to apply',
   '(`what_to_do`), and — for crew targets — (3) the current agent body',
-  'as READ-ONLY cross-reference. You submit the FULL NEW BODY via the',
-  '`submit_body` tool. The tool\'s `body` field is the agent/crew after',
-  'your change. The `reasoning` field is a one-line note explaining',
-  'what you did (used for debugging when something goes wrong).',
+  'as READ-ONLY cross-reference. You submit ONLY the top-level sections',
+  'you changed via the `submit_changes` tool. The server merges them',
+  'over the current body; everything you don\'t return is preserved',
+  'as-is. The `reasoning` field is a one-line note explaining what you',
+  'did (used for debugging when something goes wrong).',
   '',
-  '# Body fidelity',
-  '- PRESERVE every field that wasn\'t mentioned in the change. Field',
-  '  order may differ but values must be intact.',
-  '- The output MUST conform to the TypeScript types below. The types',
-  '  are the canonical contract — the client compiles against them and',
-  '  the runtime reads them. Pay attention to which fields are optional',
-  '  vs required, the discriminated unions on `OutputType` and addon',
-  '  configs by `pluginId`, and the comments — they describe invariants',
-  '  the types alone can\'t express (e.g. "enum-typed fields reference an EnumTypeDef on agent.enums via enumType").',
+  '# Section contract (READ CAREFULLY)',
+  '- `changes` is an object whose keys are top-level body sections.',
+  '  Agent sections: name, slug, spec, persona, defaultCrewId, fields,',
+  '  domains, tags, parameters, enums, cortex, snippets, personas,',
+  '  liveBrain. Crew sections: name, description, spec, persona,',
+  '  addons, fields.',
+  '- Return ONLY the sections the change touches. Do NOT return',
+  '  sections you didn\'t change — omitting them is what preserves them.',
+  '- Every returned section must be COMPLETE — the entire value of that',
+  '  section AFTER your change. Example: to add one parameter, return',
+  '  `changes.parameters` = the FULL parameters array (all existing',
+  '  entries, order preserved, plus the new one). Never return a',
+  '  fragment, a single item, or a partial array.',
+  '- The merged result MUST conform to the TypeScript types below. The',
+  '  types are the canonical contract — the client compiles against them',
+  '  and the runtime reads them. Pay attention to which fields are',
+  '  optional vs required, the discriminated unions on `OutputType` and',
+  '  addon configs by `pluginId`, and the comments — they describe',
+  '  invariants the types alone can\'t express (e.g. "enum-typed fields',
+  '  reference an EnumTypeDef on agent.enums via enumType").',
   '- When you add a new entity (FieldDef, AddonInstance), generate a',
   '  stable id of the form `<kind>_<random8>` (e.g. `field_a1b2c3d4`,',
   '  `addon_e5f6g7h8`). Lowercase hex; only [a-z0-9_].',
@@ -225,8 +276,9 @@ const SYSTEM_PROMPT = [
   '  other agent shell fields. The crews live elsewhere — leave them',
   '  alone. The wiring into a specific crew is a separate target the',
   '  caller handles.',
-  '- The read-only agent body MUST NOT appear in your `body` output',
-  '  when you are returning a crew body.',
+  '- The read-only agent body MUST NOT appear in your `changes` output',
+  '  when the target is a crew — crew targets only ever return crew',
+  '  sections.',
   '',
   '# TypeScript types (canonical source — verbatim from the client)',
   '',
@@ -260,29 +312,34 @@ const SYSTEM_PROMPT = [
 ].join('\n');
 
 /**
- * Tool definition forces structured output. `body` is the new
- * AgentBody/CrewBody. `reasoning` captures the model's intent in one
- * line so we can debug bad outputs without losing chain-of-thought.
+ * Tool definition forces structured output. `changes` carries ONLY the
+ * changed top-level sections (each complete); the server merges them
+ * over the current body. `reasoning` captures the model's intent in
+ * one line so we can debug bad outputs without losing chain-of-thought.
  */
-const SUBMIT_BODY_TOOL = {
-  name: 'submit_body',
+const SUBMIT_CHANGES_TOOL = {
+  name: 'submit_changes',
   description:
-    'Submit the FULL new agent/crew body after applying the change. ' +
-    '`body` is the entire new body object (preserve untouched fields). ' +
+    'Submit ONLY the top-level body sections you changed. Each key of ' +
+    '`changes` is a section name (e.g. "parameters", "fields", "addons"); ' +
+    'each value is that section\'s COMPLETE new content after the change. ' +
+    'Sections you omit are preserved as-is by the server. ' +
     '`reasoning` is a one-line note describing what you changed.',
   input_schema: {
     type: 'object',
     properties: {
-      body: {
+      changes: {
         type: 'object',
-        description: 'The full new AgentBody or CrewBody after the change.',
+        description:
+          'Map of changed section name → complete new section value. ' +
+          'Only include sections the change touches.',
       },
       reasoning: {
         type: 'string',
         description: 'One-line note explaining what you did and any edge cases you handled.',
       },
     },
-    required: ['body'],
+    required: ['changes'],
   },
 };
 
@@ -338,7 +395,7 @@ async function generatePatch({
 
   sections.push(
     '',
-    `## Current ${entity === 'agent' ? 'AgentBody' : 'CrewBody'} (the body to mutate and return)`,
+    `## Current ${entity === 'agent' ? 'AgentBody' : 'CrewBody'} (read it; return only the sections you change)`,
     '```json',
     JSON.stringify(currentBody, null, 2),
     '```',
@@ -347,7 +404,8 @@ async function generatePatch({
     whatToDo,
     '',
     '## Task',
-    `Call the submit_body tool with the FULL new ${entity === 'agent' ? 'AgentBody' : 'CrewBody'}.`,
+    'Call the submit_changes tool with ONLY the changed sections (each',
+    'section complete). Sections you omit are preserved automatically.',
   );
 
   const userMessage = sections.join('\n');
@@ -355,8 +413,8 @@ async function generatePatch({
   const result = await claudeService.sendOneShot(SYSTEM_PROMPT, userMessage, {
     model: MODEL,
     maxTokens: MAX_TOKENS,
-    tools: [SUBMIT_BODY_TOOL],
-    toolChoice: { type: 'tool', name: 'submit_body' },
+    tools: [SUBMIT_CHANGES_TOOL],
+    toolChoice: { type: 'tool', name: 'submit_changes' },
   });
 
   const usage = result?.usage || null;
@@ -382,18 +440,31 @@ async function generatePatch({
     throw new Error('Patch generator: forced tool_use returned no input.');
   }
 
-  const newBody = result.toolUse.input.body;
+  const changes = result.toolUse.input.changes;
   const reasoning = result.toolUse.input.reasoning || '';
   if (reasoning) {
     console.log(`[patch] ${entity} "${entityName}" reasoning: ${reasoning}`);
   }
 
-  if (!newBody || typeof newBody !== 'object') {
-    throw new Error('Patch generator: submit_body called without a valid `body` object.');
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
+    throw new Error('Patch generator: submit_changes called without a valid `changes` object.');
   }
+
+  const { next: newBody, applied, ignored } = mergeChanges(entity, currentBody, changes);
+  if (ignored.length > 0) {
+    console.warn(`[patch] ${entity} "${entityName}" ignored unknown sections: ${ignored.join(', ')}`);
+  }
+  if (applied.length === 0) {
+    throw new Error(
+      'Patch generator: submit_changes returned no recognized sections '
+      + `(got: ${Object.keys(changes).join(', ') || 'nothing'}).`,
+    );
+  }
+  console.log(`[patch] ${entity} "${entityName}" changed sections: ${applied.join(', ')}`);
 
   return {
     newBody,
+    changedSections: applied,
     reasoning,
     tokens: usage
       ? { input: usage.inputTokens, output: usage.outputTokens, total: usage.inputTokens + usage.outputTokens }
@@ -402,4 +473,4 @@ async function generatePatch({
   };
 }
 
-module.exports = { generatePatch };
+module.exports = { generatePatch, mergeChanges };

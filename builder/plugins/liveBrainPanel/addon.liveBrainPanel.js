@@ -12,9 +12,15 @@
  *   - other renders   → JSON validated against the render's shape.
  * If the answer is empty or doesn't fit the shape, we CLEAR the slot so
  * the panel simply doesn't show this turn (per product decision — no
- * fallbacks). Usage is logged automatically by `llm.sendOneShot` under
- * the `live-brain-panel` process, so brain runs are distinguishable from
- * regular chat addons in the usage dashboard.
+ * fallbacks).
+ *
+ * USAGE LOGGING: each panel is its own "process" in `llm_usage`, tagged
+ * `LB · <panel title>` (like a normal addon carries its type in the
+ * process column), with the crew column set to `live_brain` so all panel
+ * spend groups as one family and stays separate from the real chat crew.
+ * The model is logged per call as usual. This is intentionally NOT keyed
+ * off `pluginId` (which stays `live-brain-panel` for the run inspector /
+ * runs endpoint / reasoning filter) — usage tagging is independent of it.
  */
 
 const { registerPlugin } = require('../../runtime/pluginRegistry');
@@ -22,6 +28,28 @@ const { parseOutput } = require('../../runtime/outputParser');
 const { validatePanelValues } = require('../../runtime/panelShapes');
 
 const LIVE_BRAIN_PANEL_PLUGIN_ID = 'live-brain-panel';
+
+// The crew bucket every panel's LLM usage is grouped under, so brain
+// spend is one identifiable family and never mixed into the chat crew's
+// usage. (The specific panel goes in the `process` column — see below.)
+const LIVE_BRAIN_USAGE_CREW = 'live_brain';
+
+/**
+ * Build the `llm_usage.process` tag for a panel: `LB · <title>`. Mirrors
+ * how a normal addon carries its identity in `process`, so each panel is
+ * a distinct, human-readable row in the usage dashboard. `process` is
+ * varchar(50): we strip a leading emoji/symbol from the title and cap the
+ * whole tag at 50 chars. Falls back to the panel id when there's no title.
+ */
+function panelUsageProcess(instance) {
+  const prefix = 'LB · ';
+  const raw = (instance?.config?.name || instance?.instanceId || 'panel')
+    // Drop leading emoji / pictographs / punctuation so the tag reads as
+    // the panel's words, not its icon.
+    .replace(/^[\s\p{Extended_Pictographic}\p{Emoji_Presentation}\p{P}\p{S}]+/u, '')
+    .trim() || String(instance?.instanceId || 'panel');
+  return (prefix + raw).slice(0, 50);
+}
 
 // A panel ANALYSES the conversation — it must not be handed a user turn
 // to answer. On the offline lane `historyMessages` already contains the
@@ -54,8 +82,13 @@ function stripHtmlFence(s) {
 async function run(ctx) {
   const {
     instance, prompt, modelString, conversationId,
-    agentNameForLogs, ownerUserId, historyMessages, llm, usageProcess, usageCrew,
+    agentNameForLogs, ownerUserId, historyMessages, llm,
   } = ctx;
+  // Panel-specific usage tags (NOT ctx.usageProcess/usageCrew, which are
+  // the generic plugin id + chat crew): each panel is its own process,
+  // grouped under the `live_brain` crew. See panelUsageProcess above.
+  const usageProcess = panelUsageProcess(instance);
+  const usageCrew    = LIVE_BRAIN_USAGE_CREW;
 
   const start = Date.now();
   const cfg = instance.config || {};
@@ -75,9 +108,9 @@ async function run(ctx) {
     model:          modelString,
     jsonOutput:     structured,
     historyMessages,
-    context:        usageProcess,      // 'live-brain-panel' → tagged in llm_usage
+    context:        usageProcess,      // 'LB · <panel>' → llm_usage.process
     agentName:      agentNameForLogs,
-    crewMember:     usageCrew,
+    crewMember:     usageCrew,          // 'live_brain'   → llm_usage.crew_member
     conversationId: String(conversationId),
     userId:         ownerUserId,
   });

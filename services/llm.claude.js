@@ -145,6 +145,14 @@ class ClaudeService {
       // Tool-use response: pull the (first) tool_use block out and
       // return its parsed input. The text path is bypassed.
       if (Array.isArray(tools) && tools.length > 0) {
+        // A tool call cut off by the output cap yields an empty/partial
+        // input that downstream code would misread as "model returned
+        // nothing". Fail loudly with the real cause instead.
+        if (response.stop_reason === 'max_tokens') {
+          throw new Error(
+            `Tool-use response truncated: hit the ${maxTokens}-token output limit before the tool call completed.`,
+          );
+        }
         const toolBlock = response.content.find(c => c.type === 'tool_use');
         if (!toolBlock) {
           throw new Error('Tool-use call returned no tool_use block.');
