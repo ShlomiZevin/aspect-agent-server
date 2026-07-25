@@ -132,6 +132,17 @@ async function updateMessageContent(messageId, content) {
     .where(eq(messages.id, Number(messageId)));
 }
 
+async function getMessage(messageId) {
+  const [row] = await drizzle().select().from(messages)
+    .where(eq(messages.id, Number(messageId))).limit(1);
+  return row || null;
+}
+
+async function deleteMessage(messageId) {
+  await drizzle().delete(messages)
+    .where(eq(messages.id, Number(messageId)));
+}
+
 async function renameChat(chatId, name) {
   const chat = await getChat(chatId);
   if (!chat) return null;
@@ -172,6 +183,8 @@ module.exports = {
   listMessages,
   appendMessage,
   updateMessageContent,
+  getMessage,
+  deleteMessage,
   renameChat,
   setChatNameIfBlank,
   deleteChat,

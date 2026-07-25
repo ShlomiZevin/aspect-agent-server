@@ -200,10 +200,22 @@ function resolveTargets(planTargets, project) {
 async function consolidate({ chatId, agentSlug, ownerUserId }) {
   const start = Date.now();
 
-  // 1. Recent chat history.
-  const history = (await alfredChats.listMessages(chatId)).slice(-HISTORY_TURNS);
+  // 1. Recent chat history — sliced at the last apply marker. Every
+  //    successful Apply drops a marker row into the chat; the part of
+  //    the conversation before it was already consumed, so we only
+  //    consolidate what came after. Deleting the marker (client ✕)
+  //    naturally re-opens the window.
+  const all = await alfredChats.listMessages(chatId);
+  const lastMarkerIdx = all.reduce(
+    (acc, m, i) => (m.metadata?.kind === 'apply-marker' ? i : acc), -1,
+  );
+  const history = all.slice(lastMarkerIdx + 1).slice(-HISTORY_TURNS);
   if (history.length === 0) {
-    throw new Error('No chat history to apply from.');
+    throw new Error(
+      lastMarkerIdx >= 0
+        ? 'Nothing new to apply — everything in this chat was already applied. Keep chatting, or delete the "Applied" marker to re-collect earlier changes.'
+        : 'No chat history to apply from.',
+    );
   }
 
   // 2. Current project state, both as a human summary (for the LLM's

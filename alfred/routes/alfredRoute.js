@@ -161,6 +161,30 @@ router.get('/chats/:chatId/messages', async (req, res) => {
   }
 });
 
+/**
+ * DELETE /chats/:chatId/messages/:messageId
+ *
+ * Apply-marker removal ONLY — regular chat messages can't be deleted.
+ * Removing a marker re-opens the consolidator's window back to the
+ * previous marker (or the whole chat).
+ */
+router.delete('/chats/:chatId/messages/:messageId', async (req, res) => {
+  try {
+    const chat = await alfredChats.getChat(req.params.chatId);
+    if (!chat) return res.status(404).json({ error: 'Chat not found' });
+    const msg = await alfredChats.getMessage(req.params.messageId);
+    if (!msg || msg.conversationId !== chat.id)
+      return res.status(404).json({ error: 'Message not found in this chat' });
+    if (msg.metadata?.kind !== 'apply-marker')
+      return res.status(400).json({ error: 'Only apply markers can be deleted' });
+    await alfredChats.deleteMessage(msg.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[alfred] DELETE marker failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/chats/:chatId/messages', async (req, res) => {
   const { chatId } = req.params;
   const { ownerUserId, userMessage, agentSlug } = req.body || {};
@@ -287,7 +311,19 @@ router.post('/chats/:chatId/apply/preview', async (req, res) => {
  */
 router.post('/chats/:chatId/apply/generate', async (req, res) => {
   const { chatId } = req.params;
-  const { agentSlug, ownerUserId, description, reason, targets } = req.body || {};
+  const { agentSlug, ownerUserId, description, reason, targets, workingBodies } = req.body || {};
+
+  // Client-visible working copies — when present, generation bases on
+  // what the user actually SEES (unsaved edits included, chained
+  // applies stack). Absent entities fall back to the saved viewing
+  // version. Keyed by entity id for O(1) lookup.
+  const workingAgent = workingBodies?.agent && workingBodies.agent.id && workingBodies.agent.body
+    ? workingBodies.agent : null;
+  const workingCrews = new Map(
+    (Array.isArray(workingBodies?.crews) ? workingBodies.crews : [])
+      .filter(c => c && c.id && c.body)
+      .map(c => [c.id, c.body]),
+  );
 
   if (!agentSlug)             return res.status(400).json({ error: 'Missing agentSlug' });
   if (!ownerUserId)           return res.status(400).json({ error: 'Missing ownerUserId' });
@@ -316,31 +352,40 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
         return res.status(400).json({ error: 'Malformed target' });
 
       let currentBody;
-      let viewingVersionId;
       let entityNameSnap;
 
       if (target.entity === 'agent') {
-        const { agent, version, body } = await loadAgentViewingBody(target.entityId);
-        currentBody       = body;
-        viewingVersionId  = version.id;
-        entityNameSnap    = body.name || agent.slug;
-        if (!latestAgentBody) latestAgentBody = body;
+        if (workingAgent && workingAgent.id === target.entityId) {
+          currentBody   = workingAgent.body;
+          entityNameSnap = currentBody.name || agentSlug;
+        } else {
+          const { agent, body } = await loadAgentViewingBody(target.entityId);
+          currentBody    = body;
+          entityNameSnap = body.name || agent.slug;
+        }
+        if (!latestAgentBody) latestAgentBody = currentBody;
       } else if (target.entity === 'crew') {
-        const { version, body } = await loadCrewViewingBody(target.entityId);
-        currentBody       = body;
-        viewingVersionId  = version.id;
-        entityNameSnap    = body.name || target.entityName || target.entityId;
+        if (workingCrews.has(target.entityId)) {
+          currentBody = workingCrews.get(target.entityId);
+        } else {
+          const { body } = await loadCrewViewingBody(target.entityId);
+          currentBody = body;
+        }
+        entityNameSnap = currentBody.name || target.entityName || target.entityId;
       } else {
         return res.status(400).json({ error: `Unknown target entity "${target.entity}"` });
       }
 
       // For crew targets: pass the latest agent body as cross-reference.
-      // Falls back to a fresh load when there was no agent target earlier
-      // in the queue.
+      // Prefers (in order): a post-patch agent body from earlier in this
+      // queue, the client's working agent body, a fresh DB load.
       let agentBodyContext = null;
       if (target.entity === 'crew') {
         if (latestAgentBody) {
           agentBodyContext = latestAgentBody;
+        } else if (workingAgent) {
+          agentBodyContext = workingAgent.body;
+          latestAgentBody = workingAgent.body;
         } else {
           const parentAgentId = await agentIdForTarget(target);
           const parent = await loadAgentViewingBody(parentAgentId);
@@ -414,6 +459,28 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
     // existing Save / Save As buttons. The client follows up with
     // /log/apply on Save to write the log row(s).
     const applyGroupId = changeLog.newApplyGroupId();
+
+    // Apply marker — the boundary row in the chat. The consolidator
+    // only reads messages after the last marker, so the next Apply
+    // won't re-collect what this one just consumed. The client renders
+    // it as a divider with a ✕ (deleting it re-opens the window).
+    try {
+      const firstLine = String(description || '').split(/\r?\n/)[0].trim().slice(0, 140);
+      const label = firstLine || prepared.map(p => p.entityNameSnap).join(', ');
+      await alfredChats.appendMessage({
+        chatId,
+        role: 'assistant',
+        content: `✅ Applied: ${label}`,
+        metadata: {
+          kind: 'apply-marker',
+          applyGroupId,
+          targets: prepared.map(p => ({ entity: p.target.entity, entityName: p.entityNameSnap })),
+        },
+      });
+    } catch (err) {
+      // Marker is bookkeeping — never fail the apply over it.
+      console.error('[alfred] apply-marker write failed:', err.message);
+    }
     res.json({
       ok: true,
       applyGroupId,
