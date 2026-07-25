@@ -285,9 +285,10 @@ router.post('/chats/:chatId/apply/preview', async (req, res) => {
     });
 
     res.json({
-      summary:     plan.summary,
-      description: plan.description,
-      targets:     plan.targets,
+      summary:        plan.summary,
+      description:    plan.description,
+      targets:        plan.targets,
+      alreadyApplied: plan.alreadyApplied === true,
     });
   } catch (err) {
     console.error('[alfred] apply/preview failed:', err);

@@ -217,11 +217,20 @@ async function consolidate({ chatId, agentSlug, ownerUserId }) {
   );
   const history = all.slice(lastMarkerIdx + 1).slice(-HISTORY_TURNS);
   if (history.length === 0) {
-    throw new Error(
-      lastMarkerIdx >= 0
-        ? 'Nothing new to apply — everything in this chat was already applied. Keep chatting, or delete the "Applied" marker to re-collect earlier changes.'
-        : 'No chat history to apply from.',
-    );
+    if (lastMarkerIdx >= 0) {
+      // Everything before the marker was already applied. This is a
+      // NORMAL outcome, not an error — return an empty plan (no LLM
+      // call needed) and let the UI show a friendly empty state.
+      return {
+        summary: '',
+        description: '',
+        targets: [],
+        alreadyApplied: true,
+        tokens: { input: 0, output: 0, total: 0 },
+        durationMs: Date.now() - start,
+      };
+    }
+    throw new Error('No chat history to apply from.');
   }
 
   // 2. Current project state, both as a human summary (for the LLM's
