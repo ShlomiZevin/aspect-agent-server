@@ -31,7 +31,9 @@ const MODELS = [
   { id: 'claude-haiku-4-5',  providerId: 'anthropic', name: 'Claude Haiku 4.5',  notes: 'Cheap & fast' },
 
   // ── OpenAI ──
-  { id: 'gpt-5.6',      providerId: 'openai', name: 'GPT-5.6',      notes: '"Sol" — newest, recommended' },
+  { id: 'gpt-5.6',       providerId: 'openai', name: 'GPT-5.6 Sol',   notes: 'Newest, recommended' },
+  { id: 'gpt-5.6-terra', providerId: 'openai', name: 'GPT-5.6 Terra', notes: 'Balanced — half price of Sol' },
+  { id: 'gpt-5.6-luna',  providerId: 'openai', name: 'GPT-5.6 Luna',  notes: 'Cheap & fast' },
   { id: 'gpt-5.5',      providerId: 'openai', name: 'GPT-5.5',      notes: 'Strong all-round' },
   { id: 'gpt-4o',       providerId: 'openai', name: 'GPT-4o',       notes: 'Balanced' },
   { id: 'gpt-5.4-mini', providerId: 'openai', name: 'GPT-5.4 mini', notes: 'New mini — cheap & fast' },
