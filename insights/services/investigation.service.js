@@ -209,6 +209,27 @@ Respond with ONLY a JSON object: { "isSimpleQuery": true or false }`;
   }
 }
 
+/**
+ * Code-level (non-LLM) safety net — independent of whether the synthesis
+ * prompt's own self-check instruction actually gets followed. Detects the
+ * shape of bug that produced the "19 stores at 0% Q3 attainment" false
+ * finding: a numeric column that is EXACTLY 0 on every single row. Real
+ * business data essentially never does this uniformly across 3+ rows; it's
+ * a strong tell for a broken JOIN or other pipeline gap, not a genuine
+ * finding, regardless of which query produced it.
+ * @returns {{flagged: boolean, columns: string[]}}
+ */
+function detectAllZeroAnomaly(data) {
+  if (!Array.isArray(data) || data.length < 3) return { flagged: false, columns: [] };
+  const numericCols = Object.keys(data[0]).filter(
+    k => data.every(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00' || row[k] === null)
+      && data.every(row => typeof row[k] === 'number' || row[k] === null || /^-?\d+(\.\d+)?$/.test(String(row[k])))
+  );
+  // Require the column to be non-null numeric zero somewhere (not just all-null, which is a different, benign case).
+  const flaggedCols = numericCols.filter(k => data.some(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00'));
+  return { flagged: flaggedCols.length > 0, columns: flaggedCols };
+}
+
 async function planQuestion(datasetId, config, prompt) {
   const dataThrough = await getDataThroughDate(datasetId);
   const systemPrompt = `You are planning a proactive business-intelligence investigation for ${config.brandLabel}. You will be given an open-ended investigation prompt (like "Main risks for the next 6 months" or "Bundle opportunities hiding in baskets"). Your job is NOT to answer it yet — it is to turn it into exactly ONE concrete, specific, SQL-answerable data question that a text-to-SQL engine could run against a single database table to gather the evidence needed.
@@ -232,7 +253,7 @@ Pick the category that best matches what the investigation prompt is actually ab
   return { category, dataQuestion: parsed.dataQuestion };
 }
 
-async function synthesizeInsight({ datasetId, config, prompt, category, dataQuestion, queryResult }) {
+async function synthesizeInsight({ datasetId, config, prompt, category, dataQuestion, queryResult, zeroAnomaly }) {
   const { sql, explanation, data, rowCount } = queryResult;
   // Cap what we feed back — enough rows to see the shape/pattern, not the whole table.
   const sampleRows = data.slice(0, 30);
@@ -241,6 +262,8 @@ async function synthesizeInsight({ datasetId, config, prompt, category, dataQues
   const systemPrompt = `You are Aspect, an AI that proactively investigates ${config.brandLabel}'s data and writes up findings for a business audience. You already ran a real SQL query and have the real result rows below — write the insight using ONLY these numbers. Do not invent any figure that isn't directly computable from the provided rows.
 
 ${dataThrough ? `The data runs through ${dataThrough} — that is "now." When your headline/title/description says something like "as of," "currently," "this quarter," or names a year, it MUST be consistent with that real date, not a guess from any other year.\n` : ''}
+SANITY CHECK before writing anything: if EVERY row shows the key metric at exactly 0 (or some other suspiciously uniform value across 100% of rows), that is a strong signal of a JOIN/pipeline/data-gap bug, not a genuine uniform business outcome — real business data almost never produces the identical extreme value on every single row. In that case do NOT write a confident business-risk headline with a specific dollar figure. Instead: use tag "DATA QUALITY" (not "RISK" or any other category tag), keep the headline factual and hedged ("N rows show $0 — likely a data or pipeline issue, not confirmed store performance"), cap confidence at 40, and make the FIRST confidenceChecks entry the specific caveat explaining what looks broken (e.g. a join key that shouldn't match, a null field that should be populated). Only write a normal confident finding when the pattern varies across rows the way real business data does.
+
 
 The detail page is NOT one fixed template — you choose, for THIS specific finding, which content blocks actually convey it best, from this palette:
 - "chart": a line/bar/pie/table series over categories (weeks, months, stores, product families...) — best when there's a real trend or a multi-item breakdown worth plotting.
@@ -304,7 +327,7 @@ Data question asked: "${dataQuestion}"
 SQL executed: ${sql}
 Explanation: ${explanation}
 Row count: ${rowCount}
-Result rows (JSON, up to 30): ${JSON.stringify(sampleRows)}`;
+Result rows (JSON, up to 30): ${JSON.stringify(sampleRows)}${zeroAnomaly?.flagged ? `\n\nAUTOMATED CHECK FLAGGED THIS RESULT: column(s) [${zeroAnomaly.columns.join(', ')}] are exactly 0 on every row. Per the SANITY CHECK instruction above, this MUST be written up as a likely data/pipeline issue, not a confident business finding.` : ''}`;
 
   const response = await llmService.sendOneShot(systemPrompt, userMessage, {
     model: MODEL, maxTokens: 2048, jsonOutput: true, context: 'insights_investigate_synthesize',
@@ -450,9 +473,19 @@ async function investigate(datasetId, prompt) {
     throw new Error(`Data query failed: ${queryResult.message}`);
   }
 
-  const synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult });
+  const zeroAnomaly = detectAllZeroAnomaly(queryResult.data);
 
-  const confidence = Math.max(0, Math.min(100, Math.round(synthesized.confidence ?? 70)));
+  const synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, zeroAnomaly });
+
+  // Hard enforcement, not just a prompt hint: cap confidence and mark the tag
+  // even if the model's own self-check (see synthesizeInsight's system
+  // prompt) didn't kick in for this particular response.
+  let confidence = Math.max(0, Math.min(100, Math.round(synthesized.confidence ?? 70)));
+  let tag = synthesized.tag || category.toUpperCase();
+  if (zeroAnomaly.flagged) {
+    confidence = Math.min(confidence, 40);
+    if (!/data quality/i.test(tag)) tag = 'DATA QUALITY';
+  }
   const color = CATEGORY_COLOR[category];
   const chart = normalizeChart(synthesized.chart, color, dataQuestion.toUpperCase());
   let blocks = normalizeBlocks(synthesized.blocks, color, dataQuestion.toUpperCase());
@@ -464,7 +497,7 @@ async function investigate(datasetId, prompt) {
     id: `investigate-${Date.now()}`,
     category,
     categoryLabel: synthesized.categoryLabel || category,
-    tag: synthesized.tag || category.toUpperCase(),
+    tag,
     confidence,
     confidenceLabel: confidenceLabelFor(confidence),
     foundAgo: 'just now',

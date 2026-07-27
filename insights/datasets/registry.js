@@ -33,7 +33,7 @@ const REGISTRY = {
       gradientTo: '#D946EF',
     },
     defaultBrandLabel: 'Hyper Toy, a toy retail chain',
-    defaultDataModelDescription: 'a facts table with sales, inventory, and target rows (record types), joined to products, stores/warehouses, and customers. Common measures: revenue (ex VAT), profit, margin %, units sold, target attainment %, inventory value/units, loyalty signups. Common dimensions: store, region, branch, product, product family, date (day/week/month/quarter), cashier, campaign, customer city.',
+    defaultDataModelDescription: 'a facts table with sales, inventory, and target rows (record types), joined to products, stores/warehouses, and customers. Common measures: revenue (ex VAT), profit, margin %, units sold, target attainment %, inventory value/units, loyalty signups. Common dimensions: store, region, branch, product, product family, date (day/week/month/quarter), cashier, campaign, customer city. IMPORTANT: sales targets/attainment exist only at store+time granularity — never ask for target attainment broken down by product/product family/SKU, that dimension does not exist on target rows.',
     defaultBootstrapPrompts: [
       'Which stores are furthest behind their sales target this quarter, and why',
       'Which product family has the steepest margin decline recently',
