@@ -3,9 +3,10 @@
  *
  * A standalone product, separate from /api/bi: proactive "Aspect investigates
  * your data" findings, rather than user-driven ad-hoc queries. All insight
- * and tracked-metric content is real — no illustrative/seed content remains
- * (see insights/data/<dataset>.seed.js, which now only holds static dataset
- * branding, not fake insights). Insights come from
+ * and tracked-metric content is real — no illustrative/seed content. Every
+ * dataset registered in ../datasets/registry.js and enabled via
+ * ../services/intelligence-config.service.js (see the admin panel) is served
+ * generically here; insights themselves come from
  * insights/services/investigation.service.js (a real plan -> query ->
  * synthesize LLM/DB pipeline).
  *
@@ -16,7 +17,7 @@
  * source for it.
  *
  * Endpoints:
- *   GET  /api/insights                                — list available datasets (auto-discovered from SEEDS)
+ *   GET  /api/insights                                — list enabled datasets (auto-discovered from the registry + config)
  *   GET  /api/insights/:datasetId/insights             — real generated insight summaries (fast, in-memory)
  *   GET  /api/insights/:datasetId/tracked              — the subset of insights marked "tracked", as strip cards
  *   POST /api/insights/:datasetId/tracked/reorder       — { insightIds: string[] } -> persists "Manage tracking" drag-to-reorder
@@ -35,11 +36,8 @@
 const express = require('express');
 const router = express.Router();
 const investigationService = require('../services/investigation.service');
-
-// Registry keyed by dataset id — add future customer seed modules here.
-const SEEDS = {
-  hypertoy: require('../data/hypertoy.seed'),
-};
+const registry = require('../datasets/registry');
+const intelligenceConfigService = require('../services/intelligence-config.service');
 
 function toSummary(insight) {
   const { id, category, categoryLabel, tag, confidence, confidenceLabel, foundAgo, headline,
@@ -51,14 +49,19 @@ function toSummary(insight) {
   };
 }
 
-function getSeed(datasetId) {
-  const seed = SEEDS[datasetId];
-  if (!seed) {
-    const err = new Error(`No insights available for dataset: ${datasetId}`);
+/** Throws a 404-shaped error unless the dataset exists and is enabled. */
+async function requireEnabled(datasetId) {
+  if (!registry.get(datasetId)) {
+    const err = new Error(`Unknown dataset: ${datasetId}`);
     err.status = 404;
     throw err;
   }
-  return seed;
+  const config = await intelligenceConfigService.getConfig(datasetId);
+  if (!config.enabled) {
+    const err = new Error(`Aspect Intelligence is not enabled for dataset: ${datasetId}`);
+    err.status = 404;
+    throw err;
+  }
 }
 
 function handleError(res, err, context) {
@@ -67,17 +70,27 @@ function handleError(res, err, context) {
   res.status(status).json({ error: err.message });
 }
 
-// Generic — auto-discovers every dataset registered in SEEDS. Adding a new
-// client's seed module to SEEDS is the only step needed for it to appear here.
-router.get('/', (_req, res) => {
-  res.json({ datasets: Object.values(SEEDS).map(seed => seed.getMeta()) });
+// Generic — auto-discovers every dataset registered in ../datasets/registry.js
+// that's currently enabled (see ../services/intelligence-config.service.js).
+// Adding a new dataset to the registry + enabling it in the admin panel is
+// the only step needed for it to appear here.
+router.get('/', async (_req, res) => {
+  try {
+    const configs = await intelligenceConfigService.getAllConfigs();
+    const datasets = configs
+      .filter(c => c.enabled)
+      .map(c => ({ id: c.id, ...registry.get(c.id).defaultMeta }));
+    res.json({ datasets });
+  } catch (err) {
+    handleError(res, err, 'list datasets');
+  }
 });
 
 // Registered before the generic /:datasetId/:insightId route below so
 // "insights" and "tracked" are matched as static segments, not an insightId.
-router.get('/:datasetId/insights', (req, res) => {
+router.get('/:datasetId/insights', async (req, res) => {
   try {
-    getSeed(req.params.datasetId); // 404s on an unknown dataset
+    await requireEnabled(req.params.datasetId);
     const insights = investigationService.listGenerated(req.params.datasetId).map(toSummary);
     res.json({ insights });
   } catch (err) {
@@ -85,9 +98,9 @@ router.get('/:datasetId/insights', (req, res) => {
   }
 });
 
-router.get('/:datasetId/tracked', (req, res) => {
+router.get('/:datasetId/tracked', async (req, res) => {
   try {
-    getSeed(req.params.datasetId);
+    await requireEnabled(req.params.datasetId);
     const tracked = investigationService.listTracked(req.params.datasetId);
     res.json({ tracked });
   } catch (err) {
@@ -99,9 +112,9 @@ router.get('/:datasetId/tracked', (req, res) => {
 // complete new order, sent by the client that's already rendering the
 // draggable list. Registered before /:datasetId/:insightId below so
 // "tracked" is matched as a static segment, not an insightId.
-router.post('/:datasetId/tracked/reorder', (req, res) => {
+router.post('/:datasetId/tracked/reorder', async (req, res) => {
   try {
-    getSeed(req.params.datasetId);
+    await requireEnabled(req.params.datasetId);
     const insightIds = Array.isArray(req.body?.insightIds) ? req.body.insightIds : [];
     const tracked = investigationService.reorderTracked(req.params.datasetId, insightIds);
     res.json({ tracked });
@@ -110,9 +123,9 @@ router.post('/:datasetId/tracked/reorder', (req, res) => {
   }
 });
 
-router.get('/:datasetId/:insightId', (req, res) => {
+router.get('/:datasetId/:insightId', async (req, res) => {
   try {
-    getSeed(req.params.datasetId);
+    await requireEnabled(req.params.datasetId);
     const detail = investigationService.getGeneratedById(req.params.datasetId, req.params.insightId);
     if (!detail) return res.status(404).json({ error: `Unknown insight: ${req.params.insightId}` });
     res.json(detail);
@@ -135,7 +148,7 @@ router.post('/:datasetId/:insightId/track', (req, res) => {
 // insight's own already-computed fields (see generateActionPlan).
 router.post('/:datasetId/:insightId/plan', async (req, res) => {
   try {
-    getSeed(req.params.datasetId);
+    await requireEnabled(req.params.datasetId);
     const plan = await investigationService.generateActionPlan(req.params.datasetId, req.params.insightId);
     if (!plan) return res.status(404).json({ error: `Unknown insight: ${req.params.insightId}` });
     res.json(plan);
@@ -162,7 +175,7 @@ router.post('/:datasetId/investigate', async (req, res) => {
   const prompt = ((req.body && req.body.prompt) || '').trim();
 
   try {
-    getSeed(req.params.datasetId);
+    await requireEnabled(req.params.datasetId);
     const insight = await investigationService.investigate(req.params.datasetId, prompt);
     res.json({
       prompt: insight.evidence.prompt, // the actual prompt used — may be the auto-proposed one
@@ -184,7 +197,7 @@ router.post('/:datasetId/classify-prompt', async (req, res) => {
   const prompt = ((req.body && req.body.prompt) || '').trim();
   if (!prompt) return res.status(400).json({ error: 'A prompt is required' });
   try {
-    getSeed(req.params.datasetId);
+    await requireEnabled(req.params.datasetId);
     const isSimpleQuery = await investigationService.classifyPrompt(prompt);
     res.json({ isSimpleQuery });
   } catch (err) {
@@ -197,7 +210,7 @@ router.post('/:datasetId/classify-prompt', async (req, res) => {
 // persistence file exists) rather than shipping fake placeholder content.
 router.post('/:datasetId/bootstrap', async (req, res) => {
   try {
-    getSeed(req.params.datasetId);
+    await requireEnabled(req.params.datasetId);
     const insights = await investigationService.bootstrap(req.params.datasetId);
     res.json({ created: insights.length, insightIds: insights.map(i => i.id) });
   } catch (err) {

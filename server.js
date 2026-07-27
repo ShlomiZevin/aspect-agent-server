@@ -143,6 +143,9 @@ app.use('/api/bi', require('./bi/routes/bi.routes'));
 // Proactive AI-investigation insights feed. Separate product from /api/bi
 // (ad-hoc queries) — see insights/routes/insights.routes.js.
 app.use('/api/insights', require('./insights/routes/insights.routes'));
+// Admin panel for enabling/configuring Aspect Intelligence per dataset — see
+// insights/routes/insights-admin.routes.js.
+app.use('/api/admin/intelligence', require('./insights/routes/insights-admin.routes'));
 
 // ========== MODELS REGISTRY ==========
 // Single source of truth for the LLM models the platform supports.
@@ -6351,6 +6354,10 @@ async function startServer() {
     require('./agents/zolstock/data-reload').register(dataReloadService);
     require('./agents/tevanaot/data-reload').register(dataReloadService);
     app.set('dataReloadService', dataReloadService);
+    // Aspect Intelligence reuses this same service's getDataInfo() for its
+    // per-dataset "data through" freshness lookup (see
+    // insights/services/investigation.service.js) instead of a bespoke query.
+    require('./insights/services/investigation.service').setDataReloadService(dataReloadService);
     await dataReloadService.cleanupStaleRuns();
     // Auto-complete a swap if a worker died right after MVs (no manual re-run needed).
     dataReloadService.startSelfHealLoop();
