@@ -62,8 +62,16 @@ function validatePanelValues(render, parsed, cfg = {}) {
       if (predefined) {
         tags = cfg.labels.map(toStr).filter(Boolean);
       } else {
-        if (!Array.isArray(parsed.tags)) return null;
-        tags = parsed.tags.map(toStr).filter(Boolean);
+        // Generated: prefer an explicit `tags` list; if the model only
+        // returned `active`, treat those AS the tags (all shown, none
+        // highlighted) so the panel never renders empty.
+        if (Array.isArray(parsed.tags)) {
+          tags = parsed.tags.map(toStr).filter(Boolean);
+        } else {
+          const onlyActive = toActiveList(parsed.active);
+          if (onlyActive.length === 0) return null;
+          return { tags: onlyActive, active: [] };
+        }
       }
       if (tags.length === 0) return null;
       // Keep only active values that actually exist in the label set.
@@ -106,7 +114,8 @@ function validatePanelValues(render, parsed, cfg = {}) {
           const value = toNum(b.value);
           if (value === null) return null;
           const color = safeColor(b.color);
-          return { label: toStr(b.label), value: clamp01to100(value), ...(color ? { color } : {}) };
+          const caption = b.caption != null ? toStr(b.caption) : '';
+          return { label: toStr(b.label), value: clamp01to100(value), ...(color ? { color } : {}), ...(caption ? { caption } : {}) };
         })
         .filter(Boolean);
       return bars.length ? { bars } : null;
@@ -122,9 +131,38 @@ function validatePanelValues(render, parsed, cfg = {}) {
             .map(([title, body]) => ({ title, body }));
       const cards = arr
         .filter(c => c && typeof c === 'object' && (c.title !== undefined || c.body !== undefined))
-        .map(c => ({ title: toStr(c.title), body: toStr(c.body) }))
+        .map(c => ({ title: toStr(c.title), body: toStr(c.body), ...(c.tag != null && toStr(c.tag) ? { tag: toStr(c.tag) } : {}) }))
         .filter(c => c.title || c.body);
       return cards.length ? { cards } : null;
+    }
+
+    case 'journey': {
+      // PREFERRED simple/flat form (like the other panels) — status labels
+      // as key→value, plus two reserved keys:
+      //   { "Current stage":"Trust building", "Missing":"…", "readiness":60, "next":"…" }
+      // Also accepts the structured { rows:[{k,v,pill?}], readiness:{value}, next }.
+      const RESERVED = new Set(['readiness', 'next', 'rows']);
+      let rows;
+      if (Array.isArray(parsed.rows)) {
+        rows = parsed.rows
+          .map(r => (r && typeof r === 'object')
+            ? { k: toStr(r.k), v: toStr(r.v), ...(r.pill ? { pill: true } : {}) }
+            : null)
+          .filter(r => r && (r.k || r.v));
+      } else {
+        rows = Object.entries(parsed)
+          .filter(([k, v]) => !RESERVED.has(k) && String(k).trim() && toStr(v))
+          .map(([k, v]) => ({ k: toStr(k), v: toStr(v) }));
+      }
+      // readiness: a plain number (flat) or { value } (structured).
+      const rRaw = parsed.readiness;
+      const rNum = (rRaw && typeof rRaw === 'object') ? toNum(rRaw.value) : toNum(rRaw);
+      const readiness = rNum !== null
+        ? { value: clamp01to100(rNum), ...(rRaw && typeof rRaw === 'object' && rRaw.label ? { label: toStr(rRaw.label) } : {}) }
+        : null;
+      const next = parsed.next != null ? toStr(parsed.next) : '';
+      if (!rows.length && !readiness && !next) return null;
+      return { journey: { rows, ...(readiness ? { readiness } : {}), ...(next ? { next } : {}) } };
     }
 
     default:

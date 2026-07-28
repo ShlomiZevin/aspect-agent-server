@@ -944,7 +944,7 @@ export type AgentBody = Pick<
   AgentDoc,
   'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
   | 'fields' | 'domains' | 'tags' | 'parameters' | 'enums'
-  | 'cortex' | 'snippets' | 'personas' | 'liveBrain'
+  | 'cortex' | 'snippets' | 'personas' | 'liveBrain' | 'profiler'
 >;
 
 // ─── Live Brain ────────────────────────────────────────────────────
@@ -969,7 +969,7 @@ export type AgentBody = Pick<
  * the LLM only returns the dynamic part (active / values).
  */
 export type PanelRender =
-  | 'text' | 'html' | 'tags' | 'fields' | 'bars' | 'cards';
+  | 'text' | 'html' | 'tags' | 'fields' | 'bars' | 'cards' | 'journey';
 
 /**
  * A TEXT panel — the author writes free text and drops in live values
@@ -1051,6 +1051,73 @@ export interface LiveBrainDef {
   frame?: {
     arrangement?: 'stack' | 'grid';
     openMode?: 'half' | 'full';
+  };
+}
+
+// ─── Profiler ──────────────────────────────────────────────────────
+// A SECOND customer-facing surface, a sibling of Live Brain: a live,
+// LLM-built customer profile shown beside the chat (opens on ~1/3
+// screen). It reuses the SAME engine — every panel is an ordinary addon
+// (prompt/model/history/render/filter) run through `addonRunner` and
+// logged in the run log + `llm_usage` — the only difference from a Live
+// Brain panel is the memory slot it writes to (`profiler`, not `brain`).
+// Authored on the `/:agent/builder/profiler` screen. See the Profiler
+// plan. Ask Profiler (natural-language Q&A over the profile) is a
+// separate later addition and is intentionally not modelled yet.
+
+/**
+ * One Profiler panel. Structurally a {@link BrainPanel} (so authoring,
+ * rendering, shapes and the run engine are all shared), plus two
+ * Profiler-only display hints. The three "fixed indicators" Noa's spec
+ * describes are simply panels with a `bars` render and `placement:
+ * 'header'` — nothing is hard-coded; the author arranges them.
+ */
+export interface ProfilerPanel extends BrainPanel {
+  /**
+   * Where the panel renders. `header` → the compact indicators strip
+   * pinned above the sections (e.g. the Depth / Engagement / Quality
+   * bars); `body` → a normal section card in the scroll area. Default
+   * `body`.
+   */
+  placement?: 'header' | 'body';
+  /** Internal author-facing note on the panel's purpose. Never shown to
+   *  the customer. */
+  description?: string;
+}
+
+/**
+ * Agent-level Profiler configuration. Optional for back-compat; readers
+ * treat absence as `{ panels: [] }`.
+ */
+export interface ProfilerDef {
+  panels: ProfilerPanel[];
+  /**
+   * Ask Profiler — the headline feature: the user talks to the profile
+   * in natural language and it answers about itself (why it inferred
+   * something, what's missing, what to ask next). It's an on-demand LLM
+   * run (user-triggered, not cadence): the whole current profiler state
+   * is handed to the model as JSON alongside the question, and the answer
+   * streams back. Logged like any run. Two authored controls (WYSIWYG):
+   * the answering `model` and the `prompt` (how the profile speaks about
+   * itself — ships with a sensible default, rarely changed). Optional
+   * `chips` are preset questions shown in the drawer.
+   */
+  ask?: {
+    enabled: boolean;
+    model: ModelRef;
+    /** System prompt for how the profile answers about itself. Has a
+     *  built-in default; authors rarely change it. */
+    prompt: string;
+    /** Preset one-tap questions shown in the Ask drawer. */
+    chips?: string[];
+  };
+  /**
+   * Presentation frame, kept separate from panel data (mirrors
+   * {@link LiveBrainDef.frame}). The Profiler opens on ~1/3 screen by
+   * default — smaller than Live Brain.
+   */
+  frame?: {
+    openMode?: 'third' | 'half' | 'full';
   };
 }
 
@@ -1169,6 +1236,14 @@ export interface AgentDoc {
    * `{ panels: [] }`.
    */
   liveBrain?: LiveBrainDef;
+  /**
+   * Agent-level Profiler — a second customer-facing surface beside the
+   * chat (a live, LLM-built customer profile), sibling to `liveBrain`.
+   * Authored on the `/:agent/builder/profiler` screen. Part of the
+   * versioned agent body. Optional for back-compat; readers treat
+   * absence as `{ panels: [] }`.
+   */
+  profiler?: ProfilerDef;
   /**
    * The crews that belong to this agent. NOT part of the agent
    * version body — crews are their own versioned entities and live

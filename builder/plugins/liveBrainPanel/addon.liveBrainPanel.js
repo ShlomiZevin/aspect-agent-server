@@ -28,27 +28,26 @@ const { parseOutput } = require('../../runtime/outputParser');
 const { validatePanelValues } = require('../../runtime/panelShapes');
 
 const LIVE_BRAIN_PANEL_PLUGIN_ID = 'live-brain-panel';
-
-// The crew bucket every panel's LLM usage is grouped under, so brain
-// spend is one identifiable family and never mixed into the chat crew's
-// usage. (The specific panel goes in the `process` column — see below.)
-const LIVE_BRAIN_USAGE_CREW = 'live_brain';
+// The Profiler runs its sections through this SAME plugin under a second
+// id, so its runs are separable in the run inspector / reasoning filters
+// while sharing 100% of the logic. The dispatcher picks which id.
+const PROFILER_PANEL_PLUGIN_ID = 'profiler-panel';
 
 /**
- * Build the `llm_usage.process` tag for a panel: `LB · <title>`. Mirrors
- * how a normal addon carries its identity in `process`, so each panel is
- * a distinct, human-readable row in the usage dashboard. `process` is
- * varchar(50): we strip a leading emoji/symbol from the title and cap the
- * whole tag at 50 chars. Falls back to the panel id when there's no title.
+ * Build the `llm_usage.process` tag for a panel: `<prefix> · <title>`
+ * (e.g. `LB · Mood` for Live Brain, `PF · Identity` for the Profiler).
+ * Mirrors how a normal addon carries its identity in `process`, so each
+ * panel is a distinct, human-readable row in the usage dashboard.
+ * `process` is varchar(50): we strip a leading emoji/symbol from the
+ * title and cap the whole tag at 50 chars. Falls back to the panel id.
  */
-function panelUsageProcess(instance) {
-  const prefix = 'LB · ';
+function panelUsageProcess(instance, prefix = 'LB') {
   const raw = (instance?.config?.name || instance?.instanceId || 'panel')
     // Drop leading emoji / pictographs / punctuation so the tag reads as
     // the panel's words, not its icon.
     .replace(/^[\s\p{Extended_Pictographic}\p{Emoji_Presentation}\p{P}\p{S}]+/u, '')
     .trim() || String(instance?.instanceId || 'panel');
-  return (prefix + raw).slice(0, 50);
+  return (`${prefix} · ` + raw).slice(0, 50);
 }
 
 // A panel ANALYSES the conversation — it must not be handed a user turn
@@ -84,15 +83,18 @@ async function run(ctx) {
     instance, prompt, modelString, conversationId,
     agentNameForLogs, ownerUserId, historyMessages, llm,
   } = ctx;
-  // Panel-specific usage tags (NOT ctx.usageProcess/usageCrew, which are
-  // the generic plugin id + chat crew): each panel is its own process,
-  // grouped under the `live_brain` crew. See panelUsageProcess above.
-  const usageProcess = panelUsageProcess(instance);
-  const usageCrew    = LIVE_BRAIN_USAGE_CREW;
-
   const start = Date.now();
   const cfg = instance.config || {};
   const panelId = instance.instanceId;
+  // Which surface this panel belongs to. The dispatcher stamps
+  // `memorySlot` ('profiler') + usage identity onto config; defaults keep
+  // Live Brain's behaviour. `slot` also routes the memory write below.
+  const slot = cfg.memorySlot === 'profiler' ? 'profiler' : undefined;
+  // Panel-specific usage tags (NOT ctx.usageProcess/usageCrew, which are
+  // the generic plugin id + chat crew): each panel is its own process,
+  // grouped under its surface's crew bucket. See panelUsageProcess above.
+  const usageProcess = panelUsageProcess(instance, cfg.usagePrefix || 'LB');
+  const usageCrew    = cfg.usageCrew || 'live_brain';
   const render = typeof cfg.render === 'string' ? cfg.render : 'text';
   // `text` (Markdown) and `html` are free-form string renders — everything
   // else has a JSON shape the model must return.
@@ -142,9 +144,10 @@ async function run(ctx) {
   }
 
   // Valid → replace the slot; invalid/empty → clear it so the panel hides.
+  // `slot` routes the write to the right surface (Live Brain vs Profiler).
   const memoryWrites = entry
-    ? [{ kind: 'panel', panelId, entry }]
-    : [{ kind: 'panel', panelId, clear: true }];
+    ? [{ kind: 'panel', panelId, entry, slot }]
+    : [{ kind: 'panel', panelId, clear: true, slot }];
 
   return {
     rawOutput:    raw,
@@ -156,10 +159,18 @@ async function run(ctx) {
   };
 }
 
+// Both surfaces share ONE implementation. Registering under two ids keeps
+// their runs separable (run inspector / reasoning filters) while the code
+// stays single-source. The dispatcher chooses the id per surface.
 registerPlugin({
   id:                 LIVE_BRAIN_PANEL_PLUGIN_ID,
   allowedOutputTypes: ['json-to-memory'],
   run,
 });
+registerPlugin({
+  id:                 PROFILER_PANEL_PLUGIN_ID,
+  allowedOutputTypes: ['json-to-memory'],
+  run,
+});
 
-module.exports = { LIVE_BRAIN_PANEL_PLUGIN_ID };
+module.exports = { LIVE_BRAIN_PANEL_PLUGIN_ID, PROFILER_PANEL_PLUGIN_ID };

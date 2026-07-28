@@ -61,6 +61,12 @@ const SECTION_RETRIEVAL = 'retrieval';
  *  builder's brain run inspector. Live-Brain panels are the ONLY writers.
  *  See docs/guides/BUILDER_V2_LIVE_BRAIN.md. */
 const SECTION_PANELS = 'panels';
+/** Profiler panels = the Profiler surface's panel outputs. Same flat
+ *  `{ [panelId]: entry }` rolling-replace shape as SECTION_PANELS, but a
+ *  SEPARATE slot so the Profiler and Live Brain never collide — a panel
+ *  write carries `slot:'profiler'` to land here. Written by Profiler
+ *  panels, read by the customer Profiler surface + its run inspector. */
+const SECTION_PROFILER_PANELS = 'profilerPanels';
 /** Sections that follow the `{ [domain]: { [field]: value } }` shape.
  *  Summary breaks the pattern — its writes are flat `{ [name]: entry }` —
  *  so it has its own write path and is NOT in this list. */
@@ -98,6 +104,7 @@ function normalizeBlob(raw) {
     [SECTION_SUMMARY]:   {},
     [SECTION_RETRIEVAL]: {},
     [SECTION_PANELS]:    {},
+    [SECTION_PROFILER_PANELS]: {},
     runCounts:           {},
   });
   if (!raw || typeof raw !== 'object') return empty();
@@ -105,13 +112,15 @@ function normalizeBlob(raw) {
       Object.prototype.hasOwnProperty.call(raw, SECTION_THINKING) ||
       Object.prototype.hasOwnProperty.call(raw, SECTION_SUMMARY) ||
       Object.prototype.hasOwnProperty.call(raw, SECTION_RETRIEVAL) ||
-      Object.prototype.hasOwnProperty.call(raw, SECTION_PANELS)) {
+      Object.prototype.hasOwnProperty.call(raw, SECTION_PANELS) ||
+      Object.prototype.hasOwnProperty.call(raw, SECTION_PROFILER_PANELS)) {
     return {
       [SECTION_MEMORY]:    raw[SECTION_MEMORY]    && typeof raw[SECTION_MEMORY]    === 'object' ? raw[SECTION_MEMORY]    : {},
       [SECTION_THINKING]:  raw[SECTION_THINKING]  && typeof raw[SECTION_THINKING]  === 'object' ? raw[SECTION_THINKING]  : {},
       [SECTION_SUMMARY]:   raw[SECTION_SUMMARY]   && typeof raw[SECTION_SUMMARY]   === 'object' ? raw[SECTION_SUMMARY]   : {},
       [SECTION_RETRIEVAL]: raw[SECTION_RETRIEVAL] && typeof raw[SECTION_RETRIEVAL] === 'object' ? raw[SECTION_RETRIEVAL] : {},
       [SECTION_PANELS]:    raw[SECTION_PANELS]    && typeof raw[SECTION_PANELS]    === 'object' ? raw[SECTION_PANELS]    : {},
+      [SECTION_PROFILER_PANELS]: raw[SECTION_PROFILER_PANELS] && typeof raw[SECTION_PROFILER_PANELS] === 'object' ? raw[SECTION_PROFILER_PANELS] : {},
       runCounts:           raw.runCounts && typeof raw.runCounts === 'object' ? raw.runCounts : {},
     };
   }
@@ -193,15 +202,20 @@ function applyWrites(blob, writes) {
       continue;
     }
 
-    // Panels: flat, rolling-replace slots keyed by panel id (Live Brain).
-    //   { kind:'panel', panelId, entry }      → set slot (replace)
-    //   { kind:'panel', panelId, clear:true } → drop slot (panel hides)
+    // Panels: flat, rolling-replace slots keyed by panel id. The
+    // OPTIONAL `slot` selects the surface: 'profiler' → the Profiler
+    // slot; anything else (default) → Live Brain's `panels`. Same shape
+    // in both, so Live Brain and Profiler share the panel plugin without
+    // colliding.
+    //   { kind:'panel', panelId, entry, slot? }      → set slot (replace)
+    //   { kind:'panel', panelId, clear:true, slot? } → drop slot (hides)
     if (w.kind === 'panel') {
-      if (!blob[SECTION_PANELS]) blob[SECTION_PANELS] = {};
+      const section = w.slot === 'profiler' ? SECTION_PROFILER_PANELS : SECTION_PANELS;
+      if (!blob[section]) blob[section] = {};
       if (!w.panelId) continue;
-      if (w.clear === true) { delete blob[SECTION_PANELS][w.panelId]; continue; }
+      if (w.clear === true) { delete blob[section][w.panelId]; continue; }
       if (!w.entry || typeof w.entry !== 'object') continue;
-      blob[SECTION_PANELS][w.panelId] = w.entry;
+      blob[section][w.panelId] = w.entry;
       continue;
     }
 
@@ -244,18 +258,25 @@ function getRetrieval(blob, name) {
   return sec[name];
 }
 
-/** Read a Live Brain panel's stored entry by panel id. Returns undefined
- *  when the panel has no valid value (never ran, or last run was hidden). */
-function getPanel(blob, panelId) {
-  const sec = blob?.[SECTION_PANELS];
+/** The storage section for a panel `slot` — 'profiler' → the Profiler
+ *  slot, anything else → Live Brain's `panels`. */
+function panelSectionFor(slot) {
+  return slot === 'profiler' ? SECTION_PROFILER_PANELS : SECTION_PANELS;
+}
+
+/** Read a panel's stored entry by panel id from the given `slot`
+ *  ('brain' default | 'profiler'). Returns undefined when the panel has
+ *  no valid value (never ran, or last run was hidden). */
+function getPanel(blob, panelId, slot) {
+  const sec = blob?.[panelSectionFor(slot)];
   if (!sec || typeof panelId !== 'string' || !panelId) return undefined;
   return sec[panelId];
 }
 
-/** The whole panels section — `{ [panelId]: entry }`. Empty object when
- *  nothing has been written. */
-function listPanels(blob) {
-  return (blob && blob[SECTION_PANELS]) || {};
+/** The whole panels section for a `slot` — `{ [panelId]: entry }`. Empty
+ *  object when nothing has been written. */
+function listPanels(blob, slot) {
+  return (blob && blob[panelSectionFor(slot)]) || {};
 }
 
 /** Read a summary entry by name. Returns undefined when the slot is
@@ -385,6 +406,7 @@ module.exports = {
   SECTION_SUMMARY,
   SECTION_RETRIEVAL,
   SECTION_PANELS,
+  SECTION_PROFILER_PANELS,
   DOMAIN_SECTIONS,
   SECTIONS,
 };
