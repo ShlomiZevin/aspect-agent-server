@@ -1,35 +1,34 @@
 /**
  * Real "Aspect investigates your data" pipeline for the Insights "investigate"
- * box — replaces the old canned/fixed response (POST /investigate used to
- * always return the same 4 seed insight ids regardless of the prompt).
+ * box — works for any dataset registered in ../datasets/registry.js and
+ * enabled via ./intelligence-config.service.js (see the admin panel).
  *
- * Three LLM/DB round trips, reusing the exact same engine the real chat uses
- * for `fetch_hypertoy_data` (DataQueryService -> sql-generator.service ->
+ * Three LLM/DB round trips per dataset, reusing the exact same engine the
+ * real chat agents use (DataQueryService -> sql-generator.service ->
  * schema-descriptor.service), so the generated SQL is subject to the same
- * safety validation and anti-pattern learning as every other query on this
- * dataset — nothing insight-specific was bypassed:
+ * safety validation and anti-pattern learning as every other query on that
+ * dataset — nothing insight-specific is bypassed:
  *
  *   1. PLAN    — turn the free-text investigation prompt ("Main risks for
  *      the next 6 months") into one concrete, SQL-answerable data question
  *      plus a category classification.
  *   2. QUERY   — run that question through the real NL->SQL pipeline against
- *      the actual hypertoy database and get real result rows back.
+ *      the actual dataset database and get real result rows back.
  *   3. SYNTHESIZE — feed the real rows (not the plan, not a guess) back to
  *      the model and ask it to write the full insight (headline, scenarios,
  *      reasoning trail, confidence) grounded only in those numbers.
  *
- * Generated insights are the ONLY insight content this API serves now (the
- * old hypertoy.seed.js illustrative INSIGHTS/TRACKED arrays are gone —
- * Kosta was explicit that seed/fake content must not remain once the real
- * pipeline exists). Kept in-memory per dataset (module-level Map) and
- * persisted to a JSON file so a server restart before the demo doesn't wipe
- * everything that's been generated so far.
+ * Generated insights are the ONLY insight content this API serves (no
+ * illustrative/seed content) — kept in-memory per dataset (module-level Map)
+ * and persisted to a JSON file so a server restart doesn't wipe everything
+ * that's been generated so far.
  */
 const fs = require('fs');
 const path = require('path');
 const llmService = require('../../services/llm');
 const { DataQueryService } = require('../../services/data-query.service');
-const { getPool } = require('../../services/db.hypertoy');
+const registry = require('../datasets/registry');
+const intelligenceConfigService = require('./intelligence-config.service');
 
 const MODEL = 'claude-sonnet-4-6';
 const CATEGORY_COLOR = {
@@ -41,12 +40,27 @@ const CATEGORY_COLOR = {
 };
 const VALID_CATEGORIES = Object.keys(CATEGORY_COLOR);
 
-// Shared with planQuestion() and proposeInvestigationPrompt() — one
-// description of what's actually queryable, not two hand-maintained copies
-// that could drift apart.
-const DATA_MODEL_DESCRIPTION = `a facts table with sales, inventory, and target rows (record types), joined to products, stores/warehouses, and customers. Common measures: revenue (ex VAT), profit, margin %, units sold, target attainment %, inventory value/units, loyalty signups. Common dimensions: store, region, branch, product, product family, date (day/week/month/quarter), cashier, campaign, customer city.`;
-
 const PERSIST_PATH = path.join(__dirname, '..', 'data', 'generated-insights.json');
+
+/** @returns {Object} the registry entry for a dataset id — throws a 404-shaped error if unknown. */
+function getDatasetEntry(datasetId) {
+  const entry = registry.get(datasetId);
+  if (!entry) {
+    const err = new Error(`Unknown dataset: ${datasetId}`);
+    err.status = 404;
+    throw err;
+  }
+  return entry;
+}
+
+// Set once at server startup (see server.js, next to the data-reload
+// registrations) — lets getDataThroughDate() reuse the SAME per-schema
+// freshness lookup DataStatusBar already uses (DataReloadService.getDataInfo),
+// instead of a dataset-specific hardcoded SQL query.
+let dataReloadServiceRef = null;
+function setDataReloadService(instance) {
+  dataReloadServiceRef = instance;
+}
 
 // datasetId -> InsightDetail[], newest first.
 const generated = new Map();
@@ -100,31 +114,39 @@ function persist() {
   }
 }
 
-let dataQueryService = null;
-function getDataQueryService() {
-  if (!dataQueryService) dataQueryService = new DataQueryService(getPool());
-  return dataQueryService;
+// datasetId -> DataQueryService — several datasets currently share one
+// underlying pg Pool (see services/db.*.js), but a dedicated pool for any of
+// them is just as valid, so this is keyed per dataset rather than assuming
+// a single shared instance.
+const dataQueryServices = new Map();
+function getDataQueryService(datasetId) {
+  if (!dataQueryServices.has(datasetId)) {
+    dataQueryServices.set(datasetId, new DataQueryService(getDatasetEntry(datasetId).getPool()));
+  }
+  return dataQueryServices.get(datasetId);
 }
 
-// Real "today" for this dataset, cached after the first lookup — without
-// this, the model has no idea what year the business is actually in and
-// falls back to guessing from its own training era (caught writing "as of
-// Q3 2024" in a headline when the data is really anchored around mid-2026).
-// Same MAX(transaction_date) pattern zer4u's crew already uses for its own
-// "data last updated" banner, so this always agrees with reality rather
-// than a hardcoded/stale guess.
-let cachedDataThrough = null;
-async function getDataThroughDate() {
-  if (cachedDataThrough) return cachedDataThrough;
+// Real "today" for this dataset, cached after the first lookup per dataset —
+// without this, the model has no idea what year the business is actually in
+// and falls back to guessing from its own training era (caught writing "as
+// of Q3 2024" in a headline when the data is really anchored around mid-
+// 2026). Reuses the SAME per-schema freshness lookup DataStatusBar already
+// uses (DataReloadService.getDataInfo → lastDataDate) instead of a
+// dataset-specific hardcoded SQL query — every dataset's own reloader
+// already knows how to compute this for its own schema.
+const cachedDataThrough = new Map();
+async function getDataThroughDate(datasetId) {
+  if (cachedDataThrough.has(datasetId)) return cachedDataThrough.get(datasetId);
+  let value = null;
   try {
-    const r = await getPool().query(
-      `SELECT TO_CHAR(MAX("transaction_date"), 'YYYY-MM-DD') AS d FROM hypertoy.facts WHERE "record_type" = 'מכירות'`
-    );
-    cachedDataThrough = r.rows[0]?.d || null;
+    const schemaName = getDatasetEntry(datasetId).schemaName;
+    const info = dataReloadServiceRef ? await dataReloadServiceRef.getDataInfo(schemaName) : null;
+    value = info?.lastDataDate || null;
   } catch {
-    cachedDataThrough = null;
+    value = null;
   }
-  return cachedDataThrough;
+  cachedDataThrough.set(datasetId, value);
+  return value;
 }
 
 function extractFirstJSON(text) {
@@ -187,11 +209,32 @@ Respond with ONLY a JSON object: { "isSimpleQuery": true or false }`;
   }
 }
 
-async function planQuestion(prompt) {
-  const dataThrough = await getDataThroughDate();
-  const systemPrompt = `You are planning a proactive business-intelligence investigation for Hyper Toy, a toy retail chain. You will be given an open-ended investigation prompt (like "Main risks for the next 6 months" or "Bundle opportunities hiding in baskets"). Your job is NOT to answer it yet — it is to turn it into exactly ONE concrete, specific, SQL-answerable data question that a text-to-SQL engine could run against a single database table to gather the evidence needed.
+/**
+ * Code-level (non-LLM) safety net — independent of whether the synthesis
+ * prompt's own self-check instruction actually gets followed. Detects the
+ * shape of bug that produced the "19 stores at 0% Q3 attainment" false
+ * finding: a numeric column that is EXACTLY 0 on every single row. Real
+ * business data essentially never does this uniformly across 3+ rows; it's
+ * a strong tell for a broken JOIN or other pipeline gap, not a genuine
+ * finding, regardless of which query produced it.
+ * @returns {{flagged: boolean, columns: string[]}}
+ */
+function detectAllZeroAnomaly(data) {
+  if (!Array.isArray(data) || data.length < 3) return { flagged: false, columns: [] };
+  const numericCols = Object.keys(data[0]).filter(
+    k => data.every(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00' || row[k] === null)
+      && data.every(row => typeof row[k] === 'number' || row[k] === null || /^-?\d+(\.\d+)?$/.test(String(row[k])))
+  );
+  // Require the column to be non-null numeric zero somewhere (not just all-null, which is a different, benign case).
+  const flaggedCols = numericCols.filter(k => data.some(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00'));
+  return { flagged: flaggedCols.length > 0, columns: flaggedCols };
+}
 
-${dataThrough ? `The data runs through ${dataThrough} — treat that as "now" for anything relative ("recent," "this quarter," "next 6 months"). Do not assume any other year.\n\n` : ''}The data available: ${DATA_MODEL_DESCRIPTION}
+async function planQuestion(datasetId, config, prompt) {
+  const dataThrough = await getDataThroughDate(datasetId);
+  const systemPrompt = `You are planning a proactive business-intelligence investigation for ${config.brandLabel}. You will be given an open-ended investigation prompt (like "Main risks for the next 6 months" or "Bundle opportunities hiding in baskets"). Your job is NOT to answer it yet — it is to turn it into exactly ONE concrete, specific, SQL-answerable data question that a text-to-SQL engine could run against a single database table to gather the evidence needed.
+
+${dataThrough ? `The data runs through ${dataThrough} — treat that as "now" for anything relative ("recent," "this quarter," "next 6 months"). Do not assume any other year.\n\n` : ''}The data available: ${config.dataModelDescription}
 
 Respond with ONLY a JSON object:
 {
@@ -210,15 +253,17 @@ Pick the category that best matches what the investigation prompt is actually ab
   return { category, dataQuestion: parsed.dataQuestion };
 }
 
-async function synthesizeInsight({ prompt, category, dataQuestion, queryResult }) {
+async function synthesizeInsight({ datasetId, config, prompt, category, dataQuestion, queryResult, zeroAnomaly }) {
   const { sql, explanation, data, rowCount } = queryResult;
   // Cap what we feed back — enough rows to see the shape/pattern, not the whole table.
   const sampleRows = data.slice(0, 30);
-  const dataThrough = await getDataThroughDate();
+  const dataThrough = await getDataThroughDate(datasetId);
 
-  const systemPrompt = `You are Aspect, an AI that proactively investigates a toy retailer's (Hyper Toy) data and writes up findings for a business audience. You already ran a real SQL query and have the real result rows below — write the insight using ONLY these numbers. Do not invent any figure that isn't directly computable from the provided rows.
+  const systemPrompt = `You are Aspect, an AI that proactively investigates ${config.brandLabel}'s data and writes up findings for a business audience. You already ran a real SQL query and have the real result rows below — write the insight using ONLY these numbers. Do not invent any figure that isn't directly computable from the provided rows.
 
 ${dataThrough ? `The data runs through ${dataThrough} — that is "now." When your headline/title/description says something like "as of," "currently," "this quarter," or names a year, it MUST be consistent with that real date, not a guess from any other year.\n` : ''}
+SANITY CHECK before writing anything: if EVERY row shows the key metric at exactly 0 (or some other suspiciously uniform value across 100% of rows), that is a strong signal of a JOIN/pipeline/data-gap bug, not a genuine uniform business outcome — real business data almost never produces the identical extreme value on every single row. In that case do NOT write a confident business-risk headline with a specific dollar figure. Instead: use tag "DATA QUALITY" (not "RISK" or any other category tag), keep the headline factual and hedged ("N rows show $0 — likely a data or pipeline issue, not confirmed store performance"), cap confidence at 40, and make the FIRST confidenceChecks entry the specific caveat explaining what looks broken (e.g. a join key that shouldn't match, a null field that should be populated). Only write a normal confident finding when the pattern varies across rows the way real business data does.
+
 
 The detail page is NOT one fixed template — you choose, for THIS specific finding, which content blocks actually convey it best, from this palette:
 - "chart": a line/bar/pie/table series over categories (weeks, months, stores, product families...) — best when there's a real trend or a multi-item breakdown worth plotting.
@@ -282,7 +327,7 @@ Data question asked: "${dataQuestion}"
 SQL executed: ${sql}
 Explanation: ${explanation}
 Row count: ${rowCount}
-Result rows (JSON, up to 30): ${JSON.stringify(sampleRows)}`;
+Result rows (JSON, up to 30): ${JSON.stringify(sampleRows)}${zeroAnomaly?.flagged ? `\n\nAUTOMATED CHECK FLAGGED THIS RESULT: column(s) [${zeroAnomaly.columns.join(', ')}] are exactly 0 on every row. Per the SANITY CHECK instruction above, this MUST be written up as a likely data/pipeline issue, not a confident business finding.` : ''}`;
 
   const response = await llmService.sendOneShot(systemPrompt, userMessage, {
     model: MODEL, maxTokens: 2048, jsonOutput: true, context: 'insights_investigate_synthesize',
@@ -379,13 +424,13 @@ function normalizeBlocks(rawBlocks, color, fallbackTitle) {
  * topics: every already-generated insight's actual data question is listed
  * so the model is pushed to find a real gap rather than repeat one.
  */
-async function proposeInvestigationPrompt(datasetId) {
+async function proposeInvestigationPrompt(datasetId, config) {
   const existing = listGenerated(datasetId);
   const covered = existing.length
     ? existing.map(i => `- [${i.category}] ${i.evidence?.dataQuestion || i.headline}`).join('\n')
     : '(nothing investigated yet — pick any strong angle)';
 
-  const systemPrompt = `You are Aspect, an AI that proactively investigates a toy retailer's (Hyper Toy) data and finds business insights on its own, without being asked a specific question. The data available: ${DATA_MODEL_DESCRIPTION}
+  const systemPrompt = `You are Aspect, an AI that proactively investigates ${config.brandLabel}'s data and finds business insights on its own, without being asked a specific question. The data available: ${config.dataModelDescription}
 
 Propose ONE new investigation to run next — something a sharp analyst would genuinely want to know, phrased as a business question (not SQL, not generic filler like "analyze sales"). It must be meaningfully different from everything already investigated below: a different measure, dimension, or angle — not a rephrasing of an existing one.
 
@@ -409,24 +454,38 @@ Respond with ONLY a JSON object: { "prompt": "the new investigation request, one
  * @returns {Promise<Object>} the new InsightDetail-shaped record (with id)
  */
 async function investigate(datasetId, prompt) {
-  if (datasetId !== 'hypertoy') {
-    throw new Error(`Real investigation is not wired up for dataset: ${datasetId}`);
+  const entry = getDatasetEntry(datasetId);
+  const config = await intelligenceConfigService.getConfig(datasetId);
+  if (!config.enabled) {
+    const err = new Error(`Aspect Intelligence is not enabled for dataset: ${datasetId}`);
+    err.status = 404;
+    throw err;
   }
 
-  const actualPrompt = prompt && prompt.trim() ? prompt.trim() : await proposeInvestigationPrompt(datasetId);
+  const actualPrompt = prompt && prompt.trim() ? prompt.trim() : await proposeInvestigationPrompt(datasetId, config);
 
-  const { category, dataQuestion } = await planQuestion(actualPrompt);
+  const { category, dataQuestion } = await planQuestion(datasetId, config, actualPrompt);
 
-  const queryResult = await getDataQueryService().queryByQuestion(dataQuestion, 'hypertoy', {
+  const queryResult = await getDataQueryService(datasetId).queryByQuestion(dataQuestion, entry.schemaName, {
     llmAgentName: 'Aspect Intelligence',
   });
   if (queryResult.error) {
     throw new Error(`Data query failed: ${queryResult.message}`);
   }
 
-  const synthesized = await synthesizeInsight({ prompt: actualPrompt, category, dataQuestion, queryResult });
+  const zeroAnomaly = detectAllZeroAnomaly(queryResult.data);
 
-  const confidence = Math.max(0, Math.min(100, Math.round(synthesized.confidence ?? 70)));
+  const synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, zeroAnomaly });
+
+  // Hard enforcement, not just a prompt hint: cap confidence and mark the tag
+  // even if the model's own self-check (see synthesizeInsight's system
+  // prompt) didn't kick in for this particular response.
+  let confidence = Math.max(0, Math.min(100, Math.round(synthesized.confidence ?? 70)));
+  let tag = synthesized.tag || category.toUpperCase();
+  if (zeroAnomaly.flagged) {
+    confidence = Math.min(confidence, 40);
+    if (!/data quality/i.test(tag)) tag = 'DATA QUALITY';
+  }
   const color = CATEGORY_COLOR[category];
   const chart = normalizeChart(synthesized.chart, color, dataQuestion.toUpperCase());
   let blocks = normalizeBlocks(synthesized.blocks, color, dataQuestion.toUpperCase());
@@ -438,7 +497,7 @@ async function investigate(datasetId, prompt) {
     id: `investigate-${Date.now()}`,
     category,
     categoryLabel: synthesized.categoryLabel || category,
-    tag: synthesized.tag || category.toUpperCase(),
+    tag,
     confidence,
     confidenceLabel: confidenceLabelFor(confidence),
     foundAgo: 'just now',
@@ -480,30 +539,20 @@ async function investigate(datasetId, prompt) {
   return insight;
 }
 
-// Curated, known-workable prompts to populate the feed with real content the
-// first time (or whenever asked) instead of leaving it empty — these are the
-// same category angles the old seed content illustrated, now actually
-// computed. Basket-affinity/cross-sell is deliberately excluded: it needs a
-// self-join across ~2M rows with no supporting index and reliably times out
-// (see [[project_aspect_intelligence_real_investigate]] in memory) — a real
-// measure/materialized view would be needed before it belongs here.
-const BOOTSTRAP_PROMPTS = [
-  'Which stores are furthest behind their sales target this quarter, and why',
-  'Which product family has the steepest margin decline recently',
-  'Which SKUs are tying up the most inventory value with the slowest sell-through',
-  'What is the loyalty signup trend over the last several weeks, and what is driving it',
-];
-
 /**
- * Runs the curated prompt set sequentially (not in parallel — each one is
- * already 3 LLM/DB round trips, running them concurrently would multiply
- * load for no benefit) and returns whichever succeeded. Failures are logged
- * and skipped, never thrown — this is a best-effort populate, not a
- * user-facing action that should fail loudly.
+ * Runs the dataset's curated prompt set (config.bootstrapPrompts — see
+ * insights/datasets/registry.js for defaults, admin-editable via
+ * intelligence-config.service.js) sequentially — not in parallel, since each
+ * one is already 3 LLM/DB round trips and running them concurrently would
+ * multiply load for no benefit — and returns whichever succeeded. Failures
+ * are logged and skipped, never thrown: this is a best-effort populate, not
+ * a user-facing action that should fail loudly.
  */
 async function bootstrap(datasetId) {
+  const config = await intelligenceConfigService.getConfig(datasetId);
+  if (!config) throw new Error(`Unknown dataset: ${datasetId}`);
   const results = [];
-  for (const prompt of BOOTSTRAP_PROMPTS) {
+  for (const prompt of config.bootstrapPrompts) {
     try {
       const insight = await investigate(datasetId, prompt);
       results.push(insight);
@@ -548,7 +597,8 @@ async function generateActionPlan(datasetId, insightId) {
   if (!insight) return null;
   if (insight.actionPlan) return insight.actionPlan;
 
-  const systemPrompt = `You are Aspect, an AI that helps a toy retailer (Hyper Toy) act on business insights it already found. You are NOT running a new query — you already have this finding, fully computed. Write a concrete, specific action plan a store/category manager could actually execute this week, grounded ONLY in the numbers already present below. Do not invent any new figure that isn't already stated.
+  const config = await intelligenceConfigService.getConfig(datasetId);
+  const systemPrompt = `You are Aspect, an AI that helps ${config.brandLabel} act on business insights it already found. You are NOT running a new query — you already have this finding, fully computed. Write a concrete, specific action plan a store/category manager could actually execute this week, grounded ONLY in the numbers already present below. Do not invent any new figure that isn't already stated.
 
 Respond with ONLY a JSON object:
 {
@@ -680,4 +730,4 @@ function reorderTracked(datasetId, insightIds) {
 // swallowed it).
 loadPersisted();
 
-module.exports = { investigate, listGenerated, getGeneratedById, deleteGenerated, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan, classifyPrompt };
+module.exports = { investigate, listGenerated, getGeneratedById, deleteGenerated, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan, classifyPrompt, setDataReloadService };

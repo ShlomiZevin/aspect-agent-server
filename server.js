@@ -143,6 +143,9 @@ app.use('/api/bi', require('./bi/routes/bi.routes'));
 // Proactive AI-investigation insights feed. Separate product from /api/bi
 // (ad-hoc queries) — see insights/routes/insights.routes.js.
 app.use('/api/insights', require('./insights/routes/insights.routes'));
+// Admin panel for enabling/configuring Aspect Intelligence per dataset — see
+// insights/routes/insights-admin.routes.js.
+app.use('/api/admin/intelligence', require('./insights/routes/insights-admin.routes'));
 
 // ========== MODELS REGISTRY ==========
 // Single source of truth for the LLM models the platform supports.
@@ -1890,9 +1893,18 @@ async function runProfilerAsync({ agentName, conversationId, userId, message, se
   }
 }
 
+// Generic "something went wrong" text shown to the user when streaming fails,
+// localized to the language of the client that sent the request. Falls back
+// to Hebrew for callers that don't send a language (e.g. WhatsApp bridge).
+const STREAM_ERROR_TEXT = {
+  he: 'סליחה, יש אצלי עומס זמני... כדאי לנסות לשלוח שוב בעוד רגע.',
+  en: "Sorry, I'm experiencing a temporary overload... please try sending again in a moment.",
+  es: 'Lo siento, tengo una sobrecarga temporal... intenta enviar de nuevo en un momento.',
+};
+
 // Streaming endpoint
 app.post('/api/finance-assistant/stream', async (req, res) => {
-  const { message, conversationId, userId, agentName, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled, temperatureOverrides, topKOverrides, profilerFreshStart, profilerEnabled, restrictedMode } = req.body;
+  const { message, conversationId, userId, agentName, language, overrideCrewMember, debug, promptOverrides, modelOverrides, fallbackOverrides, personaOverride, kbOverrides, thinkingPromptOverrides, thinkingModelOverrides, thinkerDisabled, temperatureOverrides, topKOverrides, profilerFreshStart, profilerEnabled, restrictedMode } = req.body;
 
   if (!message || !conversationId) {
     return res.status(400).json({ error: 'Missing message or conversationId' });
@@ -1900,6 +1912,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
 
   let sendSSE = null; // defined here so catch block can access it
   let agent = null;
+  let currentCrewName = null; // defined here (not inside the try) so the catch block can access it
   const agentNameToUse = agentName || 'Aspect';
 
   try {
@@ -1952,7 +1965,6 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     const hasCrew = await crewService.hasCrew(agentNameToUse);
 
     let fullReply = '';
-    let currentCrewName = null;
     let modelUsedData = null; // Tracks which model actually responded (primary or fallback)
     let streamUsageData = null; // Tracks token usage from streaming response
 
@@ -2409,7 +2421,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         .catch(mailErr => console.error('❌ Failed to send error email:', mailErr.message));
     }
 
-    const errorText = 'סליחה, יש אצלי עומס זמני... כדאי לנסות לשלוח שוב בעוד רגע.';
+    const errorText = STREAM_ERROR_TEXT[language] || STREAM_ERROR_TEXT.he;
 
     const midStream = err.textYielded === true; // error after partial text was already sent
 
@@ -6351,6 +6363,10 @@ async function startServer() {
     require('./agents/zolstock/data-reload').register(dataReloadService);
     require('./agents/tevanaot/data-reload').register(dataReloadService);
     app.set('dataReloadService', dataReloadService);
+    // Aspect Intelligence reuses this same service's getDataInfo() for its
+    // per-dataset "data through" freshness lookup (see
+    // insights/services/investigation.service.js) instead of a bespoke query.
+    require('./insights/services/investigation.service').setDataReloadService(dataReloadService);
     await dataReloadService.cleanupStaleRuns();
     // Auto-complete a swap if a worker died right after MVs (no manual re-run needed).
     dataReloadService.startSelfHealLoop();
