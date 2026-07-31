@@ -78,6 +78,19 @@ function migrateLegacyBlocks(insight) {
     next = { ...next, blocks };
   }
   if (typeof next.tracked !== 'boolean') next = { ...next, tracked: false };
+  // Reports persisted before the History-page fields were added (see
+  // project memory: "Insight Boutique" turns 9-12) — backfill sane defaults
+  // rather than leaving them undefined, which would break the History
+  // table's date/origin/unread-dot rendering.
+  if (typeof next.createdAt !== 'number') {
+    const match = /^investigate-(\d+)$/.exec(next.id);
+    next = { ...next, createdAt: match ? Number(match[1]) : Date.now() };
+  }
+  if (next.origin !== 'user' && next.origin !== 'proposed') next = { ...next, origin: 'proposed' };
+  // Existing reports predate view-tracking — treat them as already seen so
+  // the History page doesn't retroactively mark a backlog of old reports
+  // "not viewed yet".
+  if (typeof next.viewed !== 'boolean') next = { ...next, viewed: true };
   // Re-derive chart colors for insights persisted before the 3+-series
   // color fix (every series past the first used to collapse onto the same
   // dashed orange) — normalizeChart is deterministic/idempotent, so this is
@@ -462,6 +475,11 @@ async function investigate(datasetId, prompt) {
     throw err;
   }
 
+  // Captured before actualPrompt overwrites an empty prompt with Aspect's own
+  // proposed angle — the History page needs to tell "I asked this" apart
+  // from "Aspect suggested this on its own" (design turn 12a: "my report" vs
+  // "proposed" tag), which the fallback logic below would otherwise erase.
+  const origin = prompt && prompt.trim() ? 'user' : 'proposed';
   const actualPrompt = prompt && prompt.trim() ? prompt.trim() : await proposeInvestigationPrompt(datasetId, config);
 
   const { category, dataQuestion } = await planQuestion(datasetId, config, actualPrompt);
@@ -502,6 +520,11 @@ async function investigate(datasetId, prompt) {
     confidenceLabel: confidenceLabelFor(confidence),
     foundAgo: 'just now',
     isGenerated: true,
+    createdAt: Date.now(),
+    origin,
+    // Flips to true the first time the detail page is opened — see
+    // markViewed(), called from the GET /:datasetId/:insightId route.
+    viewed: false,
     // Toggled from the detail page's "Track" button — see setTracked/listTracked below.
     // This is the ONLY source of "Tracked by you" content now: no separate
     // auto-computed metric set, so the strip is genuinely user-curated.
@@ -580,6 +603,19 @@ function deleteGenerated(datasetId, insightId) {
   generated.set(datasetId, next);
   if (removed) persist();
   return removed;
+}
+
+/**
+ * Marks a report as opened — drives the History page's "Ready — not viewed
+ * yet" highlight (design turn 12a). A no-op (no persist) if it's already
+ * viewed, so opening an already-read report repeatedly doesn't write to disk
+ * every time.
+ */
+function markViewed(datasetId, insightId) {
+  const insight = getGeneratedById(datasetId, insightId);
+  if (!insight || insight.viewed) return;
+  insight.viewed = true;
+  persist();
 }
 
 /**
@@ -730,4 +766,4 @@ function reorderTracked(datasetId, insightIds) {
 // swallowed it).
 loadPersisted();
 
-module.exports = { investigate, listGenerated, getGeneratedById, deleteGenerated, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan, classifyPrompt, setDataReloadService };
+module.exports = { investigate, listGenerated, getGeneratedById, deleteGenerated, markViewed, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan, classifyPrompt, setDataReloadService };

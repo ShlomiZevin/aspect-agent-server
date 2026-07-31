@@ -41,10 +41,16 @@ const intelligenceConfigService = require('../services/intelligence-config.servi
 
 function toSummary(insight) {
   const { id, category, categoryLabel, tag, confidence, confidenceLabel, foundAgo, headline,
-    impactValue, impactLabel, impactDirection, ctaLabel, chart, isGenerated, tracked } = insight;
+    impactValue, impactLabel, impactDirection, ctaLabel, chart, isGenerated, tracked,
+    createdAt, origin, viewed, evidence } = insight;
   return {
     id, category, categoryLabel, tag, confidence, confidenceLabel, foundAgo, headline,
     impactValue, impactLabel, impactDirection, ctaLabel, isGenerated, tracked,
+    // My Reports (11a) / Report history (12a) fields — see
+    // investigation.service.js's migrateLegacyBlocks for defaults on older
+    // records. askedPrompt is what the user actually typed (or, for an
+    // Aspect-proposed report, what Aspect chose to investigate).
+    createdAt, origin, viewed, askedPrompt: evidence?.prompt || headline,
     chartPreview: { categories: chart.categories, series: chart.series.map(s => ({ key: s.key, points: s.points, color: s.color, dashed: !!s.dashed })) },
   };
 }
@@ -128,6 +134,12 @@ router.get('/:datasetId/:insightId', async (req, res) => {
     await requireEnabled(req.params.datasetId);
     const detail = investigationService.getGeneratedById(req.params.datasetId, req.params.insightId);
     if (!detail) return res.status(404).json({ error: `Unknown insight: ${req.params.insightId}` });
+    // Opening the detail page IS "viewing" it — drives the History page's
+    // "Ready — not viewed yet" highlight (design turn 12a). Fired after the
+    // response is built from the still-unviewed `detail` object on purpose,
+    // so this page load itself still shows whatever state it was in when
+    // the click happened.
+    investigationService.markViewed(req.params.datasetId, req.params.insightId);
     res.json(detail);
   } catch (err) {
     handleError(res, err, 'detail');
