@@ -200,6 +200,7 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       // reload. Absent = the agent never used it (working copy treats it
       // as no panels).
       liveBrain:       agentBody.liveBrain,
+      profiler:        agentBody.profiler,
       crews,
       versions: agentVersions.map(v => ({
         id:           v.id,

@@ -96,6 +96,8 @@ const SYSTEM_PROMPT = [
   '    during generation.',
   '- A single conversation can touch multiple targets (agent body + one',
   '  or more crew bodies). One target per body that needs changing.',
+  '- Live Brain panels (`liveBrain`) and Profiler config (`profiler` —',
+  '  panels / Ask Profiler / frame) live on the AGENT body → agent target.',
   '- entityId MUST match an id present in the project state. Never invent',
   '  ids.',
   '- what_to_do is the prose handed to the patch generator. Be precise',

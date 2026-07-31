@@ -418,6 +418,223 @@ router.get('/:slug/conversations/:convId/live-brain/runs', async (req, res) => {
   }
 });
 
+// ─── Profiler (second customer surface) ────────────────────────────
+// Mirrors the Live Brain endpoints. The Profiler is a live, LLM-built
+// customer profile; its panels compute during the turn and persist to
+// the `profiler` memory slot. See profilerDispatcher.js + the Profiler
+// plan.
+
+/** Default system prompt for Ask Profiler — how the profile speaks about
+ *  itself. Authors can override via `profiler.ask.prompt`; most won't. */
+const DEFAULT_ASK_PROMPT =
+  'You ARE this customer profile — the live understanding the assistant has built of the customer from the conversation. ' +
+  'Answer the question about yourself using ONLY the profile JSON and the conversation provided: why something was inferred or classified, ' +
+  "what's still missing, what to ask next, how the profile affects the next step. Be concise, specific and grounded in the data. " +
+  'Never invent facts that are not supported by the profile or the conversation. Answer in the same language as the question. ' +
+  "If the data doesn't support an answer, say so plainly.";
+
+/** Default one-tap Ask chips, used when the author set none. Keep in sync
+ *  with DEFAULT_ASK_CHIPS in the client ProfilerScreen. */
+const DEFAULT_ASK_CHIPS = [
+  'What do we know about this customer so far?',
+  'What is still missing from the profile?',
+  'Why was the customer classified this way?',
+  'What should we ask next?',
+];
+
+/**
+ * GET /api/agents/:slug/conversations/:convId/profiler
+ *   Render-ready Profiler panels for a conversation (initial load /
+ *   history), plus the presentation frame and the Ask-Profiler surface
+ *   config (enabled + preset chips). Same resolver the live
+ *   `profiler.panel` SSE uses, so first-load matches streaming updates.
+ */
+router.get('/:slug/conversations/:convId/profiler', async (req, res) => {
+  try {
+    const { slug, convId } = req.params;
+    const { ownerUserId, version = 'active' } = req.query;
+    if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
+    const userId = await resolveUserId(String(ownerUserId));
+    const builderMemory = require('../runtime/builderMemory');
+    const { resolveRunnable } = require('../services/builderProjects');
+    const { resolveProfilerPanelsForClient } = require('../runtime/profilerDispatcher');
+
+    const mode = version === 'viewing' ? 'viewing'
+      : version === 'published' ? 'published'
+      : 'active';
+
+    let runnable;
+    try {
+      runnable = await resolveRunnable({ agentSlug: String(slug), ownerUserId: String(ownerUserId), mode });
+    } catch {
+      return res.json({ panels: [], frame: null, ask: null });
+    }
+
+    const profiler = runnable?.agent?.body?.profiler || null;
+    const panels = Array.isArray(profiler?.panels) ? profiler.panels : [];
+    if (panels.length === 0) return res.json({ panels: [], frame: null, ask: null });
+
+    const blob = await builderMemory.loadMemory(userId, Number(convId));
+    res.json({
+      panels: resolveProfilerPanelsForClient(panels, blob),
+      frame:  profiler?.frame || null,
+      ask:    profiler?.ask?.enabled
+        ? { enabled: true, chips: (Array.isArray(profiler.ask.chips) && profiler.ask.chips.length) ? profiler.ask.chips : DEFAULT_ASK_CHIPS }
+        : null,
+    });
+  } catch (err) {
+    console.error('[builder] GET profiler failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/agents/:slug/conversations/:convId/profiler/runs
+ *   Recent Profiler panel runs (newest first), filtered to the
+ *   `profiler-panel` plugin so the run inspector shows Profiler activity
+ *   only — never chat addons or Live Brain panels.
+ */
+router.get('/:slug/conversations/:convId/profiler/runs', async (req, res) => {
+  try {
+    const { convId } = req.params;
+    const addonRunsStore = require('../runtime/addonRunsStore');
+    const rows = await addonRunsStore.recentRunsForConversation(Number(convId), 'profiler-panel', 40);
+    res.json({
+      runs: rows.map(r => ({
+        id:         r.id,
+        instanceId: r.instanceId,
+        pluginId:   r.pluginId,
+        status:     r.status,
+        durationMs: r.durationMs,
+        runData:    r.runData,
+        startedAt:  r.startedAt,
+        endedAt:    r.endedAt,
+      })),
+    });
+  } catch (err) {
+    console.error('[builder] GET profiler runs failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/agents/:slug/conversations/:convId/profiler/refresh
+ *   Hard refresh: recompute the WHOLE Profiler right now (every panel,
+ *   ignoring cadence). Body: { ownerUserId, version? }. Returns the fresh
+ *   render-ready panels — the client swaps them in.
+ */
+router.post('/:slug/conversations/:convId/profiler/refresh', async (req, res) => {
+  try {
+    const { slug, convId } = req.params;
+    const { ownerUserId, version = 'active' } = req.body || {};
+    if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
+    const userId = await resolveUserId(String(ownerUserId));
+    const { refreshProfilerPanels } = require('../runtime/profilerDispatcher');
+
+    const mode = version === 'viewing' ? 'viewing'
+      : version === 'published' ? 'published'
+      : 'active';
+
+    const panels = await refreshProfilerPanels({
+      agentSlug:      String(slug),
+      ownerUserId:    String(ownerUserId),
+      userId,
+      conversationId: Number(convId),
+      mode,
+    });
+    res.json({ panels });
+  } catch (err) {
+    console.error('[builder] POST profiler refresh failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/agents/:slug/conversations/:convId/profiler/ask
+ *   Ask Profiler: hand the whole current profiler state (as JSON) + the
+ *   recent conversation + the question to the answering model, and return
+ *   the answer. On-demand (not cadence). Body: { ownerUserId, question,
+ *   version? }. Logged in llm_usage under `PF · Ask` / crew `profiler`.
+ */
+router.post('/:slug/conversations/:convId/profiler/ask', async (req, res) => {
+  try {
+    const { slug, convId } = req.params;
+    const { ownerUserId, question, version = 'active' } = req.body || {};
+    if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
+    if (!question || !String(question).trim()) return res.status(400).json({ error: 'Missing question' });
+
+    const userId = await resolveUserId(String(ownerUserId));
+    const builderMemory = require('../runtime/builderMemory');
+    const { resolveRunnable } = require('../services/builderProjects');
+    const { resolveProfilerPanelsForClient } = require('../runtime/profilerDispatcher');
+    const llm = require('../../services/llm');
+
+    const mode = version === 'viewing' ? 'viewing'
+      : version === 'published' ? 'published'
+      : 'active';
+
+    let runnable;
+    try {
+      runnable = await resolveRunnable({ agentSlug: String(slug), ownerUserId: String(ownerUserId), mode });
+    } catch {
+      return res.status(404).json({ error: 'Agent not built' });
+    }
+
+    const profiler = runnable?.agent?.body?.profiler || null;
+    if (!profiler?.ask?.enabled) return res.status(400).json({ error: 'Ask Profiler is not enabled for this agent' });
+
+    // The profile the model reasons over = the render-ready panels.
+    const panels = Array.isArray(profiler.panels) ? profiler.panels : [];
+    const blob = await builderMemory.loadMemory(userId, Number(convId));
+    const profile = resolveProfilerPanelsForClient(panels, blob);
+
+    // Recent conversation for grounding (last 20 turns, chronological).
+    let history = [];
+    try {
+      const rows = await drizzle().select({ role: messages.role, content: messages.content })
+        .from(messages)
+        .where(eq(messages.conversationId, Number(convId)))
+        .orderBy(desc(messages.id))
+        .limit(20);
+      history = rows.reverse();
+    } catch { /* history is best-effort */ }
+    const historyText = history
+      .map(m => `${m.role === 'user' ? 'USER' : 'ASSISTANT'}: ${m.content}`)
+      .join('\n\n');
+
+    const systemPrompt = (typeof profiler.ask.prompt === 'string' && profiler.ask.prompt.trim())
+      ? profiler.ask.prompt
+      : DEFAULT_ASK_PROMPT;
+
+    const contextMessage = [
+      '## Profile (JSON)',
+      profile.length ? JSON.stringify(profile, null, 2) : 'No profile built yet.',
+      '',
+      '## Conversation',
+      historyText || 'No messages yet.',
+      '',
+      '## Question',
+      String(question),
+    ].join('\n');
+
+    const modelString = profiler.ask.model?.modelId || 'claude-sonnet-4-6';
+    const answer = await llm.sendOneShot(systemPrompt, contextMessage, {
+      model:          modelString,
+      jsonOutput:     false,
+      context:        'PF · Ask',
+      agentName:      runnable.agent.body?.name || String(slug),
+      crewMember:     'profiler',
+      conversationId: String(convId),
+      userId:         String(ownerUserId),
+    });
+
+    res.json({ answer: typeof answer === 'string' ? answer : (answer?.text || '') });
+  } catch (err) {
+    console.error('[builder] POST profiler ask failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /**
  * DELETE /api/agents/:slug/conversations/:convId
  *   Cascade: addon_runs, messages, conversation.

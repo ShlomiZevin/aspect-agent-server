@@ -40,6 +40,7 @@ const { seedPinnedFields } = require('./pinnedFields');
 const { runAddon } = require('./addonRunner');
 const { dispatchOfflineAddons } = require('./offlineDispatcher');
 const { dispatchLiveBrainPanels } = require('./liveBrainDispatcher');
+const { dispatchProfilerPanels } = require('./profilerDispatcher');
 const modelsService = require('../../services/models.service');
 
 // Provider-id → display label, pre-indexed so the per-addon resolve
@@ -520,6 +521,12 @@ async function runOnce({
   // offline lane (after the reply lands), and after it so panels can read
   // anything the offline addons just wrote. Never blocks the reply.
   await dispatchLiveBrainPanels({ ctx, didTransition: anyTransition });
+
+  // ── 8. Compute the Profiler panels — the SECOND customer surface.
+  // Same non-blocking phase, right after Live Brain so a profiler panel
+  // can read anything the brain / offline addons just wrote. Never blocks
+  // the reply. No-op unless the agent has `profiler.panels`.
+  await dispatchProfilerPanels({ ctx, didTransition: anyTransition });
 
   return { assistantText, totalMs: Date.now() - totalStart };
 }

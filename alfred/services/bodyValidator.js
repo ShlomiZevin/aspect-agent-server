@@ -162,11 +162,49 @@ function checkAddonInstance(addon, path, errors, knownFieldIds) {
   }
 }
 
-const VALID_PANEL_RENDERS = new Set(['text', 'html', 'tags', 'fields', 'bars', 'cards']);
+const VALID_PANEL_RENDERS = new Set(['text', 'html', 'tags', 'fields', 'bars', 'cards', 'journey']);
+const VALID_PANEL_PLACEMENTS = new Set(['header', 'body']);
+const VALID_PROFILER_OPEN_MODES = new Set(['third', 'half', 'full']);
 
-/** Light checks for agent.liveBrain (LiveBrainDef). Catches generator
- *  mistakes (missing prompt/model/trigger on an AI panel, bogus render)
- *  without re-implementing the full type. */
+/** Per-panel checks shared by Live Brain and Profiler (a ProfilerPanel
+ *  is structurally a BrainPanel + placement/description). Catches
+ *  generator mistakes (missing prompt/model/trigger on an AI panel,
+ *  bogus render) without re-implementing the full type. */
+function checkPanel(p, path, errors, { allowPlacement = false } = {}) {
+  if (!isObject(p)) { pushErr(errors, path, 'must be an object'); return; }
+  if (typeof p.id !== 'string' || !p.id)
+    pushErr(errors, `${path}.id`, 'required string');
+  if (typeof p.title !== 'string')
+    pushErr(errors, `${path}.title`, 'required string');
+  if (!VALID_PANEL_RENDERS.has(p.render))
+    pushErr(errors, `${path}.render`, `must be one of ${[...VALID_PANEL_RENDERS].join(', ')}`);
+  const src = p.source;
+  if (!isObject(src)) {
+    pushErr(errors, `${path}.source`, 'required object');
+  } else if (src.kind === 'text') {
+    if (typeof src.text !== 'string')
+      pushErr(errors, `${path}.source.text`, 'required string for kind "text"');
+  } else if (src.kind === 'prompt') {
+    if (typeof src.prompt !== 'string')
+      pushErr(errors, `${path}.source.prompt`, 'required string for kind "prompt"');
+    if (!isObject(src.model))
+      pushErr(errors, `${path}.source.model`, 'required ModelRef object for kind "prompt"');
+    if (!isObject(src.history) || !VALID_HISTORY_MODES.has(src.history.mode))
+      pushErr(errors, `${path}.source.history.mode`, `must be one of ${[...VALID_HISTORY_MODES].join(', ')}`);
+    if (!isObject(src.trigger) || typeof src.trigger.kind !== 'string')
+      pushErr(errors, `${path}.source.trigger`, 'required object with a kind for kind "prompt"');
+  } else {
+    pushErr(errors, `${path}.source.kind`, 'must be "text" or "prompt"');
+  }
+  if ('filter' in p && p.filter !== undefined) {
+    if (!isObject(p.filter) || !Array.isArray(p.filter.conditions))
+      pushErr(errors, `${path}.filter`, 'when present must be an object with a conditions array');
+  }
+  if (allowPlacement && p.placement !== undefined && !VALID_PANEL_PLACEMENTS.has(p.placement))
+    pushErr(errors, `${path}.placement`, 'when present must be "header" or "body"');
+}
+
+/** Light checks for agent.liveBrain (LiveBrainDef). */
 function checkLiveBrain(liveBrain, errors) {
   if (!isObject(liveBrain)) {
     pushErr(errors, 'liveBrain', 'when present must be an object');
@@ -176,38 +214,45 @@ function checkLiveBrain(liveBrain, errors) {
     pushErr(errors, 'liveBrain.panels', 'required array (may be empty)');
     return;
   }
-  liveBrain.panels.forEach((p, i) => {
-    const path = `liveBrain.panels[${i}]`;
-    if (!isObject(p)) { pushErr(errors, path, 'must be an object'); return; }
-    if (typeof p.id !== 'string' || !p.id)
-      pushErr(errors, `${path}.id`, 'required string');
-    if (typeof p.title !== 'string')
-      pushErr(errors, `${path}.title`, 'required string');
-    if (!VALID_PANEL_RENDERS.has(p.render))
-      pushErr(errors, `${path}.render`, `must be one of ${[...VALID_PANEL_RENDERS].join(', ')}`);
-    const src = p.source;
-    if (!isObject(src)) {
-      pushErr(errors, `${path}.source`, 'required object');
-    } else if (src.kind === 'text') {
-      if (typeof src.text !== 'string')
-        pushErr(errors, `${path}.source.text`, 'required string for kind "text"');
-    } else if (src.kind === 'prompt') {
-      if (typeof src.prompt !== 'string')
-        pushErr(errors, `${path}.source.prompt`, 'required string for kind "prompt"');
-      if (!isObject(src.model))
-        pushErr(errors, `${path}.source.model`, 'required ModelRef object for kind "prompt"');
-      if (!isObject(src.history) || !VALID_HISTORY_MODES.has(src.history.mode))
-        pushErr(errors, `${path}.source.history.mode`, `must be one of ${[...VALID_HISTORY_MODES].join(', ')}`);
-      if (!isObject(src.trigger) || typeof src.trigger.kind !== 'string')
-        pushErr(errors, `${path}.source.trigger`, 'required object with a kind for kind "prompt"');
+  liveBrain.panels.forEach((p, i) => checkPanel(p, `liveBrain.panels[${i}]`, errors));
+}
+
+/** Light checks for agent.profiler (ProfilerDef): panels (with
+ *  placement) + the ask block + frame. */
+function checkProfiler(profiler, errors) {
+  if (!isObject(profiler)) {
+    pushErr(errors, 'profiler', 'when present must be an object');
+    return;
+  }
+  if (!Array.isArray(profiler.panels)) {
+    pushErr(errors, 'profiler.panels', 'required array (may be empty)');
+  } else {
+    profiler.panels.forEach((p, i) =>
+      checkPanel(p, `profiler.panels[${i}]`, errors, { allowPlacement: true }));
+  }
+  if ('ask' in profiler && profiler.ask !== undefined) {
+    const a = profiler.ask;
+    if (!isObject(a)) {
+      pushErr(errors, 'profiler.ask', 'when present must be an object');
     } else {
-      pushErr(errors, `${path}.source.kind`, 'must be "text" or "prompt"');
+      if (typeof a.enabled !== 'boolean')
+        pushErr(errors, 'profiler.ask.enabled', 'required boolean');
+      if (!isObject(a.model))
+        pushErr(errors, 'profiler.ask.model', 'required ModelRef object');
+      if (typeof a.prompt !== 'string')
+        pushErr(errors, 'profiler.ask.prompt', 'required string (empty = server default)');
+      if ('chips' in a && a.chips !== undefined && !Array.isArray(a.chips))
+        pushErr(errors, 'profiler.ask.chips', 'when present must be an array of strings');
     }
-    if ('filter' in p && p.filter !== undefined) {
-      if (!isObject(p.filter) || !Array.isArray(p.filter.conditions))
-        pushErr(errors, `${path}.filter`, 'when present must be an object with a conditions array');
+  }
+  if ('frame' in profiler && profiler.frame !== undefined) {
+    const f = profiler.frame;
+    if (!isObject(f)) {
+      pushErr(errors, 'profiler.frame', 'when present must be an object');
+    } else if (f.openMode !== undefined && !VALID_PROFILER_OPEN_MODES.has(f.openMode)) {
+      pushErr(errors, 'profiler.frame.openMode', 'when present must be "third", "half" or "full"');
     }
-  });
+  }
 }
 
 function validateAgentBody(body) {
@@ -256,6 +301,9 @@ function validateAgentBody(body) {
 
   if ('liveBrain' in body && body.liveBrain !== undefined)
     checkLiveBrain(body.liveBrain, errors);
+
+  if ('profiler' in body && body.profiler !== undefined)
+    checkProfiler(body.profiler, errors);
 
   return errors.length === 0 ? { ok: true } : { ok: false, errors };
 }
