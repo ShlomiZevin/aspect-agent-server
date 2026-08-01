@@ -11,10 +11,16 @@
  *   DELETE /api/admin/intelligence/datasets/:id/versions/:section/:savedAt — removes one version entry (doesn't touch the live config)
  *   POST /api/admin/intelligence/datasets/:id/generate-description — introspects the real DB schema and drafts a plain-language dataModelDescription (not saved — caller reviews then PUTs it)
  *   POST /api/admin/intelligence/datasets/:id/generate-example-prompt — proposes one new example/hero-chip prompt, distinct from the ones already listed (not saved — caller reviews then adds it)
- *   GET  /api/admin/intelligence/datasets/:id/insights             — full generated-insight list for monitoring/cleanup
+ *   GET  /api/admin/intelligence/datasets/:id/insights             — full generated-insight list for monitoring/cleanup, across every user session
+ *   DELETE /api/admin/intelligence/datasets/:id/insights/:insightId — removes any generated insight regardless of which session owns it
+ *   POST /api/admin/intelligence/datasets/:id/insights/:insightId/track — toggles "tracked" on any insight regardless of owner
  *
- * Bootstrap/investigate/delete reuse the existing public /api/insights/*
- * routes directly — no admin-only duplicates needed for those.
+ * The public /api/insights/* routes are per-session (see storeKey in
+ * investigation.service.js) and can't be reused here: this admin page has no
+ * single userId to scope by, since it manages content across every
+ * anonymous session at once — hence the cross-user delete/track duplicates
+ * above (deleteGeneratedAny/setTrackedAny) instead of just forwarding to the
+ * public ones. Bootstrap/investigate still reuse the public routes directly.
  */
 
 const express = require('express');
@@ -36,7 +42,7 @@ router.get('/datasets', async (_req, res) => {
     const configs = await intelligenceConfigService.getAllConfigs();
     const datasets = configs.map(config => {
       const entry = registry.get(config.id);
-      const generated = investigationService.listGenerated(config.id);
+      const generated = investigationService.listGeneratedAll(config.id);
       return {
         id: entry.id,
         name: entry.defaultMeta.name,
@@ -166,8 +172,25 @@ router.get('/datasets/:id/insights', async (req, res) => {
   if (!registry.get(req.params.id)) {
     return res.status(404).json({ error: `Unknown dataset: ${req.params.id}` });
   }
-  const insights = investigationService.listGenerated(req.params.id);
+  const insights = investigationService.listGeneratedAll(req.params.id);
   res.json({ insights });
+});
+
+// Admin-only cross-user delete/track — the admin monitoring page lists
+// insights across every anonymous session at once (see listGeneratedAll
+// above) and has no specific userId to scope by, unlike the public
+// per-session /api/insights/* routes.
+router.delete('/datasets/:id/insights/:insightId', (req, res) => {
+  const removed = investigationService.deleteGeneratedAny(req.params.id, req.params.insightId);
+  if (!removed) return res.status(404).json({ error: `No generated insight: ${req.params.insightId}` });
+  res.json({ deleted: true });
+});
+
+router.post('/datasets/:id/insights/:insightId/track', (req, res) => {
+  const tracked = !!(req.body && req.body.tracked);
+  const insight = investigationService.setTrackedAny(req.params.id, req.params.insightId, tracked);
+  if (!insight) return res.status(404).json({ error: `Unknown insight: ${req.params.insightId}` });
+  res.json({ id: insight.id, tracked: insight.tracked });
 });
 
 module.exports = router;

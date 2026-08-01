@@ -55,6 +55,23 @@ function toSummary(insight) {
   };
 }
 
+/**
+ * Every report/tracked-metric endpoint below is scoped to the anonymous
+ * browser session that owns it (see investigation.service.js's storeKey) —
+ * same identity (users.externalId) the chat's own conversations already use,
+ * so "your reports" and "your chats" are the same session. Throws a
+ * 400-shaped error rather than silently falling back to a shared bucket,
+ * which would leak one user's reports into another's view.
+ */
+function requireUserId(value) {
+  if (!value || typeof value !== 'string') {
+    const err = new Error('A userId is required');
+    err.status = 400;
+    throw err;
+  }
+  return value;
+}
+
 /** Throws a 404-shaped error unless the dataset exists and is enabled. */
 async function requireEnabled(datasetId) {
   if (!registry.get(datasetId)) {
@@ -97,7 +114,8 @@ router.get('/', async (_req, res) => {
 router.get('/:datasetId/insights', async (req, res) => {
   try {
     await requireEnabled(req.params.datasetId);
-    const insights = investigationService.listGenerated(req.params.datasetId).map(toSummary);
+    const userId = requireUserId(req.query.userId);
+    const insights = investigationService.listGenerated(req.params.datasetId, userId).map(toSummary);
     res.json({ insights });
   } catch (err) {
     handleError(res, err, 'list');
@@ -107,7 +125,8 @@ router.get('/:datasetId/insights', async (req, res) => {
 router.get('/:datasetId/tracked', async (req, res) => {
   try {
     await requireEnabled(req.params.datasetId);
-    const tracked = investigationService.listTracked(req.params.datasetId);
+    const userId = requireUserId(req.query.userId);
+    const tracked = investigationService.listTracked(req.params.datasetId, userId);
     res.json({ tracked });
   } catch (err) {
     handleError(res, err, 'tracked');
@@ -121,8 +140,9 @@ router.get('/:datasetId/tracked', async (req, res) => {
 router.post('/:datasetId/tracked/reorder', async (req, res) => {
   try {
     await requireEnabled(req.params.datasetId);
+    const userId = requireUserId(req.body?.userId);
     const insightIds = Array.isArray(req.body?.insightIds) ? req.body.insightIds : [];
-    const tracked = investigationService.reorderTracked(req.params.datasetId, insightIds);
+    const tracked = investigationService.reorderTracked(req.params.datasetId, userId, insightIds);
     res.json({ tracked });
   } catch (err) {
     handleError(res, err, 'reorder tracked');
@@ -132,14 +152,15 @@ router.post('/:datasetId/tracked/reorder', async (req, res) => {
 router.get('/:datasetId/:insightId', async (req, res) => {
   try {
     await requireEnabled(req.params.datasetId);
-    const detail = investigationService.getGeneratedById(req.params.datasetId, req.params.insightId);
+    const userId = requireUserId(req.query.userId);
+    const detail = investigationService.getGeneratedById(req.params.datasetId, userId, req.params.insightId);
     if (!detail) return res.status(404).json({ error: `Unknown insight: ${req.params.insightId}` });
     // Opening the detail page IS "viewing" it — drives the History page's
     // "Ready — not viewed yet" highlight (design turn 12a). Fired after the
     // response is built from the still-unviewed `detail` object on purpose,
     // so this page load itself still shows whatever state it was in when
     // the click happened.
-    investigationService.markViewed(req.params.datasetId, req.params.insightId);
+    investigationService.markViewed(req.params.datasetId, userId, req.params.insightId);
     res.json(detail);
   } catch (err) {
     handleError(res, err, 'detail');
@@ -149,10 +170,15 @@ router.get('/:datasetId/:insightId', async (req, res) => {
 // Toggles whether this insight shows up in "Tracked by you" — the ONLY way
 // anything lands in that strip, see file header comment.
 router.post('/:datasetId/:insightId/track', (req, res) => {
-  const tracked = !!(req.body && req.body.tracked);
-  const insight = investigationService.setTracked(req.params.datasetId, req.params.insightId, tracked);
-  if (!insight) return res.status(404).json({ error: `Unknown insight: ${req.params.insightId}` });
-  res.json({ id: insight.id, tracked: insight.tracked });
+  try {
+    const userId = requireUserId(req.body?.userId);
+    const tracked = !!(req.body && req.body.tracked);
+    const insight = investigationService.setTracked(req.params.datasetId, userId, req.params.insightId, tracked);
+    if (!insight) return res.status(404).json({ error: `Unknown insight: ${req.params.insightId}` });
+    res.json({ id: insight.id, tracked: insight.tracked });
+  } catch (err) {
+    handleError(res, err, 'track');
+  }
 });
 
 // "Open <cta> plan" on the detail page — generates (or returns the cached)
@@ -161,7 +187,8 @@ router.post('/:datasetId/:insightId/track', (req, res) => {
 router.post('/:datasetId/:insightId/plan', async (req, res) => {
   try {
     await requireEnabled(req.params.datasetId);
-    const plan = await investigationService.generateActionPlan(req.params.datasetId, req.params.insightId);
+    const userId = requireUserId(req.body?.userId);
+    const plan = await investigationService.generateActionPlan(req.params.datasetId, userId, req.params.insightId);
     if (!plan) return res.status(404).json({ error: `Unknown insight: ${req.params.insightId}` });
     res.json(plan);
   } catch (err) {
@@ -171,9 +198,14 @@ router.post('/:datasetId/:insightId/plan', async (req, res) => {
 
 // Only ever removes a generated insight — there is no other kind anymore.
 router.delete('/:datasetId/:insightId', (req, res) => {
-  const removed = investigationService.deleteGenerated(req.params.datasetId, req.params.insightId);
-  if (!removed) return res.status(404).json({ error: `No generated insight: ${req.params.insightId}` });
-  res.json({ deleted: true });
+  try {
+    const userId = requireUserId(req.query.userId);
+    const removed = investigationService.deleteGenerated(req.params.datasetId, userId, req.params.insightId);
+    if (!removed) return res.status(404).json({ error: `No generated insight: ${req.params.insightId}` });
+    res.json({ deleted: true });
+  } catch (err) {
+    handleError(res, err, 'delete');
+  }
 });
 
 // Runs a real plan -> query -> synthesize investigation (see
@@ -188,7 +220,8 @@ router.post('/:datasetId/investigate', async (req, res) => {
 
   try {
     await requireEnabled(req.params.datasetId);
-    const insight = await investigationService.investigate(req.params.datasetId, prompt);
+    const userId = requireUserId(req.body?.userId);
+    const insight = await investigationService.investigate(req.params.datasetId, userId, prompt);
     res.json({
       prompt: insight.evidence.prompt, // the actual prompt used — may be the auto-proposed one
       status: 'ready',
