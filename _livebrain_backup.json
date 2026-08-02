@@ -1,0 +1,177 @@
+{
+  "agentId": "agent_ds2c4j1an",
+  "versionId": "ver_u0a4jnzoz",
+  "savedAt": "2026-07-31T09:03:48.723Z",
+  "liveBrain": {
+    "frame": {
+      "openMode": "half",
+      "arrangement": "stack"
+    },
+    "panels": [
+      {
+        "id": "panel_zpri0m1qy",
+        "title": "🧠 What's going on",
+        "render": "text",
+        "source": {
+          "kind": "prompt",
+          "model": {
+            "modelId": "gpt-4o-mini",
+            "providerId": "openai"
+          },
+          "prompt": "In 1–2 short sentences, describe what the user seems to want or feel right now and what you're focusing on. Output only the text (Markdown allowed).",
+          "history": {
+            "n": 10,
+            "mode": "last_n"
+          },
+          "trigger": {
+            "n": 1,
+            "kind": "every_n_messages"
+          }
+        }
+      },
+      {
+        "id": "panel_jxdcrerbc",
+        "title": "✨ Snapshot",
+        "render": "html",
+        "source": {
+          "kind": "prompt",
+          "model": {
+            "modelId": "gpt-4o-mini",
+            "providerId": "openai"
+          },
+          "prompt": "Produce a small, nice-looking summary card as an HTML fragment: one <div> with inline styles (padding, rounded corners, a soft background color, a bold title line, and a short sentence about the conversation). Return only the fragment, no <html>/<head>/<style>, no code fences.",
+          "history": {
+            "n": 10,
+            "mode": "last_n"
+          },
+          "trigger": {
+            "n": 1,
+            "kind": "every_n_messages"
+          }
+        }
+      },
+      {
+        "id": "panel_g5fnp9rwk",
+        "tags": {
+          "mode": "generated",
+          "labels": []
+        },
+        "title": "🏷️ Mood & topics",
+        "render": "tags",
+        "source": {
+          "kind": "prompt",
+          "model": {
+            "modelId": "gpt-4o-mini",
+            "providerId": "openai"
+          },
+          "prompt": "Choose a few short labels (moods or topics) that describe the conversation, and mark which are active right now. Return only JSON like {\"tags\":[\"curious\",\"stressed\",\"planning\"],\"active\":[\"curious\"]}.",
+          "history": {
+            "n": 10,
+            "mode": "last_n"
+          },
+          "trigger": {
+            "n": 1,
+            "kind": "every_n_messages"
+          }
+        }
+      },
+      {
+        "id": "panel_xqma20bjq",
+        "title": "📋 Key facts",
+        "fields": {
+          "keys": [],
+          "mode": "generated"
+        },
+        "render": "fields",
+        "source": {
+          "kind": "prompt",
+          "model": {
+            "modelId": "gpt-4o-mini",
+            "providerId": "openai"
+          },
+          "prompt": "Pull out a few key facts from the conversation as short key→value pairs. Return only a flat JSON object like {\"Goal\":\"…\",\"Mood\":\"…\",\"Topic\":\"…\"}.",
+          "history": {
+            "n": 10,
+            "mode": "last_n"
+          },
+          "trigger": {
+            "n": 1,
+            "kind": "every_n_messages"
+          }
+        }
+      },
+      {
+        "id": "panel_ygxfzdd1f",
+        "title": "📊 Read on the user",
+        "render": "bars",
+        "source": {
+          "kind": "prompt",
+          "model": {
+            "modelId": "gpt-4o-mini",
+            "providerId": "openai"
+          },
+          "prompt": "Estimate each of these on a 0–100 scale from the conversation: Engagement, Confidence, Urgency, Positivity. Return only a flat JSON object like {\"Engagement\":70,\"Confidence\":40,\"Urgency\":55,\"Positivity\":65}.",
+          "history": {
+            "n": 10,
+            "mode": "last_n"
+          },
+          "trigger": {
+            "n": 1,
+            "kind": "every_n_messages"
+          }
+        }
+      },
+      {
+        "id": "panel_lbj5u15la",
+        "title": "🗂️ Topics",
+        "render": "cards",
+        "source": {
+          "kind": "prompt",
+          "model": {
+            "modelId": "gpt-4o-mini",
+            "providerId": "openai"
+          },
+          "prompt": "For each main topic in the conversation, produce a card. Return only a flat JSON object mapping each topic title to a one-sentence note, like {\"Sleep\":\"…\",\"Budget\":\"…\"}.",
+          "history": {
+            "n": 10,
+            "mode": "last_n"
+          },
+          "trigger": {
+            "n": 1,
+            "kind": "every_n_messages"
+          }
+        }
+      },
+      {
+        "id": "panel_a3f7c2d1",
+        "tags": {
+          "mode": "predefined",
+          "labels": [
+            "beginner",
+            "intermediate",
+            "advanced",
+            "native"
+          ]
+        },
+        "title": "🎓 English Level",
+        "render": "tags",
+        "source": {
+          "kind": "prompt",
+          "model": {
+            "modelId": "gpt-4o-mini",
+            "providerId": "openai"
+          },
+          "prompt": "Based on the user's vocabulary, sentence structure, and grammar in the conversation, decide which English level label best describes them. Return only JSON like {\"active\": [\"intermediate\"]}. Allowed tags: beginner, intermediate, advanced, native.",
+          "history": {
+            "n": 10,
+            "mode": "last_n"
+          },
+          "trigger": {
+            "n": 1,
+            "kind": "every_n_messages"
+          }
+        }
+      }
+    ]
+  }
+}
