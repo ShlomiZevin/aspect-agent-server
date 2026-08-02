@@ -62,8 +62,24 @@ function setDataReloadService(instance) {
   dataReloadServiceRef = instance;
 }
 
-// datasetId -> InsightDetail[], newest first.
+// "datasetId::userId" -> InsightDetail[], newest first. Reports are private
+// per anonymous browser session — the same identity model chat conversations
+// already use (see services/conversation.service.js: users.externalId,
+// created by POST /api/user/create, persisted client-side in localStorage).
+// A composite string key (not a nested Map) so persist()/loadPersisted()'s
+// existing Object.fromEntries(generated.entries()) JSON round-trip needed no
+// changes — it just naturally produces flat top-level keys like
+// "hypertoy::anon_123" instead of "hypertoy". Pre-migration entries (bare
+// "hypertoy" keys, no "::") stay in the Map under their old key, unreachable
+// by any per-user lookup but harmlessly still on disk — not deleted.
 const generated = new Map();
+function storeKey(datasetId, userId) {
+  return `${datasetId}::${userId}`;
+}
+// bootstrap() has no requesting user (admin/system-triggered dataset seed,
+// see bootstrap() below) — its output lives under this fixed sentinel rather
+// than a real anon id.
+const BOOTSTRAP_USER_ID = 'system';
 
 // Insights persisted before the dynamic-blocks change (see
 // project_aspect_intelligence_blocks in memory) have `chart`/`scenarios` at
@@ -78,6 +94,19 @@ function migrateLegacyBlocks(insight) {
     next = { ...next, blocks };
   }
   if (typeof next.tracked !== 'boolean') next = { ...next, tracked: false };
+  // Reports persisted before the History-page fields were added (see
+  // project memory: "Insight Boutique" turns 9-12) — backfill sane defaults
+  // rather than leaving them undefined, which would break the History
+  // table's date/origin/unread-dot rendering.
+  if (typeof next.createdAt !== 'number') {
+    const match = /^investigate-(\d+)$/.exec(next.id);
+    next = { ...next, createdAt: match ? Number(match[1]) : Date.now() };
+  }
+  if (next.origin !== 'user' && next.origin !== 'proposed') next = { ...next, origin: 'proposed' };
+  // Existing reports predate view-tracking — treat them as already seen so
+  // the History page doesn't retroactively mark a backlog of old reports
+  // "not viewed yet".
+  if (typeof next.viewed !== 'boolean') next = { ...next, viewed: true };
   // Re-derive chart colors for insights persisted before the 3+-series
   // color fix (every series past the first used to collapse onto the same
   // dashed orange) — normalizeChart is deterministic/idempotent, so this is
@@ -453,7 +482,7 @@ Respond with ONLY a JSON object: { "prompt": "the new investigation request, one
  * text box involved), proposeInvestigationPrompt() picks the angle instead.
  * @returns {Promise<Object>} the new InsightDetail-shaped record (with id)
  */
-async function investigate(datasetId, prompt) {
+async function investigate(datasetId, userId, prompt) {
   const entry = getDatasetEntry(datasetId);
   const config = await intelligenceConfigService.getConfig(datasetId);
   if (!config.enabled) {
@@ -462,6 +491,11 @@ async function investigate(datasetId, prompt) {
     throw err;
   }
 
+  // Captured before actualPrompt overwrites an empty prompt with Aspect's own
+  // proposed angle — the History page needs to tell "I asked this" apart
+  // from "Aspect suggested this on its own" (design turn 12a: "my report" vs
+  // "proposed" tag), which the fallback logic below would otherwise erase.
+  const origin = prompt && prompt.trim() ? 'user' : 'proposed';
   const actualPrompt = prompt && prompt.trim() ? prompt.trim() : await proposeInvestigationPrompt(datasetId, config);
 
   const { category, dataQuestion } = await planQuestion(datasetId, config, actualPrompt);
@@ -502,6 +536,11 @@ async function investigate(datasetId, prompt) {
     confidenceLabel: confidenceLabelFor(confidence),
     foundAgo: 'just now',
     isGenerated: true,
+    createdAt: Date.now(),
+    origin,
+    // Flips to true the first time the detail page is opened — see
+    // markViewed(), called from the GET /:datasetId/:insightId route.
+    viewed: false,
     // Toggled from the detail page's "Track" button — see setTracked/listTracked below.
     // This is the ONLY source of "Tracked by you" content now: no separate
     // auto-computed metric set, so the strip is genuinely user-curated.
@@ -531,9 +570,10 @@ async function investigate(datasetId, prompt) {
     evidence: { prompt: actualPrompt, dataQuestion, sql: queryResult.sql },
   };
 
-  const list = generated.get(datasetId) || [];
+  const key = storeKey(datasetId, userId);
+  const list = generated.get(key) || [];
   list.unshift(insight);
-  generated.set(datasetId, list);
+  generated.set(key, list);
   persist();
 
   return insight;
@@ -554,7 +594,7 @@ async function bootstrap(datasetId) {
   const results = [];
   for (const prompt of config.bootstrapPrompts) {
     try {
-      const insight = await investigate(datasetId, prompt);
+      const insight = await investigate(datasetId, BOOTSTRAP_USER_ID, prompt);
       results.push(insight);
     } catch (err) {
       console.error(`❌ Bootstrap prompt failed, skipping: "${prompt}" — ${err.message}`);
@@ -563,23 +603,93 @@ async function bootstrap(datasetId) {
   return results;
 }
 
-function listGenerated(datasetId) {
-  return generated.get(datasetId) || [];
+function listGenerated(datasetId, userId) {
+  return generated.get(storeKey(datasetId, userId)) || [];
 }
 
-function getGeneratedById(datasetId, insightId) {
-  return listGenerated(datasetId).find(i => i.id === insightId) || null;
+/**
+ * Admin-only, cross-user: every generated insight for this dataset
+ * regardless of which anonymous session created it — used by the admin
+ * dataset overview/monitoring pages (insights-admin.routes.js), which need a
+ * dataset-wide count/list, not one user's private view.
+ */
+function listGeneratedAll(datasetId) {
+  const prefix = `${datasetId}::`;
+  const lists = [];
+  for (const [key, list] of generated.entries()) {
+    // `key === datasetId` matches pre-migration entries, persisted under the
+    // bare dataset id before per-user storeKey()s existed — without this,
+    // the admin monitoring page silently loses every insight generated
+    // before this change (verified live: hypertoy had 4 such entries).
+    if (key === datasetId || key.startsWith(prefix)) lists.push(...list);
+  }
+  return lists;
+}
+
+function getGeneratedById(datasetId, userId, insightId) {
+  return listGenerated(datasetId, userId).find(i => i.id === insightId) || null;
+}
+
+/**
+ * Admin-only, cross-user: finds which per-user bucket an insight actually
+ * lives in — the admin monitoring page (see listGeneratedAll) has no
+ * specific userId to scope by, since it's managing content across every
+ * session at once.
+ * @returns {string|null} the storage key ("datasetId::userId") that owns this insightId
+ */
+function findOwnerKey(datasetId, insightId) {
+  const prefix = `${datasetId}::`;
+  for (const [key, list] of generated.entries()) {
+    if ((key === datasetId || key.startsWith(prefix)) && list.some(i => i.id === insightId)) return key;
+  }
+  return null;
+}
+
+/** Admin-only, cross-user version of deleteGenerated — see findOwnerKey. */
+function deleteGeneratedAny(datasetId, insightId) {
+  const key = findOwnerKey(datasetId, insightId);
+  if (!key) return false;
+  const list = generated.get(key);
+  const next = list.filter(i => i.id !== insightId);
+  generated.set(key, next);
+  persist();
+  return true;
+}
+
+/** Admin-only, cross-user version of setTracked — see findOwnerKey. @returns {Object|null} the updated insight, or null if unknown */
+function setTrackedAny(datasetId, insightId, tracked) {
+  const key = findOwnerKey(datasetId, insightId);
+  if (!key) return null;
+  const insight = generated.get(key).find(i => i.id === insightId);
+  insight.tracked = !!tracked;
+  if (insight.tracked) insight.trackedOrder = Date.now();
+  persist();
+  return insight;
 }
 
 /** @returns {boolean} true if an insight with this id existed and was removed */
-function deleteGenerated(datasetId, insightId) {
-  const list = generated.get(datasetId);
+function deleteGenerated(datasetId, userId, insightId) {
+  const key = storeKey(datasetId, userId);
+  const list = generated.get(key);
   if (!list) return false;
   const next = list.filter(i => i.id !== insightId);
   const removed = next.length !== list.length;
-  generated.set(datasetId, next);
+  generated.set(key, next);
   if (removed) persist();
   return removed;
+}
+
+/**
+ * Marks a report as opened — drives the History page's "Ready — not viewed
+ * yet" highlight (design turn 12a). A no-op (no persist) if it's already
+ * viewed, so opening an already-read report repeatedly doesn't write to disk
+ * every time.
+ */
+function markViewed(datasetId, userId, insightId) {
+  const insight = getGeneratedById(datasetId, userId, insightId);
+  if (!insight || insight.viewed) return;
+  insight.viewed = true;
+  persist();
 }
 
 /**
@@ -592,8 +702,8 @@ function deleteGenerated(datasetId, insightId) {
  * re-run the LLM every time.
  * @returns {Promise<Object|null>} the plan, or null if no such insight exists
  */
-async function generateActionPlan(datasetId, insightId) {
-  const insight = getGeneratedById(datasetId, insightId);
+async function generateActionPlan(datasetId, userId, insightId) {
+  const insight = getGeneratedById(datasetId, userId, insightId);
   if (!insight) return null;
   if (insight.actionPlan) return insight.actionPlan;
 
@@ -676,21 +786,21 @@ function toTrackedMetric(insight) {
   };
 }
 
-function listTracked(datasetId) {
+function listTracked(datasetId, userId) {
   // trackedOrder is only ever set when an insight gets tracked (or
   // explicitly reordered) — older, already-tracked insights predating this
   // field just sort first (undefined treated as -Infinity-ish via ?? 0
   // being smaller than any real Date.now()-based value), which is a
   // harmless one-time default, not a bug to special-case.
-  return listGenerated(datasetId)
+  return listGenerated(datasetId, userId)
     .filter(i => i.tracked)
     .sort((a, b) => (a.trackedOrder ?? 0) - (b.trackedOrder ?? 0))
     .map(toTrackedMetric);
 }
 
 /** @returns {Object|null} the updated insight, or null if no insight with this id exists */
-function setTracked(datasetId, insightId, tracked) {
-  const list = generated.get(datasetId);
+function setTracked(datasetId, userId, insightId, tracked) {
+  const list = generated.get(storeKey(datasetId, userId));
   if (!list) return null;
   const insight = list.find(i => i.id === insightId);
   if (!insight) return null;
@@ -710,15 +820,15 @@ function setTracked(datasetId, insightId, tracked) {
  * the complete ordered list already (it's the one rendering the drag UI).
  * @returns {Object[]} the reordered tracked metrics, same shape as listTracked
  */
-function reorderTracked(datasetId, insightIds) {
-  const list = generated.get(datasetId);
+function reorderTracked(datasetId, userId, insightIds) {
+  const list = generated.get(storeKey(datasetId, userId));
   if (!list) return [];
   insightIds.forEach((id, index) => {
     const insight = list.find(i => i.id === id && i.tracked);
     if (insight) insight.trackedOrder = index;
   });
   persist();
-  return listTracked(datasetId);
+  return listTracked(datasetId, userId);
 }
 
 // Called down here, not right after the function declaration above: it
@@ -730,4 +840,4 @@ function reorderTracked(datasetId, insightIds) {
 // swallowed it).
 loadPersisted();
 
-module.exports = { investigate, listGenerated, getGeneratedById, deleteGenerated, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan, classifyPrompt, setDataReloadService };
+module.exports = { investigate, listGenerated, listGeneratedAll, getGeneratedById, deleteGenerated, deleteGeneratedAny, setTrackedAny, markViewed, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan, classifyPrompt, setDataReloadService };
