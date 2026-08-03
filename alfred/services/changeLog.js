@@ -67,8 +67,20 @@ async function listForAgent(agentId, limit = 100) {
     .limit(limit);
 }
 
+/**
+ * List recent rows across ALL agents, newest first. Powers Alfred's
+ * cross-project history learning ("what did we change and why").
+ */
+async function listRecent(limit = 100) {
+  return drizzle()
+    .select()
+    .from(agentLog)
+    .orderBy(desc(agentLog.appliedAt))
+    .limit(limit);
+}
+
 function newApplyGroupId() {
   return 'apply_' + crypto.randomBytes(8).toString('hex');
 }
 
-module.exports = { insert, listForAgent, newApplyGroupId };
+module.exports = { insert, listForAgent, listRecent, newApplyGroupId };

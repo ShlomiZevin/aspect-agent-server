@@ -199,6 +199,8 @@ async function logTextRun(ctx, panel, entry, resolved) {
 
 async function dispatchProfilerPanels({ ctx, didTransition }) {
   const { runnable, userId, conversationId, memory, emit } = ctx;
+  // Master switch — `enabled:false` skips the whole Profiler (all panels).
+  if (runnable.agent.body?.profiler?.enabled === false) return;
   const panels = Array.isArray(runnable.agent.body?.profiler?.panels)
     ? runnable.agent.body.profiler.panels
     : [];

@@ -75,6 +75,149 @@ customer ever sees it. It's a fourth thing on lybi.ai alongside the tool, the KB
 
 ---
 
+## 2b. 🎯 THE MVP — "Meeting Sessions", the first HQ drop surface
+
+> **Locked with Shlomi 2026-08-02.** Narrower than the earlier version of this section, deliberately.
+
+**The loop: drop a call recording into HQ → minutes later you have a summary, a decision list, action
+items already on the task board, and the meeting is held there permanently — speaker-labelled,
+searchable, and playable back to the exact moment anything was said.**
+
+**We build the drop pipe as general infrastructure, but meetings are the only content type we take
+end-to-end in the MVP.** That's the right shape: the pipe is reusable for every later connector, the
+payload stays focused, and meetings are the content that is **100% lost today** and retrievable no
+other way — so it's the only piece obviously worth the build on day one.
+
+> ### 🔄 UNCONFIRMED — 2026-08-02: meetings may already be transcribed into Notion
+>
+> Noa reports our meetings are **already being transcribed into Notion**. If that holds, it changes
+> the MVP's *source*, not its shape — the atom model, drop pipe, Scribe crew and holder are all
+> identical; only where transcripts come from moves. It would also mean **HQ launches with months of
+> history instead of accumulating from zero**, which is the difference between useful on day one and
+> useful in three months.
+>
+> **Seven questions for Noa — one of them decides everything:**
+>
+> 1. **⭐ Full transcripts, or only summaries?** *This is the decisive one.* Full transcripts let us
+>    re-derive decisions with our own prompts and **re-run the whole archive whenever the Scribe
+>    improves**. Summaries are lossy and permanently freeze someone else's judgement about what
+>    mattered — you can never get the detail back.
+> 2. **Are speakers labelled?** No speakers → no owner on an action item, which is most of the
+>    Scribe's value. Still fine for *"what did we discuss/decide"*, not for *"who owns it"*.
+> 3. **What tool produces them?** Determines quality, Hebrew handling, whether it has its own API,
+>    and whether we depend on a third party whose Notion output format can change under us.
+> 4. **Hebrew, English, or mixed — and how good?** If it already handles our Hebrew well, that
+>    answers the ASR bake-off for free.
+> 5. **How far back does it go?** That's the size of the free head start.
+> 6. **Every meeting, or only some?** A partial archive with *unknown* gaps is a trust problem — HQ
+>    would answer confidently from an incomplete record.
+> 7. **Automatic, or does someone paste it in?** Decides whether it keeps working without us.
+>
+> **Branch A — full transcripts with speakers:** the MVP becomes *Notion connector → pull the archive
+> → Scribe → hold + Ask*. Transcription work defers entirely while the existing tool keeps feeding.
+> Faster, and far more useful on day one.
+>
+> **Branch B — summaries only, or no speakers:** ingest the archive anyway as **history** (genuinely
+> valuable), **and** still build the recording → transcript path for going forward. The archive is a
+> free head start either way.
+>
+> **Either way the archive gets ingested.** The only open question is whether we still build capture.
+> Note this also vindicates choosing the **Notion API connector over a one-off export** (§4): if
+> transcripts are actively landing there, we need incremental sync, not a snapshot.
+>
+> *Do not rewrite the MVP until Noa confirms. The section below is Branch B, the safe assumption.*
+>
+> ---
+>
+> ### 🧪 PROPOSED Phase 1 (Shlomi, 2026-08-02): the drop-off accepts **Notion links**
+>
+> Smallest possible first phase — paste a Notion link into HQ, HQ pulls it in. **~2–3 days** instead
+> of the 2-week recording MVP, and it validates the archive's real quality before we commit to
+> anything.
+>
+> **Correction to the framing:** a Notion link is *not* publicly fetchable (§4). Pulling a page from
+> a link needs the API token **and** that page shared with our integration — so "drop a link" is not
+> a lighter-weight alternative to the connector, it's **the same setup with a smaller UI**. That's
+> fine, and actually the point: once the setup exists, full sync is a small increment on top.
+>
+> **⭐ The upgrade: accept a link to a *database*, not just a page.** The transcripts almost certainly
+> live in a Notion **database** ("Meetings"), one page per meeting with date/attendee properties. So
+> instead of pasting a link per meeting, paste the **database** link **once** and we pull every row.
+> Same code path (`databases.query` instead of `blocks.children`), roughly half a day more, and **one
+> paste ingests the entire archive**.
+>
+> **What Shlomi does in Notion — ~10 minutes, once:**
+>
+> 1. **Create an internal integration** — notion.so → Settings → Connections → *Develop or manage
+>    integrations* → **New integration**. Name it `Lybi HQ`, associate it with our workspace, type
+>    **Internal**.
+> 2. **Capabilities — tick these now**, because adding them later means editing the integration and
+>    re-sharing: **Read content** · **Read comments** (§4 — comments are where decisions often hide) ·
+>    **Read user information**. No insert/update capability needed; keep it read-only.
+> 3. **Copy the Internal Integration Secret** (starts `ntn_`; older ones `secret_`) → server env as
+>    `NOTION_TOKEN`.
+> 4. **Share the content with it** — open the Meetings database (or the top-level page above it) →
+>    `⋯` menu → **Connections** → **Add connection** → `Lybi HQ`. **This cascades to child pages**, so
+>    sharing one top-level parent covers everything under it.
+> 5. **Grab the link** — the 32-char hex in the URL is the ID. For a database it's the part *before*
+>    `?v=`.
+>
+> **What we build:** token config + resolve a pasted URL to page-or-database + `notion-to-md` +
+> normalise → atoms + index → Ask over them. ~2–3 days total.
+>
+> **What it does and doesn't get us.** It gets the whole archive in, indexed and askable, and proves
+> the content quality immediately. It doesn't yet sync automatically — but that's a small increment
+> (the `search` + `last_edited_time` filter on the scheduler tick we already run). And if the tool
+> keeps writing new meetings into Notion, **that increment means we may never build transcription at
+> all** — that's Branch A, reached cheaply.
+>
+> **One reassurance worth stating:** ingesting means **we own a copy**. The atoms live in our
+> Postgres + Pinecone. If the transcription tool dies or Notion goes away, everything ingested up to
+> that point is still ours. The dependency is on *future* capture, never on the archive we've already
+> taken.
+
+### What's in
+
+1. **Drop** — the capture page. Accepts files generally; audio/video is what we process end-to-end.
+2. **Transcribe — with speakers.** Provider decided by the bake-off (§5): **try OpenAI
+   `gpt-4o-transcribe-diarize` first, fall back to ElevenLabs Scribe v2 if it isn't good enough.**
+   Build it behind a small provider interface — `transcription.service.js` is already two-provider
+   shaped, so a swap stays a config change, never a rewrite.
+3. **Scribe** — summary · one atom per decision · **action items → real tasks on the existing board**
+   · open questions.
+4. **Hold** — the Meetings library. List + detail: date, participants, duration, summary, decisions,
+   actions, and the full speaker-labelled transcript.
+5. **Index as it lands** — everything embedded into the `hq-meetings` namespace during ingestion.
+   Free, since it's in the pipe anyway, and it makes Ask a wiring job rather than a build.
+
+### Two details that decide whether it gets trusted
+
+- **Keep the recording, and make the transcript seek it.** Per-segment timestamps → click any line
+  (or any decision) and jump to that moment in the audio. This is what earns the word "holder", and
+  it's what makes people believe a summary: verification is one click, not a re-listen.
+- **Everything must be correctable.** The Scribe *will* miss an owner or mangle a decision. If you
+  can't fix it in place, you stop trusting it within a week. Editable summary/decisions/actions, and
+  editable speaker names (which also covers us if reference-clip name-mapping doesn't pan out).
+
+### What's out
+
+Meet connector (you drag the file in) · Drive watcher · Notion · mobile · Pulse · Timeline ·
+Constellation · Librarian · Chief of Staff · Cost page.
+
+**Ask is the one judgement call.** It's *nearly free* — indexing already happens in the pipe, and the
+Ask crew is a KB Retriever pointed at `hq-meetings`. Recommendation: **include it, scoped to meetings
+only** (~3 days), because without it this is a meeting-notes tool rather than the start of a brain.
+It's also the clean line to cut if we want the first ship smaller.
+
+**Effort: ~2 weeks** for the meetings pipeline + holder, **+~3 days** if Ask is in.
+
+**The test that says it worked:** *finish a real call, drop the recording, and get a decision list
+you'd actually send to Noa and Hila — with the tasks already on the board and each decision clickable
+back to the moment it was said.* If that lands, the rest of the plan is worth building. If it
+doesn't, we found out in two weeks.
+
+---
+
 ## 3. We already own ~70% of this
 
 Not a greenfield build — mostly assembly, 2 connectors and 1 new surface.
@@ -284,16 +427,67 @@ depend on Meet only for file delivery, so switching back costs us almost nothing
 
 Reported accuracy, worth verifying on *our* audio rather than trusting benchmarks:
 
-| Option | Note |
-|---|---|
-| **ElevenLabs Scribe** | Best reported WER (~3.1% FLEURS), does diarization — speaker labels are what a decision log needs |
-| **Speechmatics** | Claims ~96% word accuracy on Hebrew specifically |
-| **ivrit.ai Whisper** | Israeli open project, 3,300+ hrs of Hebrew; Hebrew-tuned Whisper beats vanilla Whisper |
-| **Whisper / Gemini** | **What we already have wired.** Weaker on Hebrew but zero integration cost — the baseline to beat |
+### ⚠️ Speakers: our currently-wired path gives NONE
 
-**Action: run one real recording through all four, compare, pick.** One day of work that determines
-the quality ceiling of the entire company memory — worth doing properly. Note that mixed Hebrew/
-English (how we actually talk) is the real test case, not clean Hebrew.
+I said we could start on the transcription we already have. **That was wrong, and it matters.**
+`transcription.service.js` calls **`whisper-1`**, and **Whisper does not output speaker labels at
+all** — not names, not even "Speaker 1". It returns one undifferentiated wall of text. (It's also
+now legacy — on OpenAI/Azure retirement schedules.)
+
+That's disqualifying rather than inconvenient, because **the Scribe's output depends on it.** Action
+items need an owner: *"Noa will redo the pricing page"* is useful, *"it was decided the pricing page
+will be redone"* is not. So **diarization is MVP-critical, not a Phase-2 refinement**, and the MVP
+must start on a diarizing provider — not on what's wired today.
+
+| Option | Speakers? | Hebrew? | Note |
+|---|---|---|---|
+| **`gpt-4o-transcribe-diarize`** | ✅ built-in, `diarized_json`, labels `A:`/`B:` | 100+ languages (Hebrew not explicitly confirmed — **verify**) | Same OpenAI SDK we already call → smallest integration change. **Plus the feature below.** |
+| **ElevenLabs Scribe** | ✅ up to 32 speakers | ✅ Hebrew, among 99 languages | Best reported WER (~3.1% FLEURS), char-level timestamps. Strongest *confirmed* pairing of both needs. |
+| **Gemini** | ⚠️ prompted, not a formal feature — steerable ("Speaker A is Alice") | ✅ | An LLM doing diarization; can drift over long audio. Fine as a fallback, not as the spine. |
+| **ivrit.ai Whisper** | ❌ — it's a Whisper fine-tune, so it inherits "no diarization" | ✅ best-in-class Hebrew | Would need pairing with a separate step (pyannote / WhisperX). *Reasoned, not directly verified.* |
+| **Speechmatics** | likely ✅ (core feature) — **verify** | ✅ claims ~96% | Verify both together before counting on it. |
+| **`whisper-1`** *(what we have)* | ❌ **none** | weak | **Not viable for the MVP.** |
+
+### 🎯 The bit that's better than you asked for — real names, not "Speaker 1"
+
+`gpt-4o-transcribe-diarize` accepts **`known_speaker_names[]` + `known_speaker_references[]`** — up to
+**four** reference clips of **2–10 seconds each**, mapping segments onto known people.
+
+We are three people. **Record five seconds of Shlomi, Noa and Hila once, and every meeting from then
+on comes back labelled with real names** — no "Speaker A", no manual mapping, no LLM guessing from
+context. Ten minutes of setup, permanently. That also closes the Meet tradeoff from earlier: Meet's
+native transcript knows real names but can't do Hebrew; this gives us both.
+
+*(Even without it, three known participants makes `A/B/C` → names trivially inferable by the Scribe.
+The reference clips just remove the guesswork.)*
+
+### The bake-off — what to actually score
+
+*Status: Shlomi hands-on tested **ElevenLabs Scribe v2** (2026-08-02) — looks great. OpenAI in progress.*
+
+One real recording, ideally a full-length one, through both. **Score the end output, not the
+transcript** — a transcript with 8% WER can still yield a perfect decision list, while one with 3% WER
+but broken speaker mapping yields a confidently wrong one. So run each transcript through a
+Scribe-style prompt and compare **the decision lists**.
+
+Ranked by how often they're what actually breaks:
+
+1. **Speaker consistency across the *whole* recording.** Does Speaker A at 00:05 stay Speaker A at
+   45:00, or silently get re-labelled halfway? This is the classic failure, it's invisible in a
+   30-second sample, and it corrupts a decision log without ever looking wrong.
+2. **Overlapping speech and interruptions.** Clean turn-taking is easy; three people talking over
+   each other on a call is where diarization actually falls apart.
+3. **Hebrew/English code-switching mid-sentence** — how we really talk. Not clean Hebrew.
+4. **Our vocabulary** — Lybi, Freeda, Alfred, Aspect, crew, addon, Pinecone, Zer4U. Both support
+   keyterm prompting (Scribe takes up to 1000 terms); test whether feeding our glossary fixes mangled
+   product names, because it'll appear in every meeting we ever record.
+5. **Long-file handling.** A 90-minute call. Note our existing service compresses >24 MB for OpenAI;
+   provider limits differ.
+6. **Per-segment timestamps** — needed later for *"jump to where this was decided"*.
+7. **Cost per hour** at our volume. Probably trivial for 3 people, but worth knowing.
+
+> **Keep the test recording.** It becomes our regression fixture — every future provider swap re-runs
+> the same file, so quality changes are measured rather than guessed.
 
 ### The remaining downsides of switching to Meet, honestly
 
@@ -308,10 +502,25 @@ English (how we actually talk) is the real test case, not clean Hebrew.
    `drive-to-gcs` authenticates with a service-account key file — same pattern applies).
 5. **You still need the file-drop path** for anything not on Meet — which we're building anyway.
 
-**Net: yes, basically just Google Meet — but for recording, not transcription.** The Business
-Standard upgrade is no longer required for HQ's sake. And since Phase 1's drop-a-recording path works
-regardless of platform, **this decision doesn't block anything** — we can stay on Zoom through Phase
-1 and switch whenever convenient.
+**Net: yes, basically just Google Meet — but for recording, not transcription.** And since the MVP's
+drop-a-recording path works regardless of platform, **this decision blocks nothing** — we can stay on
+Zoom (or on a local screen recording) through the MVP and switch whenever convenient.
+
+> ⚠️ **Correction (2026-08-02).** An earlier version of this section said *"the Business Standard
+> upgrade is no longer required."* **Wrong.** Establishing that Meet can't transcribe Hebrew removed
+> the need for Business Standard's *transcription* — but **native Meet recording is itself a Business
+> Standard+ feature.** Business Starter and free Gmail have **no recording at all**. Confirmed live:
+> Shlomi has no recording option in Meet, which means boostart.io is on Starter (or an admin has the
+> toggle off).
+>
+> So the Meet auto-record story — the reliability win this whole section rests on — **has a
+> prerequisite: upgrading to Business Standard** (roughly +$7/user/month; about +$21/month for the
+> three of us). Small, but it is a real dependency and it was not previously written down.
+>
+> **It does not block the MVP.** A local screen recording produces exactly the file we need. The
+> upgrade buys *automatic* capture, which is what stops recording from depending on someone
+> remembering — worth doing before we rely on meetings being captured by default, not before we start
+> building.
 
 ---
 
@@ -420,6 +629,19 @@ authenticated cross-service API.
 - **Client** — `src/hq/`, mounted at **`lybi.ai/hq`**, lazy-loaded.
 - **Auth** — `/hq` locked to our three Google accounts. Day one, not later.
 
+### Keeping it separate in practice — folder convention only (decided 2026-08-03)
+
+No worktree, no submodule, no second repo. **Folder naming is the whole mechanism**, and it's already
+the house pattern: the server has `builder/`, `bi/`, `alfred/`, `whatsapp/`; the client has `builder/`,
+`live-chat/`. `hq/` is simply the next one. Everything HQ lives in those two folders and commits are
+prefixed `hq:`, so HQ files sort together and stay legible in the SCM view.
+
+**Pair it with one habit: land the wiring commit first.** HQ touches ~4 core files *ever* — the route
+in `App.tsx`, the router mount in `server.js`, the schema export, and deps. Do those as a single small
+commit up front and merge it. Every change afterwards is then purely under `hq/`, and the git view
+stays clean on its own. Skip this and those touches trickle in over weeks — which is exactly the
+core-vs-HQ mixing we're trying to avoid.
+
 ### On the separate host — you were right to push back; drop it
 
 I'd recommended a separate build target at `hq.lybi.ai`. **Checking the code, the argument for it
@@ -474,8 +696,8 @@ through, but it is **not** the primary control. The primary control is that we n
 | Phase | Scope | Est. |
 |---|---|---|
 | **0 · Skeleton** | `hq_atoms`/`hq_sources`/`hq_links`, Pinecone namespaces, `/hq` route + auth guard, capture endpoint, the **`hq` builder agent** + its crews, the **headless job runner** (§7) | ~3 days |
-| **1 · Drop & Ask + 📱Mobile** | file/URL/text/**voice** capture → normalise → classify → index. Ask **with citations**. Sources health. **PWA capture on the phone.** | 2 wks |
-| **2 · Meetings** | Hebrew ASR bake-off → Meet/Drive recording connector → **Scribe** → decisions + tasks | 1–2 wks |
+| **1 · 🎯 MVP — Meeting Sessions** | drop a recording → diarised transcript → **Scribe** → summary/decisions/tasks → the Meetings holder (seekable audio, editable). Ask scoped to meetings. **§2b** | ~2 wks (+3d Ask) |
+| **2 · Widen the drop** | text/paste/URL/file through the same pipe · 📱 mobile PWA capture · Sources health | 1–2 wks |
 | **3 · Watchers + connectors** | generalise the Drive watcher · **Notion API connector** (~2d) · one-time OneDrive→Drive dump (Noa) · docs tree + builder state | ~2 wks |
 | **4 · Live tools** | task board · builder state · calendar · usage as tools | ~1 wk |
 | **5 · Surfaces** | Pulse · Timeline · **Cost** · Constellation | ~2 wks |
@@ -531,12 +753,13 @@ unanswered question.
    This is the keystone; build it before any worker logic.
 5. **`/hq` route + auth guard** — three Google accounts, lazy-loaded (§8). `src/hq/` on the client,
    `hq/` on the server, one-directional imports.
-6. **Capture endpoint** — text/paste (structure preserved + optional source URL), file, URL. The
-   normalise → classify → chunk → embed path, wired straight through to Ask so the loop closes on
-   day one even with three atoms in it.
+6. **Capture endpoint** — general file drop, with audio/video as the first type taken end-to-end
+   (§2b). Normalise → classify → chunk → embed.
+7. **Transcription provider interface** — `gpt-4o-transcribe-diarize` first, ElevenLabs Scribe v2
+   behind the same interface as the fallback. Decide with the bake-off (§5), not by guessing.
 
-**First real proof it works:** drop the brand doc into Capture, ask HQ *"what's our main palette
-colour"*, get the right hex **with a citation** back to the file. That's Phase 0/1 done.
+**First real proof it works:** drop a real call recording, get back a decision list you'd send to Noa
+and Hila, with the tasks on the board. That's the MVP (§2b).
 
 ### Before writing any code, re-read
 

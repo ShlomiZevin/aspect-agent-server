@@ -368,9 +368,11 @@ router.get('/:slug/conversations/:convId/live-brain', async (req, res) => {
       return res.json({ panels: [] });
     }
 
-    const panels = Array.isArray(runnable?.agent?.body?.liveBrain?.panels)
-      ? runnable.agent.body.liveBrain.panels
-      : [];
+    // Master switch off → the whole Live Brain is hidden (no panels).
+    const liveBrain = runnable?.agent?.body?.liveBrain;
+    const panels = (liveBrain?.enabled === false || !Array.isArray(liveBrain?.panels))
+      ? []
+      : liveBrain.panels;
     if (panels.length === 0) return res.json({ panels: [] });
 
     const blob = await builderMemory.loadMemory(userId, Number(convId));
@@ -470,7 +472,10 @@ router.get('/:slug/conversations/:convId/profiler', async (req, res) => {
       return res.json({ panels: [], frame: null, ask: null });
     }
 
-    const profiler = runnable?.agent?.body?.profiler || null;
+    // Master switch off → the whole Profiler is hidden (no panels, no Ask).
+    const profiler = (runnable?.agent?.body?.profiler?.enabled === false)
+      ? null
+      : (runnable?.agent?.body?.profiler || null);
     const panels = Array.isArray(profiler?.panels) ? profiler.panels : [];
     if (panels.length === 0) return res.json({ panels: [], frame: null, ask: null });
 

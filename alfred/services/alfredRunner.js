@@ -17,14 +17,17 @@ const claudeService = require('../../services/llm.claude');
 const { logUsage } = require('../../services/usageLogger');
 const { SYSTEM_PROMPT, buildProjectSummary } = require('./alfredContext');
 const alfredChats = require('./alfredChats');
-const changeLog = require('./changeLog');
+const alfredTools = require('./alfredTools');
 const { hydrateProject } = require('../../builder/services/builderProjects');
 
 const ALFRED_MODEL    = 'claude-sonnet-4-6';
 const ALFRED_PROCESS  = 'alfred-brainstorm';
 const HISTORY_LIMIT   = 20;   // last N messages (~10 turns) per turn
 const MAX_TOKENS      = 4096;
-const MAX_TOOL_ITERATIONS = 4; // safety: cap recursion so a misbehaving model can't loop forever
+// Ultra-Alfred workflows chain tools (list_agents → read_agent →
+// read_conversation → read_run); 8 rounds bounds a runaway loop while
+// leaving room for a real investigation.
+const MAX_TOOL_ITERATIONS = 8;
 
 // ─── Tool definitions ────────────────────────────────────────────
 
@@ -60,8 +63,9 @@ const TOOLS = [
   {
     name: 'read_change_log',
     description:
-      'Read this agent\'s change history (Alfred applies + manual "Validate & Log" entries). ' +
-      'Use when the user asks what was changed, when something was added, who did what, etc. ' +
+      'Read change history (Alfred applies + manual "Validate & Log" entries), with the ' +
+      'changed sections per entry. By default: THIS agent. Pass allAgents: true for the ' +
+      'whole platform — use that to learn from past decisions across projects. ' +
       'Returns plain text — newest entries first.',
     input_schema: {
       type: 'object',
@@ -70,7 +74,80 @@ const TOOLS = [
           type: 'number',
           description: 'Max entries to return. Default 20, max 100.',
         },
+        allAgents: {
+          type: 'boolean',
+          description: 'true = history across ALL agents, not just the current one.',
+        },
       },
+    },
+  },
+  {
+    name: 'list_agents',
+    description:
+      'List every agent on the platform (name, slug, project, last activity). Use this ' +
+      'FIRST whenever the user mentions another agent by a loose/partial name — match the ' +
+      'name yourself from this list, tell the user which agent you matched, then read_agent ' +
+      'its slug.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'read_agent',
+    description:
+      'Read ANOTHER agent\'s full JSON (crews, addons with prompts, fields, enums, ' +
+      'snippets, personas, liveBrain, profiler). READ-ONLY: Apply can never modify other ' +
+      'agents — to copy something from there, quote its config verbatim in the chat and ' +
+      'propose it for THIS agent.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        slug: { type: 'string', description: 'The agent slug (exact — from list_agents).' },
+      },
+      required: ['slug'],
+    },
+  },
+  {
+    name: 'list_conversations',
+    description:
+      'List recent chat conversations for the CURRENT agent (builder preview + customer ' +
+      '/live chats), newest first. Use when the user wants to debug "the chat" and no ' +
+      'conversation is currently open, or to find an older chat.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max conversations. Default 10, max 30.' },
+      },
+    },
+  },
+  {
+    name: 'read_conversation',
+    description:
+      'Read a chat conversation: the transcript with a per-turn ADDON RUN digest — which ' +
+      'addons ran or were skipped (and by which filter), models, durations, memory writes, ' +
+      'transitions, parse errors, truncated outputs. THE debugging tool for "why did the ' +
+      'agent say/do that?". Omit conversationId to read the chat the user currently has ' +
+      'open in the builder.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        conversationId: {
+          type: 'number',
+          description: 'Conversation id. Omit for the currently open preview chat.',
+        },
+      },
+    },
+  },
+  {
+    name: 'read_run',
+    description:
+      'Zoom into ONE addon run: the FULL assembled prompt exactly as the LLM received it, ' +
+      'the full raw output, parsed output, and memory writes. Use after read_conversation ' +
+      'when you need to see precisely what a step saw or produced.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        runId: { type: 'string', description: 'The run id from a read_conversation digest.' },
+      },
+      required: ['runId'],
     },
   },
   {
@@ -94,23 +171,35 @@ const TOOLS = [
   },
 ];
 
-function formatChangeLogForLLM(rows) {
-  if (rows.length === 0) return 'No log entries yet for this agent.';
-  return rows.map(r => {
-    const when = new Date(r.appliedAt).toLocaleString();
-    const actor = r.actor === 'alfred' ? 'Alfred' : 'manual edit';
-    const what  = (r.whatChanged || '').trim() || '(no description)';
-    const why   = (r.reason || '').trim();
-    const head  = `[${when}] ${actor} · ${r.entity}: ${r.entityName}`;
-    return why ? `${head}\n  ${what}\n  Why: ${why}` : `${head}\n  ${what}`;
-  }).join('\n\n');
-}
-
 async function runTool(name, input, ctx) {
   if (name === 'read_change_log') {
-    const limit = Math.min(Math.max(Number(input?.limit) || 20, 1), 100);
-    const rows = await changeLog.listForAgent(ctx.agentId, limit);
-    return formatChangeLogForLLM(rows);
+    return alfredTools.changeLogText({
+      agentId: input?.allAgents === true ? null : ctx.agentId,
+      limit:   input?.limit,
+    });
+  }
+  if (name === 'list_agents') {
+    return alfredTools.listAgents();
+  }
+  if (name === 'read_agent') {
+    const slug = String(input?.slug || '').trim();
+    if (!slug) return 'read_agent requires a slug (see list_agents).';
+    return alfredTools.readAgent(slug, ctx.ownerUserId);
+  }
+  if (name === 'list_conversations') {
+    return alfredTools.listConversations({ agentSlug: ctx.agentSlug, limit: input?.limit });
+  }
+  if (name === 'read_conversation') {
+    const convId = input?.conversationId ?? ctx.activeConversationId;
+    if (convId == null) {
+      return 'No conversation is open in the builder and no conversationId was given — use list_conversations to pick one.';
+    }
+    return alfredTools.readConversation({ conversationId: convId });
+  }
+  if (name === 'read_run') {
+    const runId = String(input?.runId || '').trim();
+    if (!runId) return 'read_run requires a runId (from a read_conversation digest).';
+    return alfredTools.readRun({ runId });
   }
   if (name === 'read_addon_code') {
     const pluginId = String(input?.pluginId || '').trim();
@@ -150,7 +239,7 @@ async function runTool(name, input, ctx) {
  * @param {(type: string, payload: object) => void} args.emit
  * @returns {Promise<{ assistantText: string }>}
  */
-async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, emit }) {
+async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConversationId, emit }) {
   const start = Date.now();
 
   // 1. Recent history (last N), already in chronological order.
@@ -173,7 +262,7 @@ async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, emit }) {
     throw new Error(`No project found for slug "${agentSlug}".`);
   }
   const agentId = project.agents[0].id;
-  const toolCtx = { agentId };
+  const toolCtx = { agentId, agentSlug, ownerUserId, activeConversationId };
 
   const summary = await buildProjectSummary({ agentSlug, ownerUserId });
   const systemPrompt = `${SYSTEM_PROMPT}\n\n## Current project state\n${summary}`;

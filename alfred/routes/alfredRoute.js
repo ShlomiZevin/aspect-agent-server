@@ -187,7 +187,7 @@ router.delete('/chats/:chatId/messages/:messageId', async (req, res) => {
 
 router.post('/chats/:chatId/messages', async (req, res) => {
   const { chatId } = req.params;
-  const { ownerUserId, userMessage, agentSlug } = req.body || {};
+  const { ownerUserId, userMessage, agentSlug, activeConversationId } = req.body || {};
 
   if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
   if (!userMessage) return res.status(400).json({ error: 'Missing userMessage' });
@@ -240,6 +240,9 @@ router.post('/chats/:chatId/messages', async (req, res) => {
       chatId:         Number(chatId),
       agentSlug,
       ownerUserId,
+      // The preview conversation the user currently has open in the
+      // builder — lets `read_conversation` target "this chat" directly.
+      activeConversationId: activeConversationId != null ? Number(activeConversationId) : null,
       emit,
     });
 

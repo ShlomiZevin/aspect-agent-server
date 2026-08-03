@@ -204,6 +204,8 @@ async function logTextRun(ctx, panel, entry, resolved) {
 
 async function dispatchLiveBrainPanels({ ctx, didTransition }) {
   const { runnable, userId, conversationId, memory, emit } = ctx;
+  // Master switch — `enabled:false` skips the whole Live Brain (all panels).
+  if (runnable.agent.body?.liveBrain?.enabled === false) return;
   const panels = Array.isArray(runnable.agent.body?.liveBrain?.panels)
     ? runnable.agent.body.liveBrain.panels
     : [];

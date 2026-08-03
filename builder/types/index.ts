@@ -1044,6 +1044,12 @@ export interface BrainPanel {
 export interface LiveBrainDef {
   panels: BrainPanel[];
   /**
+   * Master on/off for the WHOLE Live Brain — one switch that runs or skips
+   * all its panels at once (like turning every addon off together).
+   * Optional + absent-means-enabled, so pre-flag agents stay on.
+   */
+  enabled?: boolean;
+  /**
    * Presentation frame (task 754) — the wrapper's look, kept SEPARATE
    * from panel data so it can be restyled without touching the engine.
    * Optional; defaults: vertical stack, half-screen.
@@ -1091,6 +1097,11 @@ export interface ProfilerPanel extends BrainPanel {
  */
 export interface ProfilerDef {
   panels: ProfilerPanel[];
+  /**
+   * Master on/off for the WHOLE Profiler — one switch that runs or skips
+   * all its panels (and Ask) at once. Optional + absent-means-enabled.
+   */
+  enabled?: boolean;
   /**
    * Ask Profiler — the headline feature: the user talks to the profile
    * in natural language and it answers about itself (why it inferred
