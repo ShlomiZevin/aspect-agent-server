@@ -1,9 +1,32 @@
 # Lybi HQ — the central company brain
 
-> **Status: 🔒 LOCKED 2026-08-02 — awaiting Shlomi's GO. Nothing built, do not start.**
-> Every open design question is settled (§2). What remains (§12) is small, non-blocking, and
-> answerable during the build. On GO, start at §13.
+> **Status: 🚀 MVP BUILT 2026-08-03 — live at `/hq`, awaiting review.**
+> Phase 0 + the Meeting Sessions MVP (§2b) are built and verified end-to-end against the real DB,
+> Pinecone and LLMs: drop → index → Scribe → Ask with citations. **Implementation notes live in
+> [`hq/README.md`](../../hq/README.md).** Still to come: the Notion import needs `NOTION_TOKEN`
+> before it can run, and everything from §10 Phase 2 onward is unbuilt.
 > Supersedes `BRAIN_CENTER.md` (same doc, renamed once the name was settled).
+
+### What shipped (2026-08-03)
+
+| Area | Status |
+|---|---|
+| `hq_atoms` / `hq_sources` / `hq_links` + migration | ✅ run against the live DB |
+| Notion connector (link → page **or database** → markdown) | ✅ built, **needs `NOTION_TOKEN` to run** |
+| Ingest: normalise → chunk → embed → Pinecone (`hq` namespace) | ✅ verified |
+| Scribe: summary · decisions (with quotes) · actions (with owners) · open questions | ✅ verified on a real transcript |
+| Ask with clickable citations | ✅ verified, including correct refusal when it doesn't know |
+| Bilingual retrieval (Hebrew question ↔ English content) | ✅ built after the naive version failed the test |
+| `/hq` client: Ask · Drop · Library · Atom detail · Sources | ✅ own lazy chunk, 31 kB (10 kB gzip) |
+| Cost attribution via `llm_usage` (`agentName:'hq'`) | ✅ free, no migration — as designed in §7 |
+
+Two findings worth keeping:
+- **The lazy chunk confirms §8** — HQ builds as its own 31 kB bundle, so no customer route downloads
+  it. The separate-host idea really was unnecessary.
+- **Cross-lingual retrieval had to be built.** `text-embedding-3-small` scored a Hebrew question at
+  0.26 against English content versus 0.43 for the English equivalent — right on the threshold. Ask
+  now retrieves in both languages and merges. This would have looked fine in an English-only demo
+  and failed in real use.
 > Sister docs: [BUILDER_V2.md](./BUILDER_V2.md) (the engine this runs on),
 > [KB_V2.md](./KB_V2.md) + [KB_V2_RETRIEVER.md](./KB_V2_RETRIEVER.md) (retrieval),
 > [BUILDER_V2_LIVE_BRAIN.md](./BUILDER_V2_LIVE_BRAIN.md) (panel renderers we reuse),

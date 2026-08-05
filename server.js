@@ -147,6 +147,12 @@ app.use('/api/insights', require('./insights/routes/insights.routes'));
 // insights/routes/insights-admin.routes.js.
 app.use('/api/admin/intelligence', require('./insights/routes/insights-admin.routes'));
 
+// ─── Lybi HQ ───────────────────────────────────────────────────────
+// Our own internal company brain — meetings, docs, decisions. NOT a product
+// and never customer-facing; nothing in the product may import from hq/.
+// See docs/guides/LYBI_HQ.md.
+app.use('/api/hq', require('./hq/routes/hq.routes'));
+
 // ========== MODELS REGISTRY ==========
 // Single source of truth for the LLM models the platform supports.
 // Server-hardcoded today (services/models.service.js); the client
