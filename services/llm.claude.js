@@ -163,10 +163,13 @@ class ClaudeService {
         };
       }
 
-      // Default: text response.
+      // Default: text response. `stopReason` lets callers distinguish a
+      // complete answer from one cut off by the max_tokens cap —
+      // critical for JSON-returning callers, where truncation otherwise
+      // surfaces as a misleading "malformed JSON" parse error.
       const textContent = response.content.find(c => c.type === 'text');
       const text = textContent?.text || '';
-      return { text, usage };
+      return { text, usage, stopReason: response.stop_reason };
     } catch (error) {
       console.error('❌ Claude OneShot Error:', error.message);
       throw new Error(`Failed to get Claude response: ${error.message}`);

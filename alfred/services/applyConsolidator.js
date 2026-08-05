@@ -100,6 +100,11 @@ const SYSTEM_PROMPT = [
   '  panels / Ask Profiler / frame) live on the AGENT body → agent target.',
   '- entityId MUST match an id present in the project state. Never invent',
   '  ids.',
+  '- The apply pipeline can NOT create new crews. If the conversation',
+  '  agreed on a crew that does not exist yet in the project state,',
+  '  EXCLUDE those changes from targets and say in `description` that',
+  '  the crew must first be created in the builder sidebar — then a',
+  '  second Apply can fill it.',
   '- what_to_do is the prose handed to the patch generator. Be precise',
   '  about field names, types, addon settings — that\'s what the patch',
   '  generator will translate into JSON.',
@@ -267,15 +272,18 @@ async function consolidate({ chatId, agentSlug, ownerUserId }) {
     'Produce the JSON plan covering everything the user agreed to. JSON only.',
   ].join('\n');
 
-  // 3. One-shot Claude call with jsonOutput hint.
+  // 3. One-shot Claude call with jsonOutput hint. 8192 output tokens —
+  //    whole-crew plans in Hebrew blew past the old 2048 cap and died
+  //    as truncated "malformed JSON" (prod, 4.8.2026).
   const result = await claudeService.sendOneShot(SYSTEM_PROMPT, userMessage, {
     model: MODEL,
-    maxTokens: 2048,
+    maxTokens: 8192,
     jsonOutput: true,
   });
 
   const text = (result && typeof result === 'object' && 'text' in result) ? result.text : result;
   const usage = (result && typeof result === 'object' && 'usage' in result) ? result.usage : null;
+  const stopReason = (result && typeof result === 'object') ? result.stopReason : undefined;
   const durationMs = Date.now() - start;
 
   // Log usage.
@@ -292,7 +300,16 @@ async function consolidate({ chatId, agentSlug, ownerUserId }) {
     });
   }
 
-  // 4. Parse the JSON.
+  // 4. Truncated? Say so honestly — retrying an over-cap plan verbatim
+  //    can never succeed; the user needs to shrink the ask.
+  if (stopReason === 'max_tokens') {
+    throw new Error(
+      'The plan is too large to generate in one go — ask Alfred to apply '
+      + 'the changes in smaller pieces (e.g. one crew or one topic at a time).',
+    );
+  }
+
+  // 5. Parse the JSON.
   let plan;
   try {
     plan = extractJson(text);
