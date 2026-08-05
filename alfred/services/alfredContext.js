@@ -264,6 +264,25 @@ const STATIC_SYSTEM_PROMPT = [
   'Typical use: several independent Field Extractors joined into one',
   'parallel step, then the Talker as the next step.',
   '',
+  '# Fields can be filled by ANY JSON-emitting addon (not just extractors)',
+  'The engine auto-harvests every addon\'s parsed JSON output: any',
+  'TOP-LEVEL key whose name exactly matches a declared field (agent or',
+  'crew scope) is written to that FIELD automatically — under the',
+  'field\'s domain, value as-is. So a Thinker (or Field Interviewer,',
+  'or any json-to-memory addon) can double as a quiet extractor just by',
+  'returning the field\'s exact name as a key: `{ "mood": "sad", ... }`',
+  'fills the declared `mood` field AND still lands in the thinking',
+  'domain. Rules: exact name match · explicit Field Extractor writes',
+  'win over the harvest · null/undefined values are skipped.',
+  'Design implications:',
+  '- A dedicated Field Extractor is NOT always needed — when a Thinker',
+  '  already reasons about a value, having it return the field name is',
+  '  often the leaner setup (one LLM call instead of two).',
+  '- The flip side: a Thinker output key that ACCIDENTALLY collides',
+  '  with a declared field name WILL overwrite that field — watch for',
+  '  this when debugging surprise field values, and avoid field-named',
+  '  keys in prompts that shouldn\'t write fields.',
+  '',
   '# Choice vs Targeted KB — THE decision rule',
   'Two different products share one data structure (`agent.enums`), and',
   'you must never mix them up. Decide with ONE question: **does the user',
@@ -445,17 +464,47 @@ function stripVersionBodies(entity) {
 }
 
 /**
+ * Overlay the client's UNSAVED working copies onto a DB-hydrated
+ * project, so Alfred reads the DRAFT the user actually sees (matching
+ * the preview runtime and Apply generation, which already work this
+ * way). `workingBodies` = { agent?: {id, body}, crews?: [{id, body}] }
+ * — AgentBody / CrewBody shapes; absent entities keep their DB state.
+ */
+function overlayWorkingBodies(project, workingBodies) {
+  if (!workingBodies || !project || !project.agents || !project.agents[0]) return project;
+  const agent = project.agents[0];
+  let next = agent;
+  if (workingBodies.agent && workingBodies.agent.body && workingBodies.agent.id === agent.id) {
+    // AgentBody has no `crews` key, so the spread can't clobber them.
+    next = { ...agent, ...workingBodies.agent.body };
+  }
+  const crewBodies = new Map(
+    (Array.isArray(workingBodies.crews) ? workingBodies.crews : [])
+      .filter(c => c && c.id && c.body)
+      .map(c => [c.id, c.body]),
+  );
+  if (crewBodies.size > 0) {
+    next = {
+      ...next,
+      crews: (next.crews || []).map(c =>
+        crewBodies.has(c.id) ? { ...c, ...crewBodies.get(c.id) } : c),
+    };
+  }
+  return { ...project, agents: [next, ...project.agents.slice(1)] };
+}
+
+/**
  * Produce the per-turn context block: the CURRENT AGENT as raw JSON
  * (working copy — what the builder UI edits), with version snapshot
- * bodies stripped. This is exactly what the builder sees, so Alfred
- * can answer any question about the agent without a lossy summary
- * in between.
+ * bodies stripped. When the client passes `workingBodies`, the UNSAVED
+ * draft is overlaid so Alfred sees exactly what's on screen.
  */
-async function buildProjectSummary({ agentSlug, ownerUserId }) {
-  const project = await hydrateProject({ agentSlug, ownerUserId });
+async function buildProjectSummary({ agentSlug, ownerUserId, workingBodies }) {
+  let project = await hydrateProject({ agentSlug, ownerUserId });
   if (!project) {
     return `No project found for slug "${agentSlug}". The user hasn't bootstrapped the builder yet.`;
   }
+  project = overlayWorkingBodies(project, workingBodies);
 
   const lines = [`Project: ${project.name || '(unnamed)'}`];
   if (project.spec) lines.push(`Project spec: ${project.spec}`);
@@ -481,4 +530,5 @@ module.exports = {
   SYSTEM_PROMPT,
   buildProjectSummary,
   stripVersionBodies,
+  overlayWorkingBodies,
 };

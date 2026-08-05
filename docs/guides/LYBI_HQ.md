@@ -36,7 +36,7 @@ Two findings worth keeping:
 
 ## 0. The name
 
-**Lybi HQ.** Route `/hq`, deployed at `hq.lybi.ai`. Its AI workers are **the staff**.
+**Lybi HQ.** Route `/hq`, served at `lybi.ai/hq`. Its AI workers are **the staff**.
 
 Why this one: the thing is about **running the company**, not about being a brain — which is the
 exact distinction we drew in §1. It has zero overlap with our product vocabulary (brain · agent ·
@@ -79,17 +79,21 @@ customer ever sees it. It's a fourth thing on lybi.ai alongside the tool, the KB
 
 ---
 
-## 2. Decisions locked (2026-08-01)
+## 2. Decisions locked
+
+> **Canonical list: [`LYBI_HQ_DECISIONS.md`](./LYBI_HQ_DECISIONS.md)** — every settled decision,
+> numbered, with the reasoning and the date. The table below is the original 2026-08-01 snapshot,
+> kept for context; where the two differ, the register wins.
 
 | # | Decision |
 |---|---|
-| Name | **Lybi HQ** · `/hq` · `hq.lybi.ai` · workers = "the staff" |
+| Name | **Lybi HQ** · `lybi.ai/hq` · workers = "the staff" |
 | Placement | Its own top-level surface. **Not** a view inside the builder. |
 | Engine | **Same server engine (Builder V2)** — confirmed. Tool is separate, engine is shared. |
-| **Shape** | **HQ is one builder agent; the staff are its crews.** Shlomi's call, and it's the right one — verified against the code, it needs almost no new engine work. See §7. |
+| **Shape** | *Superseded 2026-08-05 → decision **C2**: two tiers. Substrate crews (Scribe · Ask · Keeper) stay crews of the one `hq` agent; the business agents from Noa's deck become separate builder agents.* |
 | Codebase | **Same repo, hard-separated inside it. One app at `lybi.ai/hq`, lazy-loaded** — no separate host needed. See §8. |
 | LLM cost | **Free** — falls out of the agent/crew shape, no schema change. See §7. |
-| Mobile | **First-class, Phase 1.** Capture-and-ask from the phone is what keeps HQ fed. See §4. |
+| Mobile | Capture-and-ask from the phone is what keeps HQ fed. *Deferred out of the narrowed MVP (§2b) — thin version only.* |
 | OneDrive | **No connector.** Noa moves the content into Google Drive once; we only ever watch Drive. |
 | Notion | **API connector** (~2 days with `notion-to-md`) — gives refetch-a-page, incremental sync, comments, and paste-a-link. Shlomi's call; my export-only recommendation was wrong. See §4. |
 | Codebase indexing | **Skip deep code indexing.** Index the docs tree + builder state — understanding the *product and builder* is what matters, not source lines. |

@@ -33,7 +33,7 @@
 
 const claudeService = require('../../services/llm.claude');
 const { logUsage } = require('../../services/usageLogger');
-const { buildProjectSummary } = require('./alfredContext');
+const { buildProjectSummary, overlayWorkingBodies } = require('./alfredContext');
 const alfredChats = require('./alfredChats');
 const { hydrateProject } = require('../../builder/services/builderProjects');
 
@@ -210,7 +210,7 @@ function resolveTargets(planTargets, project) {
  * @param {string} args.ownerUserId
  * @returns {Promise<{ summary, description, targets, tokens, durationMs }>}
  */
-async function consolidate({ chatId, agentSlug, ownerUserId }) {
+async function consolidate({ chatId, agentSlug, ownerUserId, workingBodies }) {
   const start = Date.now();
 
   // 1. Recent chat history — sliced at the last apply marker. Every
@@ -240,13 +240,17 @@ async function consolidate({ chatId, agentSlug, ownerUserId }) {
     throw new Error('No chat history to apply from.');
   }
 
-  // 2. Current project state, both as a human summary (for the LLM's
-  //    reasoning) AND as the live hydrated doc (for id resolution).
-  const project = await hydrateProject({ agentSlug, ownerUserId });
+  // 2. Current project state, both as a summary (for the LLM's
+  //    reasoning) AND as the hydrated doc (for id resolution). The
+  //    client's unsaved working copies are overlaid on BOTH so the
+  //    plan is built against the draft the user sees — names in the
+  //    summary, ids in the table, and target resolution all agree.
+  let project = await hydrateProject({ agentSlug, ownerUserId });
   if (!project) {
     throw new Error(`No project found for slug "${agentSlug}".`);
   }
-  const projectSummary = await buildProjectSummary({ agentSlug, ownerUserId });
+  project = overlayWorkingBodies(project, workingBodies);
+  const projectSummary = await buildProjectSummary({ agentSlug, ownerUserId, workingBodies });
 
   // Also include each entity's id alongside its name in a small
   // reference block so the LLM can pick correct ids without us

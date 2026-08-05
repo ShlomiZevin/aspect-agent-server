@@ -187,7 +187,7 @@ router.delete('/chats/:chatId/messages/:messageId', async (req, res) => {
 
 router.post('/chats/:chatId/messages', async (req, res) => {
   const { chatId } = req.params;
-  const { ownerUserId, userMessage, agentSlug, activeConversationId } = req.body || {};
+  const { ownerUserId, userMessage, agentSlug, activeConversationId, workingBodies } = req.body || {};
 
   if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
   if (!userMessage) return res.status(400).json({ error: 'Missing userMessage' });
@@ -243,6 +243,8 @@ router.post('/chats/:chatId/messages', async (req, res) => {
       // The preview conversation the user currently has open in the
       // builder — lets `read_conversation` target "this chat" directly.
       activeConversationId: activeConversationId != null ? Number(activeConversationId) : null,
+      // Unsaved working copies — Alfred talks about the DRAFT on screen.
+      workingBodies,
       emit,
     });
 
@@ -277,7 +279,7 @@ router.post('/chats/:chatId/messages', async (req, res) => {
 router.post('/chats/:chatId/apply/preview', async (req, res) => {
   try {
     const { chatId } = req.params;
-    const { agentSlug, ownerUserId } = req.body || {};
+    const { agentSlug, ownerUserId, workingBodies } = req.body || {};
     if (!agentSlug)   return res.status(400).json({ error: 'Missing agentSlug' });
     if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
 
@@ -285,6 +287,8 @@ router.post('/chats/:chatId/apply/preview', async (req, res) => {
       chatId: Number(chatId),
       agentSlug,
       ownerUserId,
+      // Client working copies — the plan is built against the draft.
+      workingBodies,
     });
 
     res.json({

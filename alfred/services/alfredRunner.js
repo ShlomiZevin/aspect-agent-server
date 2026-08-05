@@ -239,7 +239,7 @@ async function runTool(name, input, ctx) {
  * @param {(type: string, payload: object) => void} args.emit
  * @returns {Promise<{ assistantText: string }>}
  */
-async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConversationId, emit }) {
+async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConversationId, workingBodies, emit }) {
   const start = Date.now();
 
   // 1. Recent history (last N), already in chronological order.
@@ -264,7 +264,10 @@ async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConvers
   const agentId = project.agents[0].id;
   const toolCtx = { agentId, agentSlug, ownerUserId, activeConversationId };
 
-  const summary = await buildProjectSummary({ agentSlug, ownerUserId });
+  // The client ships its working copies so Alfred sees the DRAFT the
+  // user is looking at — same contract as the preview runtime and
+  // Apply generation. Falls back to the saved state when absent.
+  const summary = await buildProjectSummary({ agentSlug, ownerUserId, workingBodies });
   const systemPrompt = `${SYSTEM_PROMPT}\n\n## Current project state\n${summary}`;
 
   // 3. Streaming loop with tool support. Each iteration: stream the
