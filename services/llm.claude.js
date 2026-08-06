@@ -147,11 +147,15 @@ class ClaudeService {
       if (Array.isArray(tools) && tools.length > 0) {
         // A tool call cut off by the output cap yields an empty/partial
         // input that downstream code would misread as "model returned
-        // nothing". Fail loudly with the real cause instead.
+        // nothing". Fail loudly with the real cause instead. The usage
+        // rides on the error — the truncated output was still billed,
+        // so callers can log it (a 16K truncation is real money).
         if (response.stop_reason === 'max_tokens') {
-          throw new Error(
+          const err = new Error(
             `Tool-use response truncated: hit the ${maxTokens}-token output limit before the tool call completed.`,
           );
+          err.usage = usage;
+          throw err;
         }
         const toolBlock = response.content.find(c => c.type === 'tool_use');
         if (!toolBlock) {
@@ -172,7 +176,10 @@ class ClaudeService {
       return { text, usage, stopReason: response.stop_reason };
     } catch (error) {
       console.error('❌ Claude OneShot Error:', error.message);
-      throw new Error(`Failed to get Claude response: ${error.message}`);
+      const wrapped = new Error(`Failed to get Claude response: ${error.message}`);
+      // Preserve billed usage across the wrap (set on truncation errors).
+      if (error && error.usage) wrapped.usage = error.usage;
+      throw wrapped;
     }
   }
 

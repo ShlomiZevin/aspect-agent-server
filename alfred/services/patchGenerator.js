@@ -27,11 +27,11 @@ const { logUsage } = require('../../services/usageLogger');
 
 const MODEL    = 'claude-sonnet-4-6';
 const PROCESS  = 'alfred-apply-patch';
-// Output cap. With the section contract most applies use a few hundred
-// tokens; the cap only matters when a single big section (e.g. a long
-// Hebrew enums bible) is itself the change. llm.claude surfaces a clear
-// "truncated" error if it's ever hit.
-const MAX_TOKENS = 16384;
+// Output cap. With item paths most applies use a few hundred tokens;
+// the cap only matters for a deliberate whole-section rewrite. 21000 is
+// just under the SDK's non-streaming ceiling. llm.claude surfaces a
+// clear "truncated" error if it's ever hit.
+const MAX_TOKENS = 21000;
 
 /**
  * The replaceable top-level sections per entity — mirrors the AgentBody /
@@ -48,18 +48,62 @@ const CREW_SECTION_KEYS = [
 ];
 
 /**
- * Merge the model's changed sections over the current body. Unknown
- * keys are ignored (logged) rather than fatal — the validator judges
- * the merged result anyway.
+ * Array sections that support ITEM PATHS ("section/itemId" keys),
+ * mapped to the property that identifies an item. Lets the generator
+ * touch one enum / field / addon without re-emitting the whole array —
+ * the fix for giant sections (Freeda's Hebrew enum bible alone
+ * outgrew the output cap, truncating every apply that touched enums).
+ */
+const AGENT_ITEM_SECTIONS = {
+  fields: 'id', enums: 'id', snippets: 'id', personas: 'id',
+  parameters: 'id', cortex: 'instanceId',
+};
+const CREW_ITEM_SECTIONS = { addons: 'instanceId', fields: 'id' };
+
+/**
+ * Merge the model's changes over the current body. Two key shapes,
+ * one rule (key = what changed, value = its complete new content):
+ *
+ *   - "<section>"          → replace the whole section.
+ *   - "<section>/<itemId>" → replace ONE item in an id'd array
+ *     section (add when the id is new — appended; remove when the
+ *     value is null). The path's id is authoritative — it overrides
+ *     any id inside the value so the two can't diverge.
+ *
+ * Wholesale sections apply first, item paths second, so combining
+ * both is deterministic. Unknown keys are ignored (logged) rather
+ * than fatal — the validator judges the merged result anyway.
  */
 function mergeChanges(entity, currentBody, changes) {
   const allowed = entity === 'agent' ? AGENT_SECTION_KEYS : CREW_SECTION_KEYS;
+  const itemSections = entity === 'agent' ? AGENT_ITEM_SECTIONS : CREW_ITEM_SECTIONS;
   const applied = [];
   const ignored = [];
   const next = { ...currentBody };
-  for (const [key, value] of Object.entries(changes || {})) {
+
+  const entries = Object.entries(changes || {});
+  for (const [key, value] of entries.filter(([k]) => !k.includes('/'))) {
     if (!allowed.includes(key)) { ignored.push(key); continue; }
     next[key] = value;
+    applied.push(key);
+  }
+  for (const [key, value] of entries.filter(([k]) => k.includes('/'))) {
+    const parts = key.split('/');
+    const [section, itemId] = parts;
+    const idKey = itemSections[section];
+    if (parts.length !== 2 || !idKey || !itemId) { ignored.push(key); continue; }
+    const arr = Array.isArray(next[section]) ? [...next[section]] : [];
+    const idx = arr.findIndex(it => it && it[idKey] === itemId);
+    if (value === null) {
+      if (idx >= 0) arr.splice(idx, 1);
+    } else if (typeof value !== 'object' || Array.isArray(value)) {
+      ignored.push(key);
+      continue;
+    } else {
+      const item = { ...value, [idKey]: itemId };
+      if (idx >= 0) arr[idx] = item; else arr.push(item);
+    }
+    next[section] = arr;
     applied.push(key);
   }
   return { next, applied, ignored };
@@ -186,10 +230,23 @@ const SYSTEM_PROMPT = [
   '- Return ONLY the sections the change touches. Do NOT return',
   '  sections you didn\'t change — omitting them is what preserves them.',
   '- Every returned section must be COMPLETE — the entire value of that',
-  '  section AFTER your change. Example: to add one parameter, return',
-  '  `changes.parameters` = the FULL parameters array (all existing',
-  '  entries, order preserved, plus the new one). Never return a',
-  '  fragment, a single item, or a partial array.',
+  '  section AFTER your change. Never return a partial array as a',
+  '  section value.',
+  '- ITEM PATHS — the preferred way to touch a FEW items in a BIG array',
+  '  section: a key may address one item as `"<section>/<itemId>"`, with',
+  '  the COMPLETE item (after your change) as the value. `null` value =',
+  '  remove that item. A freshly-generated id = add (appended at the end',
+  '  of the section). Valid sections: agent `fields` / `enums` /',
+  '  `snippets` / `personas` / `parameters` (by `id`) and `cortex` (by',
+  '  `instanceId`); crew `fields` (by `id`) and `addons` (by',
+  '  `instanceId`). Example — add one choice field without re-emitting',
+  '  anything else:',
+  '  `{ "fields/field_a1b2c3d4": { ...complete FieldDef... },',
+  '     "enums/enum_e5f6g7h8": { ...complete EnumTypeDef... } }`.',
+  '  NEVER re-emit a whole large section (the enums bible, a long',
+  '  fields list) to change one item — the output gets truncated.',
+  '  Return a whole section only when reordering it or rewriting most',
+  '  of it. Wholesale + item paths may combine; wholesale applies first.',
   '- The merged result MUST conform to the TypeScript types below. The',
   '  types are the canonical contract — the client compiles against them',
   '  and the runtime reads them. Pay attention to which fields are',
@@ -491,12 +548,31 @@ async function generatePatch({
 
   const userMessage = sections.join('\n');
 
-  const result = await claudeService.sendOneShot(SYSTEM_PROMPT, userMessage, {
-    model: MODEL,
-    maxTokens: MAX_TOKENS,
-    tools: [SUBMIT_CHANGES_TOOL],
-    toolChoice: { type: 'tool', name: 'submit_changes' },
-  });
+  let result;
+  try {
+    result = await claudeService.sendOneShot(SYSTEM_PROMPT, userMessage, {
+      model: MODEL,
+      maxTokens: MAX_TOKENS,
+      tools: [SUBMIT_CHANGES_TOOL],
+      toolChoice: { type: 'tool', name: 'submit_changes' },
+    });
+  } catch (err) {
+    // A truncated call still billed its full output — log the usage the
+    // error carries so failures aren't invisible in llm_usage.
+    if (err && err.usage) {
+      logUsage({
+        process: PROCESS,
+        model: MODEL,
+        inputTokens:  err.usage.inputTokens  || 0,
+        outputTokens: err.usage.outputTokens || 0,
+        durationMs: Date.now() - start,
+        agentName: agentSlug,
+        conversationId: conversationId != null ? String(conversationId) : null,
+        userId: ownerUserId,
+      });
+    }
+    throw err;
+  }
 
   const usage = result?.usage || null;
   const durationMs = Date.now() - start;
