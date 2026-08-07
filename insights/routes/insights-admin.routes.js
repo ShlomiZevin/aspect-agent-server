@@ -40,9 +40,9 @@ function handleError(res, err, context) {
 router.get('/datasets', async (_req, res) => {
   try {
     const configs = await intelligenceConfigService.getAllConfigs();
-    const datasets = configs.map(config => {
+    const datasets = await Promise.all(configs.map(async config => {
       const entry = registry.get(config.id);
-      const generated = investigationService.listGeneratedAll(config.id);
+      const generated = await investigationService.listGeneratedAll(config.id);
       return {
         id: entry.id,
         name: entry.defaultMeta.name,
@@ -54,7 +54,7 @@ router.get('/datasets', async (_req, res) => {
         insightCount: generated.length,
         trackedCount: generated.filter(i => i.tracked).length,
       };
-    });
+    }));
     res.json({ datasets });
   } catch (err) {
     handleError(res, err, 'datasets list');
@@ -172,7 +172,7 @@ router.get('/datasets/:id/insights', async (req, res) => {
   if (!registry.get(req.params.id)) {
     return res.status(404).json({ error: `Unknown dataset: ${req.params.id}` });
   }
-  const insights = investigationService.listGeneratedAll(req.params.id);
+  const insights = await investigationService.listGeneratedAll(req.params.id);
   res.json({ insights });
 });
 
@@ -180,15 +180,15 @@ router.get('/datasets/:id/insights', async (req, res) => {
 // insights across every anonymous session at once (see listGeneratedAll
 // above) and has no specific userId to scope by, unlike the public
 // per-session /api/insights/* routes.
-router.delete('/datasets/:id/insights/:insightId', (req, res) => {
-  const removed = investigationService.deleteGeneratedAny(req.params.id, req.params.insightId);
+router.delete('/datasets/:id/insights/:insightId', async (req, res) => {
+  const removed = await investigationService.deleteGeneratedAny(req.params.id, req.params.insightId);
   if (!removed) return res.status(404).json({ error: `No generated insight: ${req.params.insightId}` });
   res.json({ deleted: true });
 });
 
-router.post('/datasets/:id/insights/:insightId/track', (req, res) => {
+router.post('/datasets/:id/insights/:insightId/track', async (req, res) => {
   const tracked = !!(req.body && req.body.tracked);
-  const insight = investigationService.setTrackedAny(req.params.id, req.params.insightId, tracked);
+  const insight = await investigationService.setTrackedAny(req.params.id, req.params.insightId, tracked);
   if (!insight) return res.status(404).json({ error: `Unknown insight: ${req.params.insightId}` });
   res.json({ id: insight.id, tracked: insight.tracked });
 });
