@@ -393,7 +393,9 @@ Respond with ONLY a JSON object with this exact shape (all string fields, ₪ fo
   "confidenceBasis": "one sentence citing the real sample size / time window"
 }
 
-The top-level "chart" field is separate from "blocks" — it's always a small, simple preview used only on the insight's list-view card, so still fill it in even if you don't choose a "chart" block for the detail page. Inside "blocks", the only place you may reason beyond the literal query result is a "scenarios" block's good/neutral/negative values (forward-looking projections — keep them plausible and proportionate to the real current figure). Every other field, in every block, must trace back to the actual data provided.`;
+The top-level "chart" field is separate from "blocks" — it's always a small, simple preview used only on the insight's list-view card, so still fill it in even if you don't choose a "chart" block for the detail page. Inside "blocks", the only place you may reason beyond the literal query result is a "scenarios" block's good/neutral/negative values (forward-looking projections — keep them plausible and proportionate to the real current figure). Every other field, in every block, must trace back to the actual data provided.
+
+ARITHMETIC SELF-CHECK before finalizing "impactValue" (and any total figure in "headline"/"title"): if it represents a combined/aggregate total across several items (e.g. "N stores/families... ₪X total"), and you are ALSO listing those same individual items in a block (ranked_list/comparison), ₪X MUST equal the literal sum of the individual item values you put in that block — actually add them up, don't estimate. A frequent real mistake is citing a bigger, rounder headline total (e.g. including borderline/excluded items) while the block only lists the narrower set that supports it — pick ONE consistent set of items and make every figure describing it agree exactly.`;
 
   const anomalyNote = dataAnomaly?.flagged
     ? (dataAnomaly.reason === 'all-zero'
@@ -459,7 +461,8 @@ async function verifyInsight({ config, queryResult, synthesized }) {
 Check specifically:
 - Every concrete number in "headline", "title", and "impactValue", and inside "blocks" (chart points, ranked_list values, stat_callout value, comparison values), must be directly present in, or a simple direct aggregate (sum/count/avg/max/min/%) of, the provided rows. Reject a number that isn't.
 - Exception: a "scenarios" block's "good"/"neutral"/"negative" values are ALLOWED to be plausible forward-looking projections, not literal row data — do not flag those alone for being projections.
-- Internal consistency: if the same metric appears in two places (e.g. a stat_callout and the chart), the values must agree with each other.
+- ARITHMETIC CHECK (do this explicitly, don't eyeball it): if "impactValue" (or a total inside "headline"/"title") claims a combined/aggregate figure across several items — e.g. "N stores/families... ₪X total" — and a block (ranked_list/comparison) lists those same individual items, ACTUALLY ADD UP the individual item values yourself and compare the sum to ₪X. Flag it as a real issue if they disagree beyond simple rounding — this is a common real bug: a bigger headline total that silently includes items the detail blocks don't, or excludes items they do.
+- Internal consistency: if the same metric appears in two places (e.g. a stat_callout and the chart, or a number restated inside a "scenarios" description), the values must agree with each other.
 - The finding must not overstate what a thin result actually shows (e.g. presenting 2 rows as a firm multi-point trend).
 
 Respond with ONLY a JSON object:
