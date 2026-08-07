@@ -151,6 +151,22 @@ function parseJSON(text) {
 }
 
 /**
+ * Cheap diagnostic, not a fix by itself — a valid JSON object always ends on
+ * a closing brace (or a closing code fence around one); a response cut off
+ * mid-generation almost never does. Used only to make a "No JSON object
+ * found" log line actionable (raise maxTokens) instead of a bare, ambiguous
+ * parse error — found live in prod via scripts/test-insights-battery.js:
+ * synthesizeInsight's response for a wide multi-item finding legitimately
+ * exceeded its old 2048-token cap on BOTH retry attempts (not a fluke — the
+ * same prompt/data produces a similarly-sized response every time), so the
+ * "1 retry" stability fix from earlier today couldn't save it by itself.
+ */
+function looksTruncated(rawResponse) {
+  const trimmed = String(rawResponse || '').trim();
+  return trimmed.length > 0 && !trimmed.endsWith('}') && !trimmed.endsWith('```');
+}
+
+/**
  * "Gentle helper" (design turn 4c) — before committing to a multi-minute
  * investigation, check whether the typed prompt is actually just a quick
  * lookup ("top 10 products", "revenue today") that Data Chat can answer
@@ -252,8 +268,9 @@ Pick the category that best matches what the investigation prompt is actually ab
   // step's own failure mode instead.
   let lastErr;
   for (let attempt = 1; attempt <= 2; attempt++) {
+    let response;
     try {
-      const response = await llmService.sendOneShot(systemPrompt, `Investigation prompt: "${prompt}"`, {
+      response = await llmService.sendOneShot(systemPrompt, `Investigation prompt: "${prompt}"`, {
         model: MODEL, maxTokens: 512, jsonOutput: true, context: 'insights_investigate_plan',
       });
       const parsed = parseJSON(response);
@@ -262,7 +279,8 @@ Pick the category that best matches what the investigation prompt is actually ab
       return { category, dataQuestion: parsed.dataQuestion };
     } catch (err) {
       lastErr = err;
-      console.error(`   [plan attempt ${attempt}] failed: ${err.message}`);
+      const hint = looksTruncated(response) ? ' (response looks truncated — did not end on "}"; consider raising maxTokens)' : '';
+      console.error(`   [plan attempt ${attempt}] failed: ${err.message}${hint}`);
     }
   }
   throw lastErr;
@@ -364,18 +382,31 @@ Result rows (JSON, up to 30): ${JSON.stringify(sampleRows)}${anomalyNote}${verif
   // planQuestion() above and the QUERY step's own SQL retry — a single bad
   // response shouldn't kill the whole investigation, and a response with no
   // headline shouldn't silently ship a broken card either.
+  //
+  // maxTokens 2048 -> 4096 (2026-08-07): scripts/test-insights-battery.js
+  // caught this failing on BOTH attempts, consistently, for wide multi-item
+  // findings (a 300+-family ranking, a multi-store breakdown) — the full
+  // schema (chart + up to 3 blocks, each with several items, + reasoning +
+  // confidenceChecks + confidenceBasis, sometimes in Hebrew, which tokenizes
+  // less efficiently) can legitimately exceed 2048 tokens for a genuinely
+  // rich finding. A same-prompt retry doesn't help a systematic token-budget
+  // problem the way it helps a one-off glitch — the response was truncated
+  // mid-JSON both times. 4096 matches the provider's own default cap
+  // (llm.claude.js) rather than an arbitrarily tighter one.
   let lastErr;
   for (let attempt = 1; attempt <= 2; attempt++) {
+    let response;
     try {
-      const response = await llmService.sendOneShot(systemPrompt, userMessage, {
-        model: MODEL, maxTokens: 2048, jsonOutput: true, context: 'insights_investigate_synthesize',
+      response = await llmService.sendOneShot(systemPrompt, userMessage, {
+        model: MODEL, maxTokens: 4096, jsonOutput: true, context: 'insights_investigate_synthesize',
       });
       const parsed = parseJSON(response);
       if (!parsed.headline) throw new Error('Synthesize step returned no headline');
       return parsed;
     } catch (err) {
       lastErr = err;
-      console.error(`   [synthesize attempt ${attempt}] failed: ${err.message}`);
+      const hint = looksTruncated(response) ? ' (response looks truncated — did not end on "}"; consider raising maxTokens)' : '';
+      console.error(`   [synthesize attempt ${attempt}] failed: ${err.message}${hint}`);
     }
   }
   throw lastErr;
@@ -408,7 +439,7 @@ Check specifically:
 
 Respond with ONLY a JSON object:
 { "verified": true or false, "issues": ["short specific issue", ...] }
-Set "verified": false only for a REAL problem (an invented/unsupported number, an internal contradiction, or a wildly overstated claim) — not for writing style or a clearly-labeled scenario projection. Empty "issues" array when verified is true.`;
+Set "verified": false only for a REAL problem (an invented/unsupported number, an internal contradiction, or a wildly overstated claim) — not for writing style or a clearly-labeled scenario projection. Empty "issues" array when verified is true. Each issue: ONE plain sentence, under 25 words, stating the concrete discrepancy — not your reasoning process, not a running commentary on whether you're about to flag it or not.`;
 
   const userMessage = `Real query result rows (JSON, up to 30 of ${rowCount}): ${JSON.stringify(sampleRows)}
 
@@ -419,9 +450,18 @@ impactValue: ${synthesized.impactValue}
 blocks: ${JSON.stringify(synthesized.blocks)}
 chart: ${JSON.stringify(synthesized.chart)}`;
 
+  // maxTokens 512 -> 1024 (2026-08-07): caught live via
+  // scripts/test-insights-battery.js — a real multi-issue verification
+  // response ran long enough (the model tends to think out loud per issue
+  // despite the "one plain sentence" instruction above) to hit 512 and get
+  // silently swallowed by the catch below, meaning the insight shipped as
+  // "verified: true" without ever actually being checked. That's the worst
+  // failure mode for a safety net: it fails exactly on the more complex,
+  // more-likely-to-have-real-issues cases, not the simple ones.
+  let response;
   try {
-    const response = await llmService.sendOneShot(systemPrompt, userMessage, {
-      model: MODEL, maxTokens: 512, jsonOutput: true, context: 'insights_investigate_verify',
+    response = await llmService.sendOneShot(systemPrompt, userMessage, {
+      model: MODEL, maxTokens: 1024, jsonOutput: true, context: 'insights_investigate_verify',
     });
     const parsed = parseJSON(response);
     return { verified: parsed.verified !== false, issues: Array.isArray(parsed.issues) ? parsed.issues.slice(0, 5).map(String) : [] };
@@ -429,7 +469,8 @@ chart: ${JSON.stringify(synthesized.chart)}`;
     // The verifier itself failing (network hiccup, malformed JSON) should
     // never block or downgrade an otherwise-real insight — treat as "unable
     // to verify this time," not "verification failed."
-    console.error(`   Verify step failed, not blocking on it: ${err.message}`);
+    const hint = looksTruncated(response) ? ' (response looks truncated — did not end on "}"; consider raising maxTokens)' : '';
+    console.error(`   Verify step failed, not blocking on it: ${err.message}${hint}`);
     return { verified: true, issues: [] };
   }
 }
