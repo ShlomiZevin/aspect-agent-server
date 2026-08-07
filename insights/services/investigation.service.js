@@ -543,6 +543,20 @@ function spliceNumber(original, token, newValue) {
  * SAME figure stated wrong (2%-100% off) — a number that's way off is more
  * likely an unrelated metric than a slip, and left for VERIFY to judge
  * instead of guessing.
+ *
+ * REAL BUG caught live in prod the same day this shipped (via
+ * scripts/test-insights-battery.js's own run, not a user): a "steepest
+ * margin decline" insight's impactValue correctly named ONE family's own
+ * decline (-9.89pp) — its ranked_list block showed that family plus several
+ * OTHER families for context/ranking, not as addends of a total. This
+ * function summed the whole list anyway and overwrote the already-correct
+ * -9.89pp with a meaningless "-15.44pp" (the sum of unrelated families'
+ * declines), which VERIFY then correctly flagged as wrong — i.e. this
+ * function INTRODUCED the exact class of error it exists to prevent. Fixed
+ * by checking first whether impactValue already matches a SINGLE item in
+ * the block (the common "here's the standout, the rest is context" shape)
+ * — only treat it as an aggregate-across-everything claim (the "N stores...
+ * ₪X total" shape this function actually targets) when it doesn't.
  */
 function reconcileImpactValue(synthesized) {
   if (typeof synthesized.impactValue !== 'string') return synthesized;
@@ -555,6 +569,13 @@ function reconcileImpactValue(synthesized) {
 
   const claimed = parseNumberToken(synthesized.impactValue);
   if (!claimed || claimed.value === 0) return synthesized;
+
+  // impactValue naming ONE item's own value (almost always the #1/top-ranked
+  // one) is a completely different, equally common shape as "a total across
+  // every item" — summing the whole list would compare two unrelated
+  // numbers in that case. Bail out rather than guess which shape this is.
+  const matchesSingleItem = itemValues.some(v => v !== 0 && Math.abs(claimed.value - v) / Math.abs(v) <= 0.05);
+  if (matchesSingleItem) return synthesized;
 
   const sum = itemValues.reduce((a, b) => a + b, 0);
   if (sum === 0 || Math.sign(sum) !== Math.sign(claimed.value)) return synthesized; // a sign disagreement is a different, more serious kind of error than a magnitude slip — don't guess at a fix, let VERIFY judge it

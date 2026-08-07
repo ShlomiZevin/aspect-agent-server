@@ -120,10 +120,23 @@ check(
 
 // The other real shape from the battery: an AVERAGE across items, not a
 // sum ("Avg revenue of ₪X for N cashiers" not matching the real average).
+// None of the raw items is within 5% of the claimed ₪95 — otherwise the
+// matchesSingleItem guard below would (correctly) refuse to touch it.
 check(
   'average mismatch beyond rounding gets corrected to the real code-computed average',
-  reconcileImpactValue(rankedListInsight('₪90', ['70', '75', '80', '85', '90', '85', '80', '86.09'])).impactValue,
-  '₪81.39' // real average of those 8 values (651.09 / 8), corrected in place — currency symbol preserved untouched
+  reconcileImpactValue(rankedListInsight('₪95', ['70', '75', '80', '85', '78', '72', '80', '86.09'])).impactValue,
+  '₪78.26' // real average of those 8 values (626.09 / 8), corrected in place — currency symbol preserved untouched
+);
+
+// REAL BUG caught live in prod the same day: impactValue naming ONE item's
+// own value (the #1/top-ranked family in a "steepest decline" ranking,
+// with the rest of the list shown as context/runners-up) must NOT be
+// treated as "a total across every item" — summing the whole list
+// overwrote an already-correct -9.89pp with a meaningless -15.44pp.
+check(
+  'impactValue matching a single ranked item (not a sum) is left completely alone',
+  reconcileImpactValue(rankedListInsight('-9.89pp', ['-9.89pp', '-7.2pp', '-6.1pp', '-4.8pp', '-3.05pp'])).impactValue,
+  '-9.89pp'
 );
 
 // Normal rounding (< 2% off) must NOT be "corrected" into a different-looking number.
