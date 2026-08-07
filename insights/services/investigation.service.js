@@ -890,4 +890,13 @@ async function reorderTracked(datasetId, userId, insightIds) {
   return listTracked(datasetId, userId);
 }
 
-module.exports = { investigate, listGenerated, listGeneratedAll, getGeneratedById, deleteGenerated, deleteGeneratedAny, setTrackedAny, markViewed, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan, classifyPrompt, setDataReloadService };
+module.exports = {
+  investigate, listGenerated, listGeneratedAll, getGeneratedById, deleteGenerated, deleteGeneratedAny,
+  setTrackedAny, markViewed, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan,
+  classifyPrompt, setDataReloadService,
+  // Exported purely so scripts/test-insights-unit.js can exercise this
+  // pure, DB/LLM-free logic directly as real regression tests (see the
+  // 2026-08-07 bugs each of these was fixed for) — not part of the public
+  // API surface any route calls into.
+  detectSuspiciousResult, looksLikeTimeSeries,
+};
