@@ -481,6 +481,112 @@ function confidenceLabelFor(score) {
   return 'Low';
 }
 
+// Matches the FIRST numeric digit run in a short value string like "₪159K",
+// "-₪54K / mo", "1,860", "82.79" — digits (with thousands separators) plus
+// an optional K/M scale suffix. Deliberately does NOT try to capture the
+// sign in the same match: a leading "-" is often separated from the digits
+// by a currency symbol ("-₪54K"), so the sign is detected separately (see
+// parseNumberToken) by checking for a literal "-" anywhere before the
+// match, rather than requiring it immediately adjacent to the digits.
+const NUMBER_TOKEN = /([\d,]+(?:\.\d+)?)\s*([KM])?\b/i;
+
+function parseNumberToken(str) {
+  const s = String(str ?? '');
+  const m = NUMBER_TOKEN.exec(s);
+  if (!m) return null;
+  const raw = parseFloat(m[1].replace(/,/g, ''));
+  if (Number.isNaN(raw)) return null;
+  const scale = m[2] ? { k: 1e3, m: 1e6 }[m[2].toLowerCase()] : 1;
+  const isNegative = s.slice(0, m.index).includes('-');
+  return { value: (isNegative ? -1 : 1) * raw * scale, index: m.index, length: m[0].length };
+}
+
+/** Formats a MAGNITUDE only (no sign) — spliceNumber() below is responsible for reusing whatever sign character the original string already had, never adding a second one. */
+function formatMagnitude(absValue) {
+  const round = (n, dp) => Math.round(n * 10 ** dp) / 10 ** dp;
+  if (absValue >= 1e6) return `${round(absValue / 1e6, 2)}M`;
+  if (absValue >= 1e3) return `${round(absValue / 1e3, 1)}K`;
+  return Number.isInteger(absValue) ? String(absValue) : String(round(absValue, 2));
+}
+
+/**
+ * Splices a corrected number back into the original string in place,
+ * keeping every other character (sign, currency symbol, "/ mo", "pts"...)
+ * exactly as written — only the digit run itself is replaced, always with
+ * a plain magnitude (see formatMagnitude), never a sign, so a "-" already
+ * present earlier in the string (e.g. "-₪10.9M") is reused as-is instead of
+ * risking a double sign like "-₪-10M". Callers are responsible for only
+ * calling this when the replacement value's sign already matches the
+ * original's (see the sign-agreement guard in reconcileImpactValue).
+ */
+function spliceNumber(original, token, newValue) {
+  return original.slice(0, token.index) + formatMagnitude(Math.abs(newValue)) + original.slice(token.index + token.length);
+}
+
+/**
+ * Deterministic correction, not just detection: if "impactValue" states a
+ * combined total (or average) across several items that are ALSO listed
+ * individually in a ranked_list/comparison block, recompute that sum/
+ * average with real code arithmetic — which cannot hallucinate — and
+ * overwrite impactValue if the model's own mental math disagreed. This is
+ * the single most common real failure scripts/test-insights-battery.js
+ * caught VERIFY rejecting live in prod 2026-08-07 (e.g. "impactValue claims
+ * ₪10.9M but the 20 stores listed sum to ₪10.04M"). Runs BEFORE
+ * verifyInsight on every synthesis attempt, so this whole class of mismatch
+ * gets fixed for free — no extra LLM call, no spending the one available
+ * regenerate-and-recheck retry on arithmetic code can just do exactly.
+ *
+ * Deliberately conservative: only corrects the short, structured
+ * "impactValue" field, never headline/title prose (splicing a corrected
+ * number into a full sentence isn't reliable); only fires when the claimed
+ * number is close enough to the computed sum/average to be clearly the
+ * SAME figure stated wrong (2%-100% off) — a number that's way off is more
+ * likely an unrelated metric than a slip, and left for VERIFY to judge
+ * instead of guessing.
+ */
+function reconcileImpactValue(synthesized) {
+  if (typeof synthesized.impactValue !== 'string') return synthesized;
+  const blocks = Array.isArray(synthesized.blocks) ? synthesized.blocks : [];
+  const itemBlock = blocks.find(b => (b.type === 'ranked_list' || b.type === 'comparison') && Array.isArray(b.items) && b.items.length >= 2);
+  if (!itemBlock) return synthesized;
+
+  const itemValues = itemBlock.items.map(it => parseNumberToken(it.value)).filter(Boolean).map(t => t.value);
+  if (itemValues.length < 2) return synthesized;
+
+  const claimed = parseNumberToken(synthesized.impactValue);
+  if (!claimed || claimed.value === 0) return synthesized;
+
+  const sum = itemValues.reduce((a, b) => a + b, 0);
+  if (sum === 0 || Math.sign(sum) !== Math.sign(claimed.value)) return synthesized; // a sign disagreement is a different, more serious kind of error than a magnitude slip — don't guess at a fix, let VERIFY judge it
+  const avg = sum / itemValues.length; // always the same sign as sum (dividing by a positive count) — one sign check covers both candidates
+
+  // Ratio, not a one-sided relative error: |claimed-x|/|x| is bounded above
+  // by 1.0 as claimed shrinks toward 0 relative to x, so it can NEVER flag
+  // "claimed is basically unrelated to a much bigger x" — caught by a test
+  // case where "₪2" against ₪1M-scale items still slipped under an err>1
+  // cutoff. ratio = |claimed|/|x| has no such blind spot in either
+  // direction: too small AND too big both show up as ratio far from 1.
+  const ratioTo = candidate => Math.abs(claimed.value) / Math.abs(candidate);
+  const sumRatio = ratioTo(sum), avgRatio = ratioTo(avg);
+
+  // Whichever of {sum, avg} the model's claim is closer to (ratio nearer 1)
+  // is almost certainly what it was TRYING to state — pick that as the
+  // intended target, then check whether it actually got the arithmetic right.
+  const sumIsCloser = Math.abs(sumRatio - 1) <= Math.abs(avgRatio - 1);
+  const target = sumIsCloser ? sum : avg;
+  const ratio = sumIsCloser ? sumRatio : avgRatio;
+
+  // Within 2% either way is normal rounding, not a bug. Less than half or
+  // more than double is more likely an unrelated metric than a slip —
+  // left for VERIFY to judge instead of guessing at a "fix".
+  if (ratio >= 0.98 && ratio <= 1.02) return synthesized;
+  if (ratio < 0.5 || ratio > 2) return synthesized;
+
+  const correctedImpactValue = spliceNumber(synthesized.impactValue, claimed, target);
+  console.log(`   Reconciled impactValue via code arithmetic: "${synthesized.impactValue}" -> "${correctedImpactValue}" (block items summed in code, not model mental math)`);
+  return { ...synthesized, impactValue: correctedImpactValue };
+}
+
 // Distinct hues for a genuine multi-series chart (3+ series — e.g. several
 // product families' margin trends plotted together). The old logic gave
 // series[0] the real category color and EVERY other series the exact same
@@ -628,6 +734,7 @@ async function investigate(datasetId, userId, prompt) {
   const dataAnomaly = detectSuspiciousResult(queryResult.data);
 
   let synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly });
+  synthesized = reconcileImpactValue(synthesized);
 
   // Step 4, VERIFY: an independent LLM pass fact-checks step 3's own output
   // against the real rows (see verifyInsight() doc comment for why this is a
@@ -640,6 +747,7 @@ async function investigate(datasetId, userId, prompt) {
   if (!verification.verified) {
     console.log(`   Verify rejected first synthesis attempt, regenerating once: ${verification.issues.join('; ')}`);
     synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, verifierFeedback: verification.issues });
+    synthesized = reconcileImpactValue(synthesized);
     verification = await verifyInsight({ config, queryResult, synthesized });
   }
 
@@ -939,5 +1047,5 @@ module.exports = {
   // pure, DB/LLM-free logic directly as real regression tests (see the
   // 2026-08-07 bugs each of these was fixed for) — not part of the public
   // API surface any route calls into.
-  detectSuspiciousResult, looksLikeTimeSeries,
+  detectSuspiciousResult, looksLikeTimeSeries, reconcileImpactValue,
 };

@@ -4,7 +4,7 @@
  * complements scripts/test-insights-battery.js, which exercises the real
  * live pipeline end to end but is slow (30-100s per prompt, needs a running
  * server + real DB). These run in milliseconds and exist specifically to
- * lock in the three real bugs found and fixed on 2026-08-07 so they can't
+ * lock in the real bugs found and fixed on 2026-08-07 so they can't
  * silently regress:
  *   1. detectSuspiciousResult missed a same-non-zero-value-everywhere column
  *      (only caught all-zero originally).
@@ -12,11 +12,15 @@
  *      percentile columns that are SUPPOSED to be identical on every row.
  *   3. toTrackedMetric's isRanking heuristic misclassified a genuine
  *      multi-month time trend as a "ranked snapshot".
+ *   4. reconcileImpactValue: impactValue disagreeing with the sum/average of
+ *      a block's own listed items — the single most common real failure
+ *      the live battery caught VERIFY rejecting, now fixed with code
+ *      arithmetic instead of hoping the model's retry gets it right.
  *
  * Usage: node scripts/test-insights-unit.js
  */
 
-const { detectSuspiciousResult, looksLikeTimeSeries } = require('../insights/services/investigation.service');
+const { detectSuspiciousResult, looksLikeTimeSeries, reconcileImpactValue } = require('../insights/services/investigation.service');
 
 let pass = 0, fail = 0;
 function check(label, actual, expected) {
@@ -96,6 +100,68 @@ check('week labels are a time series', looksLikeTimeSeries(['Week 1', 'Week 2', 
 check('store/entity names are NOT a time series', looksLikeTimeSeries(['גן-שמואל', 'תל אביב', 'חיפה']), false);
 check('product family names are NOT a time series', looksLikeTimeSeries(['Lego', 'Whiteboards', 'Pencil Cases']), false);
 check('empty categories is NOT a time series', looksLikeTimeSeries([]), false);
+
+console.log('\nreconcileImpactValue ────────────────────────────────────');
+
+function rankedListInsight(impactValue, values) {
+  return { impactValue, blocks: [{ type: 'ranked_list', items: values.map((v, i) => ({ label: `item${i}`, value: v, pct: 100 })) }] };
+}
+
+// The real bug shape caught by the live battery: "N stores... ₪X total"
+// where X disagrees with what the individually-listed items actually sum
+// to. Sign kept consistent on both sides (claimed AND items negative) —
+// a sign DISAGREEMENT is deliberately treated as a different, more
+// serious error and left untouched (see the dedicated test below).
+check(
+  'sum mismatch beyond rounding gets corrected to the real code-computed sum',
+  reconcileImpactValue(rankedListInsight('-₪10.9M / mo', Array(20).fill('-₪500K'))).impactValue,
+  '-₪10M / mo' // 20 * 500K = 10,000,000 -> "10M", original "-₪" prefix and "/ mo" suffix untouched
+);
+
+// The other real shape from the battery: an AVERAGE across items, not a
+// sum ("Avg revenue of ₪X for N cashiers" not matching the real average).
+check(
+  'average mismatch beyond rounding gets corrected to the real code-computed average',
+  reconcileImpactValue(rankedListInsight('₪90', ['70', '75', '80', '85', '90', '85', '80', '86.09'])).impactValue,
+  '₪81.39' // real average of those 8 values (651.09 / 8), corrected in place — currency symbol preserved untouched
+);
+
+// Normal rounding (< 2% off) must NOT be "corrected" into a different-looking number.
+check(
+  'small rounding difference is left alone',
+  reconcileImpactValue(rankedListInsight('₪293', ['₪150', '₪142.75'])).impactValue, // sum = 292.75, claim 293 is <1% off
+  '₪293'
+);
+
+// A number that isn't plausibly the same figure (way off, both directions)
+// is left for VERIFY, not guessed at. Also the specific regression case for
+// a real bug found while building this: a one-sided relative-error check
+// (|claimed-x|/|x|) is mathematically bounded below 1.0 as claimed shrinks
+// toward 0, so "₪2" against ₪1M-scale items used to slip through a
+// "reject if err > 1" cutoff and get "corrected" into ₪500K. A ratio check
+// (|claimed|/|x|) has no such blind spot in either direction.
+check(
+  'wildly unrelated (much smaller) number is left alone, not force-corrected',
+  reconcileImpactValue(rankedListInsight('₪2', ['₪500K', '₪500K'])).impactValue,
+  '₪2'
+);
+
+// A genuine sign disagreement (claimed negative, items positive) is a
+// different, more serious kind of error than a magnitude slip — must be
+// left for VERIFY to judge, never spliced (risk of a double sign like
+// "-₪-10M" if this guard were missing).
+check(
+  'sign disagreement between claim and items is left alone',
+  reconcileImpactValue(rankedListInsight('-₪10.9M / mo', Array(20).fill('₪500K'))).impactValue,
+  '-₪10.9M / mo'
+);
+
+// No ranked_list/comparison block at all -> nothing to reconcile against, untouched.
+check(
+  'insight with no itemized block is untouched',
+  reconcileImpactValue({ impactValue: '₪999K', blocks: [{ type: 'stat_callout', value: '₪999K' }] }).impactValue,
+  '₪999K'
+);
 
 console.log(`\n════════ ${pass}/${pass + fail} PASS ════════`);
 process.exit(fail ? 1 : 0);
