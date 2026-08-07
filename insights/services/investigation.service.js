@@ -279,7 +279,16 @@ function detectSuspiciousResult(data) {
   );
   if (allZeroCols.length > 0) return { flagged: true, reason: 'all-zero', columns: allZeroCols };
 
+  // Exclude columns whose own name says they're a deliberately-constant
+  // benchmark (a percentile/average cross-joined onto every row for
+  // comparison, e.g. "revenue_p75_threshold" or "avg_inventory_units") —
+  // caught live in prod being identical isn't a JOIN bug there, it's exactly
+  // how that SQL pattern is supposed to look. Deliberately does NOT exclude
+  // "target" — a real per-store sales target column pinned to the same
+  // value on every row IS the original bug this check exists to catch.
+  const isLikelyBenchmarkCol = k => /avg|average|median|percentile|benchmark|threshold|_p\d{2}(_|$)/i.test(k);
   const allSameCols = numericCols.filter(k => {
+    if (isLikelyBenchmarkCol(k)) return false;
     const values = data.map(row => String(row[k])).filter(v => v !== 'null');
     if (values.length < 3) return false;
     return values.every(v => v === values[0]) && values[0] !== '0' && values[0] !== '0.00';
