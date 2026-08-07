@@ -300,7 +300,7 @@ SANITY CHECK before writing anything: if EVERY row shows the key metric at exact
 
 The detail page is NOT one fixed template — you choose, for THIS specific finding, which content blocks actually convey it best, from this palette:
 - "chart": a line/bar/pie/table series over categories (weeks, months, stores, product families...) — best when there's a real trend or a multi-item breakdown worth plotting.
-- "ranked_list": a numbered leaderboard of items with a value and a relative bar — best for "which N stores/products/families..." questions, where a ranked comparison IS the finding.
+- "ranked_list": a numbered leaderboard of items with a value and a relative bar — best for "which N stores/products/families..." questions, where a ranked comparison IS the finding. MAXIMUM 10 items — pick the top 10 by whatever measure the ranking is about, never more (anything past 10 gets discarded downstream anyway, so writing more just wastes your own output budget and risks getting cut off mid-response on a large finding).
 - "stat_callout": one big headline number with a short description — best for a simple, single-fact finding that doesn't need a trend or a ranking.
 - "comparison": 2-3 side-by-side cards contrasting distinct groups (e.g. in-stock vs stockout, this month vs last month) — best when the finding IS a contrast between two or three things.
 - "scenarios": exactly 4 cards (Current / Good prognosis / Neutral / Negative) with forward-looking projections — best when the finding calls for "what happens if we act vs don't."
@@ -383,22 +383,24 @@ Result rows (JSON, up to 30): ${JSON.stringify(sampleRows)}${anomalyNote}${verif
   // response shouldn't kill the whole investigation, and a response with no
   // headline shouldn't silently ship a broken card either.
   //
-  // maxTokens 2048 -> 4096 (2026-08-07): scripts/test-insights-battery.js
-  // caught this failing on BOTH attempts, consistently, for wide multi-item
-  // findings (a 300+-family ranking, a multi-store breakdown) — the full
-  // schema (chart + up to 3 blocks, each with several items, + reasoning +
-  // confidenceChecks + confidenceBasis, sometimes in Hebrew, which tokenizes
-  // less efficiently) can legitimately exceed 2048 tokens for a genuinely
-  // rich finding. A same-prompt retry doesn't help a systematic token-budget
-  // problem the way it helps a one-off glitch — the response was truncated
-  // mid-JSON both times. 4096 matches the provider's own default cap
-  // (llm.claude.js) rather than an arbitrarily tighter one.
+  // maxTokens 2048 -> 4096 -> 6144 (2026-08-07, same day, two separate
+  // rounds): scripts/test-insights-battery.js caught 2048 failing on BOTH
+  // attempts for wide multi-item findings, so it was bumped to 4096 (the
+  // provider's own default). Then caught 4096 ALSO failing — specifically
+  // on the regenerate-after-VERIFY-rejection retry, which tends to produce
+  // an even LONGER response than the original attempt (the model tries to
+  // be extra-thorough after being told what it got wrong) — for a
+  // 15-item ranked_list finding. Paired with capping ranked_list at 10
+  // items in the prompt itself just above (most of the actual bloat: items
+  // 11-15 were being generated only to be discarded by normalizeBlocks()
+  // downstream anyway), 6144 gives real headroom above the largest
+  // legitimate response observed so far without guessing indefinitely.
   let lastErr;
   for (let attempt = 1; attempt <= 2; attempt++) {
     let response;
     try {
       response = await llmService.sendOneShot(systemPrompt, userMessage, {
-        model: MODEL, maxTokens: 4096, jsonOutput: true, context: 'insights_investigate_synthesize',
+        model: MODEL, maxTokens: 6144, jsonOutput: true, context: 'insights_investigate_synthesize',
       });
       const parsed = parseJSON(response);
       if (!parsed.headline) throw new Error('Synthesize step returned no headline');
