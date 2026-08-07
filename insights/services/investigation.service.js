@@ -804,6 +804,14 @@ How it was found: ${JSON.stringify(insight.reasoning)}`;
   return plan;
 }
 
+// Calendar-shaped category labels (months, quarters, week numbers, bare
+// years) — a single-series chart plotted against these is a genuine TIME
+// TREND, never a ranking, regardless of point count.
+const TIME_CATEGORY_PATTERN = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|q[1-4]|w(eek)?\s?\d{1,2}|\d{4})/i;
+function looksLikeTimeSeries(categories) {
+  return categories.length > 0 && categories.every(c => TIME_CATEGORY_PATTERN.test(String(c).trim()));
+}
+
 /**
  * Turns a tracked insight into a "Tracked by you" strip card — reuses the
  * insight's own card-preview chart (same one InsightCard shows) rather than
@@ -814,14 +822,19 @@ function toTrackedMetric(insight) {
   const series = insight.chart?.series || [];
   const categories = insight.chart?.categories || [];
   const points = series[0]?.points || [];
-  // More than 2 points on a single series is a RANKED SNAPSHOT across
-  // different entities (e.g. "top 8 product families by revenue"), not a
-  // value sampled over time. Those categories are typically sorted by rank,
-  // so "first point vs last point" is really "leader vs last place" —
-  // trivially a huge, meaningless "decline" every time, regardless of any
-  // actual trend. Only a genuine 2-point pair (this-vs-that, before-vs-after)
-  // is honest to render as a rise/fall percentage.
-  const isRanking = points.length > 2 && series.length === 1;
+  // More than 2 points on a single series COULD be a RANKED SNAPSHOT across
+  // different entities (e.g. "top 8 product families by revenue") rather
+  // than a value sampled over time — those categories are typically sorted
+  // by rank, so "first point vs last point" would really be "leader vs last
+  // place," trivially a huge, meaningless "decline" every time. But it could
+  // just as easily be a genuine multi-month trend (categories = "Feb", "Mar",
+  // "Apr"...), which has the exact same shape (1 series, >2 points) and was
+  // being misclassified as a ranking by point-count alone — caught live on a
+  // real 6-month margin-trend insight showing a nonsense "Leader: Jun" label
+  // instead of its real declining trend. looksLikeTimeSeries() checks the
+  // actual category labels first; only genuinely non-calendar categories
+  // (store/product/family names) fall through to the ranking treatment.
+  const isRanking = points.length > 2 && series.length === 1 && !looksLikeTimeSeries(categories);
 
   let trendDir = 'flat', trendLabel = '— flat';
   if (isRanking) {
