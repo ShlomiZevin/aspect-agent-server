@@ -3,32 +3,51 @@
  * box — works for any dataset registered in ../datasets/registry.js and
  * enabled via ./intelligence-config.service.js (see the admin panel).
  *
- * Three LLM/DB round trips per dataset, reusing the exact same engine the
- * real chat agents use (DataQueryService -> sql-generator.service ->
- * schema-descriptor.service), so the generated SQL is subject to the same
- * safety validation and anti-pattern learning as every other query on that
- * dataset — nothing insight-specific is bypassed:
+ * Four LLM/DB round trips per dataset (PLAN, QUERY, SYNTHESIZE, VERIFY),
+ * reusing the exact same engine the real chat agents use (DataQueryService ->
+ * sql-generator.service -> schema-descriptor.service), so the generated SQL
+ * is subject to the same safety validation and anti-pattern learning as
+ * every other query on that dataset — nothing insight-specific is bypassed:
  *
- *   1. PLAN    — turn the free-text investigation prompt ("Main risks for
+ *   1. PLAN       — turn the free-text investigation prompt ("Main risks for
  *      the next 6 months") into one concrete, SQL-answerable data question
  *      plus a category classification.
- *   2. QUERY   — run that question through the real NL->SQL pipeline against
- *      the actual dataset database and get real result rows back.
+ *   2. QUERY      — run that question through the real NL->SQL pipeline
+ *      against the actual dataset database and get real result rows back.
  *   3. SYNTHESIZE — feed the real rows (not the plan, not a guess) back to
  *      the model and ask it to write the full insight (headline, scenarios,
  *      reasoning trail, confidence) grounded only in those numbers.
+ *   4. VERIFY     — an INDEPENDENT LLM pass (no memory of writing the
+ *      insight, no stake in it sounding compelling) fact-checks step 3's
+ *      output against the real rows again. One regenerate-and-recheck retry
+ *      if it finds unsupported numbers or internal contradictions; if it's
+ *      still not satisfied after that, the insight is downgraded (tag ->
+ *      "DATA QUALITY", confidence capped) rather than discarded — the query
+ *      itself was real, only the write-up was over-claiming.
+ *
+ * PLAN and SYNTHESIZE each get one retry on a malformed/incomplete JSON
+ * response (QUERY already had its own self-correcting SQL retry from day
+ * one — see data-query.service.js) — a single bad LLM response no longer
+ * kills the whole investigation outright.
  *
  * Generated insights are the ONLY insight content this API serves (no
- * illustrative/seed content) — kept in-memory per dataset (module-level Map)
- * and persisted to a JSON file so a server restart doesn't wipe everything
- * that's been generated so far.
+ * illustrative/seed content) — persisted in Postgres via
+ * ./insights-store.service.js (see db/migrations/037_add_intelligence_insights.sql).
+ * NOT a local file anymore: an earlier version wrote to
+ * insights/data/generated-insights.json, which lived in the deploy build
+ * context and got baked into every Docker image (`COPY . .`, and that path
+ * wasn't in .dockerignore) — every single deploy was silently resetting live
+ * production insights back to whatever stale snapshot happened to be on the
+ * deploying machine's disk. Caught live in prod 2026-08-07 (see project
+ * memory) — a real insight generated during one revision's lifetime 404'd
+ * the moment the next revision took over. Postgres storage doesn't have
+ * that failure mode: it's the same durable DB every deploy connects to.
  */
-const fs = require('fs');
-const path = require('path');
 const llmService = require('../../services/llm');
 const { DataQueryService } = require('../../services/data-query.service');
 const registry = require('../datasets/registry');
 const intelligenceConfigService = require('./intelligence-config.service');
+const store = require('./insights-store.service');
 
 const MODEL = 'claude-sonnet-4-6';
 const CATEGORY_COLOR = {
@@ -39,8 +58,6 @@ const CATEGORY_COLOR = {
   risk: '#C2410C',
 };
 const VALID_CATEGORIES = Object.keys(CATEGORY_COLOR);
-
-const PERSIST_PATH = path.join(__dirname, '..', 'data', 'generated-insights.json');
 
 /** @returns {Object} the registry entry for a dataset id — throws a 404-shaped error if unknown. */
 function getDatasetEntry(datasetId) {
@@ -62,86 +79,13 @@ function setDataReloadService(instance) {
   dataReloadServiceRef = instance;
 }
 
-// "datasetId::userId" -> InsightDetail[], newest first. Reports are private
-// per anonymous browser session — the same identity model chat conversations
-// already use (see services/conversation.service.js: users.externalId,
-// created by POST /api/user/create, persisted client-side in localStorage).
-// A composite string key (not a nested Map) so persist()/loadPersisted()'s
-// existing Object.fromEntries(generated.entries()) JSON round-trip needed no
-// changes — it just naturally produces flat top-level keys like
-// "hypertoy::anon_123" instead of "hypertoy". Pre-migration entries (bare
-// "hypertoy" keys, no "::") stay in the Map under their old key, unreachable
-// by any per-user lookup but harmlessly still on disk — not deleted.
-const generated = new Map();
-function storeKey(datasetId, userId) {
-  return `${datasetId}::${userId}`;
-}
 // bootstrap() has no requesting user (admin/system-triggered dataset seed,
 // see bootstrap() below) — its output lives under this fixed sentinel rather
-// than a real anon id.
+// than a real anon id. Reports are otherwise private per anonymous browser
+// session — the same identity model chat conversations already use (see
+// services/conversation.service.js: users.externalId, created by
+// POST /api/user/create, persisted client-side in localStorage).
 const BOOTSTRAP_USER_ID = 'system';
-
-// Insights persisted before the dynamic-blocks change (see
-// project_aspect_intelligence_blocks in memory) have `chart`/`scenarios` at
-// the top level but no `blocks` array — reconstruct one on load so old
-// insights still render instead of showing an empty detail page.
-function migrateLegacyBlocks(insight) {
-  let next = insight;
-  if (!next.blocks || next.blocks.length === 0) {
-    const blocks = [];
-    if (next.chart) blocks.push({ type: 'chart', chart: next.chart });
-    if (next.scenarios && next.scenarios.length > 0) blocks.push({ type: 'scenarios', items: next.scenarios });
-    next = { ...next, blocks };
-  }
-  if (typeof next.tracked !== 'boolean') next = { ...next, tracked: false };
-  // Reports persisted before the History-page fields were added (see
-  // project memory: "Insight Boutique" turns 9-12) — backfill sane defaults
-  // rather than leaving them undefined, which would break the History
-  // table's date/origin/unread-dot rendering.
-  if (typeof next.createdAt !== 'number') {
-    const match = /^investigate-(\d+)$/.exec(next.id);
-    next = { ...next, createdAt: match ? Number(match[1]) : Date.now() };
-  }
-  if (next.origin !== 'user' && next.origin !== 'proposed') next = { ...next, origin: 'proposed' };
-  // Existing reports predate view-tracking — treat them as already seen so
-  // the History page doesn't retroactively mark a backlog of old reports
-  // "not viewed yet".
-  if (typeof next.viewed !== 'boolean') next = { ...next, viewed: true };
-  // Re-derive chart colors for insights persisted before the 3+-series
-  // color fix (every series past the first used to collapse onto the same
-  // dashed orange) — normalizeChart is deterministic/idempotent, so this is
-  // a no-op for charts that were already correct (2-series pairs).
-  const primaryColor = CATEGORY_COLOR[next.category] || '#7C3AED';
-  if (next.chart) next = { ...next, chart: normalizeChart(next.chart, primaryColor, next.chart.title) };
-  if (next.blocks?.length) {
-    next = {
-      ...next,
-      blocks: next.blocks.map(b => b.type === 'chart' ? { ...b, chart: normalizeChart(b.chart, primaryColor, b.chart.title) } : b),
-    };
-  }
-  return next;
-}
-
-function loadPersisted() {
-  try {
-    const raw = fs.readFileSync(PERSIST_PATH, 'utf8');
-    const parsed = JSON.parse(raw);
-    for (const [datasetId, list] of Object.entries(parsed)) generated.set(datasetId, list.map(migrateLegacyBlocks));
-    console.log(`📄 Loaded ${[...generated.values()].flat().length} persisted generated insight(s)`);
-    persist(); // save the migration result so it doesn't need to re-run every load
-  } catch {
-    // No file yet, or unreadable — start empty, which is fine.
-  }
-}
-
-function persist() {
-  try {
-    const obj = Object.fromEntries(generated.entries());
-    fs.writeFileSync(PERSIST_PATH, JSON.stringify(obj, null, 2));
-  } catch (err) {
-    console.error(`❌ Failed to persist generated insights: ${err.message}`);
-  }
-}
 
 // datasetId -> DataQueryService — several datasets currently share one
 // underlying pg Pool (see services/db.*.js), but a dedicated pool for any of
@@ -207,6 +151,22 @@ function parseJSON(text) {
 }
 
 /**
+ * Cheap diagnostic, not a fix by itself — a valid JSON object always ends on
+ * a closing brace (or a closing code fence around one); a response cut off
+ * mid-generation almost never does. Used only to make a "No JSON object
+ * found" log line actionable (raise maxTokens) instead of a bare, ambiguous
+ * parse error — found live in prod via scripts/test-insights-battery.js:
+ * synthesizeInsight's response for a wide multi-item finding legitimately
+ * exceeded its old 2048-token cap on BOTH retry attempts (not a fluke — the
+ * same prompt/data produces a similarly-sized response every time), so the
+ * "1 retry" stability fix from earlier today couldn't save it by itself.
+ */
+function looksTruncated(rawResponse) {
+  const trimmed = String(rawResponse || '').trim();
+  return trimmed.length > 0 && !trimmed.endsWith('}') && !trimmed.endsWith('```');
+}
+
+/**
  * "Gentle helper" (design turn 4c) — before committing to a multi-minute
  * investigation, check whether the typed prompt is actually just a quick
  * lookup ("top 10 products", "revenue today") that Data Chat can answer
@@ -240,23 +200,50 @@ Respond with ONLY a JSON object: { "isSimpleQuery": true or false }`;
 
 /**
  * Code-level (non-LLM) safety net — independent of whether the synthesis
- * prompt's own self-check instruction actually gets followed. Detects the
- * shape of bug that produced the "19 stores at 0% Q3 attainment" false
- * finding: a numeric column that is EXACTLY 0 on every single row. Real
- * business data essentially never does this uniformly across 3+ rows; it's
- * a strong tell for a broken JOIN or other pipeline gap, not a genuine
- * finding, regardless of which query produced it.
- * @returns {{flagged: boolean, columns: string[]}}
+ * prompt's own self-check instruction, or the separate VERIFY step below,
+ * actually catches it. Detects two shapes of "this smells like a broken
+ * JOIN, not a real finding":
+ *   - "all-zero": a numeric column EXACTLY 0 on every row — the original bug
+ *     this was built for (the "19 stores at 0% Q3 attainment" false finding).
+ *   - "all-same-value": a numeric column pinned to the exact same NON-zero
+ *     value on every row — the same underlying pipeline gap, just not zero,
+ *     which the original check missed entirely.
+ * Real business data essentially never produces the identical value across
+ * 3+ rows for a dimension that's supposed to genuinely vary (store, week,
+ * SKU...); this is cheap and deterministic, so it runs before either LLM
+ * step even sees the data.
+ * @returns {{flagged: boolean, reason: 'all-zero'|'all-same-value'|null, columns: string[]}}
  */
-function detectAllZeroAnomaly(data) {
-  if (!Array.isArray(data) || data.length < 3) return { flagged: false, columns: [] };
-  const numericCols = Object.keys(data[0]).filter(
-    k => data.every(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00' || row[k] === null)
-      && data.every(row => typeof row[k] === 'number' || row[k] === null || /^-?\d+(\.\d+)?$/.test(String(row[k])))
+function detectSuspiciousResult(data) {
+  if (!Array.isArray(data) || data.length < 3) return { flagged: false, reason: null, columns: [] };
+  const isNumericLike = v => typeof v === 'number' || v === null || /^-?\d+(\.\d+)?$/.test(String(v));
+  const numericCols = Object.keys(data[0]).filter(k => data.every(row => isNumericLike(row[k])));
+
+  // Require the column to be non-null numeric zero somewhere (not just
+  // all-null, which is a different, benign case).
+  const allZeroCols = numericCols.filter(k =>
+    data.every(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00' || row[k] === null)
+    && data.some(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00')
   );
-  // Require the column to be non-null numeric zero somewhere (not just all-null, which is a different, benign case).
-  const flaggedCols = numericCols.filter(k => data.some(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00'));
-  return { flagged: flaggedCols.length > 0, columns: flaggedCols };
+  if (allZeroCols.length > 0) return { flagged: true, reason: 'all-zero', columns: allZeroCols };
+
+  // Exclude columns whose own name says they're a deliberately-constant
+  // benchmark (a percentile/average cross-joined onto every row for
+  // comparison, e.g. "revenue_p75_threshold" or "avg_inventory_units") —
+  // caught live in prod being identical isn't a JOIN bug there, it's exactly
+  // how that SQL pattern is supposed to look. Deliberately does NOT exclude
+  // "target" — a real per-store sales target column pinned to the same
+  // value on every row IS the original bug this check exists to catch.
+  const isLikelyBenchmarkCol = k => /avg|average|median|percentile|benchmark|threshold|_p\d{2}(_|$)/i.test(k);
+  const allSameCols = numericCols.filter(k => {
+    if (isLikelyBenchmarkCol(k)) return false;
+    const values = data.map(row => String(row[k])).filter(v => v !== 'null');
+    if (values.length < 3) return false;
+    return values.every(v => v === values[0]) && values[0] !== '0' && values[0] !== '0.00';
+  });
+  if (allSameCols.length > 0) return { flagged: true, reason: 'all-same-value', columns: allSameCols };
+
+  return { flagged: false, reason: null, columns: [] };
 }
 
 async function planQuestion(datasetId, config, prompt) {
@@ -273,16 +260,33 @@ Respond with ONLY a JSON object:
 
 Pick the category that best matches what the investigation prompt is actually about. Do not hedge or ask a follow-up question — commit to one specific, well-scoped data question.`;
 
-  const response = await llmService.sendOneShot(systemPrompt, `Investigation prompt: "${prompt}"`, {
-    model: MODEL, maxTokens: 512, jsonOutput: true, context: 'insights_investigate_plan',
-  });
-  const parsed = parseJSON(response);
-  if (!parsed.dataQuestion) throw new Error('Plan step returned no dataQuestion');
-  const category = VALID_CATEGORIES.includes(parsed.category) ? parsed.category : 'trend';
-  return { category, dataQuestion: parsed.dataQuestion };
+  // Up to 2 attempts: an LLM JSON round trip occasionally comes back
+  // malformed or missing "dataQuestion" — this used to kill the whole
+  // investigation immediately (no recourse, no canned fallback since Round
+  // 4 — see project memory). Same "self-correcting retry" philosophy the
+  // QUERY step already has for SQL execution errors, applied here to this
+  // step's own failure mode instead.
+  let lastErr;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let response;
+    try {
+      response = await llmService.sendOneShot(systemPrompt, `Investigation prompt: "${prompt}"`, {
+        model: MODEL, maxTokens: 512, jsonOutput: true, context: 'insights_investigate_plan',
+      });
+      const parsed = parseJSON(response);
+      if (!parsed.dataQuestion) throw new Error('Plan step returned no dataQuestion');
+      const category = VALID_CATEGORIES.includes(parsed.category) ? parsed.category : 'trend';
+      return { category, dataQuestion: parsed.dataQuestion };
+    } catch (err) {
+      lastErr = err;
+      const hint = looksTruncated(response) ? ' (response looks truncated — did not end on "}"; consider raising maxTokens)' : '';
+      console.error(`   [plan attempt ${attempt}] failed: ${err.message}${hint}`);
+    }
+  }
+  throw lastErr;
 }
 
-async function synthesizeInsight({ datasetId, config, prompt, category, dataQuestion, queryResult, zeroAnomaly }) {
+async function synthesizeInsight({ datasetId, config, prompt, category, dataQuestion, queryResult, dataAnomaly, verifierFeedback }) {
   const { sql, explanation, data, rowCount } = queryResult;
   // Cap what we feed back — enough rows to see the shape/pattern, not the whole table.
   const sampleRows = data.slice(0, 30);
@@ -296,7 +300,7 @@ SANITY CHECK before writing anything: if EVERY row shows the key metric at exact
 
 The detail page is NOT one fixed template — you choose, for THIS specific finding, which content blocks actually convey it best, from this palette:
 - "chart": a line/bar/pie/table series over categories (weeks, months, stores, product families...) — best when there's a real trend or a multi-item breakdown worth plotting.
-- "ranked_list": a numbered leaderboard of items with a value and a relative bar — best for "which N stores/products/families..." questions, where a ranked comparison IS the finding.
+- "ranked_list": a numbered leaderboard of items with a value and a relative bar — best for "which N stores/products/families..." questions, where a ranked comparison IS the finding. MAXIMUM 10 items — pick the top 10 by whatever measure the ranking is about, never more (anything past 10 gets discarded downstream anyway, so writing more just wastes your own output budget and risks getting cut off mid-response on a large finding).
 - "stat_callout": one big headline number with a short description — best for a simple, single-fact finding that doesn't need a trend or a ranking.
 - "comparison": 2-3 side-by-side cards contrasting distinct groups (e.g. in-stock vs stockout, this month vs last month) — best when the finding IS a contrast between two or three things.
 - "scenarios": exactly 4 cards (Current / Good prognosis / Neutral / Negative) with forward-looking projections — best when the finding calls for "what happens if we act vs don't."
@@ -348,7 +352,22 @@ Respond with ONLY a JSON object with this exact shape (all string fields, ₪ fo
   "confidenceBasis": "one sentence citing the real sample size / time window"
 }
 
-The top-level "chart" field is separate from "blocks" — it's always a small, simple preview used only on the insight's list-view card, so still fill it in even if you don't choose a "chart" block for the detail page. Inside "blocks", the only place you may reason beyond the literal query result is a "scenarios" block's good/neutral/negative values (forward-looking projections — keep them plausible and proportionate to the real current figure). Every other field, in every block, must trace back to the actual data provided.`;
+The top-level "chart" field is separate from "blocks" — it's always a small, simple preview used only on the insight's list-view card, so still fill it in even if you don't choose a "chart" block for the detail page. Inside "blocks", the only place you may reason beyond the literal query result is a "scenarios" block's good/neutral/negative values (forward-looking projections — keep them plausible and proportionate to the real current figure). Every other field, in every block, must trace back to the actual data provided.
+
+ARITHMETIC SELF-CHECK before finalizing "impactValue" (and any total figure in "headline"/"title"): if it represents a combined/aggregate total across several items (e.g. "N stores/families... ₪X total"), and you are ALSO listing those same individual items in a block (ranked_list/comparison), ₪X MUST equal the literal sum of the individual item values you put in that block — actually add them up, don't estimate. A frequent real mistake is citing a bigger, rounder headline total (e.g. including borderline/excluded items) while the block only lists the narrower set that supports it — pick ONE consistent set of items and make every figure describing it agree exactly.`;
+
+  const anomalyNote = dataAnomaly?.flagged
+    ? (dataAnomaly.reason === 'all-zero'
+        ? `\n\nAUTOMATED CHECK FLAGGED THIS RESULT: column(s) [${dataAnomaly.columns.join(', ')}] are exactly 0 on every row. Per the SANITY CHECK instruction above, this MUST be written up as a likely data/pipeline issue, not a confident business finding.`
+        : `\n\nAUTOMATED CHECK FLAGGED THIS RESULT: column(s) [${dataAnomaly.columns.join(', ')}] show the exact same non-zero value on every single row — the same kind of JOIN/pipeline-gap smell as an all-zero column, just not zero. Per the SANITY CHECK instruction above, this MUST be written up as a likely data/pipeline issue, not a confident business finding.`)
+    : '';
+  // Set only on the regenerate retry after the separate VERIFY step (see
+  // verifyInsight() below) rejected the first attempt — tells the model
+  // exactly what it invented/contradicted last time instead of making it
+  // guess what to fix.
+  const verifierNote = verifierFeedback?.length
+    ? `\n\nA PRIOR ATTEMPT AT THIS WRITE-UP WAS FACT-CHECKED AND REJECTED for: ${verifierFeedback.join('; ')}. Fix these specific problems this time — every number must be directly traceable to the result rows below, or (for a "scenarios" block only) an explicitly-labeled forward-looking projection.`
+    : '';
 
   const userMessage = `Original investigation prompt: "${prompt}"
 Category: ${category}
@@ -356,18 +375,239 @@ Data question asked: "${dataQuestion}"
 SQL executed: ${sql}
 Explanation: ${explanation}
 Row count: ${rowCount}
-Result rows (JSON, up to 30): ${JSON.stringify(sampleRows)}${zeroAnomaly?.flagged ? `\n\nAUTOMATED CHECK FLAGGED THIS RESULT: column(s) [${zeroAnomaly.columns.join(', ')}] are exactly 0 on every row. Per the SANITY CHECK instruction above, this MUST be written up as a likely data/pipeline issue, not a confident business finding.` : ''}`;
+Result rows (JSON, up to 30): ${JSON.stringify(sampleRows)}${anomalyNote}${verifierNote}`;
 
-  const response = await llmService.sendOneShot(systemPrompt, userMessage, {
-    model: MODEL, maxTokens: 2048, jsonOutput: true, context: 'insights_investigate_synthesize',
-  });
-  return parseJSON(response);
+  // Up to 2 attempts: an LLM JSON round trip occasionally comes back
+  // malformed or missing a required field. Same retry philosophy as
+  // planQuestion() above and the QUERY step's own SQL retry — a single bad
+  // response shouldn't kill the whole investigation, and a response with no
+  // headline shouldn't silently ship a broken card either.
+  //
+  // maxTokens 2048 -> 4096 -> 6144 (2026-08-07, same day, two separate
+  // rounds): scripts/test-insights-battery.js caught 2048 failing on BOTH
+  // attempts for wide multi-item findings, so it was bumped to 4096 (the
+  // provider's own default). Then caught 4096 ALSO failing — specifically
+  // on the regenerate-after-VERIFY-rejection retry, which tends to produce
+  // an even LONGER response than the original attempt (the model tries to
+  // be extra-thorough after being told what it got wrong) — for a
+  // 15-item ranked_list finding. Paired with capping ranked_list at 10
+  // items in the prompt itself just above (most of the actual bloat: items
+  // 11-15 were being generated only to be discarded by normalizeBlocks()
+  // downstream anyway), 6144 gives real headroom above the largest
+  // legitimate response observed so far without guessing indefinitely.
+  let lastErr;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let response;
+    try {
+      response = await llmService.sendOneShot(systemPrompt, userMessage, {
+        model: MODEL, maxTokens: 6144, jsonOutput: true, context: 'insights_investigate_synthesize',
+      });
+      const parsed = parseJSON(response);
+      if (!parsed.headline) throw new Error('Synthesize step returned no headline');
+      return parsed;
+    } catch (err) {
+      lastErr = err;
+      const hint = looksTruncated(response) ? ' (response looks truncated — did not end on "}"; consider raising maxTokens)' : '';
+      console.error(`   [synthesize attempt ${attempt}] failed: ${err.message}${hint}`);
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Step 4, VERIFY — deliberately a SEPARATE LLM call from synthesizeInsight,
+ * not another instruction bolted onto the same prompt. Asking one model call
+ * to both "write a compelling finding" and "critically fact-check itself" in
+ * the same breath is a conflict of incentives; a genuinely independent pass
+ * — given only the raw rows and the finished insight's factual fields, none
+ * of the reasoning that produced them — is a materially stronger check for
+ * the specific failure mode detectSuspiciousResult() can't catch: a
+ * plausible-looking number that was simply invented, not literally
+ * duplicated everywhere the way a JOIN-bug artifact is.
+ * @returns {Promise<{verified: boolean, issues: string[]}>}
+ */
+async function verifyInsight({ config, queryResult, synthesized }) {
+  const { data, rowCount } = queryResult;
+  const sampleRows = data.slice(0, 30);
+
+  const systemPrompt = `You are a strict fact-checker reviewing a business-intelligence write-up for ${config.brandLabel} BEFORE it is shown to a user. You did not write it and have no stake in it sounding impressive — your only job is to catch numbers or claims that are NOT actually supported by the real query result rows provided.
+
+Check specifically:
+- Every concrete number in "headline", "title", and "impactValue", and inside "blocks" (chart points, ranked_list values, stat_callout value, comparison values), must be directly present in, or a simple direct aggregate (sum/count/avg/max/min/%) of, the provided rows. Reject a number that isn't.
+- Exception: a "scenarios" block's "good"/"neutral"/"negative" values are ALLOWED to be plausible forward-looking projections, not literal row data — do not flag those alone for being projections.
+- ARITHMETIC CHECK (do this explicitly, don't eyeball it): if "impactValue" (or a total inside "headline"/"title") claims a combined/aggregate figure across several items — e.g. "N stores/families... ₪X total" — and a block (ranked_list/comparison) lists those same individual items, ACTUALLY ADD UP the individual item values yourself and compare the sum to ₪X. Flag it as a real issue if they disagree beyond simple rounding — this is a common real bug: a bigger headline total that silently includes items the detail blocks don't, or excludes items they do.
+- Internal consistency: if the same metric appears in two places (e.g. a stat_callout and the chart, or a number restated inside a "scenarios" description), the values must agree with each other.
+- The finding must not overstate what a thin result actually shows (e.g. presenting 2 rows as a firm multi-point trend).
+
+Respond with ONLY a JSON object:
+{ "verified": true or false, "issues": ["short specific issue", ...] }
+Set "verified": false only for a REAL problem (an invented/unsupported number, an internal contradiction, or a wildly overstated claim) — not for writing style or a clearly-labeled scenario projection. Empty "issues" array when verified is true. Each issue: ONE plain sentence, under 25 words, stating the concrete discrepancy — not your reasoning process, not a running commentary on whether you're about to flag it or not.`;
+
+  const userMessage = `Real query result rows (JSON, up to 30 of ${rowCount}): ${JSON.stringify(sampleRows)}
+
+Insight to verify:
+headline: ${synthesized.headline}
+title: ${synthesized.title}
+impactValue: ${synthesized.impactValue}
+blocks: ${JSON.stringify(synthesized.blocks)}
+chart: ${JSON.stringify(synthesized.chart)}`;
+
+  // maxTokens 512 -> 1024 (2026-08-07): caught live via
+  // scripts/test-insights-battery.js — a real multi-issue verification
+  // response ran long enough (the model tends to think out loud per issue
+  // despite the "one plain sentence" instruction above) to hit 512 and get
+  // silently swallowed by the catch below, meaning the insight shipped as
+  // "verified: true" without ever actually being checked. That's the worst
+  // failure mode for a safety net: it fails exactly on the more complex,
+  // more-likely-to-have-real-issues cases, not the simple ones.
+  let response;
+  try {
+    response = await llmService.sendOneShot(systemPrompt, userMessage, {
+      model: MODEL, maxTokens: 1024, jsonOutput: true, context: 'insights_investigate_verify',
+    });
+    const parsed = parseJSON(response);
+    return { verified: parsed.verified !== false, issues: Array.isArray(parsed.issues) ? parsed.issues.slice(0, 5).map(String) : [] };
+  } catch (err) {
+    // The verifier itself failing (network hiccup, malformed JSON) should
+    // never block or downgrade an otherwise-real insight — treat as "unable
+    // to verify this time," not "verification failed."
+    const hint = looksTruncated(response) ? ' (response looks truncated — did not end on "}"; consider raising maxTokens)' : '';
+    console.error(`   Verify step failed, not blocking on it: ${err.message}${hint}`);
+    return { verified: true, issues: [] };
+  }
 }
 
 function confidenceLabelFor(score) {
   if (score >= 85) return 'High';
   if (score >= 65) return 'Medium';
   return 'Low';
+}
+
+// Matches the FIRST numeric digit run in a short value string like "₪159K",
+// "-₪54K / mo", "1,860", "82.79" — digits (with thousands separators) plus
+// an optional K/M scale suffix. Deliberately does NOT try to capture the
+// sign in the same match: a leading "-" is often separated from the digits
+// by a currency symbol ("-₪54K"), so the sign is detected separately (see
+// parseNumberToken) by checking for a literal "-" anywhere before the
+// match, rather than requiring it immediately adjacent to the digits.
+const NUMBER_TOKEN = /([\d,]+(?:\.\d+)?)\s*([KM])?\b/i;
+
+function parseNumberToken(str) {
+  const s = String(str ?? '');
+  const m = NUMBER_TOKEN.exec(s);
+  if (!m) return null;
+  const raw = parseFloat(m[1].replace(/,/g, ''));
+  if (Number.isNaN(raw)) return null;
+  const scale = m[2] ? { k: 1e3, m: 1e6 }[m[2].toLowerCase()] : 1;
+  const isNegative = s.slice(0, m.index).includes('-');
+  return { value: (isNegative ? -1 : 1) * raw * scale, index: m.index, length: m[0].length };
+}
+
+/** Formats a MAGNITUDE only (no sign) — spliceNumber() below is responsible for reusing whatever sign character the original string already had, never adding a second one. */
+function formatMagnitude(absValue) {
+  const round = (n, dp) => Math.round(n * 10 ** dp) / 10 ** dp;
+  if (absValue >= 1e6) return `${round(absValue / 1e6, 2)}M`;
+  if (absValue >= 1e3) return `${round(absValue / 1e3, 1)}K`;
+  return Number.isInteger(absValue) ? String(absValue) : String(round(absValue, 2));
+}
+
+/**
+ * Splices a corrected number back into the original string in place,
+ * keeping every other character (sign, currency symbol, "/ mo", "pts"...)
+ * exactly as written — only the digit run itself is replaced, always with
+ * a plain magnitude (see formatMagnitude), never a sign, so a "-" already
+ * present earlier in the string (e.g. "-₪10.9M") is reused as-is instead of
+ * risking a double sign like "-₪-10M". Callers are responsible for only
+ * calling this when the replacement value's sign already matches the
+ * original's (see the sign-agreement guard in reconcileImpactValue).
+ */
+function spliceNumber(original, token, newValue) {
+  return original.slice(0, token.index) + formatMagnitude(Math.abs(newValue)) + original.slice(token.index + token.length);
+}
+
+/**
+ * Deterministic correction, not just detection: if "impactValue" states a
+ * combined total (or average) across several items that are ALSO listed
+ * individually in a ranked_list/comparison block, recompute that sum/
+ * average with real code arithmetic — which cannot hallucinate — and
+ * overwrite impactValue if the model's own mental math disagreed. This is
+ * the single most common real failure scripts/test-insights-battery.js
+ * caught VERIFY rejecting live in prod 2026-08-07 (e.g. "impactValue claims
+ * ₪10.9M but the 20 stores listed sum to ₪10.04M"). Runs BEFORE
+ * verifyInsight on every synthesis attempt, so this whole class of mismatch
+ * gets fixed for free — no extra LLM call, no spending the one available
+ * regenerate-and-recheck retry on arithmetic code can just do exactly.
+ *
+ * Deliberately conservative: only corrects the short, structured
+ * "impactValue" field, never headline/title prose (splicing a corrected
+ * number into a full sentence isn't reliable); only fires when the claimed
+ * number is close enough to the computed sum/average to be clearly the
+ * SAME figure stated wrong (2%-100% off) — a number that's way off is more
+ * likely an unrelated metric than a slip, and left for VERIFY to judge
+ * instead of guessing.
+ *
+ * REAL BUG caught live in prod the same day this shipped (via
+ * scripts/test-insights-battery.js's own run, not a user): a "steepest
+ * margin decline" insight's impactValue correctly named ONE family's own
+ * decline (-9.89pp) — its ranked_list block showed that family plus several
+ * OTHER families for context/ranking, not as addends of a total. This
+ * function summed the whole list anyway and overwrote the already-correct
+ * -9.89pp with a meaningless "-15.44pp" (the sum of unrelated families'
+ * declines), which VERIFY then correctly flagged as wrong — i.e. this
+ * function INTRODUCED the exact class of error it exists to prevent. Fixed
+ * by checking first whether impactValue already matches a SINGLE item in
+ * the block (the common "here's the standout, the rest is context" shape)
+ * — only treat it as an aggregate-across-everything claim (the "N stores...
+ * ₪X total" shape this function actually targets) when it doesn't.
+ */
+function reconcileImpactValue(synthesized) {
+  if (typeof synthesized.impactValue !== 'string') return synthesized;
+  const blocks = Array.isArray(synthesized.blocks) ? synthesized.blocks : [];
+  const itemBlock = blocks.find(b => (b.type === 'ranked_list' || b.type === 'comparison') && Array.isArray(b.items) && b.items.length >= 2);
+  if (!itemBlock) return synthesized;
+
+  const itemValues = itemBlock.items.map(it => parseNumberToken(it.value)).filter(Boolean).map(t => t.value);
+  if (itemValues.length < 2) return synthesized;
+
+  const claimed = parseNumberToken(synthesized.impactValue);
+  if (!claimed || claimed.value === 0) return synthesized;
+
+  // impactValue naming ONE item's own value (almost always the #1/top-ranked
+  // one) is a completely different, equally common shape as "a total across
+  // every item" — summing the whole list would compare two unrelated
+  // numbers in that case. Bail out rather than guess which shape this is.
+  const matchesSingleItem = itemValues.some(v => v !== 0 && Math.abs(claimed.value - v) / Math.abs(v) <= 0.05);
+  if (matchesSingleItem) return synthesized;
+
+  const sum = itemValues.reduce((a, b) => a + b, 0);
+  if (sum === 0 || Math.sign(sum) !== Math.sign(claimed.value)) return synthesized; // a sign disagreement is a different, more serious kind of error than a magnitude slip — don't guess at a fix, let VERIFY judge it
+  const avg = sum / itemValues.length; // always the same sign as sum (dividing by a positive count) — one sign check covers both candidates
+
+  // Ratio, not a one-sided relative error: |claimed-x|/|x| is bounded above
+  // by 1.0 as claimed shrinks toward 0 relative to x, so it can NEVER flag
+  // "claimed is basically unrelated to a much bigger x" — caught by a test
+  // case where "₪2" against ₪1M-scale items still slipped under an err>1
+  // cutoff. ratio = |claimed|/|x| has no such blind spot in either
+  // direction: too small AND too big both show up as ratio far from 1.
+  const ratioTo = candidate => Math.abs(claimed.value) / Math.abs(candidate);
+  const sumRatio = ratioTo(sum), avgRatio = ratioTo(avg);
+
+  // Whichever of {sum, avg} the model's claim is closer to (ratio nearer 1)
+  // is almost certainly what it was TRYING to state — pick that as the
+  // intended target, then check whether it actually got the arithmetic right.
+  const sumIsCloser = Math.abs(sumRatio - 1) <= Math.abs(avgRatio - 1);
+  const target = sumIsCloser ? sum : avg;
+  const ratio = sumIsCloser ? sumRatio : avgRatio;
+
+  // Within 2% either way is normal rounding, not a bug. Less than half or
+  // more than double is more likely an unrelated metric than a slip —
+  // left for VERIFY to judge instead of guessing at a "fix".
+  if (ratio >= 0.98 && ratio <= 1.02) return synthesized;
+  if (ratio < 0.5 || ratio > 2) return synthesized;
+
+  const correctedImpactValue = spliceNumber(synthesized.impactValue, claimed, target);
+  console.log(`   Reconciled impactValue via code arithmetic: "${synthesized.impactValue}" -> "${correctedImpactValue}" (block items summed in code, not model mental math)`);
+  return { ...synthesized, impactValue: correctedImpactValue };
 }
 
 // Distinct hues for a genuine multi-series chart (3+ series — e.g. several
@@ -452,9 +692,16 @@ function normalizeBlocks(rawBlocks, color, fallbackTitle) {
  * real data model and what's already been found, NOT a hardcoded rotation of
  * topics: every already-generated insight's actual data question is listed
  * so the model is pushed to find a real gap rather than repeat one.
+ *
+ * Takes `userId` (fixed 2026-08-07: this previously called listGenerated()
+ * with only datasetId, silently omitting userId — since listGenerated keys
+ * strictly on datasetId+userId, "existing" was ALWAYS an empty list, so the
+ * "don't repeat what's already been found" instruction below had nothing to
+ * compare against and never actually worked. Caught while migrating this
+ * file's persistence to Postgres.)
  */
-async function proposeInvestigationPrompt(datasetId, config) {
-  const existing = listGenerated(datasetId);
+async function proposeInvestigationPrompt(datasetId, userId, config) {
+  const existing = await listGenerated(datasetId, userId);
   const covered = existing.length
     ? existing.map(i => `- [${i.category}] ${i.evidence?.dataQuestion || i.headline}`).join('\n')
     : '(nothing investigated yet — pick any strong angle)';
@@ -496,7 +743,7 @@ async function investigate(datasetId, userId, prompt) {
   // from "Aspect suggested this on its own" (design turn 12a: "my report" vs
   // "proposed" tag), which the fallback logic below would otherwise erase.
   const origin = prompt && prompt.trim() ? 'user' : 'proposed';
-  const actualPrompt = prompt && prompt.trim() ? prompt.trim() : await proposeInvestigationPrompt(datasetId, config);
+  const actualPrompt = prompt && prompt.trim() ? prompt.trim() : await proposeInvestigationPrompt(datasetId, userId, config);
 
   const { category, dataQuestion } = await planQuestion(datasetId, config, actualPrompt);
 
@@ -507,18 +754,48 @@ async function investigate(datasetId, userId, prompt) {
     throw new Error(`Data query failed: ${queryResult.message}`);
   }
 
-  const zeroAnomaly = detectAllZeroAnomaly(queryResult.data);
+  const dataAnomaly = detectSuspiciousResult(queryResult.data);
 
-  const synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, zeroAnomaly });
+  let synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly });
+  synthesized = reconcileImpactValue(synthesized);
+
+  // Step 4, VERIFY: an independent LLM pass fact-checks step 3's own output
+  // against the real rows (see verifyInsight() doc comment for why this is a
+  // separate call rather than more instructions in the same prompt). One
+  // regenerate-and-recheck retry, feeding the verifier's specific complaint
+  // back in — most rejections are a single invented number and self-correct
+  // immediately once named explicitly, the same way the QUERY step's SQL
+  // retry already works.
+  let verification = await verifyInsight({ config, queryResult, synthesized });
+  if (!verification.verified) {
+    console.log(`   Verify rejected first synthesis attempt, regenerating once: ${verification.issues.join('; ')}`);
+    synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, verifierFeedback: verification.issues });
+    synthesized = reconcileImpactValue(synthesized);
+    verification = await verifyInsight({ config, queryResult, synthesized });
+  }
 
   // Hard enforcement, not just a prompt hint: cap confidence and mark the tag
   // even if the model's own self-check (see synthesizeInsight's system
-  // prompt) didn't kick in for this particular response.
+  // prompt) didn't kick in for this particular response, AND even if the
+  // independent verify pass above still isn't satisfied after the retry. A
+  // failed verification downgrades rather than discards — the query itself
+  // was real, only the write-up over-claimed, so a real (if less confident)
+  // insight is still more useful than nothing per the no-canned-fallback
+  // stance (see project memory, Round 4).
   let confidence = Math.max(0, Math.min(100, Math.round(synthesized.confidence ?? 70)));
   let tag = synthesized.tag || category.toUpperCase();
-  if (zeroAnomaly.flagged) {
+  let confidenceChecks = synthesized.confidenceChecks || [];
+  if (dataAnomaly.flagged) {
     confidence = Math.min(confidence, 40);
     if (!/data quality/i.test(tag)) tag = 'DATA QUALITY';
+  }
+  if (!verification.verified) {
+    confidence = Math.min(confidence, 40);
+    if (!/data quality/i.test(tag)) tag = 'DATA QUALITY';
+    confidenceChecks = [
+      { positive: false, text: `Automated verification flagged: ${verification.issues.join('; ') || 'unsupported figures'}` },
+      ...confidenceChecks,
+    ];
   }
   const color = CATEGORY_COLOR[category];
   const chart = normalizeChart(synthesized.chart, color, dataQuestion.toUpperCase());
@@ -562,19 +839,22 @@ async function investigate(datasetId, userId, prompt) {
     blocks,
     reasoning: synthesized.reasoning || [],
     confidenceScore: confidence,
-    confidenceChecks: synthesized.confidenceChecks || [],
+    confidenceChecks,
     confidenceBasis: synthesized.confidenceBasis || '',
     // Real evidence backing this insight — rendered by "View SQL queries" on
     // the detail page, so investors/Kosta can verify the pipeline actually
-    // ran a real query rather than fabricating numbers.
-    evidence: { prompt: actualPrompt, dataQuestion, sql: queryResult.sql },
+    // ran a real query rather than fabricating numbers. `verification`
+    // records the independent VERIFY pass's own verdict for the same reason
+    // — proof the write-up was itself checked, not just the query.
+    evidence: {
+      prompt: actualPrompt,
+      dataQuestion,
+      sql: queryResult.sql,
+      verification: { verified: verification.verified, issues: verification.issues },
+    },
   };
 
-  const key = storeKey(datasetId, userId);
-  const list = generated.get(key) || [];
-  list.unshift(insight);
-  generated.set(key, list);
-  persist();
+  await store.insert(datasetId, userId, insight);
 
   return insight;
 }
@@ -583,10 +863,11 @@ async function investigate(datasetId, userId, prompt) {
  * Runs the dataset's curated prompt set (config.bootstrapPrompts — see
  * insights/datasets/registry.js for defaults, admin-editable via
  * intelligence-config.service.js) sequentially — not in parallel, since each
- * one is already 3 LLM/DB round trips and running them concurrently would
- * multiply load for no benefit — and returns whichever succeeded. Failures
- * are logged and skipped, never thrown: this is a best-effort populate, not
- * a user-facing action that should fail loudly.
+ * one is already 4+ LLM/DB round trips (plan/query/synthesize/verify, see
+ * investigate() above) and running them concurrently would multiply load for
+ * no benefit — and returns whichever succeeded. Failures are logged and
+ * skipped, never thrown: this is a best-effort populate, not a user-facing
+ * action that should fail loudly.
  */
 async function bootstrap(datasetId) {
   const config = await intelligenceConfigService.getConfig(datasetId);
@@ -604,7 +885,7 @@ async function bootstrap(datasetId) {
 }
 
 function listGenerated(datasetId, userId) {
-  return generated.get(storeKey(datasetId, userId)) || [];
+  return store.listByUser(datasetId, userId);
 }
 
 /**
@@ -614,82 +895,37 @@ function listGenerated(datasetId, userId) {
  * dataset-wide count/list, not one user's private view.
  */
 function listGeneratedAll(datasetId) {
-  const prefix = `${datasetId}::`;
-  const lists = [];
-  for (const [key, list] of generated.entries()) {
-    // `key === datasetId` matches pre-migration entries, persisted under the
-    // bare dataset id before per-user storeKey()s existed — without this,
-    // the admin monitoring page silently loses every insight generated
-    // before this change (verified live: hypertoy had 4 such entries).
-    if (key === datasetId || key.startsWith(prefix)) lists.push(...list);
-  }
-  return lists;
+  return store.listAll(datasetId);
 }
 
 function getGeneratedById(datasetId, userId, insightId) {
-  return listGenerated(datasetId, userId).find(i => i.id === insightId) || null;
+  return store.getById(datasetId, userId, insightId);
 }
 
-/**
- * Admin-only, cross-user: finds which per-user bucket an insight actually
- * lives in — the admin monitoring page (see listGeneratedAll) has no
- * specific userId to scope by, since it's managing content across every
- * session at once.
- * @returns {string|null} the storage key ("datasetId::userId") that owns this insightId
- */
-function findOwnerKey(datasetId, insightId) {
-  const prefix = `${datasetId}::`;
-  for (const [key, list] of generated.entries()) {
-    if ((key === datasetId || key.startsWith(prefix)) && list.some(i => i.id === insightId)) return key;
-  }
-  return null;
-}
-
-/** Admin-only, cross-user version of deleteGenerated — see findOwnerKey. */
+/** Admin-only, cross-user version of deleteGenerated. @returns {Promise<boolean>} true if an insight with this id existed and was removed */
 function deleteGeneratedAny(datasetId, insightId) {
-  const key = findOwnerKey(datasetId, insightId);
-  if (!key) return false;
-  const list = generated.get(key);
-  const next = list.filter(i => i.id !== insightId);
-  generated.set(key, next);
-  persist();
-  return true;
+  return store.removeAny(datasetId, insightId);
 }
 
-/** Admin-only, cross-user version of setTracked — see findOwnerKey. @returns {Object|null} the updated insight, or null if unknown */
+/** Admin-only, cross-user version of setTracked. @returns {Promise<Object|null>} the updated insight, or null if unknown */
 function setTrackedAny(datasetId, insightId, tracked) {
-  const key = findOwnerKey(datasetId, insightId);
-  if (!key) return null;
-  const insight = generated.get(key).find(i => i.id === insightId);
-  insight.tracked = !!tracked;
-  if (insight.tracked) insight.trackedOrder = Date.now();
-  persist();
-  return insight;
+  return store.updateInsightAny(datasetId, insightId, insight => {
+    insight.tracked = !!tracked;
+    if (insight.tracked) insight.trackedOrder = Date.now();
+  });
 }
 
-/** @returns {boolean} true if an insight with this id existed and was removed */
+/** @returns {Promise<boolean>} true if an insight with this id existed and was removed */
 function deleteGenerated(datasetId, userId, insightId) {
-  const key = storeKey(datasetId, userId);
-  const list = generated.get(key);
-  if (!list) return false;
-  const next = list.filter(i => i.id !== insightId);
-  const removed = next.length !== list.length;
-  generated.set(key, next);
-  if (removed) persist();
-  return removed;
+  return store.remove(datasetId, userId, insightId);
 }
 
 /**
  * Marks a report as opened — drives the History page's "Ready — not viewed
- * yet" highlight (design turn 12a). A no-op (no persist) if it's already
- * viewed, so opening an already-read report repeatedly doesn't write to disk
- * every time.
+ * yet" highlight (design turn 12a).
  */
-function markViewed(datasetId, userId, insightId) {
-  const insight = getGeneratedById(datasetId, userId, insightId);
-  if (!insight || insight.viewed) return;
-  insight.viewed = true;
-  persist();
+async function markViewed(datasetId, userId, insightId) {
+  await store.updateInsight(datasetId, userId, insightId, insight => { insight.viewed = true; });
 }
 
 /**
@@ -703,7 +939,7 @@ function markViewed(datasetId, userId, insightId) {
  * @returns {Promise<Object|null>} the plan, or null if no such insight exists
  */
 async function generateActionPlan(datasetId, userId, insightId) {
-  const insight = getGeneratedById(datasetId, userId, insightId);
+  const insight = await store.getById(datasetId, userId, insightId);
   if (!insight) return null;
   if (insight.actionPlan) return insight.actionPlan;
 
@@ -736,9 +972,16 @@ How it was found: ${JSON.stringify(insight.reasoning)}`;
     expectedImpact: parsed.expectedImpact || '',
   };
 
-  insight.actionPlan = plan;
-  persist();
+  await store.updateInsight(datasetId, userId, insightId, i => { i.actionPlan = plan; });
   return plan;
+}
+
+// Calendar-shaped category labels (months, quarters, week numbers, bare
+// years) — a single-series chart plotted against these is a genuine TIME
+// TREND, never a ranking, regardless of point count.
+const TIME_CATEGORY_PATTERN = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|q[1-4]|w(eek)?\s?\d{1,2}|\d{4})/i;
+function looksLikeTimeSeries(categories) {
+  return categories.length > 0 && categories.every(c => TIME_CATEGORY_PATTERN.test(String(c).trim()));
 }
 
 /**
@@ -751,14 +994,19 @@ function toTrackedMetric(insight) {
   const series = insight.chart?.series || [];
   const categories = insight.chart?.categories || [];
   const points = series[0]?.points || [];
-  // More than 2 points on a single series is a RANKED SNAPSHOT across
-  // different entities (e.g. "top 8 product families by revenue"), not a
-  // value sampled over time. Those categories are typically sorted by rank,
-  // so "first point vs last point" is really "leader vs last place" —
-  // trivially a huge, meaningless "decline" every time, regardless of any
-  // actual trend. Only a genuine 2-point pair (this-vs-that, before-vs-after)
-  // is honest to render as a rise/fall percentage.
-  const isRanking = points.length > 2 && series.length === 1;
+  // More than 2 points on a single series COULD be a RANKED SNAPSHOT across
+  // different entities (e.g. "top 8 product families by revenue") rather
+  // than a value sampled over time — those categories are typically sorted
+  // by rank, so "first point vs last point" would really be "leader vs last
+  // place," trivially a huge, meaningless "decline" every time. But it could
+  // just as easily be a genuine multi-month trend (categories = "Feb", "Mar",
+  // "Apr"...), which has the exact same shape (1 series, >2 points) and was
+  // being misclassified as a ranking by point-count alone — caught live on a
+  // real 6-month margin-trend insight showing a nonsense "Leader: Jun" label
+  // instead of its real declining trend. looksLikeTimeSeries() checks the
+  // actual category labels first; only genuinely non-calendar categories
+  // (store/product/family names) fall through to the ranking treatment.
+  const isRanking = points.length > 2 && series.length === 1 && !looksLikeTimeSeries(categories);
 
   let trendDir = 'flat', trendLabel = '— flat';
   if (isRanking) {
@@ -786,31 +1034,20 @@ function toTrackedMetric(insight) {
   };
 }
 
-function listTracked(datasetId, userId) {
-  // trackedOrder is only ever set when an insight gets tracked (or
-  // explicitly reordered) — older, already-tracked insights predating this
-  // field just sort first (undefined treated as -Infinity-ish via ?? 0
-  // being smaller than any real Date.now()-based value), which is a
-  // harmless one-time default, not a bug to special-case.
-  return listGenerated(datasetId, userId)
-    .filter(i => i.tracked)
-    .sort((a, b) => (a.trackedOrder ?? 0) - (b.trackedOrder ?? 0))
-    .map(toTrackedMetric);
+async function listTracked(datasetId, userId) {
+  const tracked = await store.listTracked(datasetId, userId);
+  return tracked.map(toTrackedMetric);
 }
 
-/** @returns {Object|null} the updated insight, or null if no insight with this id exists */
+/** @returns {Promise<Object|null>} the updated insight, or null if no insight with this id exists */
 function setTracked(datasetId, userId, insightId, tracked) {
-  const list = generated.get(storeKey(datasetId, userId));
-  if (!list) return null;
-  const insight = list.find(i => i.id === insightId);
-  if (!insight) return null;
-  insight.tracked = !!tracked;
-  // Newly tracked items go to the end of the manage-tracking order — reuse
-  // Date.now() as a simple monotonically-increasing value, same pattern
-  // already used for insight ids themselves elsewhere in this file.
-  if (insight.tracked) insight.trackedOrder = Date.now();
-  persist();
-  return insight;
+  return store.updateInsight(datasetId, userId, insightId, insight => {
+    insight.tracked = !!tracked;
+    // Newly tracked items go to the end of the manage-tracking order — reuse
+    // Date.now() as a simple monotonically-increasing value, same pattern
+    // already used for insight ids themselves elsewhere in this file.
+    if (insight.tracked) insight.trackedOrder = Date.now();
+  });
 }
 
 /**
@@ -818,26 +1055,20 @@ function setTracked(datasetId, userId, insightId, tracked) {
  * a list of insight ids; server reassigns sequential trackedOrder values (0,
  * 1, 2...) rather than trying to diff/insert, since the client always has
  * the complete ordered list already (it's the one rendering the drag UI).
- * @returns {Object[]} the reordered tracked metrics, same shape as listTracked
+ * @returns {Promise<Object[]>} the reordered tracked metrics, same shape as listTracked
  */
-function reorderTracked(datasetId, userId, insightIds) {
-  const list = generated.get(storeKey(datasetId, userId));
-  if (!list) return [];
-  insightIds.forEach((id, index) => {
-    const insight = list.find(i => i.id === id && i.tracked);
-    if (insight) insight.trackedOrder = index;
-  });
-  persist();
+async function reorderTracked(datasetId, userId, insightIds) {
+  await store.reorderTracked(datasetId, userId, insightIds);
   return listTracked(datasetId, userId);
 }
 
-// Called down here, not right after the function declaration above: it
-// transitively calls normalizeChart() via migrateLegacyBlocks(), which
-// closes over SERIES_PALETTE — a `const` declared later in this file. `const`
-// isn't hoisted the way function declarations are, so calling this before
-// that line runs threw "Cannot access 'SERIES_PALETTE' before initialization"
-// and silently discarded every persisted insight (loadPersisted's catch
-// swallowed it).
-loadPersisted();
-
-module.exports = { investigate, listGenerated, listGeneratedAll, getGeneratedById, deleteGenerated, deleteGeneratedAny, setTrackedAny, markViewed, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan, classifyPrompt, setDataReloadService };
+module.exports = {
+  investigate, listGenerated, listGeneratedAll, getGeneratedById, deleteGenerated, deleteGeneratedAny,
+  setTrackedAny, markViewed, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan,
+  classifyPrompt, setDataReloadService,
+  // Exported purely so scripts/test-insights-unit.js can exercise this
+  // pure, DB/LLM-free logic directly as real regression tests (see the
+  // 2026-08-07 bugs each of these was fixed for) — not part of the public
+  // API surface any route calls into.
+  detectSuspiciousResult, looksLikeTimeSeries, reconcileImpactValue,
+};

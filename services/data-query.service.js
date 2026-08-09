@@ -100,6 +100,25 @@ class DataQueryService {
         sql = this._enforceLimit(sql, maxRows);
       } catch (error) {
         const duration = Date.now() - startTime;
+        // Real bug found 2026-08-07 via scripts/test-insights-battery.js: a
+        // GENERATION-step failure (most commonly the LLM's own JSON response
+        // being malformed — e.g. "Bad escaped character in JSON" from an
+        // unescaped backslash inside the "sql" string it wrote) used to
+        // return here immediately with ZERO retries, despite MAX_ATTEMPTS=3
+        // existing right here in this same loop and already being used for
+        // the EXECUTION-step error a few lines below. One JSON hiccup was
+        // killing the whole investigation outright even though attempts
+        // remained. Now retries the same way execution errors already do,
+        // reusing the identical previousError/previousSql self-correction
+        // channel sql-generator.service.js already reads — just fed a
+        // parse-failure message instead of a Postgres error message.
+        const canRetry = attempt < MAX_ATTEMPTS;
+        if (canRetry) {
+          console.log(`   [attempt ${attempt}] SQL generation failed, retrying: ${error.message}`);
+          prevError = `Your previous response could not be parsed as valid JSON: ${error.message}. Common cause: a literal backslash inside the "sql" string (e.g. a regex or LIKE pattern) written as \\d instead of \\\\d, or a raw line break instead of \\n. Re-check escaping and return valid JSON this time.`;
+          prevSql = null; // no valid SQL was produced — nothing real to show back
+          continue;
+        }
         slowQueryService.logSlowQuery({
           agentName, schemaName: customerSchema, question, sql: sql ?? '',
           durationMs: duration, queryType: 'error', errorMessage: error.message,
