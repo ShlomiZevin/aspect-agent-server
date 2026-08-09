@@ -17,12 +17,24 @@
 | Scribe: summary · decisions (with quotes) · actions (with owners) · open questions | ✅ verified on a real transcript |
 | Ask with clickable citations | ✅ verified, including correct refusal when it doesn't know |
 | Bilingual retrieval (Hebrew question ↔ English content) | ✅ built after the naive version failed the test |
+| **Hybrid retrieval** (vector + literal keyword) | ✅ built after a measured miss — see below |
+| Daily spend cap (`HQ_DAILY_USD_LIMIT`, default $5) | ✅ bounds fan-out, not just per-call size |
+| Scribe opt-in for Notion imports | ✅ those pages are already summaries |
 | `/hq` client: Ask · Drop · Library · Atom detail · Sources | ✅ own lazy chunk, 31 kB (10 kB gzip) |
 | Cost attribution via `llm_usage` (`agentName:'hq'`) | ✅ free, no migration — as designed in §7 |
 
 Two findings worth keeping:
 - **The lazy chunk confirms §8** — HQ builds as its own 31 kB bundle, so no customer route downloads
   it. The separate-host idea really was unnecessary.
+- **Pure vector search silently loses exact terms.** Asked whether we'd discussed an
+  external advisor, retrieval returned 12 chunks at *higher* similarity than the
+  phrasing that worked, and none contained the phrase — so HQ correctly reported it
+  knew nothing while the answer sat in the corpus. Embeddings match topic and
+  register; a task-list line doesn't look like a question. Retrieval is now hybrid
+  (literal matches first). This is the single most important thing to know before
+  touching `ask.service`.
+- **Real costs:** Hebrew is 1.44 chars/token; ~$0.09 per meeting to Scribe; ~$2/month
+  at our volume. The risk was never per-call size — it was fan-out.
 - **Cross-lingual retrieval had to be built.** `text-embedding-3-small` scored a Hebrew question at
   0.26 against English content versus 0.43 for the English equivalent — right on the threshold. Ask
   now retrieves in both languages and merges. This would have looked fine in an English-only demo

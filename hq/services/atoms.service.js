@@ -193,6 +193,30 @@ async function setScribeResult(id, { summary, decisions, actions, questions, sta
   return rows[0];
 }
 
+/**
+ * The Scribe is fire-and-forget, so anything in flight dies with the process —
+ * a restart (or a one-off import script exiting) leaves atoms pinned at
+ * `running` with nothing to ever clear them, and the UI spins forever.
+ *
+ * Mark those failed so they surface a retry instead of a permanent spinner.
+ * `updated_at` is touched whenever the status is set, so it doubles as the
+ * "started at" for a running pass.
+ */
+async function reclaimStaleScribes(staleMinutes = 15) {
+  const { rows } = await db.query(
+    `UPDATE hq_atoms
+        SET scribe_status = 'failed',
+            error = COALESCE(error, 'The summary was interrupted — re-run it.'),
+            updated_at = NOW()
+      WHERE scribe_status = 'running'
+        AND updated_at < NOW() - ($1 || ' minutes')::interval
+      RETURNING id`,
+    [String(staleMinutes)]
+  );
+  if (rows.length) console.log(`[hq] reclaimed ${rows.length} stalled Scribe run(s)`);
+  return rows.map(r => r.id);
+}
+
 async function setScribeStatus(id, status, error = null) {
   await db.query(
     `UPDATE hq_atoms SET scribe_status = $2, error = COALESCE($3, error), updated_at = NOW()
@@ -236,5 +260,5 @@ module.exports = {
   hashContent,
   createSource, findSourceByConfigKey, updateSource, listSources, deleteSource,
   upsertAtom, getAtom, getAtomsByIds, listAtoms, countAtoms,
-  setAtomIndexed, setScribeResult, setScribeStatus, patchAtom, deleteAtom,
+  setAtomIndexed, setScribeResult, setScribeStatus, reclaimStaleScribes, patchAtom, deleteAtom,
 };

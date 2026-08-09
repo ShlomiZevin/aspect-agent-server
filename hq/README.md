@@ -78,6 +78,29 @@ POST   /api/hq/ask                   { question } → { answer, citations, hits 
 - **Cost attribution is free.** Every LLM call is tagged `agentName: 'hq'` with a `crewMember`
   (`scribe` / `ask`), so `llm_usage` separates company spend from client spend with a `WHERE`
   clause — no migration, no extra column.
+- **Retrieval is HYBRID — vector + literal, and the literal half is load-bearing.**
+  Dense embeddings match *topic and register*, not words. Measured failure: asked
+  "האם דנו בליבי לגבי יועץ חיצוני", the vector search returned 12 chunks at a
+  *higher* similarity (0.47) than the phrasing that worked — and **not one
+  contained the phrase**, so HQ truthfully said it knew nothing. The mention was a
+  terse task-list line, which looks nothing like a question. `ask.service` now also
+  matches the question's content words literally against atom bodies and puts those
+  excerpts first. Substring matching absorbs Hebrew prefixes for free
+  (`%יועץ%` matches ליועץ/היועץ). **Don't "simplify" this back to vector-only.**
+- **The query rewrite must translate NAMES, not preserve them.** It once said
+  "keep names as they are", which made English questions flaky: "Meuhedet" never
+  matches "מאוחדת", so the same question worked or failed depending on the rewrite.
+- **Spend is capped.** `budget.service` refuses any Scribe/Ask call once HQ passes
+  `HQ_DAILY_USD_LIMIT` (default $5/day), costed from `llm_usage`. Per-call limits
+  bound one call; this bounds *fan-out*, which is where a runaway bill comes from —
+  auto-summarising all 983 shared Notion objects would have been ~$91 from one paste.
+- **The Scribe does NOT auto-run on Notion imports.** Those pages are already
+  AI-written notes with their own participants/action-item sections, so it summarises
+  a summary at real cost. Ask doesn't need it — retrieval runs over the body, which
+  is indexed regardless. It's a per-meeting **Summarise** button instead.
+- **Costs, measured not estimated.** Hebrew tokenizes at **1.44 chars/token** (~3×
+  worse than English). A ~40k-char meeting ≈ **$0.09** to Scribe. Five meetings a
+  week ≈ **$2/month**. Embeddings are noise (<1¢ for the whole corpus).
 - **Bilingual retrieval is deliberate.** We speak a Hebrew/English mix and
   `text-embedding-3-small` is weak across scripts, so `ask.service` retrieves with the question in
   *both* languages and merges on best score. Without it, a Hebrew question returns nothing from an

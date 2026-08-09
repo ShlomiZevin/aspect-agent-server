@@ -14,6 +14,7 @@ const ingest = require('../services/ingest.service');
 const scribe = require('../services/scribe.service');
 const askService = require('../services/ask.service');
 const drop = require('../services/drop.service');
+const budget = require('../services/budget.service');
 
 function fail(res, err, status = 500) {
   console.error('[hq]', err.message);
@@ -37,6 +38,7 @@ router.get('/status', async (_req, res) => {
       }, {}),
       indexed: counts.filter(r => r.status === 'indexed').reduce((s, r) => s + r.count, 0),
       failed: counts.filter(r => r.status === 'failed').reduce((s, r) => s + r.count, 0),
+      budget: await budget.budgetStatus(),
     });
   } catch (err) { fail(res, err); }
 });
@@ -116,6 +118,7 @@ router.post('/drop', async (req, res) => {
     });
     send('done', {
       ok: true,
+      type: 'notion',
       label: result.label,
       notionType: result.type,
       total: result.total,
@@ -161,6 +164,9 @@ router.delete('/sources/:id', async (req, res) => {
 
 router.get('/atoms', async (req, res) => {
   try {
+    // Clear any Scribe run orphaned by a restart before we report status.
+    await atomsService.reclaimStaleScribes().catch(() => {});
+
     const atoms = await atomsService.listAtoms({
       kind: req.query.kind || null,
       search: req.query.search || null,

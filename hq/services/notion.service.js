@@ -60,15 +60,25 @@ async function notionFetch(pathname, { method = 'GET', body } = {}) {
     let detail = text;
     try { detail = JSON.parse(text).message || text; } catch { /* keep raw */ }
 
-    if (res.status === 401) throw new Error('Notion rejected the token (401). Check NOTION_TOKEN.');
-    if (res.status === 404) {
-      throw new Error(
+    let message;
+    if (res.status === 401) {
+      message = 'Notion rejected the token (401). Check NOTION_TOKEN.';
+    } else if (res.status === 404) {
+      message =
         'Notion returned 404. The page exists but is not shared with the integration — ' +
-        'open it in Notion → ⋯ → Connections → add your integration (this cascades to children).'
-      );
+        'open it in Notion → ⋯ → Connections → add your integration (this cascades to children).';
+    } else if (res.status === 429) {
+      message = 'Notion rate limit hit (429). Retry in a moment.';
+    } else {
+      message = `Notion API ${res.status}: ${detail}`;
     }
-    if (res.status === 429) throw new Error('Notion rate limit hit (429). Retry in a moment.');
-    throw new Error(`Notion API ${res.status}: ${detail}`);
+
+    // Callers branch on the status code, not on the prose — matching messages
+    // with a regex is how the page-vs-database probe below broke.
+    const err = new Error(message);
+    err.status = res.status;
+    err.notionMessage = detail;
+    throw err;
   }
 
   return res.json();
@@ -109,21 +119,42 @@ function dashify(id32) {
 }
 
 /**
- * Ask Notion what an id actually is. A pasted link doesn't tell us whether it's
- * a page or a database, so we probe: databases first (a database id fetched as
- * a page 404s, and vice versa).
+ * Ask Notion what an id actually is. A pasted link doesn't say whether it points
+ * at a page or a database, so we probe the database endpoint and fall back.
+ *
+ * The fallback must accept **400 as well as 404**: fetching a page id from
+ * `/databases/{id}` returns `400 — "Provided ID … is a page, not a database"`,
+ * not a 404. An earlier version only caught 404, so pasting an ordinary page
+ * link failed outright instead of falling through to the page endpoint.
+ *
  * @returns {Promise<{ type: 'database'|'page', object: Object }>}
  */
 async function resolveObject(id) {
+  let databaseErr;
   try {
     const database = await notionFetch(`/databases/${id}`);
     return { type: 'database', object: database };
   } catch (err) {
-    if (!/404|Notion returned 404/.test(err.message)) throw err;
+    // 400 = wrong object type, 404 = not a database (or not shared). Both mean
+    // "try it as a page". Anything else (401, 429, 5xx) is a real failure.
+    if (err.status !== 400 && err.status !== 404) throw err;
+    databaseErr = err;
   }
 
-  const page = await notionFetch(`/pages/${id}`);
-  return { type: 'page', object: page };
+  try {
+    const page = await notionFetch(`/pages/${id}`);
+    return { type: 'page', object: page };
+  } catch (err) {
+    // Neither worked. A 404 on both almost always means "not shared with the
+    // integration" — surface that rather than the database probe's noise.
+    if (err.status === 404 || databaseErr?.status === 404) {
+      throw new Error(
+        `Notion can't see ${id}. Open it in Notion → ⋯ → Connections → add the ` +
+        `Lybi HQ integration (it cascades to child pages), then try again.`
+      );
+    }
+    throw err;
+  }
 }
 
 // ─── Property helpers ────────────────────────────────────────────────────────

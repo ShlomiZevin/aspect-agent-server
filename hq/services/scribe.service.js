@@ -11,6 +11,7 @@
  */
 
 const llmService = require('../../services/llm');
+const budget = require('./budget.service');
 const atomsService = require('./atoms.service');
 
 const SCRIBE_MODEL = process.env.HQ_SCRIBE_MODEL || 'claude-sonnet-4-6';
@@ -91,6 +92,7 @@ async function runScribe(atomId) {
     return null;
   }
 
+  await budget.assertWithinBudget(`the Scribe on "${atom.title.slice(0, 40)}"`);
   await atomsService.setScribeStatus(atomId, 'running');
 
   const header = [

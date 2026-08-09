@@ -16,7 +16,7 @@ function classifyInput(input) {
   const value = (input || '').trim();
   if (!value) return { type: 'empty' };
 
-  if (/notion\.so|notion\.site/i.test(value) || notion.extractNotionId(value)) {
+  if (/notion\.(so|site)|app\.notion\.com/i.test(value) || notion.extractNotionId(value)) {
     const id = notion.extractNotionId(value);
     if (id) return { type: 'notion', id, raw: value };
   }
@@ -88,7 +88,15 @@ async function dropNotion(notionId, { kind = 'auto', onProgress = null, since = 
           participants: doc.people,
           projects: doc.tags,
           occurredAt: doc.occurredAt,
-        }, { sourceId: source.id });
+        }, {
+          sourceId: source.id,
+          // Notion pages are usually already AI-written notes with their own
+          // "participants" / "action items" sections — running the Scribe over
+          // one summarises a summary, at real cost (~$0.13 per 50k-char Hebrew
+          // page). Ask doesn't need it either: retrieval runs over the body,
+          // which is indexed regardless. Left to a per-meeting button instead.
+          runScribe: false,
+        });
 
         results.push({ ok: true, atomId: atom.id, title: atom.title, skipped });
       } catch (err) {
