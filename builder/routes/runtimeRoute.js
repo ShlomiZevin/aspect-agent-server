@@ -81,17 +81,20 @@ async function resolveUserId(ownerUserId) {
 router.post('/:slug/conversations', async (req, res) => {
   try {
     const { slug } = req.params;
-    const { ownerUserId, seedMemory } = req.body || {};
+    const { ownerUserId, seedMemory, source } = req.body || {};
     if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
     const agentId = await resolveLegacyAgentId(slug);
     const userId = await resolveUserId(ownerUserId);
+    // metadata.kind records which V2 surface the conversation was born in:
+    // 'live' = customer-facing chat, 'builder-preview' = builder chat.
+    // V1 conversations have no tag — that's what keeps them out of V2 lists.
     const [conv] = await drizzle().insert(conversations).values({
       userId,
       agentId,
       channel: 'web',
       status: 'active',
       kind: 'user',
-      metadata: { kind: 'builder-preview', agentSlug: slug },
+      metadata: { kind: source === 'live' ? 'live' : 'builder-preview', agentSlug: slug },
     }).returning();
     if (Array.isArray(seedMemory) && seedMemory.length > 0) {
       const builderMemory = require('../runtime/builderMemory');
@@ -119,7 +122,7 @@ router.post('/:slug/conversations', async (req, res) => {
 router.get('/:slug/conversations', async (req, res) => {
   try {
     const { slug } = req.params;
-    const { ownerUserId } = req.query;
+    const { ownerUserId, source } = req.query;
     if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
     const d = drizzle();
     const [agentRow] = await d.select().from(agents).where(eq(agents.urlSlug, slug)).limit(1);
@@ -127,12 +130,17 @@ router.get('/:slug/conversations', async (req, res) => {
     const userRow = await d.select().from(users)
       .where(eq(users.externalId, String(ownerUserId))).limit(1);
     if (userRow.length === 0) return res.json({ conversations: [] });
+    // Each surface lists only its own conversations. The metadata.kind
+    // match also excludes untagged V1 rows that share the same legacy
+    // agent row (e.g. V1 Freeda chats under a V2 agent with slug 'freeda').
+    const surfaceKind = source === 'live' ? 'live' : 'builder-preview';
     const list = await d.select()
       .from(conversations)
       .where(and(
         eq(conversations.agentId, agentRow.id),
         eq(conversations.userId, userRow[0].id),
         eq(conversations.kind, 'user'),
+        sql`${conversations.metadata}->>'kind' = ${surfaceKind}`,
       ))
       .orderBy(desc(conversations.updatedAt))
       .limit(50);

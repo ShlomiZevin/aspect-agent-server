@@ -85,11 +85,15 @@ class AdminService {
       // created for it (tenant = agent slug — the V2 builder admin's
       // "Add user" flow for customer chat access). The OR keeps freshly
       // created users visible before their first conversation.
+      // metadata->>'kind' restricts to V2-runtime conversations — V1 rows
+      // share the same legacy agent row on slug collisions (e.g. freeda)
+      // but carry no tag, so V1 users don't leak into the V2 admin.
       conditions.push(
         sql`(${users.id} IN (
           SELECT DISTINCT c.user_id FROM conversations c
           JOIN agents a ON a.id = c.agent_id
-          WHERE LOWER(a.url_slug) = ${agentSlug} OR LOWER(a.name) = ${agentSlug}
+          WHERE (LOWER(a.url_slug) = ${agentSlug} OR LOWER(a.name) = ${agentSlug})
+            AND c.metadata->>'kind' IN ('builder-preview', 'live')
         ) OR LOWER(COALESCE(${users.tenant}, '')) = ${agentSlug})`
       );
     }
@@ -133,7 +137,8 @@ class AdminService {
     // what the agent's admin drill-down actually shows (otherwise the
     // count is cross-agent and overstates this agent's conversations).
     const agentConvFilter = agentName
-      ? sql`agent_id IN (SELECT id FROM agents WHERE LOWER(url_slug) = ${agentName.toLowerCase()} OR LOWER(name) = ${agentName.toLowerCase()})`
+      ? sql`(agent_id IN (SELECT id FROM agents WHERE LOWER(url_slug) = ${agentName.toLowerCase()} OR LOWER(name) = ${agentName.toLowerCase()})
+          AND metadata->>'kind' IN ('builder-preview', 'live'))`
       : null;
 
     const usersWithCounts = await Promise.all(
@@ -574,7 +579,8 @@ class AdminService {
       ? sql`id IN (
           SELECT DISTINCT c.user_id FROM conversations c
           JOIN agents a ON a.id = c.agent_id
-          WHERE LOWER(a.url_slug) = ${agentName.toLowerCase()} OR LOWER(a.name) = ${agentName.toLowerCase()}
+          WHERE (LOWER(a.url_slug) = ${agentName.toLowerCase()} OR LOWER(a.name) = ${agentName.toLowerCase()})
+            AND c.metadata->>'kind' IN ('builder-preview', 'live')
         )`
       : null;
 
@@ -609,7 +615,8 @@ class AdminService {
 
     // Conversations: scope to active + same agent/tenant context (via user join when tenant set).
     const agentConvFilter = agentName
-      ? sql`agent_id IN (SELECT id FROM agents WHERE LOWER(url_slug) = ${agentName.toLowerCase()} OR LOWER(name) = ${agentName.toLowerCase()})`
+      ? sql`(agent_id IN (SELECT id FROM agents WHERE LOWER(url_slug) = ${agentName.toLowerCase()} OR LOWER(name) = ${agentName.toLowerCase()})
+          AND metadata->>'kind' IN ('builder-preview', 'live'))`
       : null;
 
     const tenantConvFilter = tenant
