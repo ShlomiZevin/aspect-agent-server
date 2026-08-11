@@ -1,0 +1,207 @@
+<title>Aspect Intelligence — What Changed</title>
+<style>
+  :root {
+    --paper:     #F4F6F6;
+    --surface:   #FFFFFF;
+    --surface-2: #EDF0F0;
+    --ink:       #161B1D;
+    --ink-soft:  #3D4749;
+    --ink-mute:  #6B7679;
+    --rule:      #D3DAD9;
+    --rule-soft: #E3E8E7;
+    --true:      #2C6A5C;
+    --true-bg:   #E4EFEA;
+    --defect:    #A94A26;
+    --defect-bg: #F6E7DF;
+    --hold:      #8A6D1F;
+    --hold-bg:   #F4EDDA;
+    --shadow:    0 1px 2px rgba(22,27,29,.05), 0 8px 24px -16px rgba(22,27,29,.18);
+    --display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --data: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #101416; --surface: #161C1E; --surface-2: #1D2426;
+      --ink: #EAEFEE; --ink-soft: #B9C3C2; --ink-mute: #838F8E;
+      --rule: #2A3335; --rule-soft: #212A2C;
+      --true: #6FBBA6; --true-bg: #17302A;
+      --defect: #E08A62; --defect-bg: #352016;
+      --hold: #D6B65E; --hold-bg: #2E2716;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #101416; --surface: #161C1E; --surface-2: #1D2426;
+    --ink: #EAEFEE; --ink-soft: #B9C3C2; --ink-mute: #838F8E;
+    --rule: #2A3335; --rule-soft: #212A2C;
+    --true: #6FBBA6; --true-bg: #17302A;
+    --defect: #E08A62; --defect-bg: #352016;
+    --hold: #D6B65E; --hold-bg: #2E2716;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--paper); color: var(--ink); font-family: var(--body);
+         font-size: 16px; line-height: 1.62; margin: 0; padding: 0 24px 88px; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 840px; margin: 0 auto; }
+  header { padding: 68px 0 30px; border-bottom: 2px solid var(--ink); margin-bottom: 38px; }
+  .eyebrow { font-family: var(--data); font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase;
+             color: var(--ink-mute); margin: 0 0 16px; }
+  h1 { font-family: var(--display); font-weight: 600; font-size: clamp(32px, 5vw, 48px);
+       line-height: 1.08; letter-spacing: -.015em; text-wrap: balance; margin: 0 0 18px; }
+  .standfirst { font-size: 18px; line-height: 1.55; color: var(--ink-soft); max-width: 60ch; margin: 0; }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+  h2 { font-family: var(--display); font-weight: 600; font-size: 26px; letter-spacing: -.01em;
+       line-height: 1.2; text-wrap: balance; margin: 52px 0 6px; }
+  h2 + .note { color: var(--ink-mute); font-size: 14.5px; margin: 0 0 22px; }
+  h3 { font-size: 15.5px; font-weight: 650; margin: 26px 0 6px; }
+  p { margin: 0 0 15px; max-width: 66ch; }
+  code { font-family: var(--data); font-size: .9em; background: var(--surface-2); padding: .12em .38em; border-radius: 3px; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 1px;
+             background: var(--rule); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; margin: 0 0 10px; }
+  .metric { background: var(--surface); padding: 17px 17px 15px; }
+  .metric .k { font-family: var(--data); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+               color: var(--ink-mute); display: block; margin-bottom: 7px; }
+  .metric .v { font-family: var(--data); font-variant-numeric: tabular-nums; font-size: 25px; font-weight: 600; line-height: 1; display: block; }
+  .metric .sub { font-size: 12.5px; color: var(--ink-mute); display: block; margin-top: 6px; }
+  .v.good { color: var(--true); } .v.bad { color: var(--defect); }
+  .scroll { overflow-x: auto; margin: 18px 0 22px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  thead th { font-family: var(--data); font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+             color: var(--ink-mute); font-weight: 600; background: var(--surface-2); white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.n { font-family: var(--data); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.good { color: var(--true); font-weight: 600; } td.bad { color: var(--defect); font-weight: 600; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
+          box-shadow: var(--shadow); padding: 20px 22px; margin: 0 0 14px; }
+  .cardHead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .cardName { font-weight: 650; font-size: 15.5px; }
+  .chip { font-family: var(--data); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+          padding: 3px 7px; border-radius: 3px; font-weight: 600; white-space: nowrap; }
+  .chip.fix { background: var(--true-bg); color: var(--true); }
+  .chip.open { background: var(--defect-bg); color: var(--defect); }
+  .chip.watch { background: var(--hold-bg); color: var(--hold); }
+  .cardBody { font-size: 14.5px; color: var(--ink-soft); margin: 0; max-width: 64ch; }
+  .why { font-size: 13.5px; color: var(--ink-mute); border-left: 2px solid var(--rule);
+         padding-left: 12px; margin-top: 9px; max-width: 62ch; }
+  blockquote { border-left: 3px solid var(--true); padding: 4px 0 4px 20px; margin: 26px 0;
+               font-family: var(--display); font-size: 19px; line-height: 1.42; color: var(--ink); max-width: 56ch; }
+  ul { margin: 0 0 15px; padding-left: 20px; } li { margin-bottom: 7px; max-width: 64ch; }
+  footer { margin-top: 58px; padding-top: 20px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--ink-mute); }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+<header>
+  <p class="eyebrow">Aspect Intelligence · Change summary · 11 Aug 2026</p>
+  <h1>Making the reports true</h1>
+  <p class="standfirst">Reports were stating numbers that were confidently, badly wrong — some by <strong>127×</strong>. The cause was not bad SQL. This is what was wrong, what changed, and what is measurably better.</p>
+</header>
+
+<h2>Results</h2>
+<p class="note">42 investigations across all six datasets. Every displayed figure re-verified by re-executing the SQL the report itself cites.</p>
+
+<div class="metrics">
+  <div class="metric"><span class="k">Reports produced</span><span class="v good">81%</span><span class="sub">was 50% · 34 of 42</span></div>
+  <div class="metric"><span class="k">Figures correct</span><span class="v good">98.5%</span><span class="sub">133 of 135 checked</span></div>
+  <div class="metric"><span class="k">Schema contract</span><span class="v good">9/9</span><span class="sub">was 7 of 9</span></div>
+  <div class="metric"><span class="k">Chat regressions</span><span class="v good">0</span><span class="sub">36 questions, 3 languages</span></div>
+</div>
+<p class="why">Hypertoy now reconciles against the client's own Qlik dashboard <strong>to the shekel</strong>: total ₪131,801,440, Lego ₪19,000,391, every branch total exact.</p>
+
+<h2>What was actually wrong</h2>
+
+<blockquote>The write-up model saw 30 rows of a 20,723-row result and treated them as the whole business.</blockquote>
+
+<p>Every total, ranking and percentage was computed over <strong>0.14%</strong> of the data. The independent fact-checking pass confirmed them all — correctly, on its own terms, because those numbers really were present in the rows it was shown. It was checking whether figures came from the data, not whether the sample represented it.</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Reported</th><th class="n">Was</th><th class="n">Truth</th><th class="n">Error</th></tr></thead>
+  <tbody>
+    <tr><td>Campaign 78 revenue</td><td class="n bad">₪7,885</td><td class="n good">₪555,229</td><td class="n">70×</td></tr>
+    <tr><td>Campaign 90 revenue</td><td class="n bad">₪3,320</td><td class="n good">₪421,229</td><td class="n">127×</td></tr>
+    <tr><td>Revenue unattributed</td><td class="n bad">99.7%</td><td class="n good">94.90%</td><td class="n">—</td></tr>
+    <tr><td>Top campaign</td><td class="n bad">#193</td><td class="n good">#146</td><td class="n">#146 absent entirely</td></tr>
+    <tr><td>Total sales (product join)</td><td class="n bad">₪190,657,755</td><td class="n good">₪131,801,440</td><td class="n">+44.6%</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>The fixes that matter</h2>
+
+<div class="card">
+  <div class="cardHead"><span class="cardName">Aggregates computed in code, never by the model</span><span class="chip fix">core</span></div>
+  <p class="cardBody">The full result set is now re-aggregated in plain JavaScript back to the grain the question actually asked for — grand totals, true per-entity ranking, pre-computed shares, exact extremes. The raw rows are demoted to an illustrative sample the model is forbidden to sum.</p>
+  <p class="why">It works even when the SQL is wrong: a later run still returned the 20,723-row grain, and the digest collapsed it to 28 campaigns with every number correct.</p>
+</div>
+
+<div class="card">
+  <div class="cardHead"><span class="cardName">Impossible results are rejected</span><span class="chip fix">core</span></div>
+  <p class="cardBody">A filtered query can never total more than its own fact table, so anything larger has duplicated rows through a join. Caught a query reporting <strong>₪362.9B</strong> for a florist chain whose entire sales table totals ₪51M — 6,379× over the ceiling.</p>
+  <p class="why">This is the only guard that can catch a query which is itself wrong; every other check validates a figure against that same wrong query.</p>
+</div>
+
+<div class="card">
+  <div class="cardHead"><span class="cardName">A silent 44.6% inflation on every product figure</span><span class="chip fix">data</span></div>
+  <p class="cardBody">The product lookup holds 62,163 rows for 55,189 distinct keys, so joining it before totalling multiplied every measure. No error, no warning, entirely plausible numbers — just 44.6% too high.</p>
+</div>
+
+<div class="card">
+  <div class="cardHead"><span class="cardName">Nine tables that do not exist</span><span class="chip fix">data</span></div>
+  <p class="cardBody">One dataset's hand-written rules — the highest-authority instructions the system follows — named nine materialized views that had been deleted. Every store, revenue and target question for that client failed or returned nothing, for months, because nothing ever checked.</p>
+  <p class="why">A contract test now fails the build if any named table or column is missing. Rules were rewritten against the live schema.</p>
+</div>
+
+<div class="card">
+  <div class="cardHead"><span class="cardName">The same question gave different answers</span><span class="chip fix">core</span></div>
+  <p class="cardBody">SQL generation ran at the provider's default randomness, so asking the same thing twice produced different queries at different grains — and therefore different numbers. Now pinned deterministic.</p>
+</div>
+
+<div class="card">
+  <div class="cardHead"><span class="cardName">"Last 4 weeks" of nothing</span><span class="chip fix">data</span></div>
+  <p class="cardBody">These datasets are periodic exports, not live feeds — one was <strong>106 days</strong> behind. Every recent-window question anchored to today was correctly empty. Windows now anchor to the date the data really ends.</p>
+</div>
+
+<div class="card">
+  <div class="cardHead"><span class="cardName">Confidence now means something</span><span class="chip fix">core</span></div>
+  <p class="cardBody">The score was whatever the model felt like reporting. It is now the lower of what the model claimed and what the evidence supports — row count, query confidence, verification verdict, data-quality flags — with every deduction shown to the reader.</p>
+</div>
+
+<h2>What users see</h2>
+<ul>
+  <li><strong>Progress that tells the truth.</strong> The bar animated against a hardcoded 8 seconds while real runs take 30–100s, so it hit 96% in under 8 seconds and froze. It now follows the real pipeline stage, and the time estimate comes from the same model as the percentage, so the two cannot disagree.</li>
+  <li><strong>The original question is shown</strong> above the rewritten headline — previously there was no way to tell from a report what it was answering.</li>
+  <li><strong>Suggested reports actually appear.</strong> They were being generated under a system account that no user's view could ever read. Now shared across sessions, refreshed nightly, and saving one makes a personal copy.</li>
+  <li><strong>Deleting asks first</strong>, quoting the report by name.</li>
+  <li><strong>Answers come back in the language they were asked in</strong> — Hebrew, English, or a mix of both.</li>
+  <li><strong>Suggestion cards carry a chart</strong>, with the form chosen from the data: a line for time, bars for a ranking.</li>
+</ul>
+
+<h2>How it is verified now</h2>
+<p>Four harnesses ship with this work. The important one runs real investigations, then independently re-executes each report's own SQL and compares every figure on screen against freshly computed aggregates — so "is this true?" is a command, not an opinion.</p>
+<p>Results live in <code>verification/&lt;topic&gt;/</code>, each with a short README recording what was checked, how to reproduce it, and a summary table. Raw JSON is gitignored as regenerable output.</p>
+
+<h2>Known limits — deliberately written down</h2>
+<div class="card">
+  <div class="cardHead"><span class="cardName">Statistical significance is still untested</span><span class="chip open">open</span></div>
+  <p class="cardBody">A −219pp margin swing on ₪119 of sales is arithmetically correct and analytically worthless. Extremes now carry their base and a materiality filter exists, but it informs the write-up rather than forbidding it — and one such finding is currently visible on the reports page.</p>
+</div>
+<div class="card">
+  <div class="cardHead"><span class="cardName">Eight of 42 questions still fail</span><span class="chip open">open</span></div>
+  <p class="cardBody">Mostly inventory and sell-through questions across three unrelated datasets — a clustering that suggests one shared cause worth chasing, not eight separate ones. One "failure" is the impossible-result guard doing its job.</p>
+</div>
+<div class="card">
+  <div class="cardHead"><span class="cardName">Causal and forward-looking claims are unverified by design</span><span class="chip watch">by design</span></div>
+  <p class="cardBody">"Why did margin drop" cannot be settled by one aggregate query, and scenario projections are explicitly exempt from fact-checking. Both are plausible, not derived.</p>
+</div>
+<div class="card">
+  <div class="cardHead"><span class="cardName">The architectural fix has not been done</span><span class="chip watch">next</span></div>
+  <p class="cardBody">A semantic layer already exists elsewhere in the codebase, where joins, record types and non-summable measures are correct by construction and an unknown field returns an error rather than a plausible wrong answer. Routing investigations through it would make an entire category of defect impossible instead of merely detected.</p>
+</div>
+
+<footer>
+  Measured 11 Aug 2026 across hypertoy, zer4u, newdeli, thestock, zolstock and tevanaot. Hypertoy figures reconciled against the client's Qlik dashboard. Full detail, reproductions and suggested approaches in <code>docs/features/insights.md</code>.
+</footer>
+</div>
