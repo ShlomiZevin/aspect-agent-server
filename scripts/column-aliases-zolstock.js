@@ -6,13 +6,19 @@
  * Hebrew CSV column names are mapped to English DB column names.
  * Columns not listed here default to TEXT and keep their original (Hebrew) name.
  *
- * NOTE: gcsService.getCSVHeaders strips ALL `"` chars from headers. The ZolStock
- * facts file has no ASCII `"` in its headers (it uses the Hebrew gershayim ״ in
- * `מע״מ`, which is preserved), so the keys below match the raw headers verbatim.
+ * NOTE: gcsService.getCSVHeaders strips ALL `"` chars from headers. The original
+ * ZolStock facts file has no ASCII `"` in its headers (it uses the Hebrew
+ * gershayim ״ in `מע״מ`, which is preserved), so its keys match the raw headers
+ * verbatim. The newer items/Fact_ZolStock_CSV.csv files DO have a quoted
+ * `"מק""ט"` header — after stripping it becomes `מקט`, so that's the csvName
+ * used below (not `מק"ט`).
  *
- * Data status: only Facts_ZolStock_CSV.csv (39.46M rows) delivered so far.
- * Dimension files (products / customers / stores / calendar) are not yet provided
- * — add their maps below when they arrive.
+ * Data status (2026-08-10): "order recommendation" data delivered by Reut (BI
+ * dev), loaded EXACTLY as the 5 files she shared — no invented/pre-split files.
+ * items/stores/calendar dimensions + recommendation_facts (the actual
+ * Fact_ZolStock_CSV.csv, loaded whole). Inventory_ZolStock_CSV.csv (102M rows)
+ * deliberately deferred to Phase 2 (Kosta's call, 2026-08-10). No `customers`
+ * dimension yet.
  */
 
 const COLUMN_MAP = {
@@ -95,10 +101,87 @@ const COLUMN_MAP = {
     { csvName: 'DailyTarget',                  dbName: 'daily_target',             type: 'NUMERIC' },
   ],
 
-  // products:  [ ... ],   // TODO — not delivered yet
-  // customers: [ ... ],   // TODO — not delivered yet
-  // stores:    [ ... ],   // TODO — not delivered yet
-  // calendar:  [ ... ],   // TODO — not delivered yet
+  // ── items — product dimension (303,508 rows) ────────────────────────────────
+  // Delivered 2026-08-09 in the "המלצה להזמנות" (order recommendation) folder.
+  // `sku` is the bridge key to recommendation_facts below; `item_number` is the
+  // SAME key already used on facts.item_number, so this table also finally
+  // gives sales questions real item names/categories.
+  items: [
+    { csvName: 'BARCODE_KEY',        dbName: 'barcode_key',      type: 'TEXT'    },
+    { csvName: 'מספר פריט',           dbName: 'item_number',      type: 'TEXT'    },
+    { csvName: 'ברקוד פריט',          dbName: 'item_barcode',     type: 'TEXT'    },
+    { csvName: 'שם פריט',             dbName: 'item_name',        type: 'TEXT'    },
+    { csvName: 'ברקוד ושם פריט',      dbName: 'barcode_and_name', type: 'TEXT'    },
+    { csvName: 'עלות פריט',           dbName: 'cost',             type: 'NUMERIC' },
+    { csvName: 'עלות פריט ללא מעמ',   dbName: 'cost_ex_vat',      type: 'NUMERIC' },
+    { csvName: 'מחיר לצרכן',          dbName: 'consumer_price',   type: 'NUMERIC' },
+    { csvName: 'נשלח לסגמנט',         dbName: 'sent_to_segment',  type: 'TEXT'    },
+    { csvName: 'קטגוריה ראשית',       dbName: 'category',         type: 'TEXT'    },
+    { csvName: 'קטגוריה משנית',       dbName: 'subcategory',      type: 'TEXT'    },
+    // Source header is `"מק""ט"` (quoted, embedded gershayim-style ASCII quote).
+    // gcsService.getCSVHeaders strips ALL `"` chars, so the parsed key is 'מקט'.
+    { csvName: 'מקט',                 dbName: 'sku',              type: 'TEXT'    },
+    { csvName: 'משפחת פריט',          dbName: 'item_family',      type: 'TEXT'    },
+    { csvName: 'קוד טיפוס משפחה',     dbName: 'family_type_code', type: 'TEXT'    },
+    { csvName: 'טיפוס משפחה',         dbName: 'family_type',      type: 'TEXT'    },
+    { csvName: 'כמות יחידות בקרטון',  dbName: 'units_per_carton', type: 'NUMERIC' },
+    { csvName: 'תאור סוג אריזה',      dbName: 'packaging_desc',   type: 'TEXT'    },
+    // Only populated for 15,067/303,508 items, non-zero for just 523 — treat as
+    // a hint, not a general-purpose reorder threshold (see sql-generator notes).
+    { csvName: 'מלאי ביטחון',         dbName: 'safety_stock',     type: 'NUMERIC' },
+    { csvName: 'קוד ספק',             dbName: 'supplier_code',    type: 'TEXT'    },
+    { csvName: 'ספק',                 dbName: 'supplier',         type: 'TEXT'    },
+    { csvName: 'URL_IMG',             dbName: 'image_url',        type: 'TEXT'    },
+  ],
+
+  // ── stores — store dimension (139 rows) ─────────────────────────────────────
+  // `מספר חנות` is broken (literal "?" on 138/139 rows) — the real store number
+  // is the leading digits of `store_label` (e.g. "1180 עכו חדש"). Extract with
+  // SPLIT_PART(store_label, ' ', 1) when joining to facts.store_number.
+  stores: [
+    { csvName: 'מספר חנות',  dbName: 'store_number_raw', type: 'TEXT' },
+    { csvName: 'שם חנות',    dbName: 'store_name',       type: 'TEXT' },
+    { csvName: 'חנות',       dbName: 'store_label',      type: 'TEXT' },
+    { csvName: 'חנות פעילה', dbName: 'is_active',        type: 'TEXT' },
+  ],
+
+  // ── calendar — date dimension (735 rows, 2025-01-01..2027-01-01) ────────────
+  calendar: [
+    { csvName: 'תאריך מנותק',  dbName: 'cal_date', type: 'DATE'    },
+    { csvName: 'שנה מנותק',    dbName: 'year',      type: 'INTEGER' },
+    { csvName: 'חודש מנותק',   dbName: 'month',     type: 'TEXT'    },
+    { csvName: 'חג עברי מנותק', dbName: 'holiday',  type: 'TEXT'    },
+  ],
+
+  // ── recommendation_facts — the ACTUAL Fact_ZolStock_CSV.csv (902.5MB,
+  //    29,450,600 rows), loaded as-is — one wide table, no invented files.
+  //    Mixes 5 row kinds via which columns are populated (no discriminator
+  //    column, unlike zolstock.facts' record_type):
+  //      - warehouse stock snapshot (sku+warehouse+warehouse_qty only) — 9,153 rows
+  //      - customer orders (customer_order_id/customer_order_qty)     — 14,303 rows
+  //      - purchase orders (purchase_order_id/purchase_order_qty)     — 753 rows
+  //      - store inventory (store_inventory_qty)                      — 2,983,200 rows
+  //      - sales (qty_sold/item_number_sales)                         — 26,443,191 rows
+  //    The last two duplicate zolstock.facts (fewer columns, same broken
+  //    store_number) — steer sales/inventory questions to zolstock.facts
+  //    instead (see zolstock.crew.js / sql-generator rules).
+  recommendation_facts: [
+    { csvName: 'מקט',                     dbName: 'sku',                  type: 'TEXT'    },
+    { csvName: 'מחסן',                    dbName: 'warehouse',            type: 'TEXT'    },
+    { csvName: 'מלאי נוכחי במחסן',        dbName: 'warehouse_qty',        type: 'NUMERIC' },
+    { csvName: 'מספר חנות',               dbName: 'store_number',         type: 'TEXT'    },
+    { csvName: 'תאריך',                   dbName: 'row_date',             type: 'DATE'    },
+    { csvName: 'הזמנת לקוח',              dbName: 'customer_order_id',    type: 'TEXT'    },
+    { csvName: 'כמות הזמנת לקוח ממחסן',   dbName: 'customer_order_qty',   type: 'NUMERIC' },
+    { csvName: 'הזמנת רכש',               dbName: 'purchase_order_id',    type: 'TEXT'    },
+    { csvName: 'כמות הזמנת רכש למחסן',    dbName: 'purchase_order_qty',   type: 'NUMERIC' },
+    { csvName: 'כמות מלאי בחנויות',       dbName: 'store_inventory_qty',  type: 'NUMERIC' },
+    // Bare "1" header, always empty in all 29.45M rows — vestigial BI export column.
+    { csvName: '1',                       dbName: 'unused_col_1',         type: 'TEXT'    },
+    { csvName: 'כמות שנמכרה',             dbName: 'qty_sold',             type: 'NUMERIC' },
+    { csvName: 'מספר פריט Sales',         dbName: 'item_number_sales',    type: 'TEXT'    },
+  ],
+  // customers: [ ... ],   // TODO — still not delivered
 };
 
 function buildColumnLookup(tableName) {

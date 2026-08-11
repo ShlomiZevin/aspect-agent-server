@@ -29,6 +29,17 @@ const INDEXES = [
   { name: 'idx_facts_seller_id',       table: 'facts', col: '"seller_id"' },
   { name: 'idx_facts_customer_number', table: 'facts', col: '"customer_number"' },
   { name: 'idx_facts_sale_id',         table: 'facts', col: '"sale_id"' },
+
+  // ── items (303,508 rows) — bridge between item_number (used on facts) and
+  //    sku (used on recommendation_facts) ─────────────────────────────────────
+  { name: 'idx_items_item_number', table: 'items', col: '"item_number"' },
+  { name: 'idx_items_sku',         table: 'items', col: '"sku"' },
+
+  // ── recommendation_facts (29,450,600 rows, mixed record kinds — see
+  //    column-aliases-zolstock.js) — sku is the join key back to items ────────
+  { name: 'idx_recommendation_facts_sku',       table: 'recommendation_facts', col: '"sku"' },
+  { name: 'idx_recommendation_facts_date',      table: 'recommendation_facts', col: '"row_date"' },
+  { name: 'idx_recommendation_facts_store',     table: 'recommendation_facts', col: '"store_number"' },
 ];
 
 async function createIndexes(targetSchema, emitLog) {

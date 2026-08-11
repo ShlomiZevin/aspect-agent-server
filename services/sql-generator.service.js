@@ -839,7 +839,7 @@ ORDER BY total_revenue DESC
       return `
 ## zolstock-Specific Rules (CRITICAL — follow exactly)
 
-**Tables**: facts (~39.5M rows, WIDE, mixes record types). No dimension tables yet (no products/customers/stores name tables) — group by the numeric/name keys on facts.
+**Tables**: facts (~39.5M rows, WIDE, mixes record types); items (303,508 rows, product dimension); stores (139 rows, store dimension); recommendation_facts (29,450,600 rows, WIDE, mixes 5 record kinds — the "order recommendation" data delivered 2026-08-10). No customers dimension yet.
 
 **Materialized views (PREFER these for aggregations — pre-computed, fast):**
 - \`zolstock.mv_sales_daily\` — daily totals (revenue_ex_vat, revenue_inc_vat, total_cogs, profit_ex_vat, total_qty, line_count)
@@ -866,11 +866,60 @@ For top-N / revenue-by-period / by-store / by-item / by-seller, query the matchi
 - This month: \`WHERE record_type='מכירות' AND transaction_date >= date_trunc('month', CURRENT_DATE)\`
 - This year:  \`WHERE record_type='מכירות' AND transaction_date >= date_trunc('year', CURRENT_DATE)\`
 - On MVs the same \`transaction_date\` column is indexed — filter there too.
+- **The loaded data currently ends around mid-2026 (NOT necessarily up to CURRENT_DATE)** — a "this month"/"last month"/"today" question can legitimately return ZERO rows simply because that period hasn't loaded yet, not because of an error. For ANY query filtered to "this month", "last month", "today", or "this week", ALSO include the latest available date as a fallback column so the answer can say "no data for [period]; latest available is [date]" instead of implying a system problem:
+\`\`\`sql
+SELECT SUM(revenue_ex_vat) AS revenue, SUM(profit_ex_vat) AS profit,
+       (SELECT MAX(transaction_date) FROM zolstock.facts WHERE record_type='מכירות') AS latest_available_date
+FROM zolstock.mv_sales_daily
+WHERE transaction_date >= date_trunc('month', CURRENT_DATE)
+\`\`\`
 
 ### RULE 5 — expensive metrics: use the MV or narrow the scope (avoid timeouts)
-- **Discounts**: \`discount_amount\` is on raw facts only (no MV). \`SUM(discount_amount)\` over a full year times out — restrict to a NARROW window (default to the current month/quarter) with \`record_type='מכירות'\` and the transaction_date filter.
-- **Unique customers**: there is NO customer dimension. \`COUNT(DISTINCT customer_number)\` over a full year of facts times out. Only attempt it for a NARROW window (default to the current month) and add \`AND customer_number IS NOT NULL AND customer_number <> ''\`.
+- **Discounts**: \`discount_amount\` is on raw facts only (no MV, ~35M rows, no covering index on this column). \`SUM(discount_amount)\` over anything wider than a month WILL time out — this holds even if the user says "this year": ALWAYS restrict to \`transaction_date >= date_trunc('month', CURRENT_DATE)\` (current month) regardless of the period stated in the question, and say in the answer that you narrowed it. NEVER attempt a full-year or full-quarter discount scan on raw \`facts\` — there is no safe way to do it within the timeout.
+- **Unique customers**: there is NO customer dimension. \`COUNT(DISTINCT customer_number)\` over anything wider than a month on raw facts (~35M rows) WILL time out. ALWAYS restrict to \`transaction_date >= date_trunc('month', CURRENT_DATE)\` regardless of the period asked, add \`AND customer_number IS NOT NULL AND customer_number <> ''\`, and say you narrowed it.
+- **Average transaction/line value**: NEVER use \`COUNT(DISTINCT sale_id)\` on raw \`facts\` (times out on ~35M rows). ALWAYS use \`mv_sales_daily\`'s pre-aggregated \`line_count\`:
+\`\`\`sql
+SELECT ROUND(SUM(revenue_ex_vat) / NULLIF(SUM(line_count), 0), 2) AS avg_line_value,
+       SUM(revenue_ex_vat) AS total_revenue, SUM(line_count) AS total_lines
+FROM zolstock.mv_sales_daily
+WHERE transaction_date >= date_trunc('year', CURRENT_DATE)
+\`\`\`
 - **Inventory below minimum**: \`record_type='מלאי'\` snapshots have no useful date filter for "current stock" — restrict to the LATEST snapshot date (see example) so it doesn't scan all snapshots.
+
+### RULE 6 — item names/categories: JOIN facts to items on item_number (NOT sku)
+\`items.item_number\` is the same key as \`facts.item_number\`/MV \`item_number\`. \`items.sku\` is a DIFFERENT code — it's the key used by \`recommendation_facts\` instead. Never cross the two (item_number ≠ sku).
+
+**\`items.item_number\` is NOT unique — 1,859 of 303,508 rows share an item_number with another row** (same item_number, different barcode_key). A plain \`JOIN zolstock.items i ON i.item_number = t.item_number\` MULTIPLIES the aggregate rows (duplicate output rows with identical numbers). ALWAYS dedupe the items side first — use \`GROUP BY\` + \`MAX()\`, NOT \`DISTINCT ON ... ORDER BY <key>\`: \`DISTINCT ON\` with no tiebreak related to the value you care about picks an ARBITRARY duplicate row, so the same logical question can silently return a different answer depending on exactly how the query is written (seen in practice: "items below minimum stock" returned 47 vs 123 depending on whether the safety_stock filter was applied before or after an \`ORDER BY sku\`-only \`DISTINCT ON\`). \`MAX()\` always surfaces a non-NULL value if ANY duplicate row has one, so the result is the same regardless of query shape:
+\`\`\`sql
+JOIN (SELECT item_number, MAX(item_name) AS item_name, MAX(category) AS category, MAX(subcategory) AS subcategory
+      FROM zolstock.items GROUP BY item_number) i
+  ON i.item_number = t.item_number
+\`\`\`
+
+### RULE 6b — store names: JOIN stores on the PARSED store_label, NEVER on store_number_raw
+\`stores.store_number_raw\` is BROKEN (literal "?" on 138/139 rows) — joining on it silently returns zero rows for almost every store. The real store number is the leading digits of \`store_label\` (e.g. "1180 עכו חדש" → 1180). Always join like this:
+\`\`\`sql
+JOIN (SELECT SPLIT_PART(store_label, ' ', 1) AS store_number, store_name FROM zolstock.stores) s
+  ON s.store_number = m.store_number
+\`\`\`
+If a store-name JOIN returns no rows, do NOT conclude "no data" — fall back to querying the MV alone (store_number only, no name) rather than silently failing.
+
+### RULE 7 — recommendation_facts is WIDE with NO discriminator column — filter by which columns are populated
+Unlike \`facts\` (has \`record_type\`), this table mixes 5 record kinds purely by which columns are non-NULL:
+- **Warehouse stock**: \`WHERE warehouse_qty IS NOT NULL\` — one row per \`sku\`, no date/history (a live snapshot).
+- **Customer orders**: \`WHERE customer_order_id IS NOT NULL\` — has \`sku\`, \`store_number\`, \`row_date\`, \`customer_order_qty\`.
+- **Purchase orders**: \`WHERE purchase_order_id IS NOT NULL\` — has \`sku\`, \`row_date\`, \`purchase_order_qty\`.
+- **NEVER query on \`store_inventory_qty\` or \`qty_sold\`/\`item_number_sales\`** — those ~29.4M rows duplicate \`zolstock.facts\` with fewer columns and the same broken store_number. Use \`zolstock.facts\`/the MVs for any sales/inventory question instead.
+- Join to \`items\` via \`sku\` (not item_number) to get the item name/category. **\`items.sku\` also has duplicates (353 of 15,067 non-empty sku values appear on more than one row)** — dedupe with \`GROUP BY sku\` + \`MAX()\` (NOT \`DISTINCT ON\`, see RULE 6a for why — it silently gives different counts depending on query shape):
+\`\`\`sql
+JOIN (SELECT sku, MAX(item_name) AS item_name, MAX(category) AS category, MAX(safety_stock) AS safety_stock
+      FROM zolstock.items WHERE sku IS NOT NULL AND sku <> '' GROUP BY sku) i
+  ON i.sku = rf.sku
+\`\`\`
+- \`items.safety_stock\` is only meaningfully populated for 523 of 303,508 items — when computing "below safety stock", the result will only cover those items; do not claim full catalog coverage. **Always use \`MAX(safety_stock)\` per sku (never DISTINCT ON)** so a defined threshold on one duplicate row is never lost by arbitrarily picking a different duplicate.
+- \`customer_order\` rows' \`store_number\` is a different ID range than \`stores.store_label\` (see items/stores notes above) — don't JOIN it to \`stores\`.
+- \`purchase_order_qty\` can be negative — do not filter it out or use ABS().
+- Always add a WHERE that picks ONE record kind (per above) — a bare scan of \`recommendation_facts\` mixes all 5 kinds and is both misleading and slow (29.4M rows, no MV).
 
 ### Reference examples
 
@@ -881,27 +930,41 @@ FROM zolstock.mv_sales_daily
 WHERE transaction_date >= date_trunc('month', CURRENT_DATE)
 \`\`\`
 
-**Top 10 items this year by revenue (with profit):**
+**Top 10 items this year by revenue (with profit and name — dedupe items on item_number):**
 \`\`\`sql
-SELECT item_number,
-       SUM(total_qty)      AS qty,
-       SUM(revenue_ex_vat) AS revenue,
-       SUM(profit_ex_vat)  AS profit
-FROM zolstock.mv_sales_daily_item
-WHERE transaction_date >= date_trunc('year', CURRENT_DATE)
-GROUP BY item_number
-ORDER BY revenue DESC
-LIMIT 10
+WITH agg AS (
+  SELECT item_number,
+         SUM(total_qty)      AS qty,
+         SUM(revenue_ex_vat) AS revenue,
+         SUM(profit_ex_vat)  AS profit
+  FROM zolstock.mv_sales_daily_item
+  WHERE transaction_date >= date_trunc('year', CURRENT_DATE)
+  GROUP BY item_number
+  ORDER BY revenue DESC
+  LIMIT 10
+)
+SELECT a.*, i.item_name, i.category
+FROM agg a
+LEFT JOIN (SELECT item_number, MAX(item_name) AS item_name, MAX(category) AS category FROM zolstock.items GROUP BY item_number) i
+  ON i.item_number = a.item_number
+ORDER BY a.revenue DESC
 \`\`\`
 
-**Top stores this year:**
+**Top stores this year (with name — join on parsed store_label, NOT store_number_raw):**
 \`\`\`sql
-SELECT store_number, SUM(revenue_ex_vat) AS revenue, SUM(profit_ex_vat) AS profit
-FROM zolstock.mv_sales_daily_store
-WHERE transaction_date >= date_trunc('year', CURRENT_DATE)
-GROUP BY store_number
-ORDER BY revenue DESC
-LIMIT 10
+WITH agg AS (
+  SELECT store_number, SUM(revenue_ex_vat) AS revenue, SUM(profit_ex_vat) AS profit
+  FROM zolstock.mv_sales_daily_store
+  WHERE transaction_date >= date_trunc('year', CURRENT_DATE)
+  GROUP BY store_number
+  ORDER BY revenue DESC
+  LIMIT 10
+)
+SELECT a.*, s.store_name
+FROM agg a
+LEFT JOIN (SELECT SPLIT_PART(store_label, ' ', 1) AS store_number, store_name FROM zolstock.stores) s
+  ON s.store_number = a.store_number
+ORDER BY a.revenue DESC
 \`\`\`
 
 **Overall profit margin this year:**
@@ -949,6 +1012,59 @@ FROM zolstock.facts
 WHERE record_type = 'מכירות'
   AND transaction_date >= date_trunc('month', CURRENT_DATE)
   AND customer_number IS NOT NULL AND customer_number <> ''
+\`\`\`
+
+**Current warehouse stock for an item (dedupe items on sku; filter to the warehouse-stock rows):**
+\`\`\`sql
+SELECT i.item_name, i.category, rf.warehouse_qty, i.safety_stock
+FROM zolstock.recommendation_facts rf
+JOIN (SELECT sku, MAX(item_name) AS item_name, MAX(category) AS category, MAX(safety_stock) AS safety_stock
+      FROM zolstock.items WHERE sku IS NOT NULL AND sku <> '' GROUP BY sku) i
+  ON i.sku = rf.sku
+WHERE rf.warehouse_qty IS NOT NULL
+  AND i.item_name ILIKE '%<search term>%'
+\`\`\`
+
+**Items where warehouse stock is below their defined safety stock (only covers the 523 items that have one):**
+\`\`\`sql
+SELECT i.item_name, i.category, rf.warehouse_qty, i.safety_stock
+FROM zolstock.recommendation_facts rf
+JOIN (SELECT sku, MAX(item_name) AS item_name, MAX(category) AS category, MAX(safety_stock) AS safety_stock
+      FROM zolstock.items WHERE sku IS NOT NULL AND sku <> '' GROUP BY sku) i
+  ON i.sku = rf.sku
+WHERE rf.warehouse_qty IS NOT NULL
+  AND i.safety_stock IS NOT NULL AND i.safety_stock > 0
+  AND rf.warehouse_qty < i.safety_stock
+ORDER BY (i.safety_stock - rf.warehouse_qty) DESC
+\`\`\`
+
+**Open purchase orders (most recent first):**
+\`\`\`sql
+SELECT rf.row_date, rf.purchase_order_id, i.item_name, rf.purchase_order_qty
+FROM zolstock.recommendation_facts rf
+LEFT JOIN (SELECT sku, MAX(item_name) AS item_name FROM zolstock.items WHERE sku IS NOT NULL AND sku <> '' GROUP BY sku) i
+  ON i.sku = rf.sku
+WHERE rf.purchase_order_id IS NOT NULL
+ORDER BY rf.row_date DESC
+LIMIT 50
+\`\`\`
+
+**Open customer orders for an item:**
+\`\`\`sql
+SELECT rf.row_date, rf.customer_order_id, rf.store_number, rf.customer_order_qty
+FROM zolstock.recommendation_facts rf
+JOIN (SELECT sku, MAX(item_name) AS item_name FROM zolstock.items WHERE sku IS NOT NULL AND sku <> '' GROUP BY sku) i
+  ON i.sku = rf.sku
+WHERE rf.customer_order_id IS NOT NULL
+  AND i.item_name ILIKE '%<search term>%'
+ORDER BY rf.row_date DESC
+\`\`\`
+
+**Store name/number lookup (real store number is the leading digits of store_label):**
+\`\`\`sql
+SELECT store_name, SPLIT_PART(store_label, ' ', 1) AS store_number, is_active
+FROM zolstock.stores
+WHERE store_name ILIKE '%<search term>%'
 \`\`\``;
     }
 
