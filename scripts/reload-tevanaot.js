@@ -200,11 +200,16 @@ async function indexTevaNaot(targetSchema, emitLog) {
 async function getTevaNaotDataInfo() {
   const pool = getPool();
   try {
+    // Day precision, not month — see reload-zolstock.js's getZolStockDataInfo
+    // for why a bare 'YYYY-MM' is actively wrong here: getDataThroughDate()
+    // normalizes it to the LAST day of the month, which silently pads in
+    // however many trailing days actually have zero rows and reads them as a
+    // real decline in any "last N weeks" question.
     const result = await pool.query(
-      `SELECT TO_CHAR(MAX("transaction_date"), 'YYYY-MM') AS last_month
+      `SELECT TO_CHAR(MAX("transaction_date"), 'YYYY-MM-DD') AS last_date
        FROM tevanaot.mv_sales`
     );
-    return result.rows[0]?.last_month || null;
+    return result.rows[0]?.last_date || null;
   } catch {
     return null;
   }
