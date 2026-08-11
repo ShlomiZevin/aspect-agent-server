@@ -133,10 +133,10 @@ const REGISTRY = {
       gradientTo: '#FACC15',
     },
     defaultBrandLabel: 'Zol Stock, a discount retail chain',
-    defaultDataModelDescription: 'a wide facts table mixing sales, inventory, and wholesale-agent rows by record type, pre-aggregated into daily materialized views by item, store, and seller. Common measures: revenue and profit (ex VAT), quantity sold, inventory quantity. Common dimensions: store, item, seller, date (day/week/month). Product/customer/store name dimensions are not yet loaded — only numeric ids are available for grouping until those files arrive.',
+    defaultDataModelDescription: 'a wide facts table mixing sales, inventory, and wholesale-agent rows by record type, pre-aggregated into daily materialized views by item, store, and seller. Common measures: revenue and profit (ex VAT), quantity sold, inventory quantity. Common dimensions: store name, item name/category, seller, date (day/week/month) — item and store dimension tables (names, categories, subcategories) landed 2026-08-10, so questions can group and display by real names, not just numeric ids. A separate recommendation_facts table (warehouse stock snapshots, customer orders, purchase orders — no discriminator column, filtered by which columns are populated) supports overstock/understock and order-fulfilment questions.',
     defaultBootstrapPrompts: [
       'Which stores have the steepest sales decline recently',
-      'Which items are tying up the most inventory quantity',
+      'Which items are below their safety stock level in the warehouse',
       'What is the daily revenue trend over the last several weeks',
       'Which sellers have the highest sales volume',
     ],

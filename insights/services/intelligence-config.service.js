@@ -42,7 +42,12 @@ function defaultsFor(datasetId) {
   const entry = registry.get(datasetId);
   if (!entry) return null;
   return {
-    enabled: entry.id === 'hypertoy', // only hypertoy is verified/live by default
+    // Verified/live by default: hypertoy (reconciled to the client's own Qlik
+    // dashboard) and zolstock (33/33 figures matched in the 2026-08-11
+    // accuracy suite — the best result of the 6 datasets — after the
+    // items/stores dimension tables and schema-rules landed). The other four
+    // still default off until they get the same pass.
+    enabled: entry.id === 'hypertoy' || entry.id === 'zolstock',
     dataModelDescription: entry.defaultDataModelDescription,
     brandLabel: entry.defaultBrandLabel,
     bootstrapPrompts: entry.defaultBootstrapPrompts,
