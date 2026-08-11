@@ -142,7 +142,7 @@ const REGISTRY = {
     ],
     defaultExamplePrompts: [
       'Main risks for the next few months',
-      'Which items are below their safety stock level in the warehouse',
+      'What are the top 10 items by quantity sold',
       'Which product family has the steepest margin decline',
     ],
   },
