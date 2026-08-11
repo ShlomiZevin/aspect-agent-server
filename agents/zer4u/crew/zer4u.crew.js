@@ -110,9 +110,9 @@ You: *Call fetch_zer4u_data("current inventory levels by product")* → "הנה 
 
       // gpt-4o unreliably followed the "paste the formatted table verbatim"
       // instruction (retranslated headers, drifted into numbered lists on
-      // longer tables) — gpt-5-chat-latest complies consistently (same
+      // longer tables) — gpt-5.6 complies consistently (same
       // switch already proven out for hypertoy, see project memory).
-      model: process.env.ZER4U_CREW_MODEL || 'gpt-5-chat-latest',
+      model: process.env.ZER4U_CREW_MODEL || 'gpt-5.6',
       maxTokens: 8192,
 
       fieldsToCollect: [],

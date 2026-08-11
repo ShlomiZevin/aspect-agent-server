@@ -161,7 +161,7 @@ User: "אילו סניפים מובילים במכירות?"
       // Talker model. Upgraded from gpt-4o to GPT-5 chat (the model the project
       // already uses for its strongest conversational crews) for better answers
       // and less hallucination. The SQL is generated separately by Claude Sonnet.
-      model: process.env.HYPERTOY_CREW_MODEL || 'gpt-5-chat-latest',
+      model: process.env.HYPERTOY_CREW_MODEL || 'gpt-5.6',
       maxTokens: 8192,
       fieldsToCollect: [],
       transitionTo: null,

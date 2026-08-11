@@ -132,9 +132,9 @@ User: "אילו חנויות מובילות במכירות?"
 
       // gpt-4o unreliably followed the "paste the formatted table verbatim"
       // instruction (drifted into numbered lists on longer tables) —
-      // gpt-5-chat-latest complies consistently (same switch already proven
+      // gpt-5.6 complies consistently (same switch already proven
       // out for hypertoy, see project memory).
-      model: process.env.TEVANAOT_CREW_MODEL || 'gpt-5-chat-latest',
+      model: process.env.TEVANAOT_CREW_MODEL || 'gpt-5.6',
       maxTokens: 8192,
       fieldsToCollect: [],
       transitionTo: null,

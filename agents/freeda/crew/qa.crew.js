@@ -55,7 +55,7 @@ WHEN DISCUSSING TREATMENTS, ALWAYS DISCUSS THE 2 TYPES OF TREATMENTS: MEDICAL (i
 ## Knowledge Base
 When the user asks about menopause, symptoms, treatments, HRT, or health — always look in Knowledge base files before answering.`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 2048,
 
       knowledgeBase: {

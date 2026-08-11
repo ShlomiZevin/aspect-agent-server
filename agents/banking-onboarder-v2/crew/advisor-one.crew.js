@@ -125,7 +125,7 @@ class AdvisorOneCrew extends CrewMember {
       description: 'Intent gathering, financial profiling, and personalized product recommendations',
       isDefault: false,
       thinkerOnly: true,
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       fallbackModel: 'gpt-4o',
       maxTokens: 2048,
       persona: getPersona(),

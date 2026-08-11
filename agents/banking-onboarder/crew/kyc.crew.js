@@ -52,7 +52,7 @@ If the user has questions, answer briefly. Don't explain what was checked in det
 ## DEMO NOTE
 In this demo, all customers pass KYC automatically. In production, these would be real API calls to compliance services.`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 1500,
       tools: [],
       knowledgeBase: null

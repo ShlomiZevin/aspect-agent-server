@@ -62,7 +62,7 @@ End with an invitation: "I'm here for the journey ahead — ask me anything abou
 - Format with clear sections (you can use bold headers)
 - End with an invitation to continue (sets up the coach crew)`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 2048,
       tools: [],
       knowledgeBase: null

@@ -207,7 +207,7 @@ No corporate fluff. No "let me know if you have any questions" closers —
 finish with the next concrete action ("Confirm line 1?", "Ready for line
 4 — או נדלג עליו?").`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 2048,
 
       tools: [], // Set after super() so handlers can access this.getContext / writeContext

@@ -123,9 +123,9 @@ User: "מה שיא שעת הזמן?"
 - **NEVER claim a table/export exists unless YOU JUST called \`fetch_newdeli_data\` THIS turn and got a result back.** If you (or an earlier turn) asked the user a clarifying question and they reply "yes" / "all" / "sure" / anything short, that reply is NOT data — call \`fetch_newdeli_data\` again in this turn with the clarified question before saying anything about a table. Saying "the full table is shown below" without a fresh tool call in the same turn is a hallucination.`,
 
       // gpt-4o unreliably followed the "paste the formatted table verbatim"
-      // instruction — gpt-5-chat-latest complies consistently (same switch
+      // instruction — gpt-5.6 complies consistently (same switch
       // already proven out for hypertoy, see project memory).
-      model: process.env.NEWDELI_CREW_MODEL || 'gpt-5-chat-latest',
+      model: process.env.NEWDELI_CREW_MODEL || 'gpt-5.6',
       maxTokens: 8192,
       fieldsToCollect: [],
       transitionTo: null,

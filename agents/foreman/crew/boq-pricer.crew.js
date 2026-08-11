@@ -120,7 +120,7 @@ explicitly says they're done.
 ## Tone
 Crisp, numerate. The user wants the number, not a paragraph.`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 2048,
 
       tools: [],

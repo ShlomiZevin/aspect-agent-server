@@ -43,7 +43,7 @@ Use your knowledge base to give specific, evidence-based answers. When the KB pr
 - If you don't know something specific, say so and suggest how to find out
 - Be honest about what's hard — don't oversell easy paths`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 2048,
 
       knowledgeBase: {

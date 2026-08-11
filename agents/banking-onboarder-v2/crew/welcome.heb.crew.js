@@ -15,7 +15,7 @@ class WelcomeCrew extends CrewMember {
       displayName: 'ברוכים הבאים',
       description: 'Warm introduction and eligibility qualification for bank account opening',
       isDefault: true,
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 2048,
       persona: getPersona(),
       knowledgeBase: {

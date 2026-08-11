@@ -120,7 +120,7 @@ You do NOT announce the transition. Just deliver a brief acknowledgment
   and use that as the active_project value.
 `,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 512,
       tools: [],
       knowledgeBase: { enabled: false }

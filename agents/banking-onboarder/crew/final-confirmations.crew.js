@@ -46,7 +46,7 @@ If someone wants to pause or has a question, that's fine. No account opens witho
 ## DEMO NOTE
 This is a simulated process. In production, this would connect to real banking systems and legal documents.`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 2000,
       tools: [],
       knowledgeBase: null

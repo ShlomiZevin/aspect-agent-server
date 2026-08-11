@@ -41,7 +41,7 @@ class ReviewFinalizeCrew extends CrewMember {
       displayName: 'סיכום ואישור',
       description: 'Closing crew: verify details, get consent, collect signature, and send the user off.',
       isDefault: false,
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       fallbackModel: 'gpt-4o',
       maxTokens: 2048,
       persona: getPersona(),
