@@ -200,13 +200,20 @@ async function indexZolStock(targetSchema, emitLog) {
 async function getZolStockDataInfo() {
   const pool = getPool();
   try {
-    // TODO: point at the real fact table / date column once the schema is known.
+    // Was month-only ('YYYY-MM') — a leftover from before the real schema was
+    // known. Insights' getDataThroughDate() normalizes a bare month to its
+    // LAST day (e.g. "2026-06" -> 2026-06-30), which is wrong here: real data
+    // stops 2026-06-04, so every "last 4 weeks"-style question silently
+    // included ~26 trailing days with zero rows and reported it as a network-
+    // wide ~90% revenue collapse (all 84 stores) instead of a data-cutoff
+    // artifact. Day precision matches every other dataset's dataInfoFn
+    // (e.g. getHyperToyDataInfo) and removes the false "collapse".
     const result = await pool.query(
-      `SELECT TO_CHAR(MAX("transaction_date"), 'YYYY-MM') AS last_month
+      `SELECT TO_CHAR(MAX("transaction_date"), 'YYYY-MM-DD') AS last_date
        FROM zolstock.facts
        WHERE "record_type" = 'מכירות'`
     );
-    return result.rows[0]?.last_month || null;
+    return result.rows[0]?.last_date || null;
   } catch {
     return null;
   }
