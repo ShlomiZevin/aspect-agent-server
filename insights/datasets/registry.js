@@ -142,8 +142,8 @@ const REGISTRY = {
     ],
     defaultExamplePrompts: [
       'Main risks for the next few months',
-      'Which stores are declining fastest',
-      'Which items are overstocked',
+      'Which stores will miss this quarter\'s target — and why',
+      'Which product family has the steepest margin decline',
     ],
   },
   tevanaot: {
