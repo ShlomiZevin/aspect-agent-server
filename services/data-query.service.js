@@ -85,6 +85,9 @@ class DataQueryService {
           userId,
           previousError: attempt > 1 ? prevError : undefined,
           previousSql: attempt > 1 ? prevSql : undefined,
+          // The date the data actually ends, so relative windows anchor to it
+          // instead of CURRENT_DATE — see _buildDataRecencySection.
+          dataThroughDate: options.dataThroughDate,
         });
         sql = generated.sql;
         explanation = generated.explanation;
@@ -174,7 +177,10 @@ class DataQueryService {
 
         return {
           error: true, timeout: isTimeout,
-          message: isTimeout ? this._getTimeoutMessage() : error.message,
+          // Report the timeout THIS query actually ran under, not the module
+          // default — Insights passes 75s, so a message saying "stopped after
+          // 15 seconds" sent anyone debugging it looking in the wrong place.
+          message: isTimeout ? this._getTimeoutMessage(timeout) : error.message,
           sql, explanation, confidence, data: [], rowCount: 0,
         };
 
@@ -286,8 +292,8 @@ class DataQueryService {
   }
 
   /** @private */
-  _getTimeoutMessage() {
-    return `The query took too long and was automatically stopped after ${QUERY_TIMEOUT_MS / 1000} seconds.\n\nIt has been logged in the Query Optimizer dashboard where an admin can analyze it and create the necessary database indexes to make similar queries much faster.\n\nIn the meantime, try asking a more specific question or narrowing the time range (e.g. "last week" instead of "last year").`;
+  _getTimeoutMessage(timeoutMs = QUERY_TIMEOUT_MS) {
+    return `The query took too long and was automatically stopped after ${Math.round(timeoutMs / 1000)} seconds.\n\nIt has been logged in the Query Optimizer dashboard where an admin can analyze it and create the necessary database indexes to make similar queries much faster.\n\nIn the meantime, try asking a more specific question or narrowing the time range (e.g. "last week" instead of "last year").`;
   }
 
   async close() {

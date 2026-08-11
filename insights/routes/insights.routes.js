@@ -50,7 +50,7 @@ function toSummary(insight) {
     // investigation.service.js's migrateLegacyBlocks for defaults on older
     // records. askedPrompt is what the user actually typed (or, for an
     // Aspect-proposed report, what Aspect chose to investigate).
-    createdAt, origin, viewed, askedPrompt: evidence?.prompt || headline,
+    createdAt, origin, viewed, askedPrompt: evidence?.prompt || headline, shared: !!insight.shared,
     chartPreview: { categories: chart.categories, series: chart.series.map(s => ({ key: s.key, points: s.points, color: s.color, dashed: !!s.dashed })) },
   };
 }
@@ -220,11 +220,14 @@ router.delete('/:datasetId/:insightId', async (req, res) => {
 // existing error/restart state (JobBadge) rather than a fabricated success.
 router.post('/:datasetId/investigate', async (req, res) => {
   const prompt = ((req.body && req.body.prompt) || '').trim();
+  // Client-generated id so the browser can poll real stage progress while
+  // this long request is still open — see GET /:datasetId/progress/:jobId.
+  const jobId = typeof req.body?.jobId === 'string' ? req.body.jobId.slice(0, 64) : null;
 
   try {
     await requireEnabled(req.params.datasetId);
     const userId = requireUserId(req.body?.userId);
-    const insight = await investigationService.investigate(req.params.datasetId, userId, prompt);
+    const insight = await investigationService.investigate(req.params.datasetId, userId, prompt, jobId);
     res.json({
       prompt: insight.evidence.prompt, // the actual prompt used — may be the auto-proposed one
       status: 'ready',
@@ -234,8 +237,20 @@ router.post('/:datasetId/investigate', async (req, res) => {
       insightIds: [insight.id],
     });
   } catch (err) {
+    require('../services/investigation-progress.service').fail(jobId, err.message);
     handleError(res, err, 'investigate');
   }
+});
+
+// Real stage progress for a running investigation. Three path segments, so it
+// can't collide with the two-segment /:datasetId/:insightId detail route
+// regardless of registration order. 404 means "no such job on this instance"
+// — the client falls back to its own resume-by-diffing path rather than
+// treating it as an error.
+router.get('/:datasetId/progress/:jobId', (req, res) => {
+  const state = investigationService.getProgress(req.params.jobId);
+  if (!state) return res.status(404).json({ error: 'Unknown job' });
+  res.json(state);
 });
 
 // "Gentle helper" (design turn 4c) — before actually starting an
