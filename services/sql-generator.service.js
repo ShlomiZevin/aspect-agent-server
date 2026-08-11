@@ -13,6 +13,9 @@ class SQLGeneratorService {
   constructor() {
     // Cache slow queries per schema for 5 minutes to avoid fetching on every call
     this._antiPatternCache = new Map(); // schemaName -> { queries, fetchedAt }
+    // schemaName -> { relations, fetchedAt } — real tables/matviews, used to
+    // catch schema rules that reference relations which no longer exist.
+    this._relationCache = new Map();
   }
 
   /**
@@ -39,8 +42,12 @@ class SQLGeneratorService {
       // Step 2: Fetch slow query anti-patterns (cached)
       const antiPatterns = await this._getAntiPatterns(schemaName);
 
+      // Step 2b: verify the hand-written rules still match reality
+      const ruleCorrections = await this._getRuleCorrections(schemaName);
+
       // Step 3: Build the prompt for Claude
-      const systemPrompt = this._buildSystemPrompt(schemaName, schemaDescription, antiPatterns);
+      const systemPrompt = this._buildSystemPrompt(schemaName, schemaDescription, antiPatterns, ruleCorrections)
+        + this._buildDataRecencySection(schemaName, options.dataThroughDate);
       let userMessage = this._buildUserMessage(question);
 
       // Self-correction: if a previous attempt failed when executed, feed the exact
@@ -59,6 +66,15 @@ class SQLGeneratorService {
           model: 'claude-sonnet-4-6',
           maxTokens: 4096,
           jsonOutput: true,
+          // NL->SQL is a single-correct-answer task, but this ran at the
+          // provider default (temperature 1.0) since day one — so asking the
+          // identical question twice produced materially different SQL, with
+          // a different grain and therefore different numbers. Pinned to 0:
+          // the same question against the same schema now yields the same
+          // query. (Not fully deterministic end to end — the injected
+          // anti-pattern list changes as production traffic changes — but it
+          // removes the dominant source of drift.)
+          temperature: 0,
           context: 'sql_generation',
           agentName: options.agentName,
           conversationId: options.conversationId,
@@ -77,6 +93,70 @@ class SQLGeneratorService {
       console.error('❌ SQL Generation failed:', error.message);
       throw new Error(`Failed to generate SQL: ${error.message}`);
     }
+  }
+
+  /**
+   * Cross-checks the hand-written schema rules against what the database
+   * ACTUALLY contains, and returns a correction block for the prompt.
+   *
+   * The rules in _getSchemaSpecificRules() are the highest-authority layer the
+   * model sees ("CRITICAL — follow exactly"), but they are static text that
+   * silently rots as schemas change. Found live 2026-08-10: the zer4u rules
+   * instruct the model to join through `mv_sales_by_store_month`,
+   * `mv_sales_by_store` and `mv_sales_by_month` — none of which exist any more
+   * (zer4u has only mv_sales_by_product and mv_sales_by_product_month). Every
+   * zer4u store/target/revenue question therefore failed outright with
+   * "relation does not exist", or fell back to a zero-row query. No amount of
+   * downstream verification can fix a query aimed at a table that isn't there.
+   *
+   * Generic by construction: it reads the real catalog, so it protects any
+   * dataset whose rules drift, without anyone re-auditing them by hand.
+   * @private
+   */
+  async _getRuleCorrections(schemaName) {
+    const cached = this._relationCache.get(schemaName);
+    let relations = cached && (Date.now() - cached.fetchedAt) < 5 * 60 * 1000 ? cached.relations : null;
+
+    if (!relations) {
+      try {
+        const pool = getZer4uPool(); // the shared customer-data pool — every dataset schema lives in it
+        const { rows } = await pool.query(
+          `SELECT table_name AS name FROM information_schema.tables WHERE table_schema = $1
+           UNION
+           SELECT matviewname AS name FROM pg_matviews WHERE schemaname = $1`,
+          [schemaName]
+        );
+        relations = rows.map(r => r.name);
+        this._relationCache.set(schemaName, { relations, fetchedAt: Date.now() });
+      } catch (err) {
+        console.warn(`⚠️  Could not verify relations for ${schemaName}: ${err.message}`);
+        return '';
+      }
+    }
+    if (relations.length === 0) return '';
+
+    const rules = this._getSchemaSpecificRules(schemaName);
+    const referenced = new Set();
+    const re = new RegExp(`\\b${schemaName}\\.([a-z0-9_]+)`, 'gi');
+    let m;
+    while ((m = re.exec(rules)) !== null) referenced.add(m[1].toLowerCase());
+
+    const existing = new Set(relations.map(r => r.toLowerCase()));
+    const missing = [...referenced].filter(r => !existing.has(r));
+    if (missing.length === 0) return '';
+
+    console.warn(`⚠️  ${schemaName}: schema rules reference ${missing.length} non-existent relation(s): ${missing.join(', ')}`);
+    return `
+
+## ⚠ CORRECTION TO THE RULES ABOVE — VERIFIED AGAINST THE LIVE DATABASE
+
+The schema-specific rules above are partly out of date. These relations are named there but **DO NOT EXIST** and must never appear in your query:
+${missing.map(r => `- \`${schemaName}.${r}\` — DOES NOT EXIST`).join('\n')}
+
+The relations that genuinely exist in \`${schemaName}\` right now are:
+${relations.sort().map(r => `- \`${schemaName}.${r}\``).join('\n')}
+
+Where a rule above tells you to use a non-existent relation, ignore that instruction and build the query from the real relations listed here (and the schema description at the top, which is generated from the live database). Do NOT invent a substitute name that merely looks similar.`;
   }
 
   /**
@@ -103,7 +183,7 @@ class SQLGeneratorService {
    * Build system prompt for SQL generation
    * @private
    */
-  _buildSystemPrompt(schemaName, schemaDescription, antiPatterns = []) {
+  _buildSystemPrompt(schemaName, schemaDescription, antiPatterns = [], ruleCorrections = '') {
     return `You are an expert PostgreSQL query generator. Your task is to translate natural language questions into accurate SQL queries.
 
 ## Schema Information
@@ -123,8 +203,24 @@ Generate a PostgreSQL query that answers the user's question based on the schema
 5. **Safety**: Never generate DROP, DELETE, UPDATE, INSERT, or other destructive operations
 6. **Column Names**: EXISTING source column names with spaces or Hebrew characters MUST be quoted with double quotes. But for an ALIAS you invent yourself (\`AS ...\`), always use snake_case with NO spaces — e.g. \`AS transaction_count_drop\`, never \`AS "transaction count drop"\`. This matters beyond style: a quoted alias that echoes the user's own wording (e.g. "transaction drop", "sales drop") can accidentally contain a forbidden DDL/DML word (DROP, CREATE, ALTER, ...) as a stand-alone word, which trips the query-safety guard and rejects an otherwise-valid SELECT. snake_case never has this problem, since the guard only matches whole words.
 7. **Aggregations**: Use appropriate GROUP BY, ORDER BY, and aggregate functions
-8. **Limits**: Add a LIMIT ONLY when the user explicitly asked for a specific count ("top 10", "the 5 highest", "first 20"). For "all", "every", "the full list", "don't limit", or any plain unqualified listing question — DO NOT add a LIMIT yourself, no matter how large the table is (not even a "safety" LIMIT 500/1000/5000). This applies even to the biggest tables listed below. The application enforces its own upstream safety cap after your query runs, so row count is never your problem to solve — a query with no LIMIT clause at all is the CORRECT answer for these questions, not a risk to protect against.
-${this._getSchemaSpecificRules(schemaName)}
+8. **JOIN FAN-OUT — CHECK THIS EVERY TIME YOU JOIN BEFORE AGGREGATING**: joining a fact table to a lookup/dimension table whose join key is NOT unique silently MULTIPLIES every measure. One fact row matching 2 lookup rows is counted twice, and the result looks completely normal — no error, no warning, just inflated totals. This is the single most damaging mistake you can make here: a real case on this platform inflated total revenue by 44.6% (₪190.7M reported against a true ₪131.8M) because the product lookup held ~7,000 duplicate keys, and it went unnoticed because every individual number still looked plausible.
+   - Treat a lookup table's key as NOT unique unless the schema information above explicitly says it is.
+   - When you only need descriptive attributes (a name, a family, a category) from a lookup table, deduplicate it first instead of joining it raw:
+     \`\`\`sql
+     WITH lookup AS (
+       SELECT DISTINCT ON (join_key) join_key, attribute_you_need
+       FROM schema.lookup_table
+       ORDER BY join_key
+     )
+     SELECT l.attribute_you_need, SUM(f.measure)
+     FROM schema.fact_table f
+     JOIN lookup l ON f.join_key = l.join_key
+     GROUP BY 1
+     \`\`\`
+   - A sanity check you can apply mentally: the sum of your measure across all groups must equal the sum of that measure on the fact table alone. If a join could make it larger, the join is wrong.
+   - This applies to EVERY schema and every lookup table (products, items, parts, stores, branches, customers, suppliers), not just the ones named in the schema-specific rules below.
+9. **Limits**: Add a LIMIT ONLY when the user explicitly asked for a specific count ("top 10", "the 5 highest", "first 20"). For "all", "every", "the full list", "don't limit", or any plain unqualified listing question — DO NOT add a LIMIT yourself, no matter how large the table is (not even a "safety" LIMIT 500/1000/5000). This applies even to the biggest tables listed below. The application enforces its own upstream safety cap after your query runs, so row count is never your problem to solve — a query with no LIMIT clause at all is the CORRECT answer for these questions, not a risk to protect against.
+${this._getSchemaSpecificRules(schemaName)}${ruleCorrections}
 ${this._buildAntiPatternsSection(antiPatterns)}
 ## Output Format
 
@@ -204,7 +300,23 @@ Do NOT invent an arbitrary cutoff like "below 80% of the full target" — that i
 Include the raw values, the deviation, the z_score, and the pct_change in the result so the reasoning is auditable — never just assert "no anomalies found" without the underlying numbers to back it up.
 
 ### RULE 4 — JOINs
-- Products: \`JOIN hypertoy.products p ON f.part = p.part\`
+
+**\`products.part\` IS NOT UNIQUE — 62,163 rows for 55,189 distinct parts.** Joining \`facts\` to \`products\` directly inflates every measure by ~45% (a verified ₪131.8M of sales reports as ₪190.7M). ALWAYS deduplicate first when you need product attributes:
+\`\`\`sql
+WITH prod AS (
+  SELECT DISTINCT ON (part) part, sku, item_description, family_description
+  FROM hypertoy.products
+  ORDER BY part
+)
+SELECT pr.family_description, SUM(f.sales_ex_vat) AS revenue
+FROM hypertoy.facts f
+JOIN prod pr ON f.part = pr.part
+WHERE f.record_type = 'מכירות'
+GROUP BY 1
+\`\`\`
+This is verified against the client's own Qlik dashboard: the deduplicated form reproduces its product-family totals to the shekel (Lego ₪19,000,391 incl. VAT); the raw join does not.
+
+- Products: \`JOIN prod pr ON f.part = pr.part\` (the deduplicated CTE above — NEVER \`JOIN hypertoy.products\` directly before an aggregate)
 - Warehouses: \`JOIN hypertoy.warehouses w ON f.warehouse_code = w.warehouse_code\`
 - Stores (better attribution): \`JOIN hypertoy.stores s ON f.warehouse_code = s.store_id\` (warehouse_code on facts often matches store_id)
 - Payments: \`JOIN hypertoy.payments pay ON f.transaction_id = pay.transaction_id\`
@@ -747,92 +859,11 @@ ORDER BY avg_order_value DESC
 \`\`\``;
     }
 
+    // Rules extracted to their own module and rewritten against the live
+    // schema — the inline version named 9 materialized views that do not
+    // exist. See services/schema-rules/zer4u.rules.js.
     if (schemaName === 'zer4u') {
-      return `
-9. **Typed Columns**: Key columns in the sales table have proper types and English names — use them directly:
-    - \`sale_date\` is DATE — use standard date comparisons: \`WHERE s.sale_date >= '2024-01-01'\`
-    - \`store_id\` is INTEGER — join directly: \`ON s.store_id = st.store_id\`
-    - \`customer_id\` is INTEGER — join directly: \`ON s.customer_id = c.customer_id\`
-    - \`cost\` is NUMERIC (excl VAT) — use directly: \`SUM(s.cost)\`
-    - \`quantity\` is NUMERIC — use directly: \`SUM(s.quantity)\`
-    - \`item_code\` is TEXT — join with: \`ON s.item_code = i.item_code\`
-10. **Revenue / total sales (פדיון) — ALWAYS via materialized views**: the BI revenue measure lives in a sales column whose name contains non-ASCII (Hebrew) characters that CANNOT be typed reliably — writing it directly fails with "column does not exist". NEVER reference the raw revenue column in SQL. ALWAYS read revenue from a materialized view's \`total_revenue\` (every MV computes it from that column and is BI-correct). The plain \`revenue\` column excludes vouchers and under-reports — do not use it either. If a revenue breakdown is not covered by any MV listed below, tell the user the data is not available at that granularity rather than querying the sales table for revenue. (\`cost\` IS a normal ASCII column on \`sales\` and may be used directly for cost/profit by item.)
-11. **VAT (מע"מ)** — all monetary figures are EXCLUDING VAT (ללא מע"מ); that is the business standard. There is NO VAT-inclusive sale column — do NOT invent one or multiply by a hardcoded rate. \`"אחוז מעם לתעודה"\` holds the per-document VAT %, only if a VAT-inclusive figure is ever explicitly requested.
-12. **Transactions / number of receipts (כמות עסקאות) — must match the BI**: NEVER use \`COUNT(*)\` on sales (that counts line items, ~2.7x too high). Use the materialized views' \`transaction_count\` (already BI-correct). For ad-hoc counts on the sales table, count distinct receipts EXCLUDING tax-invoices (חשבונית חיוב), which are listed in \`${schemaName}.hesbonithiuvi\`:
-    \`COUNT(DISTINCT s."UniqueInvoiceKey") FILTER (WHERE h."UniqueInvoiceKey" IS NULL) - COUNT(DISTINCT s."UniqueInvoiceKey") FILTER (WHERE h."UniqueInvoiceKey" IS NOT NULL)\` with \`LEFT JOIN ${schemaName}.hesbonithiuvi h ON h."UniqueInvoiceKey" = s."UniqueInvoiceKey"\`.
-13. **Date Intervals**: Use standard PostgreSQL date arithmetic:
-    - Last 6 months: \`WHERE s.sale_date >= CURRENT_DATE - INTERVAL '6 months'\`
-    - Specific month: \`WHERE TO_CHAR(s.sale_date, 'YYYY-MM') = '2025-03'\`
-    - Group by month: \`TO_CHAR(s.sale_date, 'YYYY-MM') AS month\`
-
-14. **Aggregating materialized views**: every MV row is already a per-period aggregate. To total across periods you MUST aggregate the measures — use \`SUM(total_revenue)\`, \`SUM(transaction_count)\`, \`SUM(customer_count)\` — and \`GROUP BY\` only the dimensions you keep. NEVER put a bare MV measure (e.g. \`total_revenue\`, \`customer_count\`) in the SELECT or ORDER BY of a GROUP BY query without wrapping it in \`SUM(...)\`. For a single period number use \`SELECT SUM(total_revenue) FROM ${schemaName}.mv_sales_by_month WHERE sale_year = ...\`. (\`SUM(customer_count)\` across months is an approximation of yearly unique customers — say so.)
-15. **Never divide by zero**: wrap EVERY division denominator in \`NULLIF(expr, 0)\` — e.g. \`x / NULLIF(y, 0)\`. Applies to all ratios (stock/sales, margins, pct-of-target).
-16. **Targets / יעדים (performance vs target)**: the \`targets\` table has \`"TargetKey"\` = \`'<category>**<store_id>**<DD/MM/YYYY>'\` and \`"Target"\` (TEXT). EVERY \`"Target"\` value carries a trailing \`%\` (and other non-numeric chars) — you MUST strip them before casting: \`NULLIF(regexp_replace("Target", '[^0-9.-]', '', 'g'), '')::numeric\`. The date in the key is \`DD/MM/YYYY\` — parse it with \`TO_DATE(SPLIT_PART("TargetKey", '**', 3), 'DD/MM/YYYY')\`. There are several category rows per store+month, so SUM them. Join targets to actuals through \`mv_sales_by_store_month\` (NEVER the raw sales table). Reference query:
-\`\`\`sql
-SELECT sm.store_number, sm.store_name, sm.year_month,
-       sm.total_revenue AS actual_revenue, tgt.target_amount,
-       ROUND(sm.total_revenue / NULLIF(tgt.target_amount, 0) * 100, 2) AS pct_of_target
-FROM ${schemaName}.mv_sales_by_store_month sm
-JOIN (
-  SELECT SPLIT_PART("TargetKey", '**', 2) AS store_id,
-         TO_CHAR(TO_DATE(SPLIT_PART("TargetKey", '**', 3), 'DD/MM/YYYY'), 'YYYY-MM') AS year_month,
-         SUM(NULLIF(regexp_replace("Target", '[^0-9.-]', '', 'g'), '')::numeric) AS target_amount
-  FROM ${schemaName}.targets GROUP BY 1, 2
-) tgt ON tgt.store_id = sm.store_number::text AND tgt.year_month = sm.year_month
-WHERE sm.sale_year = EXTRACT(YEAR FROM CURRENT_DATE)::int
-ORDER BY sm.year_month DESC, pct_of_target DESC
-\`\`\`
-17. **Inventory questions — use \`mv_inventory_by_item\`** (columns: \`item_code\`, \`item_name\`, \`total_stock\`, \`total_value\`, \`min_stock\`). The base \`inventory\` table has only \`InventoryKey\` + non-ASCII columns — never query it directly. \`mv_inventory_by_item\` is item-level across ALL stores; there is NO reliable per-store stock breakdown, so if a per-store split is requested, say it isn't available rather than guessing columns.
-18. **Concepts the data does NOT support — answer in words, do NOT emit guessing SQL** (emitting SQL here only produces "column does not exist" / timeouts):
-    - **Payment method / payment type**: not tracked — there is no payment-method column. Tell the user.
-    - **Discount totals**: discount lives only in non-ASCII text columns with no materialized view and cannot be reliably aggregated — tell the user discount totals aren't available.
-19. **Product CATEGORY questions ("how much <category> did we sell?", "sales by category", "top categories") — group by the real category, NEVER by the product name.** The BI category is \`items.item_group\` ("קבוצת פריט"). Do NOT answer category questions with \`item_name ILIKE '%word%'\` — a name match both misses most of the category (real products rarely contain the category word in their name — e.g. chocolates are branded "Max"/"Lindt", not literally "שוקולד") and wrongly pulls in other categories (chocolate *liqueur* is in "יין ומשקאות"/"משקאות", gift packages in "חבילות שי"). Use the pre-aggregated \`${schemaName}.mv_sales_by_category_month\` (columns: \`category\`, \`year_month\`, \`sale_year\`, \`sale_month\`, \`total_quantity\`, \`total_revenue\`) — remember every row is a per-period aggregate, so \`SUM(total_revenue)\`/\`SUM(total_quantity)\` with \`GROUP BY category\` (rule 14). Match the user's term to the closest \`category\` value; the actual category names are Hebrew, e.g. שוקולד (chocolate), פרחים (flowers), מתנות (gifts), זרים מוכנים (ready bouquets), יין ומשקאות (wine & drinks), עציצים (potted plants), חבילות שי (gift packages). If the user names a category you can't confidently map, query \`SELECT DISTINCT category FROM ${schemaName}.mv_sales_by_category_month\` and pick the closest, or list the options back to the user. Only fall back to an \`item_name\` filter when the user explicitly asks about a specific NAMED product, not a category.
-
-## Important Examples
-
-**CORRECT** (date filter — sale_date is DATE):
-WHERE s.sale_date >= CURRENT_DATE - INTERVAL '6 months'
-
-**CORRECT** (join on typed integer columns):
-SELECT * FROM ${schemaName}.sales s
-JOIN ${schemaName}.stores st ON s.store_id = st.store_id
-
-**CORRECT** (monthly revenue + transactions — PREFER the materialized view, already BI-correct):
-SELECT year_month, total_revenue, transaction_count, customer_count
-FROM ${schemaName}.mv_sales_by_month
-WHERE sale_year = 2026 AND sale_month = 1
-
-**CORRECT** (revenue by month — ALWAYS from the MV, never the raw sales revenue column):
-SELECT year_month, SUM(total_revenue) AS total_revenue
-FROM ${schemaName}.mv_sales_by_month
-WHERE sale_year = EXTRACT(YEAR FROM CURRENT_DATE)::int
-GROUP BY year_month
-ORDER BY year_month
-
-**CORRECT** (how much of a category sold in a period — group by item_group via the category MV, NEVER name-match):
-SELECT SUM(total_revenue) AS total_revenue, SUM(total_quantity) AS total_quantity
-FROM ${schemaName}.mv_sales_by_category_month
-WHERE category = 'שוקולד' AND sale_year = 2026 AND sale_month = 1
-
-**CORRECT** (top categories this year):
-SELECT category, SUM(total_revenue) AS total_revenue
-FROM ${schemaName}.mv_sales_by_category_month
-WHERE sale_year = EXTRACT(YEAR FROM CURRENT_DATE)::int
-GROUP BY category
-ORDER BY total_revenue DESC
-
-**PREFER materialized views for aggregations** — they are pre-computed and much faster:
-- \`${schemaName}.mv_sales_by_month\` — monthly totals (use for monthly/period questions)
-- \`${schemaName}.mv_sales_by_year\` — annual totals
-- \`${schemaName}.mv_sales_by_store\` — per-store totals (all-time)
-- \`${schemaName}.mv_sales_by_store_month\` — store + month breakdown
-- \`${schemaName}.mv_sales_by_product\` — per-product totals (ALL-TIME only, NO date column — do NOT use when year/period is specified)
-- \`${schemaName}.mv_sales_by_product_month\` — product + month breakdown (USE THIS for year/period-filtered product queries like "top products this year")
-- \`${schemaName}.mv_sales_by_category_month\` — product CATEGORY (item_group) + month breakdown (USE THIS for ALL category questions: "how much chocolate", "sales by category", "top categories" — NEVER name-match categories)
-- \`${schemaName}.mv_sales_by_store_product\` — store + product all-time (USE THIS for top-N products per store)
-- \`${schemaName}.mv_sales_by_customer\` — per-customer totals (all-time)
-- \`${schemaName}.mv_sales_by_city\` — sales by customer city (USE THIS for geographic/city revenue breakdown)
-- \`${schemaName}.mv_sales_by_day\` — daily totals (last 90 days)`;
+      return require('./schema-rules/zer4u.rules').zer4uRules(schemaName);
     }
 
     if (schemaName === 'zolstock') {
@@ -1112,13 +1143,13 @@ for plain "total revenue this year/month/week" use mv_sales_daily (smaller/faste
 - Stores: \`JOIN tevanaot.sites si ON s.warhs = si.warhs\` — store = \`si.store_name\` (fallback \`si.warehouse_name\`). sites is unique per warhs — safe to join directly.
 - Customers: \`JOIN tevanaot.customers c ON s.cust = c.cust\`.
 - Products: **\`parts\` has MANY rows per \`part\` value (one per size), so \`part\` is NOT unique.** JOINing mv_sales (or an aggregate of it) directly to \`parts\` and SUM-ing AFTER the join multiplies every measure by the size-row count — a 16–50x over-count (we have seen "billions of ₪" / millions of units vs a real total in the tens of thousands). NEVER write \`... JOIN tevanaot.parts p ON a.part = p.part ... SUM(a.qty)\`.
-  Instead aggregate mv_sales by \`part\` FIRST, then JOIN the pre-deduplicated dimension **\`tevanaot.mv_parts_dim\`** (already exactly ONE row per \`part\`, indexed on part): \`JOIN tevanaot.mv_parts_dim p ON a.part = p.part\`. It carries the part-constant attributes (model_code, model_name, model_color_name, color, gender, shoe_type, collection, season, family_description, supplier_name, consumer_price, …) — NOT size/sku/barcode (those are size-level). Use mv_parts_dim for ALL attribute rollups; never raw \`parts\` for SUM-after-join.
+  Instead aggregate mv_sales by \`part\` FIRST, then JOIN a de-duplicated parts dimension. **There is no materialized parts dimension in this schema — you MUST define it inline as a CTE in every query that needs part attributes:** \`WITH parts_dim AS (SELECT DISTINCT ON (part) * FROM ${schemaName}.parts ORDER BY part)\`, which yields exactly ONE row per \`part\`. Then \`JOIN parts_dim p ON a.part = p.part\`. It carries the part-constant attributes (model_code, model_name, model_color_name, color, gender, shoe_type, collection, season, family_description, supplier_name, consumer_price, …) — NOT size/sku/barcode (those are size-level). Use parts_dim for ALL attribute rollups; never raw \`parts\` for SUM-after-join.
 
 ### RULE 6 — "model" vs "item" grain
 \`part\` is the model-COLOR grain (a model has several colors → several parts; each part also has several size-rows in \`parts\`).
-- "top MODELS" → roll up to the model: aggregate mv_sales by part, join \`tevanaot.mv_parts_dim\`, then \`GROUP BY model_code, model_name\` and SUM. (Listing parts directly repeats the same model once per color.)
-- "top items / SKUs" → keep part grain, show \`model_color_name\` (from mv_parts_dim).
-- "sales by color / gender / shoe_type / season / family" → aggregate by part, join \`tevanaot.mv_parts_dim\`, GROUP BY the attribute, SUM. NEVER SUM over a raw \`parts\` join (fan-out).
+- "top MODELS" → roll up to the model: aggregate mv_sales by part, join \`parts_dim\`, then \`GROUP BY model_code, model_name\` and SUM. (Listing parts directly repeats the same model once per color.)
+- "top items / SKUs" → keep part grain, show \`model_color_name\` (from parts_dim).
+- "sales by color / gender / shoe_type / season / family" → aggregate by part, join \`parts_dim\`, GROUP BY the attribute, SUM. NEVER SUM over a raw \`parts\` join (fan-out).
 
 ### RULE 7 — Inventory (resolve the BRANCH-PART key with split_part)
 \`inventory.branch_part_key\` = 'BRANCH-PART' (e.g. '17-8538'). Resolve:
@@ -1148,7 +1179,7 @@ WITH agg AS (
 )
 SELECT d.model_name, SUM(a.qty) AS units, SUM(a.revenue) AS revenue
 FROM agg a
-JOIN tevanaot.mv_parts_dim d ON a.part = d.part
+JOIN parts_dim d ON a.part = d.part
 GROUP BY d.model_code, d.model_name
 ORDER BY units DESC
 LIMIT 10
@@ -1165,7 +1196,7 @@ WITH agg AS (
 )
 SELECT COALESCE(d.gender, '(unknown)') AS gender, SUM(a.qty) AS units, SUM(a.revenue) AS revenue
 FROM agg a
-JOIN tevanaot.mv_parts_dim d ON a.part = d.part
+JOIN parts_dim d ON a.part = d.part
 GROUP BY d.gender
 ORDER BY units DESC
 \`\`\`
@@ -1210,6 +1241,40 @@ LIMIT 20
     }
 
     return '';
+  }
+
+  /**
+   * Anchors every relative time window to the date the DATA actually ends,
+   * not to today.
+   *
+   * A dataset is a periodic export, not a live feed, so "the last 4 weeks"
+   * relative to CURRENT_DATE is empty whenever the load is behind. Measured
+   * 2026-08-11: thestock ends 2026-04-27 (106 days stale) and newdeli ends
+   * 2026-05-03 (100 days). Every recent-window question against them —
+   * "this quarter's target", "last 4 weeks vs the prior 4", "the past 12
+   * weeks" — correctly returned ZERO rows, and the model had no way to know
+   * why. That was 4 of the 5 remaining zero-row failures in the suite, from
+   * one shared cause.
+   *
+   * The investigation pipeline already resolves this date for its own PLAN and
+   * write-up steps; it simply was never handed to the step that writes the
+   * WHERE clause.
+   * @private
+   */
+  _buildDataRecencySection(schemaName, dataThroughDate) {
+    if (!dataThroughDate) return '';
+    return `
+
+## ⏱ DATA RECENCY — ANCHOR EVERY RELATIVE DATE TO THIS
+
+**The data in \`${schemaName}\` ends on ${dataThroughDate}. Treat that date as "today".**
+
+This is a periodic export, not a live feed. \`CURRENT_DATE\` is NOT the end of the data, and using it for a relative window silently returns zero rows whenever the export is behind.
+
+- WRONG: \`WHERE d >= CURRENT_DATE - INTERVAL '4 weeks'\`
+- RIGHT: \`WHERE d >= DATE '${dataThroughDate}' - INTERVAL '4 weeks' AND d <= DATE '${dataThroughDate}'\`
+
+Apply this to every relative expression — "recent", "last N weeks/months", "this quarter", "year to date", "the trailing 12 months", and to both sides of any period-over-period comparison. "This quarter" means the quarter containing ${dataThroughDate}, not the quarter containing today's date.`;
   }
 
   /**

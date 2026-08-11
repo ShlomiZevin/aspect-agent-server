@@ -11,6 +11,7 @@
  */
 
 const scheduleConfig = require('./schedule-config.service');
+const insightsRefresh = require('../insights/services/insights-refresh.service');
 
 const IMPORT_WINDOW_MINUTES = 5 * 60; // retry every tick for up to 5h, mirrors the old ensure-loaded sweep
 const DRIVE_SYNC_WINDOW_MINUTES = 15; // a few retries, then stop - sync failures are rarer/cheaper to just re-trigger manually
@@ -72,6 +73,20 @@ async function runTick({ dataReloadService, driveToGcs, log = console.log }) {
     dataReloadService.ensureIndexed(schemaName).catch(err =>
       log(`[tick] ${schemaName} ensureIndexed error: ${err.message}`));
   }
+
+  // Suggested reports, regenerated once a day PER SCHEMA — the same
+  // self-checking shape as ensureIndexed above rather than a clock-based job,
+  // and for the same reason: it must run AFTER that schema's data load, not at
+  // a fixed hour. A report built before the load lands describes yesterday's
+  // data, which is precisely the staleness the whole pipeline exists to avoid.
+  // ensureInsightsRefreshed() no-ops unless the data is loaded and today's set
+  // hasn't been generated yet, so re-checking every minute is a cheap
+  // retry-until-it-works, not a duplicate-run risk.
+  const refreshed = await insightsRefresh.ensureInsightsRefreshed({ log }).catch(err => {
+    log(`[tick] insights refresh error: ${err.message}`);
+    return [];
+  });
+  for (const id of refreshed) fired.push(`${id}:insights_refresh`);
 
   return { time: `${String(now.hour).padStart(2, '0')}:${String(now.minute).padStart(2, '0')}`, fired };
 }

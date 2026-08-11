@@ -56,6 +56,16 @@ class ClaudeService {
        */
       tools,
       toolChoice,
+      /**
+       * Optional sampling temperature. Anthropic's own default is 1.0, so
+       * every sendOneShot caller was previously running fully sampled —
+       * including deterministic, single-correct-answer steps like NL->SQL
+       * generation, where it meant the SAME question produced materially
+       * DIFFERENT SQL (and therefore different numbers) run to run. Callers
+       * that want reproducibility pass temperature: 0; omitting it keeps the
+       * previous behaviour exactly, so no existing caller changes.
+       */
+      temperature,
     } = options;
 
     try {
@@ -119,6 +129,10 @@ class ClaudeService {
         system: promptText,
         messages
       };
+
+      // Only sent when the caller explicitly asked for it — leaving it off
+      // preserves Anthropic's default (1.0) for every pre-existing caller.
+      if (temperature != null) requestParams.temperature = Math.max(0, Math.min(1, temperature));
 
       // Tool-use mode — when the caller provides a tool definition
       // (and typically a tool_choice forcing it), the response is a

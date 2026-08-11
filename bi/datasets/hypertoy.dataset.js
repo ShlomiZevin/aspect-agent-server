@@ -27,9 +27,16 @@ const hypertoyDataset = {
   dateColumn: 'f.transaction_date',
 
   joins: {
-    products:   { table: 'products',   alias: 'p', on: 'f.part = p.part' },
+    // `dedupeOn` marks a lookup whose join key is NOT unique — the compiler
+    // collapses it to one row per key before joining. Without it, products
+    // (62,163 rows / 55,189 distinct `part`) inflates every measure by 44.6%:
+    // a verified ₪131,801,440 of sales reports as ₪190,657,755. Verified
+    // against the client's Qlik dashboard — deduplicated, product-family
+    // totals reconcile to the shekel (Lego ₪19,000,391 incl. VAT).
+    products:   { table: 'products',   alias: 'p', on: 'f.part = p.part', dedupeOn: 'part' },
     warehouses: { table: 'warehouses', alias: 'w', on: 'f.warehouse_code = w.warehouse_code' },
     stores:     { table: 'stores',     alias: 's', on: 'f.warehouse_code = s.store_id' },
+    // customers.customer_id is unique; national_id is not, but nothing joins on it.
     customers:  { table: 'customers',  alias: 'c', on: 'f.customer_id = c.customer_id' },
   },
 

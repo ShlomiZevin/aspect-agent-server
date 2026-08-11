@@ -1,0 +1,7 @@
+# Verification RESULTS are regenerable output, not source: large JSON blobs that
+# churn on every run and would bury real diffs. The folder structure and each
+# topic's README.md ARE tracked — the README is the durable record (what was
+# checked, how to reproduce it, the summary table); the JSON is the raw evidence
+# behind it, reproducible with the commands the README lists.
+*.json
+!.gitignore

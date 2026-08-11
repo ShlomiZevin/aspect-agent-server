@@ -113,7 +113,20 @@ function compileQuery(dataset, spec = {}) {
   for (const key of neededJoins) {
     const j = dataset.joins[key];
     if (!j) throw fail(`Dataset misconfiguration: unknown join ${key}`);
-    fromParts.push(`LEFT JOIN ${dataset.schema}.${j.table} ${j.alias} ON ${j.on}`);
+    if (j.dedupeOn) {
+      // FAN-OUT GUARD. A lookup whose join key is not unique multiplies every
+      // measure once per duplicate row — silently, with no error and entirely
+      // plausible numbers. Measured on hypertoy.products (62,163 rows for
+      // 55,189 distinct `part`): a true ₪131,801,440 of sales reported as
+      // ₪190,657,755, a 44.6% inflation. Collapsing the lookup to one row per
+      // key before the join makes that arithmetically impossible, rather than
+      // relying on whoever writes the dataset definition to remember.
+      fromParts.push(
+        `LEFT JOIN (SELECT DISTINCT ON (${j.dedupeOn}) * FROM ${dataset.schema}.${j.table} ORDER BY ${j.dedupeOn}) ${j.alias} ON ${j.on}`
+      );
+    } else {
+      fromParts.push(`LEFT JOIN ${dataset.schema}.${j.table} ${j.alias} ON ${j.on}`);
+    }
   }
 
   // ORDER BY — must reference a selected field; default: first measure DESC
