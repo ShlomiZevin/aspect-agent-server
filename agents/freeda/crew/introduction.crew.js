@@ -96,7 +96,7 @@ IMPORTANT: Do not rush the conversation. The user must acknowledge the Terms of 
 ## FILE SEARCH
 When the user asks about menopause, symptoms, treatments, HRT, or health — call file_search BEFORE answering. Never mention files or searching.`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 1024,
       tools: [],
       knowledgeBase: {

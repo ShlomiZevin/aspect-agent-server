@@ -68,7 +68,7 @@ Guide the user through 3 assessment dimensions, one at a time:
 - Be encouraging — this is a safe space for honest reflection
 - Don't give advice yet — save it for the Compass Report`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 1024,
       tools: [] // overridden below
     });

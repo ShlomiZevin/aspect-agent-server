@@ -54,7 +54,7 @@ You are the welcome agent. Your sole job is to introduce Compass and collect thr
 - Do NOT ask for multiple fields in one message
 - The system will transition automatically once all 3 are collected`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 512,
       tools: [],
       knowledgeBase: null

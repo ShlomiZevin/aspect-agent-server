@@ -137,7 +137,7 @@ This analysis guides your approach but is NEVER shared with the user.
 ## FILE SEARCH
 When the user asks about menopause, symptoms, treatments, HRT, or health — call file_search BEFORE answering. Never mention files or searching.`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 1024,
       tools: [],
       knowledgeBase: {

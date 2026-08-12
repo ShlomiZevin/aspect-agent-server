@@ -109,7 +109,15 @@ Format the description in a clear, structured way.`;
         description = rawSchemaText;
       }
 
-      return description;
+      // Appended AFTER the model's prose, deterministically, so it can never
+      // be paraphrased away or dropped: which join keys actually duplicate.
+      // This is the generic form of a bug found on hypertoy — products.part
+      // held 62,163 rows for 55,189 distinct parts, so every query joining it
+      // before aggregating inflated revenue by 44.6% (₪190.7M vs a true
+      // ₪131.8M) with no error and entirely plausible-looking numbers. Any
+      // schema can have this; measuring it beats hand-writing a rule per
+      // dataset.
+      return description + await this._buildJoinKeyReport(client, schemaName, tableSchemas);
 
     } catch (error) {
       console.error('❌ Error generating schema description:', error.message);
@@ -117,6 +125,80 @@ Format the description in a clear, structured way.`;
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Measures, for every plausible join-key column in every table, whether that
+   * column is actually UNIQUE — and reports the ones that aren't, because those
+   * are the columns that silently multiply measures when joined before an
+   * aggregate. Purely mechanical: no per-dataset knowledge, so a newly added
+   * schema gets the same protection without anyone hand-writing a rule.
+   *
+   * Scoped to id/code/key-shaped column names on tables small enough to be
+   * lookups, so this stays a handful of cheap COUNT DISTINCT queries rather
+   * than a full profiling pass over a 40M-row fact table.
+   * @private
+   */
+  async _buildJoinKeyReport(client, schemaName, tableSchemas) {
+    const KEYISH = /(^|_)(id|code|key|part|sku|barcode|number)$/i;
+    const MAX_LOOKUP_ROWS = 2_000_000;
+    const findings = [];
+
+    for (const table of tableSchemas) {
+      if (table.isMatview || table.rowCount === 0 || table.rowCount > MAX_LOOKUP_ROWS) continue;
+      const candidates = table.columns.filter(c => KEYISH.test(c.name)).slice(0, 6);
+      for (const col of candidates) {
+        try {
+          const { rows } = await client.query(
+            `SELECT COUNT(*) AS total, COUNT(DISTINCT "${col.name}") AS distinct_vals FROM ${schemaName}."${table.tableName}"`
+          );
+          const total = parseInt(rows[0].total, 10);
+          const distinct = parseInt(rows[0].distinct_vals, 10);
+          // Only near-unique columns matter. A column with few distinct values
+          // (products.family_code: 384 of 62,163) is an ATTRIBUTE — nobody
+          // joins a fact table to it, and reporting it as a hazard just adds
+          // noise that discourages legitimate GROUP BYs. The dangerous shape
+          // is a column that looks like a primary key and almost is, but has
+          // a few thousand duplicates hiding in it.
+          const uniqueness = distinct / total;
+          if (total > 0 && distinct < total && uniqueness >= 0.5) {
+            findings.push({ table: table.tableName, column: col.name, total, distinct, dupes: total - distinct });
+          }
+        } catch {
+          // A column that can't be counted (exotic type) simply isn't reported.
+        }
+      }
+    }
+
+    if (findings.length === 0) {
+      return `\n\n## Join-key uniqueness (measured from real data)\n\nEvery id/code/key column checked in this schema is unique within its table, so a straight JOIN on any of them cannot duplicate fact rows.\n`;
+    }
+
+    // No inflation factor is quoted: the real multiplier depends on which keys
+    // actually appear in the fact table, not on the lookup's own row ratio.
+    // On hypertoy, products.part is only 1.13x duplicated overall, yet the
+    // duplicated parts are high-volume sellers, so revenue inflated 1.45x.
+    // Quoting the table-level ratio would understate the damage.
+    const lines = findings
+      .sort((a, b) => b.dupes - a.dupes)
+      .map(f => `- \`${schemaName}.${f.table}.${f.column}\` — ${f.total.toLocaleString('en-US')} rows but only ${f.distinct.toLocaleString('en-US')} distinct values (${f.dupes.toLocaleString('en-US')} duplicate rows).`);
+
+    return `\n\n## Join-key uniqueness (measured from real data — NOT inferred)
+
+**These columns look like unique keys but are NOT.** Joining a fact table to them before aggregating silently inflates every SUM/COUNT, with no error and entirely plausible-looking numbers. The inflation can be far larger than the duplicate count suggests, because duplicated keys are often the high-volume ones (measured case: a lookup only 1.13x duplicated inflated revenue by 1.45x):
+
+${lines.join('\n')}
+
+When you need attributes from one of these tables, deduplicate first:
+\`\`\`sql
+WITH lookup AS (
+  SELECT DISTINCT ON (join_key) join_key, attribute
+  FROM ${schemaName}.the_table
+  ORDER BY join_key
+)
+SELECT l.attribute, SUM(f.measure) FROM ${schemaName}.fact_table f JOIN lookup l USING (join_key) GROUP BY 1
+\`\`\`
+`;
   }
 
   /**

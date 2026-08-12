@@ -90,7 +90,7 @@ When the user asks about Israeli regulations, standards (ת"י), tax law,
 contract clauses, or any reference document — call file_search BEFORE
 answering. Treat KB results as your own knowledge.`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 2048,
       tools: [],
       knowledgeBase: { enabled: false }

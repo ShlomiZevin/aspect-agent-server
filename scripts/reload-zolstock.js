@@ -2,21 +2,23 @@
  * Zol Stock Reload — two-phase zero-downtime reload.
  * Mirrors reload-hypertoy.js / reload-thestock.js exactly.
  *
- * ┌─────────────────────────────────────────────────────────────────────────┐
- * │ TODO (fill once Itzik delivers the data):                                 │
- * │   1. Set GCS_FOLDER to the bucket prefix the CSVs land in.                │
- * │   2. Populate FILE_TO_TABLE — map each CSV basename to a DB table name.   │
- * │   3. Fill column-aliases-zolstock.js (Hebrew → English column mapping).   │
- * │   4. Fill create-zolstock-indexes.js (JOIN / filter indexes).            │
- * │   5. Update getZolStockDataInfo() to point at the real fact table/date.  │
- * │ Until then FILE_TO_TABLE is empty (load is a no-op) and the reloader is   │
- * │ DISABLED by default (ZOLSTOCK_RELOAD_ENABLED !== 'true').                 │
- * └─────────────────────────────────────────────────────────────────────────┘
- *
  * Phase 1 — loadZolStock(targetSchema, emitLog):
  *   Scan GCS → read CSV headers → create tables → COPY data
  * Phase 2 — indexZolStock(targetSchema, emitLog):
  *   Create indexes. DataReloadService handles the atomic schema swap.
+ *
+ * 2026-08-10: added the "order recommendation" data Reut (BI dev) delivered —
+ * loaded EXACTLY the 5 files she shared, no invented/pre-split files. New:
+ * items/stores/calendar dimensions + recommendation_facts (the real
+ * Fact_ZolStock_CSV.csv, 902.5MB/29,450,600 rows, loaded whole). This is a
+ * DIFFERENT file from the original Facts_ZolStock_CSV.csv already mapped to
+ * `facts` below (note singular/plural) — recommendation_facts mixes 5 record
+ * kinds with NO discriminator column (unlike `facts`' `Fact Type`): see
+ * scripts/column-aliases-zolstock.js for the full breakdown/data-quality
+ * notes. Its sales/store-inventory rows duplicate `facts` (fewer columns,
+ * same broken store_number) — guidance steers those questions to `facts`
+ * instead. Inventory_ZolStock_CSV.csv (102M rows) deliberately deferred to
+ * Phase 2 (Kosta's call).
  */
 
 require('dotenv').config();
@@ -33,7 +35,12 @@ const GCS_FOLDER_DEFAULT = 'zolstock/';
 
 const FILE_TO_TABLE = {
   'Facts_ZolStock_CSV.csv': 'facts',
-  // Dimension files (products / customers / stores / calendar) — add when delivered.
+  'Items_ZolStock_CSV.csv': 'items',
+  'Stores_ZolStock_CSV.csv': 'stores',
+  'Calander_ZolStock_CSV.csv': 'calendar',   // sic — source folder spells it this way
+  'Fact_ZolStock_CSV.csv': 'recommendation_facts',   // singular — NOT the same file as Facts_ZolStock_CSV.csv above
+  // Inventory_ZolStock_CSV.csv (102M rows) — deferred to Phase 2, not mapped yet.
+  // customers — still not delivered.
 };
 
 function formatBytes(bytes) {
@@ -193,13 +200,20 @@ async function indexZolStock(targetSchema, emitLog) {
 async function getZolStockDataInfo() {
   const pool = getPool();
   try {
-    // TODO: point at the real fact table / date column once the schema is known.
+    // Was month-only ('YYYY-MM') — a leftover from before the real schema was
+    // known. Insights' getDataThroughDate() normalizes a bare month to its
+    // LAST day (e.g. "2026-06" -> 2026-06-30), which is wrong here: real data
+    // stops 2026-06-04, so every "last 4 weeks"-style question silently
+    // included ~26 trailing days with zero rows and reported it as a network-
+    // wide ~90% revenue collapse (all 84 stores) instead of a data-cutoff
+    // artifact. Day precision matches every other dataset's dataInfoFn
+    // (e.g. getHyperToyDataInfo) and removes the false "collapse".
     const result = await pool.query(
-      `SELECT TO_CHAR(MAX("transaction_date"), 'YYYY-MM') AS last_month
+      `SELECT TO_CHAR(MAX("transaction_date"), 'YYYY-MM-DD') AS last_date
        FROM zolstock.facts
        WHERE "record_type" = 'מכירות'`
     );
-    return result.rows[0]?.last_month || null;
+    return result.rows[0]?.last_date || null;
   } catch {
     return null;
   }

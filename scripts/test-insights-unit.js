@@ -176,5 +176,153 @@ check(
   '₪999K'
 );
 
+// Bug #5 (found 2026-08-10, on the FIRST run after the result digest landed):
+// a ranked_list is capped at 10 items, so on a result with more entities than
+// that it is a LEADERBOARD, not a list of addends. Summing it overwrote a
+// correct "₪5.0M attributed campaign revenue" (28 campaigns) with ₪3.72M, the
+// sum of the 10 shown — i.e. the guard introduced the exact class of error it
+// exists to prevent, for the second time. The digest knows the true entity
+// count, so this is now decided from data rather than guessed.
+check(
+  'top-N excerpt of a larger population is NOT summed into impactValue',
+  reconcileImpactValue(
+    rankedListInsight('₪5.0M', Array(10).fill('₪372K')),
+    { regrouped: true, distinctGroups: 28 }
+  ).impactValue,
+  '₪5.0M'
+);
+check(
+  'block that IS the whole population still reconciles normally',
+  reconcileImpactValue(
+    rankedListInsight('₪5.0M', Array(10).fill('₪372K')),
+    { regrouped: true, distinctGroups: 10 }
+  ).impactValue,
+  '₪3.72M'
+);
+
+// Bug #6 (found 2026-08-10 by scripts/test-insights-accuracy.js): a sparse
+// annotation column — populated on a handful of rows by a LEFT JOIN to a
+// LIMIT-1 CTE, NULL everywhere else — was flagged as "identical on every row"
+// because the check dropped NULLs before comparing. That downgraded a good
+// "steepest margin decline" insight to DATA QUALITY at confidence 35.
+check(
+  'sparse column (few non-null rows) is NOT flagged as all-same-value',
+  detectSuspiciousResult([
+    { family: 'a', margin: 12, decline_from_pct: null },
+    { family: 'b', margin: 15, decline_from_pct: null },
+    { family: 'c', margin: 11, decline_from_pct: null },
+    { family: 'd', margin: 18, decline_from_pct: null },
+    { family: 'e', margin: 14, decline_from_pct: 9.9 },
+    { family: 'f', margin: 13, decline_from_pct: 9.9 },
+    { family: 'g', margin: 17, decline_from_pct: 9.9 },
+  ]),
+  { flagged: false, reason: null, columns: [] }
+);
+// ...but a DENSE identical column is still the original bug, still caught.
+check(
+  'dense all-same-value column is still flagged',
+  detectSuspiciousResult([
+    { store: 'a', target: 5000 }, { store: 'b', target: 5000 },
+    { store: 'c', target: 5000 }, { store: 'd', target: 5000 },
+  ]),
+  { flagged: true, reason: 'all-same-value', columns: ['target'] }
+);
+check(
+  'sparse all-zero column is NOT flagged',
+  detectSuspiciousResult([
+    { store: 'a', gap: null }, { store: 'b', gap: null }, { store: 'c', gap: null },
+    { store: 'd', gap: null }, { store: 'e', gap: 0 }, { store: 'f', gap: 0 }, { store: 'g', gap: 0 },
+  ]),
+  { flagged: false, reason: null, columns: [] }
+);
+
+console.log('\nbuildResultDigest ──────────────────────────────────────');
+
+const { buildResultDigest, classifyColumns } = require('../insights/services/result-digest.service');
+
+// THE campaign bug, in miniature: the SQL grouped by (campaign, threshold),
+// so each campaign is spread over several rows and no single row is that
+// campaign's total. Re-aggregating to the declared "campaign" grain must
+// recover the true totals — A=300, B=30 — and rank A first, even though the
+// single largest ROW belongs to B.
+const grainRows = [
+  { campaign_code: 'A', campaign_value_threshold: '50', revenue: '100' },
+  { campaign_code: 'A', campaign_value_threshold: '60', revenue: '100' },
+  { campaign_code: 'A', campaign_value_threshold: '70', revenue: '100' },
+  { campaign_code: 'B', campaign_value_threshold: '80', revenue: '30' },
+];
+const grainDigest = buildResultDigest(grainRows, { dimensions: ['campaign'], measures: ['revenue'] });
+check('digest re-aggregates to the declared grain', grainDigest.groupBy, ['campaign_code']);
+check('digest recovers true per-entity totals', grainDigest.groups.map(g => [g.key, g.values.revenue]), [['A', 300], ['B', 30]]);
+check('digest grand total spans every row', grainDigest.grandTotals.revenue, 330);
+check('digest counts distinct entities, not rows', grainDigest.distinctGroups, 2);
+
+// The finer grain column must be recognised as non-summable, not totalled —
+// "₪3,068,664 campaign value" (the sum of every discount threshold) was a real
+// first-draft output of this module.
+check(
+  'threshold/price/pct columns are never summed',
+  Object.keys(grainDigest.grandTotals),
+  ['revenue']
+);
+
+// Numeric-looking IDENTIFIERS must not become measures — summing store_id
+// produces a plausible-looking, meaningless number.
+check(
+  'numeric id/code columns classify as dimensions, not measures',
+  classifyColumns([{ store_id: '10', campaign_code: '193', revenue: '5' }]).measures,
+  ['revenue']
+);
+
+// Conservative fallback: when no declared dimension maps to a real column,
+// do NOT invent a grouping — grand totals stay correct and the caller is told
+// per-item claims aren't supported.
+const noMap = buildResultDigest([{ widget: 'x', revenue: '5' }, { widget: 'y', revenue: '7' }], { dimensions: ['store'], measures: ['revenue'] });
+check('unmappable dimension does not invent a grouping', noMap.regrouped, false);
+check('grand totals still correct when regrouping is skipped', noMap.grandTotals.revenue, 12);
+
+check('empty result is reported as empty, not as zeros', buildResultDigest([], { dimensions: ['store'] }).empty, true);
+
+// Bug #7 (found 2026-08-10 by the accuracy harness on "steepest margin
+// decline"): the real entity column lost the mapping to a DERIVED annotation
+// that merely happened to contain the same word and had lower cardinality —
+// so family_description got summed away and steepest_decline_family became
+// the grouping key. Scored now by unexplained words in the column name.
+const annotationRows = Array.from({ length: 10 }, (_, i) => ({
+  family_description: `fam${i % 5}`,
+  steepest_decline_family: i < 8 ? null : 'fam4',
+  revenue: '10',
+}));
+check(
+  'real entity column beats a derived annotation sharing the same word',
+  buildResultDigest(annotationRows, { dimensions: ['product family'], measures: ['revenue'] }).groupBy,
+  ['family_description']
+);
+
+// The campaign case, re-asserted through the new scoring rather than the old
+// cardinality-only tie-break.
+check(
+  'entity code column beats a finer-grained qualifier column',
+  buildResultDigest(
+    [
+      { campaign_code: 'A', campaign_value_threshold: 'x', revenue: '1' },
+      { campaign_code: 'A', campaign_value_threshold: 'y', revenue: '1' },
+      { campaign_code: 'B', campaign_value_threshold: 'z', revenue: '1' },
+    ],
+    { dimensions: ['campaign'], measures: ['revenue'] }
+  ).groupBy,
+  ['campaign_code']
+);
+
+// A single-valued column is never a breakdown dimension.
+check(
+  'constant column is not chosen as a grouping key',
+  buildResultDigest(
+    [{ store_name: 'only', revenue: '1' }, { store_name: 'only', revenue: '2' }],
+    { dimensions: ['store'], measures: ['revenue'] }
+  ).regrouped,
+  false
+);
+
 console.log(`\n════════ ${pass}/${pass + fail} PASS ════════`);
 process.exit(fail ? 1 : 0);

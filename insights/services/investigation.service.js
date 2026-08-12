@@ -48,8 +48,19 @@ const { DataQueryService } = require('../../services/data-query.service');
 const registry = require('../datasets/registry');
 const intelligenceConfigService = require('./intelligence-config.service');
 const store = require('./insights-store.service');
+const { buildResultDigest, formatForPrompt, SAMPLE_LIMIT } = require('./result-digest.service');
+const progress = require('./investigation-progress.service');
+const measureBaseline = require('./measure-baseline.service');
 
 const MODEL = 'claude-sonnet-4-6';
+
+/** Statement timeout for investigation queries — see the call site in investigate() for why this is far above the chat default. */
+const INSIGHTS_QUERY_TIMEOUT_MS = parseInt(process.env.INSIGHTS_QUERY_TIMEOUT_MS || '75000', 10);
+
+/** Safe wrapper — a missing digest must never blank out the prompt section that tells the model where its numbers come from. */
+function digestText(digest) {
+  return digest ? formatForPrompt(digest) : 'AUTHORITATIVE AGGREGATES: unavailable for this result.';
+}
 const CATEGORY_COLOR = {
   'cross-sell': '#C026D3',
   margin: '#C2410C',
@@ -107,9 +118,19 @@ function getDataQueryService(datasetId) {
 // uses (DataReloadService.getDataInfo → lastDataDate) instead of a
 // dataset-specific hardcoded SQL query — every dataset's own reloader
 // already knows how to compute this for its own schema.
+// datasetId -> { value, at }. TTL'd, and a FAILED lookup is never cached:
+// previously this Map stored whatever the first call produced, forever. Two
+// real consequences on a long-lived Cloud Run instance: (1) one early failure
+// — the reload service not yet wired at startup, or a transient DB blip —
+// cached `null` for the life of the process, so every insight it produced
+// afterwards had no "now" anchor and the model went back to dating findings
+// from its own training era; (2) after a data reload the anchor stayed stale
+// indefinitely, so "this quarter" silently meant the previous load's quarter.
 const cachedDataThrough = new Map();
+const DATA_THROUGH_TTL_MS = 10 * 60 * 1000;
 async function getDataThroughDate(datasetId) {
-  if (cachedDataThrough.has(datasetId)) return cachedDataThrough.get(datasetId);
+  const hit = cachedDataThrough.get(datasetId);
+  if (hit && (Date.now() - hit.at) < DATA_THROUGH_TTL_MS) return hit.value;
   let value = null;
   try {
     const schemaName = getDatasetEntry(datasetId).schemaName;
@@ -118,8 +139,37 @@ async function getDataThroughDate(datasetId) {
   } catch {
     value = null;
   }
-  cachedDataThrough.set(datasetId, value);
+  value = normalizeDataThrough(value);
+  // Only a real answer is worth remembering — caching a failure turns a
+  // transient blip into a permanent degradation.
+  if (value) cachedDataThrough.set(datasetId, { value, at: Date.now() });
   return value;
+}
+
+/**
+ * DataReloadService reports freshness per schema in whatever granularity that
+ * schema's reloader tracks — several return a MONTH ("2026-04"), not a full
+ * date. That is harmless in the prose it was originally written for, but this
+ * value is now also injected into SQL generation as `DATE '<value>'`, where
+ * "2026-04" is a syntax error that would break every query for that dataset.
+ *
+ * Normalizes to a real YYYY-MM-DD (a bare month becomes its last day, which is
+ * the correct "data runs through" reading), and returns null for anything that
+ * isn't a usable date so the caller simply omits the anchor rather than
+ * emitting invalid SQL.
+ */
+function normalizeDataThrough(value) {
+  if (!value) return null;
+  const s = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const month = /^(\d{4})-(\d{2})$/.exec(s);
+  if (month) {
+    const y = Number(month[1]), m = Number(month[2]);
+    if (m < 1 || m > 12) return null;
+    return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); // day 0 of next month = last day of this one
+  }
+  const parsed = new Date(s);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
 }
 
 function extractFirstJSON(text) {
@@ -187,7 +237,7 @@ Respond with ONLY a JSON object: { "isSimpleQuery": true or false }`;
 
   try {
     const response = await llmService.sendOneShot(systemPrompt, `Request: "${prompt}"`, {
-      model: MODEL, maxTokens: 64, jsonOutput: true, context: 'insights_classify_prompt',
+      model: MODEL, maxTokens: 64, jsonOutput: true, temperature: 0, context: 'insights_classify_prompt',
     });
     const parsed = parseJSON(response);
     return !!parsed.isSimpleQuery;
@@ -221,10 +271,13 @@ function detectSuspiciousResult(data) {
 
   // Require the column to be non-null numeric zero somewhere (not just
   // all-null, which is a different, benign case).
-  const allZeroCols = numericCols.filter(k =>
-    data.every(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00' || row[k] === null)
-    && data.some(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00')
-  );
+  // Same sparse-column reasoning as the all-same-value branch below: a column
+  // that is zero on 5 rows and NULL on 1,800 is not evidence of a broken join.
+  const allZeroCols = numericCols.filter(k => {
+    const zeroCount = data.filter(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00').length;
+    const allZeroOrNull = data.every(row => row[k] === 0 || row[k] === '0' || row[k] === '0.00' || row[k] === null);
+    return allZeroOrNull && zeroCount > 0 && zeroCount / data.length >= 0.8;
+  });
   if (allZeroCols.length > 0) return { flagged: true, reason: 'all-zero', columns: allZeroCols };
 
   // Exclude columns whose own name says they're a deliberately-constant
@@ -235,10 +288,21 @@ function detectSuspiciousResult(data) {
   // "target" — a real per-store sales target column pinned to the same
   // value on every row IS the original bug this check exists to catch.
   const isLikelyBenchmarkCol = k => /avg|average|median|percentile|benchmark|threshold|_p\d{2}(_|$)/i.test(k);
+  // A column populated on only a HANDFUL of rows is a sparse annotation, not a
+  // per-row metric, so its constancy says nothing about a JOIN bug. Real case
+  // (2026-08-10): a "steepest margin decline" query LEFT JOINed a LIMIT-1 CTE,
+  // so decline_from_pct/decline_to_pct/total_margin_change were populated on
+  // ~6 of 1,814 rows — correctly identical, since they describe the one family
+  // the CTE selected. The old check ignored the NULLs entirely, flagged all
+  // three, and downgraded a perfectly good insight to DATA QUALITY at
+  // confidence 35. The original bug this guard exists for (every store at 0%
+  // attainment) had 100% coverage, so it is still caught.
+  const MIN_COVERAGE = 0.8;
   const allSameCols = numericCols.filter(k => {
     if (isLikelyBenchmarkCol(k)) return false;
     const values = data.map(row => String(row[k])).filter(v => v !== 'null');
     if (values.length < 3) return false;
+    if (values.length / data.length < MIN_COVERAGE) return false;
     return values.every(v => v === values[0]) && values[0] !== '0' && values[0] !== '0.00';
   });
   if (allSameCols.length > 0) return { flagged: true, reason: 'all-same-value', columns: allSameCols };
@@ -255,8 +319,12 @@ ${dataThrough ? `The data runs through ${dataThrough} — treat that as "now" fo
 Respond with ONLY a JSON object:
 {
   "category": one of "cross-sell" | "margin" | "inventory" | "trend" | "risk",
-  "dataQuestion": "a single, specific, concrete question in English that can be answered with one SQL aggregate query — mention the measure(s), a breakdown dimension if useful (e.g. by store, by product family, by week), and a time window"
+  "dataQuestion": "a single, specific, concrete question in English that can be answered with one SQL aggregate query — mention the measure(s), a breakdown dimension if useful (e.g. by store, by product family, by week), and a time window",
+  "measures": ["the 1-3 business quantities being measured, each 1-2 plain words, e.g. \\"revenue\\", \\"units sold\\", \\"inventory value\\""],
+  "dimensions": ["the 1-2 entities the result is broken down BY, each 1-2 plain words SINGULAR, e.g. \\"store\\", \\"product family\\", \\"month\\", \\"campaign\\". Use [] if the answer is a single overall figure with no breakdown."]
 }
+
+"measures" and "dimensions" are a machine-readable restatement of the SAME question — they are used to re-aggregate the result in code, so they must match "dataQuestion" exactly. List ONLY the entity the question is really about: if the question asks for revenue per campaign, dimensions is ["campaign"] — not ["campaign","discount level"] — even if the underlying table happens to store a finer breakdown.
 
 Pick the category that best matches what the investigation prompt is actually about. Do not hedge or ask a follow-up question — commit to one specific, well-scoped data question.`;
 
@@ -271,12 +339,19 @@ Pick the category that best matches what the investigation prompt is actually ab
     let response;
     try {
       response = await llmService.sendOneShot(systemPrompt, `Investigation prompt: "${prompt}"`, {
-        model: MODEL, maxTokens: 512, jsonOutput: true, context: 'insights_investigate_plan',
+        model: MODEL, maxTokens: 640, jsonOutput: true, temperature: 0, context: 'insights_investigate_plan',
       });
       const parsed = parseJSON(response);
       if (!parsed.dataQuestion) throw new Error('Plan step returned no dataQuestion');
       const category = VALID_CATEGORIES.includes(parsed.category) ? parsed.category : 'trend';
-      return { category, dataQuestion: parsed.dataQuestion };
+      const asStrings = v => (Array.isArray(v) ? v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim()).slice(0, 3) : []);
+      return {
+        category,
+        dataQuestion: parsed.dataQuestion,
+        // The machine-readable half of the plan — drives result-digest's
+        // re-aggregation back to the grain that was actually asked for.
+        spec: { measures: asStrings(parsed.measures), dimensions: asStrings(parsed.dimensions) },
+      };
     } catch (err) {
       lastErr = err;
       const hint = looksTruncated(response) ? ' (response looks truncated — did not end on "}"; consider raising maxTokens)' : '';
@@ -286,13 +361,20 @@ Pick the category that best matches what the investigation prompt is actually ab
   throw lastErr;
 }
 
-async function synthesizeInsight({ datasetId, config, prompt, category, dataQuestion, queryResult, dataAnomaly, verifierFeedback }) {
+async function synthesizeInsight({ datasetId, config, prompt, category, dataQuestion, queryResult, dataAnomaly, verifierFeedback, digest }) {
   const { sql, explanation, data, rowCount } = queryResult;
   // Cap what we feed back — enough rows to see the shape/pattern, not the whole table.
-  const sampleRows = data.slice(0, 30);
+  // These are ILLUSTRATIVE ONLY: every total/ranking/percentage must come from
+  // `digest` instead (see result-digest.service.js for why).
+  const sampleRows = data.slice(0, SAMPLE_LIMIT);
   const dataThrough = await getDataThroughDate(datasetId);
 
   const systemPrompt = `You are Aspect, an AI that proactively investigates ${config.brandLabel}'s data and writes up findings for a business audience. You already ran a real SQL query and have the real result rows below — write the insight using ONLY these numbers. Do not invent any figure that isn't directly computable from the provided rows.
+
+LANGUAGE — MIRROR THE PROMPT, NOTHING ELSE. Write EVERY user-visible string (headline, title, breadcrumbLabel, tag, categoryLabel, impactLabel, ctaLabel, block titles and labels, reasoning, confidenceChecks, sourceNote) in the SAME language the investigation prompt is written in.
+- Prompt in English → the ENTIRE write-up in English.
+- Prompt in Hebrew → the ENTIRE write-up in Hebrew.
+Decide from the prompt's own words alone. Hebrew appearing in the DATA (store names, product names, record types) says nothing about the requested language — the data is Hebrew regardless of what was asked, so it must not pull the write-up toward Hebrew. Keep entity names exactly as they appear in the data and keep ₪ as the currency symbol in both languages. Never translate a value that came from the database.
 
 ${dataThrough ? `The data runs through ${dataThrough} — that is "now." When your headline/title/description says something like "as of," "currently," "this quarter," or names a year, it MUST be consistent with that real date, not a guess from any other year.\n` : ''}
 SANITY CHECK before writing anything: if EVERY row shows the key metric at exactly 0 (or some other suspiciously uniform value across 100% of rows), that is a strong signal of a JOIN/pipeline/data-gap bug, not a genuine uniform business outcome — real business data almost never produces the identical extreme value on every single row. In that case do NOT write a confident business-risk headline with a specific dollar figure. Instead: use tag "DATA QUALITY" (not "RISK" or any other category tag), keep the headline factual and hedged ("N rows show $0 — likely a data or pipeline issue, not confirmed store performance"), cap confidence at 40, and make the FIRST confidenceChecks entry the specific caveat explaining what looks broken (e.g. a join key that shouldn't match, a null field that should be populated). Only write a normal confident finding when the pattern varies across rows the way real business data does.
@@ -354,7 +436,9 @@ Respond with ONLY a JSON object with this exact shape (all string fields, ₪ fo
 
 The top-level "chart" field is separate from "blocks" — it's always a small, simple preview used only on the insight's list-view card, so still fill it in even if you don't choose a "chart" block for the detail page. Inside "blocks", the only place you may reason beyond the literal query result is a "scenarios" block's good/neutral/negative values (forward-looking projections — keep them plausible and proportionate to the real current figure). Every other field, in every block, must trace back to the actual data provided.
 
-ARITHMETIC SELF-CHECK before finalizing "impactValue" (and any total figure in "headline"/"title"): if it represents a combined/aggregate total across several items (e.g. "N stores/families... ₪X total"), and you are ALSO listing those same individual items in a block (ranked_list/comparison), ₪X MUST equal the literal sum of the individual item values you put in that block — actually add them up, don't estimate. A frequent real mistake is citing a bigger, rounder headline total (e.g. including borderline/excluded items) while the block only lists the narrower set that supports it — pick ONE consistent set of items and make every figure describing it agree exactly.`;
+ARITHMETIC SELF-CHECK before finalizing "impactValue" (and any total figure in "headline"/"title"): if it represents a combined/aggregate total across several items (e.g. "N stores/families... ₪X total"), and you are ALSO listing those same individual items in a block (ranked_list/comparison), ₪X MUST equal the literal sum of the individual item values you put in that block — actually add them up, don't estimate. A frequent real mistake is citing a bigger, rounder headline total (e.g. including borderline/excluded items) while the block only lists the narrower set that supports it — pick ONE consistent set of items and make every figure describing it agree exactly.
+
+SOURCE OF NUMBERS — THIS OVERRIDES EVERYTHING ELSE ABOVE: the user message contains a block headed "AUTHORITATIVE AGGREGATES", computed in code over the COMPLETE result set. Those are the only trustworthy totals, per-entity values, rankings and percentages available to you. The raw result rows are a small, arbitrary sample of a much larger result and are there ONLY to show you the shape of the data — reading one raw row as an entity's total, or ranking entities by what you can see in the sample, produces catastrophically wrong findings (a real case: a campaign reported at ₪7,885 whose true total was ₪555,229, and a "top campaign" that was really 20th). Take every figure from the authoritative aggregates. If a number you want to state is not derivable from them, do not state it.`;
 
   const anomalyNote = dataAnomaly?.flagged
     ? (dataAnomaly.reason === 'all-zero'
@@ -375,7 +459,10 @@ Data question asked: "${dataQuestion}"
 SQL executed: ${sql}
 Explanation: ${explanation}
 Row count: ${rowCount}
-Result rows (JSON, up to 30): ${JSON.stringify(sampleRows)}${anomalyNote}${verifierNote}`;
+
+${digestText(digest)}
+
+Raw result rows (JSON, up to ${SAMPLE_LIMIT} — ILLUSTRATIVE SAMPLE ONLY, see above): ${JSON.stringify(sampleRows)}${anomalyNote}${verifierNote}`;
 
   // Up to 2 attempts: an LLM JSON round trip occasionally comes back
   // malformed or missing a required field. Same retry philosophy as
@@ -400,7 +487,7 @@ Result rows (JSON, up to 30): ${JSON.stringify(sampleRows)}${anomalyNote}${verif
     let response;
     try {
       response = await llmService.sendOneShot(systemPrompt, userMessage, {
-        model: MODEL, maxTokens: 6144, jsonOutput: true, context: 'insights_investigate_synthesize',
+        model: MODEL, maxTokens: 6144, jsonOutput: true, temperature: 0, context: 'insights_investigate_synthesize',
       });
       const parsed = parseJSON(response);
       if (!parsed.headline) throw new Error('Synthesize step returned no headline');
@@ -426,14 +513,19 @@ Result rows (JSON, up to 30): ${JSON.stringify(sampleRows)}${anomalyNote}${verif
  * duplicated everywhere the way a JOIN-bug artifact is.
  * @returns {Promise<{verified: boolean, issues: string[]}>}
  */
-async function verifyInsight({ config, queryResult, synthesized }) {
+async function verifyInsight({ config, queryResult, synthesized, digest }) {
   const { data, rowCount } = queryResult;
-  const sampleRows = data.slice(0, 30);
+  const sampleRows = data.slice(0, SAMPLE_LIMIT);
 
   const systemPrompt = `You are a strict fact-checker reviewing a business-intelligence write-up for ${config.brandLabel} BEFORE it is shown to a user. You did not write it and have no stake in it sounding impressive — your only job is to catch numbers or claims that are NOT actually supported by the real query result rows provided.
 
+THE AUTHORITATIVE AGGREGATES BLOCK IS YOUR SOURCE OF TRUTH, NOT THE RAW ROWS. It was computed in code over the COMPLETE result set; the raw rows below it are a small arbitrary sample of a much larger result. A figure that matches a raw row but CONTRADICTS the authoritative aggregates is WRONG — that is the most damaging error this check exists to catch (a real case: every campaign total in a shipped report was taken from a single sample row and was 70-127x too low, while a "top campaign" was really 20th). Never validate a total, ranking or percentage by adding up the sample.
+
 Check specifically:
-- Every concrete number in "headline", "title", and "impactValue", and inside "blocks" (chart points, ranked_list values, stat_callout value, comparison values), must be directly present in, or a simple direct aggregate (sum/count/avg/max/min/%) of, the provided rows. Reject a number that isn't.
+- Every concrete number in "headline", "title", and "impactValue", and inside "blocks" (chart points, ranked_list values, stat_callout value, comparison values), must match the authoritative aggregates, or be a simple direct arithmetic consequence of them. Reject a number that isn't — including one that is visible in the raw sample but disagrees with the aggregates.
+- Any ranking (which entity is #1, top N order) must match the authoritative per-entity ranking. Reject a ranking derived from the sample.
+- Any percentage must use the authoritative grand total as its denominator.
+- Reject any total formed by summing a percentage, rate, average, unit price or threshold column (listed under "NOT SUMMABLE" when present).
 - Exception: a "scenarios" block's "good"/"neutral"/"negative" values are ALLOWED to be plausible forward-looking projections, not literal row data — do not flag those alone for being projections.
 - ARITHMETIC CHECK (do this explicitly, don't eyeball it): if "impactValue" (or a total inside "headline"/"title") claims a combined/aggregate figure across several items — e.g. "N stores/families... ₪X total" — and a block (ranked_list/comparison) lists those same individual items, ACTUALLY ADD UP the individual item values yourself and compare the sum to ₪X. Flag it as a real issue if they disagree beyond simple rounding — this is a common real bug: a bigger headline total that silently includes items the detail blocks don't, or excludes items they do.
 - Internal consistency: if the same metric appears in two places (e.g. a stat_callout and the chart, or a number restated inside a "scenarios" description), the values must agree with each other.
@@ -443,7 +535,9 @@ Respond with ONLY a JSON object:
 { "verified": true or false, "issues": ["short specific issue", ...] }
 Set "verified": false only for a REAL problem (an invented/unsupported number, an internal contradiction, or a wildly overstated claim) — not for writing style or a clearly-labeled scenario projection. Empty "issues" array when verified is true. Each issue: ONE plain sentence, under 25 words, stating the concrete discrepancy — not your reasoning process, not a running commentary on whether you're about to flag it or not.`;
 
-  const userMessage = `Real query result rows (JSON, up to 30 of ${rowCount}): ${JSON.stringify(sampleRows)}
+  const userMessage = `${digestText(digest)}
+
+Raw sample rows (JSON, ${sampleRows.length} of ${rowCount} — ILLUSTRATIVE ONLY, never a basis for a total or ranking): ${JSON.stringify(sampleRows)}
 
 Insight to verify:
 headline: ${synthesized.headline}
@@ -463,7 +557,7 @@ chart: ${JSON.stringify(synthesized.chart)}`;
   let response;
   try {
     response = await llmService.sendOneShot(systemPrompt, userMessage, {
-      model: MODEL, maxTokens: 1024, jsonOutput: true, context: 'insights_investigate_verify',
+      model: MODEL, maxTokens: 1024, jsonOutput: true, temperature: 0, context: 'insights_investigate_verify',
     });
     const parsed = parseJSON(response);
     return { verified: parsed.verified !== false, issues: Array.isArray(parsed.issues) ? parsed.issues.slice(0, 5).map(String) : [] };
@@ -475,6 +569,55 @@ chart: ${JSON.stringify(synthesized.chart)}`;
     console.error(`   Verify step failed, not blocking on it: ${err.message}${hint}`);
     return { verified: true, issues: [] };
   }
+}
+
+/**
+ * Code-derived ceiling on how confident an insight is ALLOWED to be, computed
+ * from signals the model doesn't get to grade itself on.
+ *
+ * `confidence` was previously whatever number the write-up model felt like
+ * emitting (0-100), only ever clamped down by the anomaly/verify guards. So a
+ * finding resting on 4 rows, from SQL the generator itself flagged as low
+ * confidence, could still ship at 90 — and "90%" carried no information a user
+ * could act on. Each deduction below is a fact about the evidence, and each
+ * one that fires is surfaced verbatim in confidenceChecks so the score is
+ * explainable rather than asserted.
+ *
+ * @returns {{ceiling: number, reasons: Array<{positive: boolean, text: string}>}}
+ */
+function confidenceCeiling({ queryResult, digest, verification, dataAnomaly }) {
+  let ceiling = 95; // nothing is ever certain enough for 100
+  const reasons = [];
+  const cap = (value, text) => {
+    if (value < ceiling) ceiling = value;
+    reasons.push({ positive: false, text });
+  };
+
+  const rows = queryResult.rowCount ?? 0;
+  if (rows < 3) cap(50, `Only ${rows} result row(s) — too thin to establish a trend or ranking.`);
+  else if (rows < 10) cap(70, `Based on ${rows} result rows — a small sample for a general claim.`);
+
+  if (queryResult.confidence === 'low') cap(45, 'The SQL generator reported low confidence that this dataset can answer the question as asked.');
+  else if (queryResult.confidence === 'medium') cap(85, 'The SQL generator reported medium confidence in its query for this question.');
+
+  if (!verification.verified) cap(40, `Independent fact-check still unsatisfied: ${verification.issues.join('; ') || 'unsupported figures'}`);
+  if (dataAnomaly.flagged) cap(40, `Automated data check flagged column(s) [${dataAnomaly.columns.join(', ')}] as ${dataAnomaly.reason}.`);
+
+  // A result the digest could not re-aggregate to a named entity has no
+  // authoritative per-item numbers behind it — see result-digest.service.js.
+  if (digest && !digest.empty && !digest.regrouped) {
+    cap(65, 'The result could not be re-aggregated to a single named entity, so per-item figures are not independently confirmed.');
+  }
+  // Most of the population being immaterial means any ranking is dominated by
+  // noise unless the write-up used the material list.
+  if (digest?.materiality && digest.materiality.dropped > digest.materiality.kept) {
+    cap(80, `${digest.materiality.dropped} of ${digest.rowCount} rows are below the materiality threshold, so percentage rankings across the full set are noise-dominated.`);
+  }
+
+  if (reasons.length === 0) {
+    reasons.push({ positive: true, text: `Verified against ${rows.toLocaleString('en-US')} result rows with no data-quality or fact-check flags raised.` });
+  }
+  return { ceiling, reasons };
 }
 
 function confidenceLabelFor(score) {
@@ -560,11 +703,22 @@ function spliceNumber(original, token, newValue) {
  * — only treat it as an aggregate-across-everything claim (the "N stores...
  * ₪X total" shape this function actually targets) when it doesn't.
  */
-function reconcileImpactValue(synthesized) {
+function reconcileImpactValue(synthesized, digest) {
   if (typeof synthesized.impactValue !== 'string') return synthesized;
   const blocks = Array.isArray(synthesized.blocks) ? synthesized.blocks : [];
   const itemBlock = blocks.find(b => (b.type === 'ranked_list' || b.type === 'comparison') && Array.isArray(b.items) && b.items.length >= 2);
   if (!itemBlock) return synthesized;
+
+  // THE BLOCK MUST BE THE WHOLE POPULATION, NOT A TOP-N EXCERPT OF IT.
+  // A ranked_list is capped at 10 items, so on any result with more than 10
+  // entities it is a leaderboard, not a set of addends — and summing it
+  // produces a number that is simply a different quantity from the total
+  // impactValue is stating. Caught live 2026-08-10 on the very first run
+  // after the digest landed: a correct "₪5.0M attributed campaign revenue"
+  // (28 campaigns) was overwritten with ₪3.72M, the sum of the 10 shown.
+  // The digest knows the real entity count, so this is now decidable rather
+  // than guessed at.
+  if (digest?.regrouped && digest.distinctGroups > itemBlock.items.length) return synthesized;
 
   const itemValues = itemBlock.items.map(it => parseNumberToken(it.value)).filter(Boolean).map(t => t.value);
   if (itemValues.length < 2) return synthesized;
@@ -715,6 +869,11 @@ ${covered}
 
 Respond with ONLY a JSON object: { "prompt": "the new investigation request, one sentence, phrased the way a business user would ask it" }`;
 
+  // Deliberately left SAMPLED (no temperature: 0) while every other step in
+  // the pipeline is pinned deterministic. This is the one step whose whole
+  // job is to come up with something NEW — pinning it would make "Request a
+  // new insight" propose the same angle every time the covered list happens
+  // to look the same.
   const response = await llmService.sendOneShot(systemPrompt, 'Propose the next investigation.', {
     model: MODEL, maxTokens: 256, jsonOutput: true, context: 'insights_investigate_propose',
   });
@@ -729,7 +888,7 @@ Respond with ONLY a JSON object: { "prompt": "the new investigation request, one
  * text box involved), proposeInvestigationPrompt() picks the angle instead.
  * @returns {Promise<Object>} the new InsightDetail-shaped record (with id)
  */
-async function investigate(datasetId, userId, prompt) {
+async function investigate(datasetId, userId, prompt, jobId = null) {
   const entry = getDatasetEntry(datasetId);
   const config = await intelligenceConfigService.getConfig(datasetId);
   if (!config.enabled) {
@@ -743,21 +902,77 @@ async function investigate(datasetId, userId, prompt) {
   // from "Aspect suggested this on its own" (design turn 12a: "my report" vs
   // "proposed" tag), which the fallback logic below would otherwise erase.
   const origin = prompt && prompt.trim() ? 'user' : 'proposed';
+  progress.start(jobId);
   const actualPrompt = prompt && prompt.trim() ? prompt.trim() : await proposeInvestigationPrompt(datasetId, userId, config);
 
-  const { category, dataQuestion } = await planQuestion(datasetId, config, actualPrompt);
+  const { category, dataQuestion, spec } = await planQuestion(datasetId, config, actualPrompt);
 
+  progress.set(jobId, 'query', dataQuestion);
   const queryResult = await getDataQueryService(datasetId).queryByQuestion(dataQuestion, entry.schemaName, {
     llmAgentName: 'Aspect Intelligence',
+    // Anchor relative windows ("last 4 weeks", "this quarter") to the date the
+    // data really ends. Without it, any dataset whose export lags — thestock
+    // was 106 days behind, newdeli 100 — returns zero rows for every recent
+    // window, which was 4 of the 5 remaining zero-row failures.
+    dataThroughDate: await getDataThroughDate(datasetId),
+    // The default 15s statement timeout is a CHAT constraint — a user sitting
+    // in front of a reply. An investigation is asynchronous background work
+    // that already takes 30-100s end to end (4+ LLM round trips), and the
+    // browser polls for progress rather than blocking on the response, so
+    // there is no reason for it to inherit that budget. 8 of 42 suite cases
+    // failed purely on this: real inventory sell-through and multi-CTE trend
+    // queries need more than 15s against 40M-row fact tables.
+    timeout: INSIGHTS_QUERY_TIMEOUT_MS,
   });
   if (queryResult.error) {
     throw new Error(`Data query failed: ${queryResult.message}`);
   }
 
-  const dataAnomaly = detectSuspiciousResult(queryResult.data);
+  // A result with nothing in it used to flow straight into SYNTHESIZE, which
+  // is REQUIRED to emit a headline and an impactValue — so "this data does
+  // not exist in the schema" (the outcome the SQL retry hint explicitly asks
+  // for, via a zero-row query) came back as a confidently-worded finding about
+  // nothing. detectSuspiciousResult can't catch it either: it returns
+  // unflagged below 3 rows. Fail loudly instead — the UI already has an error
+  // state, and no insight is strictly better than an invented one.
+  if (queryResult.rowCount === 0) {
+    const err = new Error(`The data needed to answer this isn't available in this dataset — the query for "${dataQuestion}" returned no rows.`);
+    err.status = 422;
+    throw err;
+  }
 
-  let synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly });
-  synthesized = reconcileImpactValue(synthesized);
+  progress.set(jobId, 'aggregate');
+  const dataAnomaly = detectSuspiciousResult(queryResult.data);
+  // Authoritative, code-computed aggregates over the COMPLETE result set —
+  // this is what the write-up and the verifier must use instead of adding up
+  // a 30-row sample. See result-digest.service.js.
+  const digest = buildResultDigest(queryResult.data, spec);
+
+  // Is this result even arithmetically possible? Every other guard checks a
+  // figure against the query's own rows, which cannot catch a query that is
+  // itself wrong. Comparing the result's grand totals against the fact table's
+  // own totals does: a filtered query is always <= the whole table, so a
+  // result that EXCEEDS it has fanned out. This is what makes "₪362.9B revenue
+  // for a florist chain whose sales table totals ₪51M" a detectable error
+  // rather than a confident headline.
+  const baselineCheck = await measureBaseline.checkAgainstBaselines(datasetId, digest);
+  if (baselineCheck.exceeded) {
+    const f = baselineCheck.findings[0];
+    console.error(`   ❌ Impossible result: ${f.column} totals ${f.reported.toLocaleString('en-US')}, ` +
+      `but all of ${entry.schemaName}.${f.table} only totals ${f.ceiling.toLocaleString('en-US')} (${f.factor.toFixed(1)}x) — the join fanned out.`);
+    const err = new Error(
+      `The query produced an impossible result: it reports ${f.column} of ` +
+      `${Math.round(f.reported).toLocaleString('en-US')}, which is ${f.factor.toFixed(1)}x the entire dataset ` +
+      `(${Math.round(f.ceiling).toLocaleString('en-US')}). This means the query duplicated rows through a join, ` +
+      `so no finding from it can be trusted.`
+    );
+    err.status = 422;
+    throw err;
+  }
+
+  progress.set(jobId, 'synthesize');
+  let synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest });
+  synthesized = reconcileImpactValue(synthesized, digest);
 
   // Step 4, VERIFY: an independent LLM pass fact-checks step 3's own output
   // against the real rows (see verifyInsight() doc comment for why this is a
@@ -766,12 +981,15 @@ async function investigate(datasetId, userId, prompt) {
   // back in — most rejections are a single invented number and self-correct
   // immediately once named explicitly, the same way the QUERY step's SQL
   // retry already works.
-  let verification = await verifyInsight({ config, queryResult, synthesized });
+  progress.set(jobId, 'verify');
+  let verification = await verifyInsight({ config, queryResult, synthesized, digest });
   if (!verification.verified) {
     console.log(`   Verify rejected first synthesis attempt, regenerating once: ${verification.issues.join('; ')}`);
-    synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, verifierFeedback: verification.issues });
-    synthesized = reconcileImpactValue(synthesized);
-    verification = await verifyInsight({ config, queryResult, synthesized });
+    progress.set(jobId, 'synthesize', 'Rewriting after fact-check');
+    synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest, verifierFeedback: verification.issues });
+    synthesized = reconcileImpactValue(synthesized, digest);
+    progress.set(jobId, 'verify');
+    verification = await verifyInsight({ config, queryResult, synthesized, digest });
   }
 
   // Hard enforcement, not just a prompt hint: cap confidence and mark the tag
@@ -782,20 +1000,21 @@ async function investigate(datasetId, userId, prompt) {
   // was real, only the write-up over-claimed, so a real (if less confident)
   // insight is still more useful than nothing per the no-canned-fallback
   // stance (see project memory, Round 4).
-  let confidence = Math.max(0, Math.min(100, Math.round(synthesized.confidence ?? 70)));
+  // The model's self-reported confidence is now only ever an upper bid: the
+  // real score is min(what it claimed, what the evidence actually supports).
+  // Every deduction is computed from a hard signal (row count, SQL-generator
+  // confidence, verification verdict, anomaly flag, whether the digest could
+  // confirm per-entity numbers, materiality) and is surfaced in
+  // confidenceChecks, so the number shown is explainable instead of asserted.
+  const claimed = Math.max(0, Math.min(100, Math.round(synthesized.confidence ?? 70)));
+  const { ceiling, reasons } = confidenceCeiling({ queryResult, digest, verification, dataAnomaly });
+  const confidence = Math.min(claimed, ceiling);
   let tag = synthesized.tag || category.toUpperCase();
-  let confidenceChecks = synthesized.confidenceChecks || [];
-  if (dataAnomaly.flagged) {
-    confidence = Math.min(confidence, 40);
+  const confidenceChecks = [...reasons, ...(synthesized.confidenceChecks || [])];
+  // The two conditions that mean "the write-up itself is not trustworthy" (as
+  // opposed to merely thin) still re-tag the card, not just lower its score.
+  if (dataAnomaly.flagged || !verification.verified) {
     if (!/data quality/i.test(tag)) tag = 'DATA QUALITY';
-  }
-  if (!verification.verified) {
-    confidence = Math.min(confidence, 40);
-    if (!/data quality/i.test(tag)) tag = 'DATA QUALITY';
-    confidenceChecks = [
-      { positive: false, text: `Automated verification flagged: ${verification.issues.join('; ') || 'unsupported figures'}` },
-      ...confidenceChecks,
-    ];
   }
   const color = CATEGORY_COLOR[category];
   const chart = normalizeChart(synthesized.chart, color, dataQuestion.toUpperCase());
@@ -850,11 +1069,27 @@ async function investigate(datasetId, userId, prompt) {
       prompt: actualPrompt,
       dataQuestion,
       sql: queryResult.sql,
+      sqlConfidence: queryResult.confidence,
+      // What the model asked for vs what the evidence allowed — makes the
+      // final score auditable instead of a bare number.
+      confidenceClaimed: claimed,
+      confidenceCeiling: ceiling,
       verification: { verified: verification.verified, issues: verification.issues },
+      // What the numbers were actually computed from — makes the "was this a
+      // sample or the whole result?" question answerable after the fact,
+      // which it wasn't when the campaign report shipped.
+      aggregation: {
+        rowCount: digest.rowCount,
+        groupedBy: digest.groupBy,
+        distinctGroups: digest.distinctGroups,
+        collapsedColumns: digest.collapsedColumns,
+        sampleShown: Math.min(SAMPLE_LIMIT, digest.rowCount),
+      },
     },
   };
 
   await store.insert(datasetId, userId, insight);
+  progress.finish(jobId);
 
   return insight;
 }
@@ -884,8 +1119,40 @@ async function bootstrap(datasetId) {
   return results;
 }
 
-function listGenerated(datasetId, userId) {
-  return store.listByUser(datasetId, userId);
+/**
+ * A session's own reports, PLUS the dataset's shared suggestions.
+ *
+ * bootstrap() writes under the fixed `system` user while every read is scoped
+ * to the caller's own anonymous session, so those reports reached nobody — a
+ * new user saw "No open suggestions right now" forever, despite the route
+ * existing precisely to "populate an empty feed".
+ *
+ * Shared rather than copied-per-user, deliberately. A suggestion is a property
+ * of the DATA, not of the person: everyone querying this dataset is looking at
+ * the same numbers, so they should see the same findings, and those findings
+ * should refresh for everyone at once when the nightly run regenerates them. A
+ * per-user copy would freeze at whatever moment that user first visited, so two
+ * people would see different "current" figures for the same dataset — the exact
+ * class of wrongness the rest of this pipeline exists to prevent.
+ *
+ * Ownership starts at Save instead (see setTracked): saving clones the report
+ * to the user, which is also the right semantics — a saved report is a snapshot
+ * you can return to, so it SHOULD stop moving.
+ */
+async function listGenerated(datasetId, userId) {
+  const own = await store.listByUser(datasetId, userId);
+  if (userId === BOOTSTRAP_USER_ID) return own;
+
+  const shared = await store.listByUser(datasetId, BOOTSTRAP_USER_ID);
+  if (shared.length === 0) return own;
+
+  // A suggestion the user already saved is now theirs — don't show both.
+  const alreadySaved = new Set(own.map(i => i.seededFrom).filter(Boolean));
+  const suggestions = shared
+    .filter(s => !alreadySaved.has(s.id))
+    .map(s => ({ ...s, shared: true, origin: 'proposed', tracked: false }));
+
+  return [...own, ...suggestions];
 }
 
 /**
@@ -898,8 +1165,15 @@ function listGeneratedAll(datasetId) {
   return store.listAll(datasetId);
 }
 
-function getGeneratedById(datasetId, userId, insightId) {
-  return store.getById(datasetId, userId, insightId);
+/** Falls back to the dataset's shared suggestions so opening one from the list works — it isn't owned by this session. */
+async function getGeneratedById(datasetId, userId, insightId) {
+  const own = await store.getById(datasetId, userId, insightId);
+  if (own) return own;
+  if (userId === BOOTSTRAP_USER_ID) return null;
+  const shared = await store.getById(datasetId, BOOTSTRAP_USER_ID, insightId);
+  // `shared: true` tells the client this report isn't the user's — the detail
+  // page hides Delete, because removing it would take it from everyone.
+  return shared ? { ...shared, shared: true, tracked: false } : null;
 }
 
 /** Admin-only, cross-user version of deleteGenerated. @returns {Promise<boolean>} true if an insight with this id existed and was removed */
@@ -963,7 +1237,7 @@ Supporting detail blocks: ${JSON.stringify(insight.blocks)}
 How it was found: ${JSON.stringify(insight.reasoning)}`;
 
   const response = await llmService.sendOneShot(systemPrompt, userMessage, {
-    model: MODEL, maxTokens: 1024, jsonOutput: true, context: 'insights_action_plan',
+    model: MODEL, maxTokens: 1024, jsonOutput: true, temperature: 0, context: 'insights_action_plan',
   });
   const parsed = parseJSON(response);
   const plan = {
@@ -1040,14 +1314,37 @@ async function listTracked(datasetId, userId) {
 }
 
 /** @returns {Promise<Object|null>} the updated insight, or null if no insight with this id exists */
-function setTracked(datasetId, userId, insightId, tracked) {
-  return store.updateInsight(datasetId, userId, insightId, insight => {
+async function setTracked(datasetId, userId, insightId, tracked) {
+  const own = await store.updateInsight(datasetId, userId, insightId, insight => {
     insight.tracked = !!tracked;
     // Newly tracked items go to the end of the manage-tracking order — reuse
     // Date.now() as a simple monotonically-increasing value, same pattern
     // already used for insight ids themselves elsewhere in this file.
     if (insight.tracked) insight.trackedOrder = Date.now();
   });
+  if (own) return own;
+
+  // COPY-ON-SAVE. The id isn't one of this session's reports, so it is a shared
+  // suggestion being saved for the first time. Clone it to the user rather than
+  // mutating the shared row — otherwise one person saving would flip it saved
+  // for everyone. `seededFrom` lets listGenerated hide the shared original once
+  // a personal copy exists, so the same report never appears twice.
+  if (!tracked || userId === BOOTSTRAP_USER_ID) return null;
+  const shared = await store.getById(datasetId, BOOTSTRAP_USER_ID, insightId);
+  if (!shared) return null;
+
+  const copy = {
+    ...shared,
+    id: `saved-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    seededFrom: shared.id,
+    origin: 'proposed',
+    tracked: true,
+    trackedOrder: Date.now(),
+    viewed: true,
+    createdAt: Date.now(),
+  };
+  await store.insert(datasetId, userId, copy);
+  return copy;
 }
 
 /**
@@ -1066,6 +1363,8 @@ module.exports = {
   investigate, listGenerated, listGeneratedAll, getGeneratedById, deleteGenerated, deleteGeneratedAny,
   setTrackedAny, markViewed, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan,
   classifyPrompt, setDataReloadService,
+  /** Real stage progress for a running investigation — see investigation-progress.service.js. */
+  getProgress: progress.get,
   // Exported purely so scripts/test-insights-unit.js can exercise this
   // pure, DB/LLM-free logic directly as real regression tests (see the
   // 2026-08-07 bugs each of these was fixed for) — not part of the public

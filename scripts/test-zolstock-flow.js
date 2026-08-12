@@ -51,6 +51,30 @@ const QUESTIONS = [
   'Total wholesale (agent) sales to branches this year',
   'What is the total discount amount given this year?',
   'Average transaction value this year',
+  // ── order-recommendation data (items / recommendation_facts, added 2026-08-10) ──
+  'What categories of items do we carry?',
+  'List open purchase orders with quantities and dates',
+  'Which items have their warehouse stock below the defined safety stock level?',
+  'What is the current warehouse stock for item number 5427?',
+  'How many open customer orders are there and what is the total quantity?',
+  'What is the cost and consumer price for item name containing חימר?',
+  // ── extra round (2026-08-10, target ~50 total, no timeouts) ──
+  'Top 5 categories by revenue this year',
+  'איזו קטגוריה הכי נמכרת השנה?',
+  'Compare revenue between store 2 and store 25 this year',
+  'What percentage of total revenue does our top store represent this year?',
+  'Which supplier provides the most items?',
+  'What are the highest-priced items we sell?',
+  'What is the average safety stock among items that have one defined?',
+  'What was our revenue today?',
+  'What were sales yesterday?',
+  'מה היו המכירות אתמול?',
+  'Show me items with negative warehouse stock',
+  'What is the largest single customer order by quantity?',
+  'Show me the details of purchase order PO26000165',
+  'How many units per carton for item names containing חימר?',
+  'Give me a summary of the order recommendation data — warehouse stock, purchase orders, customer orders',
+  'Which items should be reordered soon based on current warehouse stock and safety stock levels?',
 ];
 
 async function askUser(question) {

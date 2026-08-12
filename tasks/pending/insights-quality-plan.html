@@ -1,0 +1,457 @@
+<title>Aspect Intelligence — Quality Remediation Plan</title>
+<style>
+  :root {
+    --paper:      #F4F6F6;
+    --surface:    #FFFFFF;
+    --surface-2:  #EDF0F0;
+    --ink:        #161B1D;
+    --ink-soft:   #3D4749;
+    --ink-mute:   #6B7679;
+    --rule:       #D3DAD9;
+    --rule-soft:  #E3E8E7;
+    --true:       #2C6A5C;
+    --true-bg:    #E4EFEA;
+    --defect:     #A94A26;
+    --defect-bg:  #F6E7DF;
+    --hold:       #8A6D1F;
+    --hold-bg:    #F4EDDA;
+    --shadow:     0 1px 2px rgba(22,27,29,.05), 0 8px 24px -16px rgba(22,27,29,.18);
+
+    --display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --data: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #101416;
+      --surface:   #161C1E;
+      --surface-2: #1D2426;
+      --ink:       #EAEFEE;
+      --ink-soft:  #B9C3C2;
+      --ink-mute:  #838F8E;
+      --rule:      #2A3335;
+      --rule-soft: #212A2C;
+      --true:      #6FBBA6;
+      --true-bg:   #17302A;
+      --defect:    #E08A62;
+      --defect-bg: #352016;
+      --hold:      #D6B65E;
+      --hold-bg:   #2E2716;
+      --shadow:    0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:     #101416;
+    --surface:   #161C1E;
+    --surface-2: #1D2426;
+    --ink:       #EAEFEE;
+    --ink-soft:  #B9C3C2;
+    --ink-mute:  #838F8E;
+    --rule:      #2A3335;
+    --rule-soft: #212A2C;
+    --true:      #6FBBA6;
+    --true-bg:   #17302A;
+    --defect:    #E08A62;
+    --defect-bg: #352016;
+    --hold:      #D6B65E;
+    --hold-bg:   #2E2716;
+    --shadow:    0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 0 24px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  .measure { max-width: 66ch; }
+
+  header.masthead {
+    padding: 72px 0 32px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 40px;
+  }
+  .eyebrow {
+    font-family: var(--data);
+    font-size: 11.5px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(34px, 5.4vw, 52px);
+    line-height: 1.08;
+    letter-spacing: -.015em;
+    text-wrap: balance;
+    margin: 0 0 20px;
+  }
+  .standfirst {
+    font-size: 18.5px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    max-width: 60ch;
+    margin: 0;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 27px;
+    letter-spacing: -.01em;
+    line-height: 1.2;
+    text-wrap: balance;
+    margin: 56px 0 6px;
+  }
+  h2 + .sectionNote { color: var(--ink-mute); font-size: 14.5px; margin: 0 0 24px; }
+  h3 {
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -.005em;
+    margin: 32px 0 8px;
+  }
+  p { margin: 0 0 16px; }
+  a { color: var(--true); text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--true); outline-offset: 3px; border-radius: 3px; }
+
+  code, .num {
+    font-family: var(--data);
+    font-variant-numeric: tabular-nums;
+    font-size: .92em;
+  }
+  code {
+    background: var(--surface-2);
+    padding: .12em .38em;
+    border-radius: 3px;
+  }
+
+  /* ── Baseline metric strip ─────────────────────────────── */
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 0 0 12px;
+  }
+  .metric { background: var(--surface); padding: 18px 18px 16px; }
+  .metric .k {
+    font-family: var(--data);
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    display: block;
+    margin-bottom: 8px;
+  }
+  .metric .v {
+    font-family: var(--data);
+    font-variant-numeric: tabular-nums;
+    font-size: 27px;
+    font-weight: 600;
+    line-height: 1;
+    display: block;
+  }
+  .metric .sub { font-size: 12.5px; color: var(--ink-mute); display: block; margin-top: 7px; }
+  .v.good { color: var(--true); }
+  .v.bad  { color: var(--defect); }
+
+  /* ── Tables ────────────────────────────────────────────── */
+  .scroll { overflow-x: auto; margin: 20px 0 24px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  thead th {
+    font-family: var(--data);
+    font-size: 10.5px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    font-weight: 600;
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.n { font-family: var(--data); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.good { color: var(--true); font-weight: 600; }
+  td.bad  { color: var(--defect); font-weight: 600; }
+
+  /* ── Horizon blocks ────────────────────────────────────── */
+  .horizon {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    padding: 24px 26px 8px;
+    margin: 0 0 20px;
+  }
+  .hHead { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; border-bottom: 1px solid var(--rule-soft); padding-bottom: 14px; margin-bottom: 4px; }
+  .hTag {
+    font-family: var(--data);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    padding: 4px 9px;
+    border-radius: 4px;
+    background: var(--surface-2);
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+  .hTitle { font-family: var(--display); font-size: 21px; font-weight: 600; margin: 0; flex: 1 1 220px; }
+  .hWhen { font-family: var(--data); font-size: 12px; color: var(--ink-mute); white-space: nowrap; }
+
+  .action { padding: 18px 0; border-bottom: 1px solid var(--rule-soft); }
+  .horizon .action:last-of-type { border-bottom: 0; }
+  .aTop { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+  .aName { font-weight: 650; font-size: 15.5px; }
+  .chip {
+    font-family: var(--data);
+    font-size: 10.5px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    padding: 3px 7px;
+    border-radius: 3px;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .chip.fix   { background: var(--true-bg);   color: var(--true); }
+  .chip.risk  { background: var(--defect-bg); color: var(--defect); }
+  .chip.watch { background: var(--hold-bg);   color: var(--hold); }
+  .aBody { font-size: 14.5px; color: var(--ink-soft); margin: 0; max-width: 64ch; }
+  .aBody + .aBody { margin-top: 8px; }
+  .evidence {
+    font-size: 13.5px;
+    color: var(--ink-mute);
+    border-left: 2px solid var(--rule);
+    padding-left: 12px;
+    margin-top: 10px;
+    max-width: 62ch;
+  }
+  .evidence b { color: var(--ink-soft); font-weight: 600; }
+
+  blockquote.pull {
+    border-left: 3px solid var(--true);
+    padding: 4px 0 4px 20px;
+    margin: 28px 0;
+    font-family: var(--display);
+    font-size: 20px;
+    line-height: 1.42;
+    color: var(--ink);
+    max-width: 56ch;
+  }
+
+  ul.tight { margin: 0 0 16px; padding-left: 20px; }
+  ul.tight li { margin-bottom: 7px; max-width: 64ch; }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 22px;
+    border-top: 1px solid var(--rule);
+    font-size: 13px;
+    color: var(--ink-mute);
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">Aspect Intelligence · Engineering Plan · 10 Aug 2026</p>
+  <h1>Getting the report pipeline to tell the truth</h1>
+  <p class="standfirst">A measured baseline across all six datasets, the diagnosis it points to, and a sequenced plan. The headline finding: verification now works — <strong>the remaining failures are wrong queries, not wrong write-ups</strong>, and no amount of downstream checking fixes those.</p>
+</header>
+
+<h2>Where we actually are</h2>
+<p class="sectionNote">42 real investigations — 3 system-proposed prompts plus 4 hand-written cases per dataset. Every figure re-checked by re-executing the insight's own SQL.</p>
+
+<div class="metrics">
+  <div class="metric"><span class="k">Cases run</span><span class="v">42</span><span class="sub">6 datasets</span></div>
+  <div class="metric"><span class="k">Produced a report</span><span class="v bad">21</span><span class="sub">50% completion</span></div>
+  <div class="metric"><span class="k">Figures verified</span><span class="v">74</span><span class="sub">of 214 displayed</span></div>
+  <div class="metric"><span class="k">Matched exactly</span><span class="v good">60</span><span class="sub">81% of checked</span></div>
+</div>
+<p class="evidence">All 14 mismatches sit inside two <code>zolstock</code> insights that the pipeline had <b>already tagged DATA QUALITY at confidence 38–40</b>. The safety net refused to present either as reliable — so no verified-and-wrong figure reached a user in this run.</p>
+
+<h3>The 21 failures, by cause</h3>
+<div class="scroll">
+<table>
+  <thead><tr><th>Cause</th><th class="n">Count</th><th>What it means</th><th>Fixed by</th></tr></thead>
+  <tbody>
+    <tr><td>Zero-row result</td><td class="n">11</td><td>Generator couldn't find the right columns and returned an empty query rather than guess</td><td>H0 · regenerate stale schema descriptions</td></tr>
+    <tr><td>Query timeout</td><td class="n">8</td><td>Complex joins exceeding the 15-second statement limit</td><td>H0 · raise the insights timeout</td></tr>
+    <tr><td>Table does not exist</td><td class="n">2</td><td>Rules instruct the model to use materialized views that were deleted</td><td>H1 · contract test</td></tr>
+  </tbody>
+</table>
+</div>
+<p>Every one of these is an <em>upstream</em> failure: the query was wrong before any verification could run. That is the whole diagnosis.</p>
+
+<h2>What the evidence says</h2>
+
+<blockquote class="pull">Verification checks whether a number came from the data. It cannot check whether the query asked the right question.</blockquote>
+
+<p class="measure">The work already shipped moved the failure mode. Write-ups no longer misread correct data — the code-computed aggregates fixed that, verified exactly against the client's own Qlik dashboard. What remains is queries that were wrong from the start, and those produce confident, plausible, entirely fictional numbers.</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Defect found</th><th class="n">Reported</th><th class="n">True value</th><th class="n">Error</th></tr></thead>
+  <tbody>
+    <tr><td>Campaign 78 revenue <span class="chip fix">fixed</span></td><td class="n bad">₪7,885</td><td class="n good">₪555,229</td><td class="n">70×</td></tr>
+    <tr><td>Campaign 90 revenue <span class="chip fix">fixed</span></td><td class="n bad">₪3,320</td><td class="n good">₪421,229</td><td class="n">127×</td></tr>
+    <tr><td>Unattributed revenue share <span class="chip fix">fixed</span></td><td class="n bad">99.7%</td><td class="n good">94.90%</td><td class="n">17× on the inverse</td></tr>
+    <tr><td>Total sales, product join <span class="chip fix">fixed</span></td><td class="n bad">₪190,657,755</td><td class="n good">₪131,801,440</td><td class="n">+44.6%</td></tr>
+    <tr><td>zer4u store revenue <span class="chip risk">open</span></td><td class="n bad">₪362.9B</td><td class="n">~₪10⁸ scale</td><td class="n">cartesian join</td></tr>
+  </tbody>
+</table>
+</div>
+<p class="evidence">The first four are closed and regression-tested. The last one is open, and is the clearest example of the upstream class: a <code>JOIN … ON TRUE</code> against a florist chain. The new confidence ceiling caught it — the model asked for 72, the evidence allowed <b>45</b> — but a wrong headline still rendered.</p>
+
+<h2>The plan</h2>
+<p class="sectionNote">Sequenced by dependency, not by preference. Each horizon makes the next one measurable.</p>
+
+<section class="horizon">
+  <div class="hHead">
+    <span class="hTag">H0</span>
+    <h3 class="hTitle">Stop the bleeding</h3>
+    <span class="hWhen">days · low risk</span>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Raise the statement timeout for insights</span><span class="chip fix">8 failures</span></div>
+    <p class="aBody">The 15-second limit is a chat constraint — a user waiting on a reply. An investigation is asynchronous background work already taking 30–100 seconds; there is no reason it inherits that budget.</p>
+    <p class="evidence">Clears the 8 timeout failures outright. One configuration value.</p>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Regenerate the four stale schema descriptions</span><span class="chip fix">≈11 failures</span></div>
+    <p class="aBody">newdeli, thestock, tevanaot and zolstock are running on descriptions generated one to three months ago. They also pre-date the duplicate-key detection, so they pick that up for free.</p>
+    <p class="evidence">zolstock has <b>34.7M sales rows and real revenue columns</b>, yet returned zero rows on 5 of 7 cases — that gap is stale schema knowledge, not missing data.</p>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Deduplicate the product join in the BI semantic layer</span><span class="chip risk">silent 45% inflation</span></div>
+    <p class="aBody">The NL→SQL path is fixed. <code>bi/datasets/hypertoy.dataset.js</code> still joins <code>f.part = p.part</code> raw, so any product-dimension query through Aspect BI inflates the same way.</p>
+    <p class="evidence"><code>products</code> holds <b>62,163 rows for 55,189 distinct parts</b>. One line, one place, permanent.</p>
+  </div>
+</section>
+
+<section class="horizon">
+  <div class="hHead">
+    <span class="hTag">H1</span>
+    <h3 class="hTitle">Make vendor knowledge provable</h3>
+    <span class="hWhen">1–2 weeks</span>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Turn rule validation into a failing test</span><span class="chip risk">9 fictional tables</span></div>
+    <p class="aBody">Per-dataset rules are necessary — record types under Hebrew labels, reversed payment names, and numeric campaign codes are not inferable from column types. The problem is that nothing proves them true. A runtime corrector now patches around bad rules; a test makes them get fixed instead.</p>
+    <p class="evidence">The zer4u rules name <b>9 materialized views that do not exist</b>, presented to the model as "CRITICAL — follow exactly". Undetected for months.</p>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Split structural facts from methodology</span><span class="chip watch">design</span></div>
+    <p class="aBody">Two kinds of knowledge are tangled in one 1,200-line string. Structural claims — which table, which join, which measure — are checkable against the live catalog and belong in a declarative form. Methodology — use a Z-score for anomalies, pace-adjust a partial month — cannot be machine-checked and is genuinely good prose that should stay prose.</p>
+    <p class="evidence">The zer4u rules are roughly 90% structural, which is precisely why they rotted invisibly.</p>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Move editable knowledge into the admin UI</span><span class="chip fix">plumbing exists</span></div>
+    <p class="aBody">Per-dataset config already supports version history, restore and non-developer editing. Only the plain-language data model uses it today; vendor rules still require a developer editing source.</p>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Rewrite the zer4u rules against its real schema</span><span class="chip risk">dataset broken</span></div>
+    <p class="aBody">Contained, measurable work with a known before state: 4 of 7 cases, two hard failures, and a ₪362.9B headline.</p>
+  </div>
+</section>
+
+<section class="horizon">
+  <div class="hHead">
+    <span class="hTag">H2</span>
+    <h3 class="hTitle">Make wrong queries impossible</h3>
+    <span class="hWhen">weeks · highest leverage</span>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Route investigations through the semantic layer</span><span class="chip fix">structural</span></div>
+    <p class="aBody">Aspect BI already compiles a structured spec into SQL: record types handled by construction, joins declared once, and margin defined as a ratio of two sums so it <em>cannot</em> be summed. An unknown field returns an error rather than a plausible wrong answer.</p>
+    <p class="aBody">The planning step already emits measures and dimensions — that is most of a spec. The work is extending the five missing dataset definitions and keeping NL→SQL as the fallback for questions a spec cannot express.</p>
+    <p class="evidence">Eliminates by construction: missing record-type filters, phantom tables, summed percentages, unexpected grain, and run-to-run drift.</p>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Measure baselines per dataset</span><span class="chip fix">catches ₪362.9B</span></div>
+    <p class="aBody">Store each core measure's fact-table total, refreshed on data reload. Any reported figure exceeding it is impossible and gets rejected before a user sees it. Cheap, deterministic, and the check that kills the cartesian-join class.</p>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Control-total invariant</span><span class="chip watch">follows H2</span></div>
+    <p class="aBody">For any aggregate over a join, compare against the same measure on the fact table alone. If the joined total is larger, the join fans out. Hard to extract from free-form SQL; nearly free once a compiler knows the base table and filters.</p>
+  </div>
+</section>
+
+<section class="horizon">
+  <div class="hHead">
+    <span class="hTag">H3</span>
+    <h3 class="hTitle">Make quality visible and non-regressing</h3>
+    <span class="hWhen">ongoing</span>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Golden-answer regression suite on a schedule</span><span class="chip fix">harness built</span></div>
+    <p class="aBody">The runner exists and already re-verifies every displayed figure against re-queried data. What it needs is known-answer questions per dataset and a schedule. The client's own Qlik dashboard is the ideal seed: total sales, revenue by branch and by product family all reconcile to the shekel today.</p>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">Raise the share of figures that are checkable</span><span class="chip watch">measurement gap</span></div>
+    <p class="aBody">Only 74 of 214 displayed figures could be automatically verified; the rest are percentages, projections or derived ratios with no direct counterpart. That share is itself a quality metric — the more of a report that is mechanically checkable, the less rests on trust.</p>
+  </div>
+
+  <div class="action">
+    <div class="aTop"><span class="aName">A second query for significance</span><span class="chip watch">analytical</span></div>
+    <p class="aBody">Let the planner emit a baseline query — prior period, or the population average — alongside the finding. This is what turns "X is lowest" into "X is lowest, and that is N deviations from its own history", which is the difference between a ranking and an insight.</p>
+  </div>
+</section>
+
+<h2>Definition of done</h2>
+<p class="sectionNote">Numbers to move, measured the same way each time by the existing suite.</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Measure</th><th class="n">Today</th><th class="n">Target</th><th>Gate</th></tr></thead>
+  <tbody>
+    <tr><td>Cases producing a report</td><td class="n bad">50%</td><td class="n">≥ 90%</td><td>H0 + H1</td></tr>
+    <tr><td>Verified figures matching truth</td><td class="n">81%</td><td class="n">100%</td><td>H2</td></tr>
+    <tr><td>Displayed figures mechanically checkable</td><td class="n bad">35%</td><td class="n">≥ 70%</td><td>H2 + H3</td></tr>
+    <tr><td>Datasets with rules proven against live schema</td><td class="n bad">3 of 6</td><td class="n">6 of 6</td><td>H1</td></tr>
+    <tr><td>Wrong figures reaching a user unflagged</td><td class="n good">0</td><td class="n">0</td><td>hold the line</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>What this plan will not fix</h2>
+<ul class="tight">
+  <li><strong>Causal claims.</strong> "Why did margin drop" cannot be established by one aggregate query. The write-up will still narrate cause over a descriptive result, and no verification step checks causation.</li>
+  <li><strong>Forward-looking scenarios.</strong> The good / neutral / negative projections are explicitly exempt from fact-checking. They are plausible, not derived.</li>
+  <li><strong>Semantic plausibility without a baseline.</strong> Nothing knows a florist chain cannot bill ₪362.9B until measure baselines exist — that is why H2 matters more than another prompt rule.</li>
+  <li><strong>Business judgment.</strong> A materially correct finding can still be the wrong thing to look at. That is a product question, not a pipeline one.</li>
+</ul>
+
+<h2>Recommended order</h2>
+<p class="measure">Start with H0. It is hours of work, carries almost no risk, and plausibly converts a large share of the 21 failed cases into working reports — which also gives H2 a clean baseline to be measured against. Run the suite before and after so the change is a number, not an impression.</p>
+<p class="measure">H1 next, because it stops the same class of rot recurring while H2 is being built. H2 is the real fix and the only one that makes an entire category of defect structurally impossible.</p>
+
+<footer>
+  Baseline measured 10 Aug 2026 across hypertoy, zer4u, newdeli, thestock, zolstock and tevanaot. Reproduce with <code>node scripts/test-insights-suite.js &lt;dataset&gt; all</code> followed by <code>node scripts/summarize-insights-suite.js</code>. Hypertoy figures reconciled against the client Qlik dashboard.
+</footer>
+
+</div>

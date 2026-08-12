@@ -44,7 +44,7 @@ When the customer pushes back or says no, be curious — ask what bothered them,
 ## DEMO NOTE
 Account terms are simulated for demo. In production, these would come from real product data.`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 2000,
       tools: [],
       knowledgeBase: null

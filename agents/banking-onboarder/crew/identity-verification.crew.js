@@ -100,7 +100,7 @@ After receiving phone number, immediately confirm OTP was sent:
 - Max 3 attempts
 - **IMPORTANT:** Always mention the code is **6 digits**`,
 
-      model: 'gpt-5-chat-latest',
+      model: 'gpt-5.6',
       maxTokens: 1500,
       tools: [],
       knowledgeBase: null
