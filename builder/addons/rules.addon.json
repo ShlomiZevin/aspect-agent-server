@@ -1,0 +1,33 @@
+{
+  "pluginId":          "rules",
+  "displayName":       "Rules",
+  "description":       "Deterministic if/then rules — set fields, transition, stop the chain. No LLM.",
+  "purpose":           "Runs an ordered list of if/then rules against the conversation memory — no LLM call, instant and free. Each rule has WHEN (the same AND-conditions as filters, PLUS a 'formula' condition: a single JavaScript expression over {{field}} tokens, e.g. `{{age}} > 50 || {{stage}} == 'post'` — that's how OR is expressed; empty WHEN = always fires) and THEN (one or more actions: set a field to a fixed value / another field's value / a JS formula like `yearsSince({{birthdate}})` or `{{a}} + {{b}}`; clear a field; transition to a crew; stop the rest of the chain; reply with fixed text). Formulas are single expressions — no loops or statements — evaluated with a hard timeout. Rules run top to bottom, every matching rule fires, later writes win. Use it to replace fixed decisions that used to live in prompts (age thresholds, defaults, routing) — the LLM should only handle judgment and tone. Place it AFTER extractors so it sees fresh values. Common pattern: extractor detects `intent`, a rule sets a targeted-KB field or transitions with stop-chain so an expensive thinker never runs when the data already decides.",
+  "icon":              "⚖️",
+  "color":             "#16a34a",
+
+  "defaultLane":       "main",
+  "fieldMode":         "none",
+  "speaks":            false,
+
+  "allowedOutputTypes": ["json-to-memory"],
+  "defaultOutputType":  "json-to-memory",
+
+  "defaultContext": {
+    "history":      { "mode": "none" }
+  },
+
+  "defaultPromptTemplate": "",
+
+  "defaultConfig": {
+    "rules": [],
+    "extractsFields": []
+  },
+
+  "hideStandardSections": {
+    "context":        true,
+    "output":         true,
+    "promptTemplate": true,
+    "repository":     true
+  }
+}

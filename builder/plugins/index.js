@@ -26,5 +26,6 @@ require('./fieldInterviewer/addon.fieldInterviewer');
 require('./thinker/addon.thinker');
 require('./summarizer/addon.summarizer');
 require('./transitionRouter/addon.transitionRouter');
+require('./rules/addon.rules');
 require('./kbRetriever/addon.kbRetriever');
 require('./liveBrainPanel/addon.liveBrainPanel');

@@ -238,6 +238,20 @@ function applyWrites(blob, writes) {
     }
 
     // Memory / thinking — domain-keyed write or domain-replace marker.
+    // Per-field clear marker (Rules addon): { field, clear:true, domain }
+    // deletes the field; domain '*' clears it from EVERY domain.
+    if (w.clear === true) {
+      if (!w.field) continue;
+      if (w.domain === '*') {
+        for (const d of Object.keys(blob[sec])) {
+          if (blob[sec][d]) delete blob[sec][d][w.field];
+        }
+        continue;
+      }
+      const cdk = domainKey(w.domain);
+      if (blob[sec][cdk]) delete blob[sec][cdk][w.field];
+      continue;
+    }
     const dk = domainKey(w.domain);
     if (w.replace === true) {
       blob[sec][dk] = {};

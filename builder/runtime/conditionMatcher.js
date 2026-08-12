@@ -25,6 +25,7 @@
  */
 
 const builderMemory = require('./builderMemory');
+const formulaEval = require('./formulaEval');
 
 /**
  * Apply a binary operator. Both sides coerced as needed:
@@ -95,6 +96,10 @@ function evaluateCondition(blob, condition, ctx) {
     }
     case 'field': {
       const v = builderMemory.findFieldValue(blob, condition.field, 'memory');
+      // Display missing as `null` — same vocabulary the formula path
+      // uses for unset fields, so run-card explanations never mix
+      // `undefined` and `null` for the same state.
+      const shown = JSON.stringify(v === undefined ? null : v);
       const op = condition.op;
       // `in` / `not-in` use the `values` array; everything else uses
       // the scalar `value`. Mirrors the client's TransitionCondition.
@@ -104,16 +109,28 @@ function evaluateCondition(blob, condition, ctx) {
         const ok = op === 'in' ? inSet : !inSet;
         return {
           ok,
-          why: `${condition.field}=${JSON.stringify(v)} ${op} [${values.join(', ')}]`,
+          why: `${condition.field}=${shown} ${op} [${values.join(', ')}]`,
         };
       }
       const ok = v !== undefined && applyOp(op, v, condition.value);
       return {
         ok,
         why: ok
-          ? `${condition.field} ${op} ${JSON.stringify(condition.value)} (actual: ${JSON.stringify(v)})`
-          : `${condition.field}=${JSON.stringify(v)} fails ${op} ${JSON.stringify(condition.value)}`,
+          ? `${condition.field} ${op} ${JSON.stringify(condition.value)} (actual: ${shown})`
+          : `${condition.field}=${shown} fails ${op} ${JSON.stringify(condition.value)}`,
       };
+    }
+    case 'formula': {
+      // Real-JS single expression, truthiness decides. `{{field}}`
+      // tokens resolve against memory. Errors (lint, runtime, timeout)
+      // evaluate to NOT-matched with the error surfaced in `why`.
+      const res = formulaEval.evaluate(condition.expr, name =>
+        builderMemory.findFieldValue(blob, name, 'memory'));
+      if (!res.ok) {
+        return { ok: false, why: `formula error: ${res.error}` };
+      }
+      const ok = Boolean(res.value);
+      return { ok, why: `${res.substituted} → ${JSON.stringify(res.value)}` };
     }
     default:
       return { ok: false, why: `unknown condition type "${condition.type}"` };
