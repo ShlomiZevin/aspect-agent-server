@@ -101,6 +101,17 @@ function evaluateCondition(blob, condition, ctx) {
       // `undefined` and `null` for the same state.
       const shown = JSON.stringify(v === undefined ? null : v);
       const op = condition.op;
+      // No-operand emptiness checks — the ONLY field ops that can
+      // match a never-collected field (every other op requires a
+      // value to exist). '' counts as empty, same as fields-collected.
+      if (op === 'is-null' || op === 'is-not-null') {
+        const empty = v === undefined || v === null || v === '';
+        const ok = op === 'is-null' ? empty : !empty;
+        return {
+          ok,
+          why: empty ? `${condition.field} is empty` : `${condition.field} has a value (${shown})`,
+        };
+      }
       // `in` / `not-in` use the `values` array; everything else uses
       // the scalar `value`. Mirrors the client's TransitionCondition.
       if (op === 'in' || op === 'not-in') {

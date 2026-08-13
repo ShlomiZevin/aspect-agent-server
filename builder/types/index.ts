@@ -798,7 +798,11 @@ export type FieldOp =
   | 'equals' | 'not-equals'
   | 'contains' | 'starts-with' | 'ends-with'
   | 'gt' | 'gte' | 'lt' | 'lte'
-  | 'in' | 'not-in';
+  | 'in' | 'not-in'
+  // No-operand ops: `is-null` matches when the field was never
+  // collected (or holds ''), `is-not-null` when it has a value.
+  // `value`/`values` are ignored for these — emit neither.
+  | 'is-null' | 'is-not-null';
 
 export type TransitionCondition =
   | { type: 'fields-collected'; fields: string[] }
