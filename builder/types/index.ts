@@ -820,6 +820,21 @@ export type TransitionCondition =
        */
       type: 'run-count';
       max: number;
+    }
+  | {
+      /**
+       * Single JavaScript expression over `{{field}}` tokens, matched
+       * by truthiness — the OR / complex-logic escape hatch the
+       * AND-only list can't express (e.g. `{{age}} > 50 || {{stage}}
+       * == 'post'`). Fenced server-side: single expression only (no
+       * loops/statements — linted), evaluated in a vm with a hard
+       * timeout. Errors evaluate as not-matched, surfaced in the run
+       * card. A field that was never collected substitutes as `null`
+       * (check emptiness with `{{x}} == null`); numeric-looking values
+       * substitute as numbers so `{{a}} + {{b}}` is math, not concat.
+       */
+      type: 'formula';
+      expr: string;
     };
 // `always` was dropped — composing with an upstream extractor +
 // field op covers the unconditional pipeline case more inspectably.
@@ -860,6 +875,93 @@ export interface TransitionRouterConfig {
    * Optional for back-compat; absence reads as `true`.
    */
   fireImmediately?: boolean;
+}
+
+// ─── Rules addon ───────────────────────────────────────────────────
+// Deterministic if/then engine over conversation memory — pluginId
+// 'rules'. No LLM call: rules run in ~1ms at 0 tokens wherever the
+// addon sits in the chain (place it AFTER extractors so it sees this
+// turn's fresh values). Rules run top to bottom, EVERY matching rule
+// fires, later writes win. Use it for fixed data-driven decisions that
+// would otherwise live as if-sentences in prompts (defaults, derived
+// values, thresholds, routing); keep judgment and tone in the LLM.
+
+/** The legacy compute-function dropdown for rule set-actions —
+ *  superseded by `RuleAction.formula`. NEVER generate new actions with
+ *  `valueMode: 'compute'`; it exists only so configs saved before
+ *  formulas keep evaluating. */
+export interface RuleComputeDef {
+  fn: 'years-since' | 'days-since' | 'add' | 'subtract' | 'today';
+  /** Source field: the date field for *-since, left operand for math. */
+  field?: string;
+  /** Right operand as another field (takes precedence over `number`). */
+  otherField?: string;
+  /** Right operand as a fixed number. */
+  number?: number;
+}
+
+/** One action inside a rule's THEN list. `type` decides which of the
+ *  optional keys apply — emit only the keys for that type. */
+export interface RuleAction {
+  type: 'set' | 'clear' | 'transition' | 'stop' | 'reply';
+  /** set/clear: target field NAME (a declared agent/crew field). */
+  field?: string;
+  /** set: how the value is produced. Default 'fixed'. */
+  valueMode?: 'fixed' | 'copy' | 'formula' | 'compute';
+  /** set + fixed: the literal value. */
+  value?: string;
+  /** set + copy: source field NAME to copy from. */
+  fromField?: string;
+  /** set + formula: SINGLE JavaScript expression over {{field}} tokens
+   *  (e.g. `yearsSince({{birthdate}})`, `{{a}} + {{b}}`,
+   *  `{{age}} >= 50 ? "50+" : "under 50"`). No loops, no statements,
+   *  no `;`, no assignment, no arrow functions — server lints and
+   *  rejects them, and evaluation runs in a vm with a hard timeout.
+   *  Helpers in scope: yearsSince(date), daysSince(date), today().
+   *  Uncollected fields substitute as `null`; numeric-looking values
+   *  substitute as numbers. */
+  formula?: string;
+  /** set + compute: legacy dropdown functions — superseded by
+   *  `formula`, kept for configs saved before it existed. */
+  compute?: RuleComputeDef;
+  /** transition: target crew id (must be an EXISTING crew on this
+   *  agent). Fires same turn unless `fireImmediately` is false. */
+  target?: ID;
+  fireImmediately?: boolean;
+  /** reply: fixed assistant text sent to the user verbatim. Pair with
+   *  a `stop` action in the same rule so the Talker doesn't also
+   *  answer (last assistant text wins otherwise). */
+  text?: string;
+}
+
+/** One if/then rule. */
+export interface RuleDef {
+  /** Client-generated id, format `rule_xxxxxxx`. */
+  id: string;
+  /** Same AND-condition vocabulary as filters/router — including the
+   *  'formula' condition type for OR / complex logic. EMPTY array =
+   *  the rule ALWAYS fires (that's how computed fields are expressed:
+   *  a THEN with no WHEN, e.g. always recompute `age` from
+   *  `{{birthdate}}`). */
+  conditions: TransitionCondition[];
+  actions: RuleAction[];
+  /** false = paused — kept but skipped at runtime. */
+  enabled?: boolean;
+}
+
+/** Rules addon config (pluginId 'rules'). Rules run top to bottom,
+ *  every match fires, later writes win; values set by an earlier rule
+ *  are visible to later rules' conditions in the SAME run.
+ *  `extractsFields` must mirror the field IDS (not names) of every
+ *  field the rules set/clear/copy — the engine resolves them to
+ *  FieldDefs so writes land in each field's declared domain. The
+ *  config UI maintains it automatically; when generating, list the
+ *  ids of all touched fields. */
+export interface RulesAddonConfig {
+  /** User-editable instance name shown on the chain card. */
+  name?: string;
+  rules: RuleDef[];
+  extractsFields: string[];
 }
 
 // ─── The three-level documents ─────────────────────────────────────

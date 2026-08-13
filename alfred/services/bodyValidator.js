@@ -160,6 +160,52 @@ function checkAddonInstance(addon, path, errors, knownFieldIds) {
     if (!isObject(addon.config.model))
       pushErr(errors, `${path}.config.model`, 'required ModelRef object');
   }
+
+  // Rules — deterministic if/then, no model, no prompt. Light shape
+  // checks that catch the generator mistakes that matter: malformed
+  // rule/action rows, unknown action types, and extractsFields carrying
+  // field NAMES instead of ids (writes would lose their domain).
+  if (addon.pluginId === 'rules') {
+    if (!isObject(addon.config)) return;
+    const RULE_ACTION_TYPES = new Set(['set', 'clear', 'transition', 'stop', 'reply']);
+    if (!Array.isArray(addon.config.rules)) {
+      pushErr(errors, `${path}.config.rules`, 'required array');
+    } else {
+      addon.config.rules.forEach((r, ri) => {
+        const rp = `${path}.config.rules[${ri}]`;
+        if (!isObject(r)) { pushErr(errors, rp, 'must be an object'); return; }
+        if (typeof r.id !== 'string' || !r.id) pushErr(errors, `${rp}.id`, 'required string');
+        if (!Array.isArray(r.conditions)) pushErr(errors, `${rp}.conditions`, 'required array (empty = always fires)');
+        if (!Array.isArray(r.actions) || r.actions.length === 0) {
+          pushErr(errors, `${rp}.actions`, 'required non-empty array');
+        } else {
+          r.actions.forEach((a, ai) => {
+            const ap = `${rp}.actions[${ai}]`;
+            if (!isObject(a) || !RULE_ACTION_TYPES.has(a.type)) {
+              pushErr(errors, `${ap}.type`, `must be one of ${[...RULE_ACTION_TYPES].join(', ')}`);
+              return;
+            }
+            if ((a.type === 'set' || a.type === 'clear') && (typeof a.field !== 'string' || !a.field))
+              pushErr(errors, `${ap}.field`, 'required field name for set/clear');
+            if (a.type === 'set' && a.valueMode === 'formula' && (typeof a.formula !== 'string' || !a.formula.trim()))
+              pushErr(errors, `${ap}.formula`, 'required expression when valueMode is "formula"');
+            if (a.type === 'transition' && (typeof a.target !== 'string' || !a.target))
+              pushErr(errors, `${ap}.target`, 'required crew id for transition');
+            if (a.type === 'reply' && (typeof a.text !== 'string' || !a.text.trim()))
+              pushErr(errors, `${ap}.text`, 'required text for reply');
+          });
+        }
+      });
+    }
+    if (!Array.isArray(addon.config.extractsFields)) {
+      pushErr(errors, `${path}.config.extractsFields`, 'required array (ids of fields the rules touch)');
+    } else if (knownFieldIds) {
+      addon.config.extractsFields.forEach((fid, i) => {
+        if (typeof fid !== 'string' || !knownFieldIds.has(fid))
+          pushErr(errors, `${path}.config.extractsFields[${i}]`, `unknown field id "${fid}" — must be a field ID (not a name) from agent.fields or this crew's fields`);
+      });
+    }
+  }
 }
 
 const VALID_PANEL_RENDERS = new Set(['text', 'html', 'tags', 'fields', 'bars', 'cards', 'journey']);
