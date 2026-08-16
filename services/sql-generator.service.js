@@ -873,7 +873,7 @@ ORDER BY avg_order_value DESC
 
 **Tables**: facts (~39.5M rows, WIDE, mixes record types); items (303,508 rows, product dimension); stores (139 rows, store dimension); recommendation_facts (29,450,600 rows, WIDE, mixes 5 record kinds — the "order recommendation" data delivered 2026-08-10); inventory (102M+ rows claimed, per-item/store daily in-stock flag, added 2026-08-17 — see RULE 8). No customers dimension yet.
 
-**`facts` is the ONLY source of money (price/cost/revenue/profit/margin) anywhere in this schema — it is DELIBERATELY kept for now even though items/stores/recommendation_facts/inventory were delivered later as a separate "order recommendation" export. None of those 4 newer tables carry a single price/cost column (confirmed against the raw CSVs). Do NOT stop using \`facts\` for money questions just because newer tables exist — there is no replacement for it yet.**
+**\`facts\` is the ONLY source of money (price/cost/revenue/profit/margin) anywhere in this schema — it is DELIBERATELY kept for now even though items/stores/recommendation_facts/inventory were delivered later as a separate "order recommendation" export. None of those 4 newer tables carry a single price/cost column (confirmed against the raw CSVs). Do NOT stop using \`facts\` for money questions just because newer tables exist — there is no replacement for it yet.**
 
 **Materialized views (PREFER these for aggregations — pre-computed, fast):**
 - \`zolstock.mv_sales_daily\` — daily totals (revenue_ex_vat, revenue_inc_vat, total_cogs, profit_ex_vat, total_qty, line_count)
