@@ -45,6 +45,7 @@ Documentation of existing features in the system. Each file describes what a fea
 Business-facing overview docs — not how-to guides. What Aspect is, its architecture at a glance, and per-client data reference.
 
 - **ASPECT_OVERVIEW.md** — What Aspect is, core idea, architecture building blocks, agent inventory, what's shipped vs. planned, and grounded (code-verified, not market-researched) strengths.
+- **ARR_TECHNOLOGY.md** — Technology & innovation positioning (investors + customers, internal draft). The **Adaptive Reasoning Runtime (ARR), powered by Signal** — its four named subsystems (Signal Layer, Cortex, Active KB / SAG, Live Context Synthesis), the SAG-vs-RAG contrast, tech stack, and an internal talk track. Every claim is mapped to real code.
 - **CLIENT_DATASETS.md** — Zer4U and Hyper Toy data: tables, scale, canonical source files, documented data-quality rules, and what questions each dataset can answer.
 
 ### `docs/setup/`
