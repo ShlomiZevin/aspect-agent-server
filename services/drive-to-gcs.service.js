@@ -187,6 +187,12 @@ async function syncClient(client, opts = {}) {
   const cfg = await resolveClientConfig(client);
   if (!cfg) throw new Error(`No Drive sync configured for '${client}' - set a Drive folder ID first.`);
   if (!cfg.folderId) throw new Error(`No Drive folder ID set for '${client}' yet.`);
+  // Fail loudly rather than silently concatenating `null` into the GCS path below
+  // (targetPath = cfg.gcsPrefix + targetBasename) — this actually happened for
+  // zolstock on 2026-08-16 (gcsPrefix unset before the DB config was saved) and
+  // wrote 5 files as e.g. "nullInventory_ZolStock_CSV.csv" in the bucket ROOT,
+  // outside any client's folder, silently.
+  if (!cfg.gcsPrefix) throw new Error(`No GCS folder configured for '${client}' yet - set it in Data Loader → Configuration → Import Folder first.`);
 
   const dryRun = !!opts.dryRun;
   const log = opts.log || console.log;
