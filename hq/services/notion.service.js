@@ -377,6 +377,54 @@ async function listDatabasePages(databaseId, { pageSize = 100, since = null } = 
   return pages;
 }
 
+/**
+ * Every object the integration can see, paginated. This is the discovery call:
+ * metadata only, no page bodies, so 800 objects come back in seconds for free.
+ */
+/**
+ * Everything the integration can see, newest edit first.
+ *
+ * `since` is a watermark: because the results are sorted by `last_edited_time`
+ * descending, the first object older than the watermark means every object
+ * after it is older too — so we stop paginating there. A workspace of 800 pages
+ * costs 9 requests on the first pass and 1 on every later pass where nothing
+ * changed.
+ *
+ * `reachedEnd` reports whether we actually walked the whole workspace. It
+ * matters because a watermarked pass cannot notice a DELETED page, so the
+ * caller must not treat a partial listing as the full truth.
+ */
+async function listAllAccessible(onProgress = null, { since = null } = {}) {
+  const all = [];
+  let cursor;
+  let stoppedEarly = false;
+  const floor = since ? new Date(since).getTime() : null;
+
+  do {
+    const body = {
+      page_size: 100,
+      sort: { direction: 'descending', timestamp: 'last_edited_time' },
+    };
+    if (cursor) body.start_cursor = cursor;
+
+    const res = await notionFetch('/search', { method: 'POST', body });
+    const batch = res.results || [];
+
+    if (floor) {
+      const fresh = batch.filter(o => new Date(o.last_edited_time || 0).getTime() > floor);
+      all.push(...fresh);
+      if (fresh.length < batch.length) { stoppedEarly = true; break; }
+    } else {
+      all.push(...batch);
+    }
+
+    cursor = res.has_more ? res.next_cursor : null;
+    onProgress?.({ found: all.length });
+  } while (cursor);
+
+  return { objects: all, reachedEnd: !stoppedEarly && !cursor };
+}
+
 /** Comments on a page. Needs the "read comments" capability on the integration. */
 async function fetchComments(pageId) {
   try {
@@ -393,6 +441,7 @@ async function fetchComments(pageId) {
 
 module.exports = {
   isConfigured,
+  listAllAccessible,
   extractNotionId,
   resolveObject,
   fetchPage,

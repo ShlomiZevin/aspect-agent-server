@@ -63,6 +63,10 @@ async function run(ctx) {
       usageData = {
         inputTokens:  chunk.inputTokens  || 0,
         outputTokens: chunk.outputTokens || 0,
+        // Reasoning-model split: billed inside outputTokens but never
+        // emitted as text. Persisted so an empty-but-billed reply is
+        // self-explanatory in the run card (#809). null = not reported.
+        reasoningTokens: typeof chunk.reasoningTokens === 'number' ? chunk.reasoningTokens : null,
         durationMs:   chunk.durationMs   || (Date.now() - start),
       };
     }
@@ -96,6 +100,7 @@ async function run(ctx) {
           input:  usageData.inputTokens,
           output: usageData.outputTokens,
           total:  usageData.inputTokens + usageData.outputTokens,
+          ...(usageData.reasoningTokens != null ? { reasoning: usageData.reasoningTokens } : {}),
         }
       : { input: 0, output: 0, total: 0 },
     durationMs:   Date.now() - start,

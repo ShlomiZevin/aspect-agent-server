@@ -25,6 +25,25 @@ async function createSource({ kind, label, config = {}, syncMode = 'once' }) {
   return rows[0];
 }
 
+/**
+ * The one long-lived source row for a whole provider (as opposed to the
+ * per-link rows Drop creates). Integrations sync against this.
+ */
+async function getOrCreateProviderSource(kind, label) {
+  const { rows } = await db.query(
+    `SELECT * FROM hq_sources WHERE kind = $1 AND config->>'provider' = 'true' LIMIT 1`,
+    [kind]
+  );
+  if (rows[0]) return rows[0];
+
+  const { rows: created } = await db.query(
+    `INSERT INTO hq_sources (kind, label, config, sync_mode)
+     VALUES ($1, $2, '{"provider":"true"}'::jsonb, 'watch') RETURNING *`,
+    [kind, label]
+  );
+  return created[0];
+}
+
 async function findSourceByConfigKey(kind, key, value) {
   const { rows } = await db.query(
     `SELECT * FROM hq_sources WHERE kind = $1 AND config->>$2 = $3 LIMIT 1`,
@@ -258,7 +277,7 @@ async function deleteAtom(id) {
 
 module.exports = {
   hashContent,
-  createSource, findSourceByConfigKey, updateSource, listSources, deleteSource,
+  createSource, getOrCreateProviderSource, findSourceByConfigKey, updateSource, listSources, deleteSource,
   upsertAtom, getAtom, getAtomsByIds, listAtoms, countAtoms,
   setAtomIndexed, setScribeResult, setScribeStatus, reclaimStaleScribes, patchAtom, deleteAtom,
 };

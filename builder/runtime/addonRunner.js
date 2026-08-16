@@ -427,7 +427,44 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
     fieldPool,
     explicitMemoryNames,
   );
-  const memoryWrites = [...pluginWrites, ...systemWrites, ...declaredWrites];
+  const allWrites = [...pluginWrites, ...systemWrites, ...declaredWrites];
+
+  // ── Enum guard (task #805): a write to an enum-bound field must be ──
+  // one of the enum's declared values. Any addon can fill fields via
+  // the JSON harvest, and an LLM that ignored — or never saw — the
+  // value list must not corrupt downstream routing that expects only
+  // declared values. A case-insensitive match is coerced to the
+  // canonical value; anything else is DROPPED from the writes, kept in
+  // `rejectedWrites` for the run card, and logged. rawOutput stays
+  // untouched — the card still shows exactly what the model returned.
+  const enumById = new Map(
+    (Array.isArray(agentEnums) ? agentEnums : []).map(e => [e.id, e]));
+  const fieldDefByName = new Map(fieldPool.filter(f => f && f.name).map(f => [f.name, f]));
+  const rejectedWrites = [];
+  const memoryWrites = [];
+  for (const w of allWrites) {
+    const isPlainFieldWrite = w && typeof w === 'object'
+      && (!w.kind || w.kind === 'memory') && w.clear !== true
+      && typeof w.field === 'string' && w.value !== undefined && w.value !== null;
+    if (!isPlainFieldWrite) { memoryWrites.push(w); continue; }
+    const def = fieldDefByName.get(w.field);
+    const en = def && def.type === 'enum' && def.enumType ? enumById.get(def.enumType) : null;
+    const allowed = en && Array.isArray(en.values)
+      ? en.values.map(v => v && v.value).filter(v => typeof v === 'string' && v)
+      : [];
+    if (allowed.length === 0) { memoryWrites.push(w); continue; }
+    const raw = String(w.value).trim();
+    const canonical = allowed.includes(raw)
+      ? raw
+      : allowed.find(v => v.toLowerCase() === raw.toLowerCase());
+    if (canonical !== undefined) {
+      memoryWrites.push(canonical === w.value ? w : { ...w, value: canonical });
+    } else {
+      rejectedWrites.push({ field: w.field, value: w.value, allowed });
+      console.warn(`⚠️ [addonRunner] rejected field write: "${w.field}" = ${JSON.stringify(w.value)} — not one of [${allowed.join(', ')}] (addon: ${meta.label})`);
+    }
+  }
+
   if (memoryWrites.length > 0) {
     builderMemory.applyWrites(memory, memoryWrites);
   }
@@ -494,6 +531,7 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
     historyMode:  historyResolution,
     historyCount: visibleCount,
     ...(typeof result.firstTokenMs === 'number' ? { firstTokenMs: result.firstTokenMs } : {}),
+    ...(rejectedWrites.length > 0 ? { rejectedWrites } : {}),
     ...(result.parseError ? { parseError: result.parseError } : {}),
     ...(didTransition ? { transition: { to: result.transition.to, reason: result.transition.reason } } : {}),
     ...(result.breakChain ? { broke: true } : {}),

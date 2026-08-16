@@ -548,6 +548,10 @@ class OpenAIService {
         let currentFunctionCall = null;
         let oaiInputTokens = 0;
         let oaiOutputTokens = 0;
+        // Reasoning models bill internal "thinking" inside output_tokens
+        // without ever emitting it as text. Capturing the split makes an
+        // empty-but-billed reply self-explanatory in the run log (#809).
+        let oaiReasoningTokens = null;
 
         // Yield each chunk as it arrives
         for await (const chunk of stream) {
@@ -556,6 +560,8 @@ class OpenAIService {
             const u = chunk.response.usage;
             oaiInputTokens = u.input_tokens || 0;
             oaiOutputTokens = u.output_tokens || 0;
+            const rt = u.output_tokens_details && u.output_tokens_details.reasoning_tokens;
+            oaiReasoningTokens = typeof rt === 'number' ? rt : null;
           }
 
           // Handle error events from OpenAI stream
@@ -700,7 +706,14 @@ class OpenAIService {
         } else {
           console.log(`✅ Crew streaming complete. Total reply length: ${fullReply.length}`);
           if (oaiInputTokens || oaiOutputTokens) {
-            yield { type: 'usage', inputTokens: oaiInputTokens, outputTokens: oaiOutputTokens, durationMs: Date.now() - _streamStart };
+            yield {
+              type: 'usage',
+              inputTokens: oaiInputTokens,
+              outputTokens: oaiOutputTokens,
+              // null when the provider didn't report a split (non-reasoning models).
+              reasoningTokens: oaiReasoningTokens,
+              durationMs: Date.now() - _streamStart,
+            };
           }
           break;
         }

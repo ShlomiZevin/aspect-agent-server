@@ -8,6 +8,8 @@
 const express = require('express');
 const router = express.Router();
 
+const db = require('../../services/db.pg');
+const pinecone = require('../../services/kb.pinecone.service');
 const notion = require('../services/notion.service');
 const atomsService = require('../services/atoms.service');
 const ingest = require('../services/ingest.service');
@@ -223,6 +225,61 @@ router.post('/atoms/:id/reindex', async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+/**
+ * Start fresh: forget everything HQ has read.
+ *
+ * The vector store is wiped by NAMESPACE, not atom by atom. Deleting per atom
+ * only reaches chunks whose atom row still exists — anything orphaned by an
+ * earlier failed delete would survive and keep surfacing in answers, which is
+ * the exact failure a "start fresh" button exists to rule out.
+ *
+ * Kept on purpose: the connector inventory (reset to "not yet") and the
+ * watermark, so an 800-page list doesn't need rediscovering just to re-pick
+ * from it. `full: true` drops those too, for a genuinely blank slate.
+ */
+router.post('/reset', async (req, res) => {
+  try {
+    if ((req.body || {}).confirm !== 'DELETE') {
+      return res.status(400).json({ error: 'reset needs an explicit confirmation' });
+    }
+    const full = (req.body || {}).full === true;
+
+    const { rows: [before] } = await db.query('SELECT COUNT(*)::int n FROM hq_atoms');
+
+    // Vectors first: once the rows are gone we can no longer name what to drop.
+    // An absent namespace 404s from Pinecone, but that IS the desired state —
+    // otherwise pressing "start fresh" twice would fail the second time.
+    let vectorsCleared = true;
+    try {
+      await pinecone.deleteNamespaceByName(ingest.HQ_NAMESPACE);
+    } catch (err) {
+      const missing = err?.status === 404 || /not found|does not exist/i.test(err?.message || '');
+      if (!missing) throw err;
+      console.log('[hq] reset: vector namespace was already empty');
+    }
+
+    await db.query('DELETE FROM hq_sync_runs');
+    await db.query('DELETE FROM hq_links');
+    await db.query('DELETE FROM hq_atoms');
+
+    if (full) {
+      await db.query('DELETE FROM hq_sync_items');
+      await db.query('DELETE FROM hq_sources');
+    } else {
+      await db.query(
+        `UPDATE hq_sync_items
+            SET status='pending', atom_id=NULL, chars=NULL, chunks=NULL,
+                error=NULL, synced_at=NULL, synced_edited_at=NULL, updated_at=NOW()`);
+      // Non-provider sources only ever described a one-off import that no
+      // longer exists; the provider row owns the page list and must survive.
+      await db.query(`DELETE FROM hq_sources WHERE config->>'provider' IS DISTINCT FROM 'true'`);
+      await db.query(`UPDATE hq_sources SET last_sync_at = NULL, last_status = 'pending'`);
+    }
+
+    res.json({ ok: true, removed: before.n, vectorsCleared, full });
+  } catch (err) { fail(res, err); }
+});
+
 // ─── Ask ─────────────────────────────────────────────────────────────────────
 
 router.post('/ask', async (req, res) => {
@@ -231,5 +288,8 @@ router.post('/ask', async (req, res) => {
     res.json(result);
   } catch (err) { fail(res, err, 400); }
 });
+
+// Integrations live in their own router — see integrations.routes.js.
+router.use('/integrations', require('./integrations.routes'));
 
 module.exports = router;
