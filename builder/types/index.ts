@@ -440,6 +440,8 @@ export interface FieldInterviewerConfig {
 }
 
 export interface TalkerConfig {
+  /** User-editable instance name shown on the chain card. */
+  name?: string;
   /** The voice prompt — what the crew is supposed to say and how. */
   prompt: string;
   model: ModelRef;
@@ -844,6 +846,8 @@ export type TransitionCondition =
 // field op covers the unconditional pipeline case more inspectably.
 
 export interface TransitionRouterConfig {
+  /** User-editable instance name shown on the chain card. */
+  name?: string;
   conditions: TransitionCondition[];
   /** Crew to transition to when conditions match. */
   target: ID;
