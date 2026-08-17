@@ -40,6 +40,11 @@ const INDEXES = [
   { name: 'idx_recommendation_facts_sku',       table: 'recommendation_facts', col: '"sku"' },
   { name: 'idx_recommendation_facts_date',      table: 'recommendation_facts', col: '"row_date"' },
   { name: 'idx_recommendation_facts_store',     table: 'recommendation_facts', col: '"store_number"' },
+
+  // ── inventory (added 2026-08-17, additive — see column-aliases-zolstock.js) ─
+  { name: 'idx_inventory_item_number_sales', table: 'inventory', col: '"item_number_sales"' },
+  { name: 'idx_inventory_store_number',      table: 'inventory', col: '"store_number"' },
+  { name: 'idx_inventory_row_date',          table: 'inventory', col: '"row_date"' },
 ];
 
 async function createIndexes(targetSchema, emitLog) {

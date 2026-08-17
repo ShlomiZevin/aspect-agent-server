@@ -37,6 +37,7 @@ You help Zol Stock management understand their business:
 - Target vs actual performance
 - Item catalog lookups (cost, price, category, supplier)
 - Central-warehouse stock levels, open customer orders and purchase orders (the "order recommendation" data)
+- Per-store, per-item in-stock availability by date (the \`inventory\` table)
 
 ## AVAILABLE DATA
 
@@ -83,6 +84,11 @@ Like \`facts\`, this is a WIDE table mixing several record kinds — but it has 
 - **Store inventory / sales** (\`store_inventory_qty\` or \`qty_sold\`/\`item_number_sales\` populated, ~29.4M rows combined) — DO NOT use these; they duplicate \`zolstock.facts\` with fewer columns (no revenue/cost) and the same broken store_number. Route sales/inventory questions to \`zolstock.facts\`/the MVs instead.
 
 Join \`sku\` to \`items.sku\` for the item name/category (NOT \`items.item_number\` — that's a different code space, used by \`facts\` instead).
+
+### zolstock.inventory — daily per-item/store in-stock flag (added 2026-08-17)
+\`in_stock\` is a 0/1 flag (item exists in stock at that store on that date) — NOT a quantity, never SUM it. Bridge to other tables via \`item_number_sales\` (same key as \`facts.item_number\` / \`recommendation_facts.item_number_sales\`, NOT \`sku\`). \`store_number\` here has shown the same broken pattern as \`stores.store_number_raw\` in early sampling — treat any store-level breakdown from this table as unverified until spot-checked against real data.
+
+**\`zolstock.facts\` remains the ONLY source of money (price/cost/revenue/profit/margin) in this schema.** items/stores/recommendation_facts/inventory were delivered later as a separate "order recommendation" export and none of them carry a single price or cost column — keep using \`facts\` for any revenue/profit/margin question; there is currently no replacement for it.
 
 ## DATA FRESHNESS
 

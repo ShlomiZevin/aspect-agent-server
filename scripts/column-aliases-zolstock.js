@@ -16,9 +16,13 @@
  * Data status (2026-08-10): "order recommendation" data delivered by Reut (BI
  * dev), loaded EXACTLY as the 5 files she shared — no invented/pre-split files.
  * items/stores/calendar dimensions + recommendation_facts (the actual
- * Fact_ZolStock_CSV.csv, loaded whole). Inventory_ZolStock_CSV.csv (102M rows)
- * deliberately deferred to Phase 2 (Kosta's call, 2026-08-10). No `customers`
- * dimension yet.
+ * Fact_ZolStock_CSV.csv, loaded whole). No `customers` dimension yet.
+ *
+ * 2026-08-17: added `inventory` (Inventory_ZolStock_CSV.csv) — additive, does
+ * NOT replace `facts`. Column list below is based on a local sample
+ * (`Inventory_ZolStock_CSV-001.csv`, 4 cols) — the live Drive file is a
+ * different size, so double check against the real headers after the first
+ * import (unmapped columns still load fine as TEXT under their raw Hebrew name).
  */
 
 const COLUMN_MAP = {
@@ -180,6 +184,19 @@ const COLUMN_MAP = {
     { csvName: '1',                       dbName: 'unused_col_1',         type: 'TEXT'    },
     { csvName: 'כמות שנמכרה',             dbName: 'qty_sold',             type: 'NUMERIC' },
     { csvName: 'מספר פריט Sales',         dbName: 'item_number_sales',    type: 'TEXT'    },
+  ],
+  // ── inventory — per-item/store daily in-stock flag (2,321,997,657 bytes
+  //    local sample, 102M+ rows claimed). NOT a stock quantity — `in_stock` is
+  //    a 0/1 flag ("קיים במלאי" = "exists in stock"), and `store_number` is
+  //    broken (literal "?" on the rows sampled), same pattern as stores.
+  //    store_number_raw — treat any store-level breakdown as unreliable until
+  //    verified post-import. Bridges to recommendation_facts/facts via
+  //    item_number_sales, NOT sku.
+  inventory: [
+    { csvName: 'תאריך',              dbName: 'row_date',          type: 'DATE'    },
+    { csvName: 'מספר פריט Sales',    dbName: 'item_number_sales', type: 'TEXT'    },
+    { csvName: 'מספר חנות',          dbName: 'store_number',      type: 'TEXT'    },
+    { csvName: 'קיים במלאי',         dbName: 'in_stock',          type: 'NUMERIC' },
   ],
   // customers: [ ... ],   // TODO — still not delivered
 };

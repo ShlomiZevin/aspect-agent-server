@@ -17,8 +17,16 @@
  * scripts/column-aliases-zolstock.js for the full breakdown/data-quality
  * notes. Its sales/store-inventory rows duplicate `facts` (fewer columns,
  * same broken store_number) — guidance steers those questions to `facts`
- * instead. Inventory_ZolStock_CSV.csv (102M rows) deliberately deferred to
- * Phase 2 (Kosta's call).
+ * instead.
+ *
+ * 2026-08-17: added Inventory_ZolStock_CSV.csv (Kosta's call — additive, does
+ * NOT replace `facts`; `facts` stays as the sole revenue/profit/margin source
+ * for now, see zolstock.rules in sql-generator.service.js). Column names below
+ * are based on a local sample (`Inventory_ZolStock_CSV-001.csv`, 4 cols: date/
+ * item/store/in-stock-flag) — the live Drive file is a different size (2.59GB
+ * vs the local 2.16GB sample), so re-check `column-aliases-zolstock.js`'s
+ * `inventory` mapping against the real headers after the first import (any
+ * unmapped column still loads fine as TEXT under its raw Hebrew name).
  */
 
 require('dotenv').config();
@@ -39,7 +47,7 @@ const FILE_TO_TABLE = {
   'Stores_ZolStock_CSV.csv': 'stores',
   'Calander_ZolStock_CSV.csv': 'calendar',   // sic — source folder spells it this way
   'Fact_ZolStock_CSV.csv': 'recommendation_facts',   // singular — NOT the same file as Facts_ZolStock_CSV.csv above
-  // Inventory_ZolStock_CSV.csv (102M rows) — deferred to Phase 2, not mapped yet.
+  'Inventory_ZolStock_CSV.csv': 'inventory',   // added 2026-08-17, additive (see header note)
   // customers — still not delivered.
 };
 

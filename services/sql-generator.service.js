@@ -871,7 +871,9 @@ ORDER BY avg_order_value DESC
       return `
 ## zolstock-Specific Rules (CRITICAL — follow exactly)
 
-**Tables**: facts (~39.5M rows, WIDE, mixes record types); items (303,508 rows, product dimension); stores (139 rows, store dimension); recommendation_facts (29,450,600 rows, WIDE, mixes 5 record kinds — the "order recommendation" data delivered 2026-08-10). No customers dimension yet.
+**Tables**: facts (~39.5M rows, WIDE, mixes record types); items (303,508 rows, product dimension); stores (139 rows, store dimension); recommendation_facts (29,450,600 rows, WIDE, mixes 5 record kinds — the "order recommendation" data delivered 2026-08-10); inventory (102M+ rows claimed, per-item/store daily in-stock flag, added 2026-08-17 — see RULE 8). No customers dimension yet.
+
+**\`facts\` is the ONLY source of money (price/cost/revenue/profit/margin) anywhere in this schema — it is DELIBERATELY kept for now even though items/stores/recommendation_facts/inventory were delivered later as a separate "order recommendation" export. None of those 4 newer tables carry a single price/cost column (confirmed against the raw CSVs). Do NOT stop using \`facts\` for money questions just because newer tables exist — there is no replacement for it yet.**
 
 **Materialized views (PREFER these for aggregations — pre-computed, fast):**
 - \`zolstock.mv_sales_daily\` — daily totals (revenue_ex_vat, revenue_inc_vat, total_cogs, profit_ex_vat, total_qty, line_count)
@@ -952,6 +954,19 @@ JOIN (SELECT sku, MAX(item_name) AS item_name, MAX(category) AS category, MAX(sa
 - \`customer_order\` rows' \`store_number\` is a different ID range than \`stores.store_label\` (see items/stores notes above) — don't JOIN it to \`stores\`.
 - \`purchase_order_qty\` can be negative — do not filter it out or use ABS().
 - Always add a WHERE that picks ONE record kind (per above) — a bare scan of \`recommendation_facts\` mixes all 5 kinds and is both misleading and slow (29.4M rows, no MV).
+
+### RULE 8 — inventory: per-item/store DAILY IN-STOCK FLAG, not a stock quantity (added 2026-08-17)
+- \`in_stock\` is a 0/1 flag ("קיים במלאי" = "exists in stock") for a given (\`row_date\`, \`item_number_sales\`, \`store_number\`) — NOT a quantity. Never SUM it expecting a stock count; COUNT rows where \`in_stock = 1\` for "how many stores currently stock item X" style questions.
+- \`store_number\` on this table has shown the same broken "?" pattern as \`stores.store_number_raw\` in early sampling — do NOT assume a store-level breakdown is reliable without spot-checking real values first (this table was added after this rule file, verify before trusting it in an answer).
+- Bridge to other tables via \`item_number_sales\` = \`facts.item_number\` / \`recommendation_facts.item_number_sales\` (NOT \`sku\`).
+- No MV yet (added same day as the table) — if a query times out on ~100M+ rows, narrow by \`row_date\` first (most recent date, or a range) rather than scanning the whole table.
+\`\`\`sql
+-- Is item X in stock, and where (most recent date only)
+SELECT store_number, in_stock
+FROM zolstock.inventory
+WHERE item_number_sales = '<item number>'
+  AND row_date = (SELECT MAX(row_date) FROM zolstock.inventory)
+\`\`\`
 
 ### Reference examples
 
