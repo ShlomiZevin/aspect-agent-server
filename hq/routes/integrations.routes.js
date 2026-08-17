@@ -87,17 +87,21 @@ router.post('/notion/discover', async (req, res) => {
 router.get('/notion/items', async (req, res) => {
   try {
     const src = await notionSource();
-    const items = await sync.listItems(src.id, {
+    const filters = {
       status: req.query.status || null,
       search: req.query.search || null,
       type: req.query.type || null,
       parent: req.query.parent || null,
       since: req.query.since || null,
       until: req.query.until || null,
+    };
+    const items = await sync.listItems(src.id, {
+      ...filters,
       limit: Math.min(parseInt(req.query.limit || '1000', 10), 2000),
       offset: parseInt(req.query.offset || '0', 10),
     });
-    res.json({ items, stats: await sync.itemStats(src.id) });
+    // Same filters, so every facet count reflects what's currently selected.
+    res.json({ items, stats: await sync.itemStats(src.id, filters) });
   } catch (err) { fail(res, err); }
 });
 

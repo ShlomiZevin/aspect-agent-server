@@ -426,20 +426,42 @@ async function itemIdsMatching(sourceId, opts = {}) {
   return rows.map(r => r.id);
 }
 
-async function itemStats(sourceId) {
-  const [statuses, types, parents] = await Promise.all([
+/**
+ * Faceted counts: every filter's numbers reflect the OTHER filters.
+ *
+ * Each facet is counted with its own dimension removed from the predicate.
+ * Pick "Documents" and the Show counts narrow to documents — but the
+ * Documents/Table-rows counts themselves stay comparable, so you can still see
+ * what switching would give you. Counting every facet with the full filter set
+ * would zero out the option you're already on and make the rail unusable.
+ */
+async function itemStats(sourceId, filters = {}) {
+  const without = (drop) => {
+    const rest = { ...filters };
+    delete rest[drop];
+    return itemFilters(sourceId, rest);
+  };
+
+  const forStatus = without('status');
+  const forType = without('type');
+  const forParent = without('parent');
+  const all = itemFilters(sourceId, filters);
+
+  const [statuses, types, parents, totals] = await Promise.all([
     db.query(
       `SELECT status, COUNT(*)::int n, COALESCE(SUM(chars),0)::int chars
-         FROM hq_sync_items WHERE source_id = $1 GROUP BY status`, [sourceId]),
+         FROM hq_sync_items WHERE ${forStatus.where} GROUP BY status`, forStatus.params),
     db.query(
       `SELECT object_type, COUNT(*)::int n
-         FROM hq_sync_items WHERE source_id = $1 GROUP BY object_type`, [sourceId]),
+         FROM hq_sync_items WHERE ${forType.where} GROUP BY object_type`, forType.params),
     db.query(
       `SELECT parent_title, COUNT(*)::int n,
               COUNT(*) FILTER (WHERE status = 'done')::int done
          FROM hq_sync_items
-        WHERE source_id = $1 AND parent_title IS NOT NULL
-        GROUP BY parent_title ORDER BY n DESC LIMIT 40`, [sourceId]),
+        WHERE ${forParent.where} AND parent_title IS NOT NULL
+        GROUP BY parent_title ORDER BY n DESC LIMIT 40`, forParent.params),
+    db.query(
+      `SELECT COUNT(*)::int n FROM hq_sync_items WHERE ${all.where}`, all.params),
   ]);
 
   const rows = statuses.rows;
@@ -447,7 +469,11 @@ async function itemStats(sourceId) {
     byStatus: Object.fromEntries(rows.map(r => [r.status, r.n])),
     byType: Object.fromEntries(types.rows.map(r => [r.object_type, r.n])),
     parents: parents.rows.map(r => ({ title: r.parent_title, count: r.n, done: r.done })),
-    total: rows.reduce((s, r) => s + r.n, 0),
+    // What the list is actually showing, with everything applied.
+    total: totals.rows[0].n,
+    // The "Everything"/"Both" options mean "this dimension unfiltered".
+    statusTotal: rows.reduce((s, r) => s + r.n, 0),
+    typeTotal: types.rows.reduce((s, r) => s + r.n, 0),
     syncedChars: rows.filter(r => r.status === 'done').reduce((s, r) => s + r.chars, 0),
   };
 }

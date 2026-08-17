@@ -42,7 +42,18 @@ async function pace() {
   lastRequestAt = Date.now();
 }
 
-async function notionFetch(pathname, { method = 'GET', body } = {}) {
+/**
+ * `attempt` is internal — see the retry below.
+ *
+ * Notion's limit is an average, not a ceiling, so steady pacing still meets the
+ * occasional 429; a long import makes thousands of requests, and without a
+ * retry every one of those costs a whole page. Notion sends `Retry-After` in
+ * seconds; we honour it, and fall back to a short backoff when it's absent.
+ * 5xx gets the same treatment — a blip shouldn't burn a page either.
+ */
+const MAX_RETRIES = 4;
+
+async function notionFetch(pathname, { method = 'GET', body, attempt = 0 } = {}) {
   await pace();
 
   const res = await fetch(`${NOTION_API}${pathname}`, {
@@ -54,6 +65,16 @@ async function notionFetch(pathname, { method = 'GET', body } = {}) {
     },
     body: body ? JSON.stringify(body) : undefined,
   });
+
+  if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
+    const headerWait = Number(res.headers.get('retry-after'));
+    const waitMs = Number.isFinite(headerWait) && headerWait > 0
+      ? headerWait * 1000
+      : 1000 * 2 ** attempt;
+    console.warn(`[hq/notion] ${res.status} on ${pathname} — retrying in ${waitMs}ms (${attempt + 1}/${MAX_RETRIES})`);
+    await new Promise(r => setTimeout(r, waitMs));
+    return notionFetch(pathname, { method, body, attempt: attempt + 1 });
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
