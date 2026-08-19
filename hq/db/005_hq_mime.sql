@@ -1,0 +1,11 @@
+-- Remember what a remote item actually IS, not just what we call it.
+--
+-- `object_type` is a human label ("document") and deliberately collapses
+-- different formats: a Google Doc and an uploaded .docx are both documents to
+-- a reader. But they are fetched completely differently — one is exported by
+-- the API, the other downloaded and parsed — and with only the label to go on,
+-- the connector guessed and sent .docx files down the Google-native export
+-- path, which 403s with "Export only supports Docs Editors files".
+--
+-- Sources that have no equivalent concept simply leave it null.
+ALTER TABLE hq_sync_items ADD COLUMN IF NOT EXISTS mime_type VARCHAR(255);

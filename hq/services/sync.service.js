@@ -18,7 +18,6 @@
  */
 
 const db = require('../../services/db.pg');
-const notion = require('./notion.service');
 const atomsService = require('./atoms.service');
 const ingest = require('./ingest.service');
 
@@ -92,82 +91,68 @@ async function reclaimStaleRuns(staleMinutes = 10) {
 // ─── Discover ────────────────────────────────────────────────────────────────
 
 /**
- * Inventory everything the Notion integration can see. Cheap: one paginated
- * `search` call per 100 objects and no content fetching at all.
+ * Inventory everything a source can see. Cheap: metadata only, no content.
  *
- * Re-running is how you find new or edited pages — an item whose
- * `remote_edited_at` moves past what we synced flips to `stale`.
+ * The engine knows nothing about Notion or Drive — `connector.list()` returns a
+ * flat list and everything below is the same for any source. See
+ * hq/connectors/README.md.
+ *
+ * Re-running is how you find new or edited items: anything whose edit time has
+ * moved past what we synced flips to `stale`.
  */
-async function discoverNotion(sourceId, { onProgress = null, full = false, trigger = 'manual' } = {}) {
+async function discover(sourceId, connector, { onProgress = null, full = false, trigger = 'manual' } = {}) {
   const run = await createRun(sourceId, 'discover', 0, { trigger, label: full ? 'Full refresh' : 'Refresh' });
 
   try {
     // The watermark is the newest edit we have ever seen here. Skipping it
-    // (`full`) is the only way to notice pages that were DELETED in Notion,
-    // since a deletion leaves nothing to sort by — so a full pass stays
-    // available and is what the "Check everything" button runs.
+    // (`full`) is the only way to notice things DELETED at the source, since a
+    // deletion leaves nothing to sort by — so a full pass stays available and
+    // is what "Re-read everything" runs.
     const { rows: [src] } = await db.query(
       'SELECT watermark_at FROM hq_sources WHERE id = $1', [sourceId]);
     const since = full ? null : src?.watermark_at || null;
 
-    const { objects, reachedEnd } = await notion.listAllAccessible(
-      ({ found }) => onProgress?.({ phase: 'discover', found }),
+    const { items } = await connector.list(
       { since },
+      ({ found }) => onProgress?.({ phase: 'discover', found }),
     );
+    await updateRun(run.id, { total: items.length });
 
-    const pages = objects.filter(o => o.object === 'page');
-    await updateRun(run.id, { total: pages.length });
+    // A watermarked pass often can't see a changed item's parent. That's
+    // handled in the upsert below (COALESCE keeps the parent we already knew),
+    // so nothing extra is needed here.
 
-    // Where each page lives. Two thirds of a real workspace are rows inside a
-    // handful of databases, so the parent is the only handle big enough to
-    // prune by — "ignore everything in Tasks" beats ticking 300 rows. The
-    // search response already carries every database and page we can see, so
-    // this map costs no extra calls.
-    // A watermarked pass only returns pages that changed, so their parents are
-    // usually NOT in this batch. Titles we already stored fill the gap.
-    const nameById = new Map(objects.map(o => [o.id, notion.titleOf(o) || '']));
-    const { rows: known } = await db.query(
-      'SELECT external_id, title FROM hq_sync_items WHERE source_id = $1', [sourceId]);
-    for (const k of known) if (!nameById.has(k.external_id)) nameById.set(k.external_id, k.title);
-
-    const parentOf = (page) => {
-      const p = page.parent || {};
-      if (p.type === 'database_id') return nameById.get(p.database_id) || 'a database';
-      if (p.type === 'page_id') return nameById.get(p.page_id) || null;
-      if (p.type === 'workspace') return 'Workspace';
-      return null;
-    };
-
-    // Written 100 rows per statement. One statement per page meant ~800 round
+    // Written 100 rows per statement. One statement per item meant ~800 round
     // trips and ~800 lines of query log for a refresh that usually changes
     // nothing — which is exactly what made a refresh look like a runaway job.
     const BATCH = 100;
     let added = 0, updated = 0, newest = src?.watermark_at ? new Date(src.watermark_at) : null;
 
-    for (let i = 0; i < pages.length; i += BATCH) {
+    for (let i = 0; i < items.length; i += BATCH) {
       if (isCancelled(run.id)) break;
-      const slice = pages.slice(i, i + BATCH);
+      const slice = items.slice(i, i + BATCH);
 
       const values = [];
       const params = [sourceId];
-      for (const page of slice) {
-        const edited = page.last_edited_time ? new Date(page.last_edited_time) : null;
+      for (const item of slice) {
+        const edited = item.editedAt ? new Date(item.editedAt) : null;
         if (edited && (!newest || edited > newest)) newest = edited;
         const base = params.length;
         params.push(
-          page.id,
-          (notion.titleOf(page) || '(untitled)').slice(0, 1000),
-          page.url || null,
-          parentOf(page),
-          page.parent?.type === 'database_id' ? 'database_row' : 'page',
-          page.last_edited_time || null,
+          item.externalId,
+          (item.title || '(untitled)').slice(0, 1000),
+          item.url || null,
+          item.parentTitle || null,
+          item.objectType || 'page',
+          item.editedAt || null,
+          item.mimeType || null,
         );
-        values.push(`($1,$${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6})`);
+        values.push(`($1,$${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7})`);
       }
 
       const { rows } = await db.query(
         `INSERT INTO hq_sync_items
-           (source_id, external_id, title, url, parent_title, object_type, remote_edited_at)
+           (source_id, external_id, title, url, parent_title, object_type, remote_edited_at, mime_type)
          VALUES ${values.join(',')}
          ON CONFLICT (source_id, external_id) DO UPDATE SET
            title = EXCLUDED.title,
@@ -175,8 +160,9 @@ async function discoverNotion(sourceId, { onProgress = null, full = false, trigg
            -- Keep the parent we already knew when a watermarked pass can't see it.
            parent_title = COALESCE(EXCLUDED.parent_title, hq_sync_items.parent_title),
            object_type = EXCLUDED.object_type,
+           mime_type = EXCLUDED.mime_type,
            remote_edited_at = EXCLUDED.remote_edited_at,
-           -- A page we already brought in that has since changed becomes stale,
+           -- Something already brought in that has since changed becomes stale,
            -- so the UI can offer "update just what moved" rather than everything.
            status = CASE
              WHEN hq_sync_items.status IN ('done','stale')
@@ -189,8 +175,8 @@ async function discoverNotion(sourceId, { onProgress = null, full = false, trigg
         params
       );
       for (const r of rows) r.inserted ? added++ : updated++;
-      await updateRun(run.id, { processed: Math.min(i + BATCH, pages.length) });
-      onProgress?.({ phase: 'discover', found: objects.length, processed: added + updated });
+      await updateRun(run.id, { processed: Math.min(i + BATCH, items.length) });
+      onProgress?.({ phase: 'discover', found: items.length, processed: added + updated });
     }
 
     // Only advance the watermark once the pass actually completed, or a cancel
@@ -201,11 +187,11 @@ async function discoverNotion(sourceId, { onProgress = null, full = false, trigg
         [sourceId, newest]);
     }
 
-    await updateRun(run.id, { status: 'done', processed: pages.length, succeeded: pages.length, finished: true });
+    await updateRun(run.id, { status: 'done', processed: items.length, succeeded: items.length, finished: true });
     active.delete(run.id);
     await atomsService.updateSource(sourceId, { lastStatus: 'ok', lastSyncAt: new Date() });
 
-    return { runId: run.id, total: pages.length, added, updated };
+    return { runId: run.id, total: items.length, added, updated };
   } catch (err) {
     await updateRun(run.id, { status: 'failed', error: err.message, finished: true });
     active.delete(run.id);
@@ -222,7 +208,7 @@ async function discoverNotion(sourceId, { onProgress = null, full = false, trigg
  * checks for cancellation between items — mid-item abort would leave a half
  * ingested atom, and an item takes ~2-4s, so waiting for the boundary is fine.
  */
-async function syncItems(sourceId, itemIds, {
+async function syncItems(sourceId, connector, itemIds, {
   kind = null, onProgress = null, trigger = 'manual', label = null,
 } = {}) {
   const source = (await atomsService.listSources()).find(s => s.id === sourceId);
@@ -238,7 +224,7 @@ async function syncItems(sourceId, itemIds, {
   const run = await createRun(sourceId, 'sync', items.length, {
     trigger, label: label || `${items.length} page${items.length === 1 ? '' : 's'}`, itemIds,
   });
-  const resolvedKind = kind || source.default_kind || 'doc';
+  const resolvedKind = kind || source.default_kind || connector.defaultKind || 'doc';
   let succeeded = 0, failed = 0, processed = 0;
 
   onProgress?.({ phase: 'start', runId: run.id, total: items.length });
@@ -257,11 +243,8 @@ async function syncItems(sourceId, itemIds, {
     onProgress?.({ phase: 'item', runId: run.id, itemId: item.id, title: item.title, processed, total: items.length });
 
     try {
-      const doc = await notion.fetchPage(item.external_id);
-      const comments = await notion.fetchComments(item.external_id);
-      const body = comments.length
-        ? `${doc.markdown}\n\n---\n\n## Comments\n\n${comments.map(c => `- ${c.text}`).join('\n')}`
-        : doc.markdown;
+      const doc = await connector.fetch(item);
+      const body = doc.body || '';
 
       const { atom, chunkCount, skipped } = await ingest.ingestDocument({
         kind: resolvedKind,
@@ -314,11 +297,11 @@ async function syncItems(sourceId, itemIds, {
  * hq_sync_runs on every item, so the UI reads state from the database rather
  * than from a socket it happens to be holding open.
  */
-function startSync(sourceId, itemIds, opts = {}) {
+function startSync(sourceId, connector, itemIds, opts = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
 
-    syncItems(sourceId, itemIds, {
+    syncItems(sourceId, connector, itemIds, {
       ...opts,
       onProgress: (p) => {
         // Hand the caller the run id as soon as it exists, then let the rest
@@ -406,8 +389,8 @@ async function listItems(sourceId, opts = {}) {
   params.push(limit, offset);
 
   const { rows } = await db.query(
-    `SELECT id, external_id, title, url, parent_title, object_type, status, chars, chunks,
-            error, atom_id, remote_edited_at, synced_at
+    `SELECT id, external_id, title, url, parent_title, object_type, mime_type, status,
+            chars, chunks, error, atom_id, remote_edited_at, synced_at
        FROM hq_sync_items
       WHERE ${where}
       ORDER BY remote_edited_at DESC NULLS LAST, id
@@ -495,6 +478,6 @@ async function latestRun(sourceId) {
 }
 
 module.exports = {
-  discoverNotion, syncItems, startSync, cancelRun, reclaimStaleRuns,
+  discover, syncItems, startSync, cancelRun, reclaimStaleRuns,
   listItems, itemIdsMatching, itemStats, setItemStatus, latestRun, listRuns, runItems, runningRun,
 };

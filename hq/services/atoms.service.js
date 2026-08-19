@@ -138,7 +138,11 @@ async function upsertAtom(atom) {
 }
 
 async function getAtom(id) {
-  const { rows } = await db.query(`SELECT * FROM hq_atoms WHERE id = $1`, [id]);
+  const { rows } = await db.query(
+    `SELECT a.*, s.kind AS source_kind, s.label AS source_label
+       FROM hq_atoms a
+       LEFT JOIN hq_sources s ON s.id = a.source_id
+      WHERE a.id = $1`, [id]);
   return rows[0] || null;
 }
 
@@ -153,21 +157,23 @@ async function getAtomsByIds(ids) {
 }
 
 async function listAtoms({ kind = null, search = null, limit = 100, offset = 0 } = {}) {
-  const where = [`visibility = 'company'`];
+  const where = [`a.visibility = 'company'`];
   const params = [];
 
-  if (kind)   { params.push(kind);            where.push(`kind = $${params.length}`); }
-  if (search) { params.push(`%${search}%`);   where.push(`(title ILIKE $${params.length} OR body ILIKE $${params.length})`); }
+  if (kind)   { params.push(kind);            where.push(`a.kind = $${params.length}`); }
+  if (search) { params.push(`%${search}%`);   where.push(`(a.title ILIKE $${params.length} OR a.body ILIKE $${params.length})`); }
 
   params.push(limit, offset);
 
   const { rows } = await db.query(
-    `SELECT id, kind, title, summary, external_url, occurred_at, ingested_at,
-            participants, projects, decisions, actions, questions,
-            status, scribe_status, chunk_count, error
-       FROM hq_atoms
+    `SELECT a.id, a.kind, a.title, a.summary, a.external_url, a.occurred_at, a.ingested_at,
+            a.participants, a.projects, a.decisions, a.actions, a.questions,
+            a.status, a.scribe_status, a.chunk_count, a.error,
+            s.kind AS source_kind, s.label AS source_label
+       FROM hq_atoms a
+       LEFT JOIN hq_sources s ON s.id = a.source_id
       WHERE ${where.join(' AND ')}
-      ORDER BY COALESCE(occurred_at, ingested_at) DESC
+      ORDER BY COALESCE(a.occurred_at, a.ingested_at) DESC
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );

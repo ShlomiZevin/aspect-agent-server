@@ -33,6 +33,11 @@ router.get('/status', async (_req, res) => {
     res.json({
       ok: true,
       notionConfigured: notion.isConfigured(),
+      // Every built source and whether its credentials are present, so the
+      // sidebar isn't hard-wired to one connector.
+      sources: require('../connectors').list().map(c => ({
+        id: c.id, name: c.name, connected: c.isConfigured(),
+      })),
       totalAtoms: total,
       byKind: counts.reduce((acc, r) => {
         acc[r.kind] = (acc[r.kind] || 0) + r.count;
