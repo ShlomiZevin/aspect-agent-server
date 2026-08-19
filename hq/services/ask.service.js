@@ -98,6 +98,14 @@ const STOPWORDS = new Set([
  * So: also match the question's content words literally against atom bodies and
  * splice a window around each hit into the excerpts. Substring matching also
  * absorbs Hebrew prefix morphology for free — `%יועץ%` matches "ליועץ" too.
+ *
+ * TITLES MATTER MORE THAN BODIES. This searched bodies only, so naming a file
+ * could never find it — "סכם לי את Macabi-lybi-Proposal 100826.pdf" missed a
+ * document HQ held in full, because the filename lives in `title`, and HQ
+ * answered that it had no access to a file it had already indexed. Naming
+ * something is the strongest signal there is that you mean THAT thing, so a
+ * title hit outranks any body hit and returns the head of the document — which
+ * is where a proposal keeps its executive summary.
  */
 async function keywordSearch(question, { maxAtoms = 4, windowChars = 1100 } = {}) {
   const terms = [...new Set(
@@ -112,16 +120,49 @@ async function keywordSearch(question, { maxAtoms = 4, windowChars = 1100 } = {}
 
   const { rows } = await db.query(
     `SELECT id, kind, title, body, external_url, occurred_at,
-            (SELECT count(*) FROM unnest($1::text[]) term WHERE body ILIKE '%' || term || '%') AS hits
+            (SELECT count(*) FROM unnest($1::text[]) term WHERE body ILIKE '%' || term || '%') AS hits,
+            (SELECT count(*) FROM unnest($1::text[]) term WHERE title ILIKE '%' || term || '%') AS title_hits,
+            (SELECT count(*) FROM unnest($1::text[]) term
+              WHERE COALESCE(summary,'') ILIKE '%' || term || '%') AS summary_hits,
+            summary
        FROM hq_atoms
       WHERE visibility = 'company'
-        AND body ILIKE ANY (SELECT '%' || term || '%' FROM unnest($1::text[]) term)
-      ORDER BY hits DESC, COALESCE(occurred_at, ingested_at) DESC
+        AND (body ILIKE ANY (SELECT '%' || term || '%' FROM unnest($1::text[]) term)
+          OR title ILIKE ANY (SELECT '%' || term || '%' FROM unnest($1::text[]) term)
+          OR COALESCE(summary,'') ILIKE ANY (SELECT '%' || term || '%' FROM unnest($1::text[]) term))
+      ORDER BY title_hits DESC, summary_hits DESC, hits DESC, COALESCE(occurred_at, ingested_at) DESC
       LIMIT $2`,
     [terms, maxAtoms]
   );
 
   return rows.map(atom => {
+    // Named outright: give the top of the document rather than a window round
+    // a term. "What's in X" wants X's opening, not one paragraph from
+    // somewhere in the middle.
+    // The summary is the one place a document says what it IS, in its own
+    // language. A proposal PDF written entirely in generic terms ("הקופה")
+    // never contains the client's name, so the body can't be matched on it —
+    // but the summary can, and it's what a person would have written down.
+    if (Number(atom.title_hits) > 0 || Number(atom.summary_hits) > 0) {
+      const head = atom.summary
+        ? `${atom.summary}
+
+---
+
+${atom.body.slice(0, windowChars * 2)}`
+        : atom.body.slice(0, windowChars * 3);
+      return {
+        atomId: atom.id,
+        title: atom.title,
+        kind: atom.kind,
+        url: atom.external_url,
+        occurredAt: atom.occurred_at,
+        text: head,
+        matched: Number(atom.title_hits) + Number(atom.summary_hits) + Number(atom.hits),
+        namedDirectly: true,
+      };
+    }
+
     // Centre the window on the rarest term that actually appears, so the
     // excerpt contains the match rather than starting from the top of the doc.
     const found = terms
@@ -246,10 +287,12 @@ async function ask(question, { topK = TOP_K } = {}) {
     url: k.url,
     occurredAt: k.occurredAt,
     // Exact matches have no cosine score; report a floor so the UI can rank
-    // them sensibly without pretending they were scored the same way.
-    score: vectorAtomIds.has(k.atomId) ? 0.99 : 0.9,
+    // them sensibly without pretending they were scored the same way. A
+    // document the question NAMED sits above everything — asking about a file
+    // by name is unambiguous in a way no similarity score can beat.
+    score: k.namedDirectly ? 1 : vectorAtomIds.has(k.atomId) ? 0.99 : 0.9,
     text: k.text,
-    via: 'exact',
+    via: k.namedDirectly ? 'named' : 'exact',
   }));
 
   // Number the excerpts as presented — the model cites these indices.
