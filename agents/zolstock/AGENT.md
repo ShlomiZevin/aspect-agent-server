@@ -15,24 +15,18 @@ This agent answers business questions by generating and executing SQL queries ag
 
 ---
 
-## Status: FACTS MODELED — ready to load; dimension files pending
+## Status: LIVE — rebuilt 2026-08-19 for the four-file delivery
 
-The `Facts_ZolStock_CSV.csv` export (~39.5M rows) has been analyzed and fully
-modeled (single wide `facts` table + indexes + materialized views, the
-thestock/hypertoy pattern — decided against splitting per-record-type).
-Dimension files (products / customers / stores / calendar) have NOT been
-delivered yet. See `tasks/pending/task-zolstock-agent-setup.md`.
+The client reduced the feed to four files: `Fact`, `Items`, `Stores`,
+`Calander`. Two previously-loaded sources are retired and no longer mapped:
+`Facts_ZolStock_CSV.csv` (plural, 7.8GB, last exported 2026-06-05) and
+`Inventory_ZolStock_CSV.csv` (3.1GB). Both remain in the GCS folder for audit;
+the loader skips anything absent from `FILE_TO_TABLE`.
 
-**Done:**
-- Client: config, page, theme (blue+yellow from logo), registry, routes, i18n, logo
-- Server: crew + tool (`fetch_zolstock_data`), `db.zolstock.js`, data-reload registration, seed script
-- Pipeline (facts): `column-aliases-zolstock.js` (52 cols), `create-zolstock-schema.js`, `create-zolstock-indexes.js`, `create-zolstock-mvs.js`, `reload-zolstock.js` (`FILE_TO_TABLE` → facts)
-- `services/sql-generator.service.js` — full `zolstock` rules block (record_type, revenue/profit, MV usage, examples)
-
-**To do:**
-- Upload `Facts_ZolStock_CSV.csv` to GCS `zolstock/` prefix
-- Set `ZOLSTOCK_RELOAD_ENABLED=true`; run Phase 1 + Phase 2 from the admin UI
-- When dimension files arrive: add their maps to `column-aliases-zolstock.js` + `FILE_TO_TABLE`, indexes, and JOINs in the crew/sql-generator (item/store/customer names)
+**The single most important consequence: this dataset no longer contains any
+money.** The retired plural file was the only source of actual revenue, cost of
+sales, discounts, campaigns, sellers, invoices, retail customers and store
+targets. Everything monetary is now DERIVED from item list prices — see below.
 
 ---
 
@@ -40,21 +34,83 @@ delivered yet. See `tasks/pending/task-zolstock-agent-setup.md`.
 
 **Schema:** `zolstock` (PostgreSQL, in the shared aspect-data-db instance)
 
-### facts — wide table (~39.5M rows), `record_type` discriminator
+### facts — one table, 29,910,277 rows, five row kinds
 
-| record_type | What it is | Rows | Key columns |
-|---|---|---|---|
-| `מכירות` | Retail sales | ~34.8M | qty_sold, unit_price, line_total (rev ex-VAT), cogs, store_number, item_number, seller, customer_number |
-| `מלאי` | Inventory snapshots | ~2.8M | store_number, item_number, inventory_qty, min_inventory |
-| `` (empty) | Agent/branch wholesale | ~1.9M | agent_sales_ex_vat, agent_sales_inc_vat, agent_sale_customer, agent |
+The delivered file concatenates five kinds of row and ships **no discriminator
+column** — the kind is implied by which columns are populated. Because guessing
+that from NULL patterns is exactly what produced silently-empty answers before,
+Phase 2 adds a STORED generated `record_type` column at load time.
 
-**Revenue (ex-VAT) = SUM(line_total). Profit (ex-VAT) = SUM(line_total - cogs)** — cost is on the line, no JOIN needed.
+| record_type | Rows | Key columns |
+|---|---|---|
+| `sales` | 26,905,987 | `row_date`, `store_number`, `item_number_sales`, `qty_sold` |
+| `store_inventory` | 2,983,200 | `store_number`, `store_inventory_qty` — **no date** |
+| `warehouse_inventory` | 8,924 | `sku`, `warehouse`, `warehouse_qty` — **no date** |
+| `customer_order` | 11,488 | `priority_customer_number`, `sku`, `row_date`, `customer_order_id`, `customer_order_qty` |
+| `purchase_order` | 677 | `sku`, `row_date`, `purchase_order_id`, `purchase_order_qty` |
 
-### Materialized views (heavy aggregations)
-`mv_sales_daily`, `mv_sales_daily_item`, `mv_sales_daily_store`, `mv_sales_daily_seller` — all carry revenue_ex_vat / revenue_inc_vat / total_cogs / profit_ex_vat / total_qty / line_count.
+### Money is derived, and it is an estimate
 
-### Not yet delivered
-No products / customers / stores / calendar dimension tables. Group by `item_number` / `store_number` / `seller` keys until those files arrive.
+`items.consumer_price` (99.6% populated) and `items.cost_ex_vat` (98.7%) are the
+only prices in the dataset. The materialized views compute:
+
+```
+revenue_list_ex_vat = qty_sold * consumer_price / 1.18
+profit_list_ex_vat  = qty_sold * (consumer_price / 1.18 - cost_ex_vat)
+```
+
+VAT is 18%, verified against the delivered item master (26.02 / 22.05 = 1.1800).
+`consumer_price` is the shelf price and therefore VAT-inclusive, so dividing by
+1.18 is what makes it comparable with `cost_ex_vat`; mixing the two bases
+overstates margin by roughly 18 points.
+
+**These figures exclude discounts and promotions.** They are list-price
+estimates, not takings, and the column names say so on purpose. Never present
+them as actual revenue.
+
+### Two item keys, not interchangeable
+
+- `facts.item_number_sales` → `items.item_number` — the SALES key, joins at
+  99.9% (26,877,988 of 26,905,987). 139,089 distinct items have sales.
+- `facts.sku` → `items.sku` — the REPLENISHMENT key, used by warehouse stock and
+  orders. Only 14,649 of 298,555 items have a sku at all.
+
+### Materialized views
+
+| View | Grain | Rows |
+|---|---|---|
+| `mv_sales_daily` | day | ~600 |
+| `mv_sales_daily_store` | day × store | ~58k |
+| `mv_sales_monthly_item` | month × item | ~1-2M |
+| `mv_sales_item_total` | item, lifetime | ~139k |
+| `mv_sales_monthly_category` | month × category | ~1k |
+| `mv_store_inventory` | store × sku | ~433k |
+| `mv_warehouse_inventory` | sku | ~8.9k |
+| `mv_open_orders` | order line | ~12k |
+
+There is deliberately **no daily-by-item view**: distinct (date, store, item)
+exceeds 16.7M of 26.9M sales rows, so that grain barely compresses the base
+table — and it is what made item questions take 566 seconds and time out in
+chat. Every view carries a UNIQUE index so refreshes can run CONCURRENTLY
+instead of taking ACCESS EXCLUSIVE.
+
+### Dimensions
+
+- `items` — 303,508 rows, 298,555 distinct `item_number`. **1,859 item numbers
+  repeat**, a silent 1.7% fan-out on a naive join; deduplicate before aggregating.
+- `stores` — 139 rows, 96 with sales. `store_number` is clean in this delivery
+  and joins directly; the old `SPLIT_PART(store_label,' ',1)` workaround is obsolete.
+- `calendar` — 733 rows with Hebrew holiday names on 111 dates.
+
+### Known data-quality gaps
+
+- 2,549,776 store-inventory rows (85% of that kind) carry **no item key and no
+  date**. They are loaded rather than dropped so nothing vanishes silently, but
+  they cannot be attributed to a product — `mv_store_inventory` covers only the
+  433,424 rows that can.
+- Inventory has no history at all, only a current snapshot. It cannot be trended.
+- Sales run **2025-01-01 to 2026-08-17**. Purchase-order rows carry dates ahead
+  of the last sale, so anchor "now" to sales rows only.
 
 ---
 

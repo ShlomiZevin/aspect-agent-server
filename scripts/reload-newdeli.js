@@ -172,4 +172,4 @@ async function getNewDeliDataInfo() {
   }
 }
 
-module.exports = { loadNewDeli, indexNewDeli, getNewDeliDataInfo };
+module.exports = { loadNewDeli, indexNewDeli, getNewDeliDataInfo, FILE_TO_TABLE };

@@ -324,5 +324,54 @@ check(
   false
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Partial-period coverage (services/period-coverage.service.js)
+//
+// The failure being guarded: chat reported a store "down 87%" comparing a full
+// month against a 4-day one. Completeness is arithmetic, so it is tested here
+// rather than trusted to a prompt.
+// ─────────────────────────────────────────────────────────────────────────────
+const coverage = require('../services/period-coverage.service');
+
+check('June 4 is a partial month', coverage.trailingPartialPeriod('2026-06-04').daysCovered, 4);
+check('June has 30 expected days', coverage.trailingPartialPeriod('2026-06-04').daysExpected, 30);
+check('data ending on a month end is complete', coverage.trailingPartialPeriod('2026-05-31'), null);
+check('Feb 28 in a non-leap year is complete', coverage.trailingPartialPeriod('2025-02-28'), null);
+check('Feb 28 in a leap year is partial', coverage.trailingPartialPeriod('2024-02-28').daysExpected, 29);
+check('unparseable date yields no period', coverage.trailingPartialPeriod('not-a-date'), null);
+check(
+  'coverage fires when the result touches the partial month',
+  coverage.computeCoverage({ dataThroughDate: '2026-06-04', rows: [{ month: '2026-06', revenue: 1 }] }).partial,
+  true
+);
+check(
+  'coverage stays silent for an unrelated period',
+  coverage.computeCoverage({ dataThroughDate: '2026-06-04', rows: [{ month: '2024-01', revenue: 1 }] }),
+  null
+);
+check(
+  'coverage stays silent when the month is complete',
+  coverage.computeCoverage({ dataThroughDate: '2026-05-31', rows: [{ month: '2026-05', revenue: 1 }] }),
+  null
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Empty-result diagnosis parsing (services/empty-result-diagnosis.service.js)
+//
+// Only the SQL parsing is unit-tested here; the probes need a live catalog.
+// ─────────────────────────────────────────────────────────────────────────────
+const diag = require('../services/empty-result-diagnosis.service');
+const DIAG_SQL = `SELECT f.item_number, SUM(f.inventory_qty) q
+                    FROM zolstock.facts f JOIN zolstock.items i ON i.item_number = f.item_number
+                   WHERE f.record_type = 'stock' AND f.transaction_date = DATE '2026-06-04'
+                   GROUP BY 1 ORDER BY q DESC LIMIT 10`;
+
+check('both relations are found', diag.relationsIn(DIAG_SQL).map(r => r.schema + '.' + r.table).sort(), ['zolstock.facts', 'zolstock.items']);
+check('the table alias is captured', diag.relationsIn(DIAG_SQL).find(r => r.table === 'facts').aliases.has('f'), true);
+check('filtered columns are extracted', diag.filteredColumns(DIAG_SQL).map(c => c.column).sort(), ['record_type', 'transaction_date']);
+check('the literal equality defines the subset', diag.literalEqualities(DIAG_SQL).map(e => e.column + '=' + e.value), ['record_type=stock']);
+check('GROUP BY / ORDER BY columns are not treated as filters', diag.filteredColumns('SELECT a FROM s.t GROUP BY a ORDER BY a').length, 0);
+check('SQL keywords are never mistaken for columns', diag.filteredColumns("SELECT 1 FROM s.t WHERE x IS NOT NULL AND y = 'z'").map(c => c.column), ['y']);
+
 console.log(`\n════════ ${pass}/${pass + fail} PASS ════════`);
 process.exit(fail ? 1 : 0);

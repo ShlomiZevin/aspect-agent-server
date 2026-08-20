@@ -58,17 +58,30 @@ async function ensureMV({ pool, schema, mv, displayIdx, total, statementTimeoutM
         for (const idx of mv.indexes) {
           const idxStart = Date.now();
           log(`    indexing ${mv.name}.${idx.name}...`);
+          // `unique: true` is opt-in per index. It matters beyond constraint
+          // enforcement: REFRESH MATERIALIZED VIEW CONCURRENTLY REQUIRES a
+          // unique index, and without one a refresh takes ACCESS EXCLUSIVE and
+          // blocks every read of the view for its whole duration. On a view
+          // that takes minutes to rebuild that is a partial outage, not a slow
+          // moment. Declare one wherever the view has a natural key.
           await client.query(
-            `CREATE INDEX ${idx.name} ON ${fqName} (${idx.col})`
+            `CREATE${idx.unique ? ' UNIQUE' : ''} INDEX ${idx.name} ON ${fqName} (${idx.col})`
           );
           log(`    indexed ${mv.name}.${idx.name} (${Date.now() - idxStart}ms)`);
         }
       }
     } else {
-      // REFRESH. CONCURRENTLY would avoid locks but needs a UNIQUE index on
-      // the MV — we don't add one (no natural PK on all MVs). Plain REFRESH
-      // locks the MV briefly; on a small read load that's fine.
-      await client.query(`REFRESH MATERIALIZED VIEW ${fqName}`);
+      // REFRESH. CONCURRENTLY avoids taking ACCESS EXCLUSIVE, but Postgres
+      // only allows it when the view carries a UNIQUE index — so it is used
+      // where one exists and skipped where it does not, rather than assumed
+      // either way. Views declared before `unique` support existed simply keep
+      // the old locking behaviour.
+      const { rows: uniq } = await client.query(
+        `SELECT 1 FROM pg_indexes
+          WHERE schemaname = $1 AND tablename = $2 AND indexdef ILIKE 'CREATE UNIQUE%' LIMIT 1`,
+        [schema, mv.name]
+      );
+      await client.query(`REFRESH MATERIALIZED VIEW ${uniq.length ? 'CONCURRENTLY ' : ''}${fqName}`);
     }
 
     if (heartbeat) clearInterval(heartbeat);

@@ -1,6 +1,7 @@
 const db = require('./db.pg');
 const { messages, messageFeedback, feedbackTags, agents, conversations } = require('../db/schema');
 const { eq, and, desc, sql, ilike, lt } = require('drizzle-orm');
+const { sanitizeFeedbackHtml, looksLikeHtml } = require('./sanitize-feedback-html');
 
 /**
  * Feedback Service
@@ -169,6 +170,54 @@ class FeedbackService {
   }
 
   /**
+   * Feedback volunteered from the sidebar rather than attached to a reply.
+   *
+   * Shares the message_feedback table, tag registry and inbox with
+   * message-scoped feedback (see 003_general_feedback.sql for why a second
+   * table was rejected). The only structural difference is that there is no
+   * message to reference, so the agent is recorded directly.
+   *
+   * `feedbackText` may contain HTML when the user pasted a screenshot — it is
+   * sanitised here, at the trust boundary, because this content is authored by
+   * one person and later rendered to another on the reviewer dashboard.
+   */
+  async createGeneralFeedback({ agentName, feedbackText, tags, contact, contextUrl, createdBy = null }) {
+    if (!this.drizzle) this.initialize();
+
+    const [agent] = await this.drizzle
+      .select({ id: agents.id })
+      .from(agents)
+      .where(eq(agents.name, agentName))
+      .limit(1);
+
+    if (!agent) throw new Error(`Agent not found: ${agentName}`);
+
+    if (tags && tags.length > 0) {
+      for (const tag of tags) {
+        await this.getOrCreateTag(agent.id, tag.name, tag.color);
+      }
+    }
+
+    const [feedback] = await this.drizzle
+      .insert(messageFeedback)
+      .values({
+        assistantMessageId: null,
+        userMessageId: null,
+        agentId: agent.id,
+        source: 'general',
+        feedbackText: sanitizeFeedbackHtml(feedbackText),
+        contact: contact ? String(contact).slice(0, 200) : null,
+        contextUrl: contextUrl ? String(contextUrl).slice(0, 2000) : null,
+        tags: tags || [],
+        crewMember: null,
+        createdBy,
+      })
+      .returning();
+
+    return feedback;
+  }
+
+  /**
    * Get feedback for a specific message
    */
   async getFeedbackForMessage(assistantMessageId) {
@@ -274,15 +323,23 @@ class FeedbackService {
         tags: messageFeedback.tags,
         crewMember: messageFeedback.crewMember,
         createdAt: messageFeedback.createdAt,
+        source: messageFeedback.source,
+        contact: messageFeedback.contact,
+        contextUrl: messageFeedback.contextUrl,
         // Join assistant message content
         messageContent: messages.content,
         // Join conversation external ID for linking
         conversationExternalId: conversations.externalId,
       })
       .from(messageFeedback)
-      .innerJoin(messages, eq(messages.id, messageFeedback.assistantMessageId))
-      .innerJoin(conversations, eq(conversations.id, messages.conversationId))
-      .where(eq(conversations.agentId, agent.id))
+      // LEFT, not INNER, since 003_general_feedback: sidebar feedback has no
+      // message, and an inner join silently dropped it from this inbox
+      // entirely — feedback the user believed they had sent.
+      .leftJoin(messages, eq(messages.id, messageFeedback.assistantMessageId))
+      .leftJoin(conversations, eq(conversations.id, messages.conversationId))
+      // Filter on the feedback's own agent_id (backfilled for old rows) rather
+      // than the conversation's, so message-less rows are still attributable.
+      .where(eq(messageFeedback.agentId, agent.id))
       .orderBy(desc(messageFeedback.createdAt))
       .limit(limit);
 
@@ -300,9 +357,18 @@ class FeedbackService {
 
       return {
         id: String(fb.id),
-        assistantMessageId: String(fb.assistantMessageId),
+        // Null for general feedback — the dashboard must not assume a message
+        // exists just because a row does.
+        assistantMessageId: fb.assistantMessageId ? String(fb.assistantMessageId) : null,
         userMessageId: fb.userMessageId ? String(fb.userMessageId) : null,
+        source: fb.source || 'message',
+        contact: fb.contact || null,
+        contextUrl: fb.contextUrl || null,
         feedbackText: fb.feedbackText || '',
+        // Flags rows written since screenshots were allowed, so the reviewer UI
+        // can render HTML for those and plain text for the legacy rows rather
+        // than showing one format's markup as the other's content.
+        isHtml: looksLikeHtml(fb.feedbackText),
         tags: fb.tags || [],
         crewMember: fb.crewMember,
         messageContent: fb.messageContent,
@@ -340,9 +406,11 @@ class FeedbackService {
         crewMember: messageFeedback.crewMember,
       })
       .from(messageFeedback)
-      .innerJoin(messages, eq(messages.id, messageFeedback.assistantMessageId))
-      .innerJoin(conversations, eq(conversations.id, messages.conversationId))
-      .where(eq(conversations.agentId, agent.id));
+      // Same reason as getFeedbackForAgent: general feedback has no message,
+      // and an inner join would leave it out of the counts.
+      .leftJoin(messages, eq(messages.id, messageFeedback.assistantMessageId))
+      .leftJoin(conversations, eq(conversations.id, messages.conversationId))
+      .where(eq(messageFeedback.agentId, agent.id));
 
     // Aggregate tags
     const tagCounts = new Map();

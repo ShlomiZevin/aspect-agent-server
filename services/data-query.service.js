@@ -1,6 +1,9 @@
 const { Pool } = require('pg');
 const sqlGeneratorService = require('./sql-generator.service');
 const slowQueryService = require('./slow-query.service');
+const emptyResultDiagnosis = require('./empty-result-diagnosis.service');
+const periodCoverage = require('./period-coverage.service');
+const dataThrough = require('./data-through.service');
 
 const QUERY_TIMEOUT_MS = parseInt(process.env.QUERY_TIMEOUT_MS || '15000');
 const SCHEMA_RE = /^[a-z0-9_]+$/i;
@@ -65,6 +68,16 @@ class DataQueryService {
 
     console.log(`Data Query: question for schema "${customerSchema}": "${question}"`);
 
+    // Anchor relative expressions to the data, not the wall clock. Insights
+    // has always passed this; chat never did, so "the last 7 days" asked in
+    // chat searched a week that the export does not contain and came back
+    // empty. Resolved here rather than in each agent's crew file so every
+    // client — including the next one added — gets it without a code change.
+    let dataThroughDate = options.dataThroughDate;
+    if (!dataThroughDate) {
+      dataThroughDate = await dataThrough.resolveDataThrough(this.pool, customerSchema).catch(() => null);
+    }
+
     const startTime = Date.now();
     // Up to 3 attempts: the LLM occasionally emits SQL that errors at execution
     // (ambiguous column, SUM on a TEXT column, a wrong column name). On a non-timeout
@@ -72,6 +85,7 @@ class DataQueryService {
     // that specific problem, then re-run. Only the FINAL outcome is logged, so a
     // question that succeeds on retry records no error.
     const MAX_ATTEMPTS = 3;
+    const BUDGET_MULTIPLIER = 2.5; // total query-phase wall clock, as a multiple of one timeout
     let prevError = null, prevSql = null;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -87,7 +101,7 @@ class DataQueryService {
           previousSql: attempt > 1 ? prevSql : undefined,
           // The date the data actually ends, so relative windows anchor to it
           // instead of CURRENT_DATE — see _buildDataRecencySection.
-          dataThroughDate: options.dataThroughDate,
+          dataThroughDate,
         });
         sql = generated.sql;
         explanation = generated.explanation;
@@ -145,12 +159,31 @@ class DataQueryService {
           }).catch(() => {});
         }
 
+        // Zero rows is ambiguous — a genuine "none" and an unsatisfiable
+        // predicate look identical to the caller. Probe for the second case
+        // so the answer can say which one it is. Only runs on empty results,
+        // so it costs nothing on the normal path.
+        let emptyReason = null;
+        if (result.rows.length === 0) {
+          emptyReason = await emptyResultDiagnosis
+            .diagnoseEmptyResult(this.pool, sql, { schemaHint: customerSchema })
+            .catch(() => null);
+          if (emptyReason) console.log(`   Empty result explained: ${emptyReason.relation}."${emptyReason.column}" is all-NULL`);
+        }
+
+        // Structural, not prose: an answer whose newest period is four days
+        // long must say so in both surfaces, and a model cannot forget a field.
+        const coverage = periodCoverage.computeCoverage({ dataThroughDate, sql, rows: result.rows });
+
         return {
           sql, explanation, confidence,
           data: result.rows,
           rowCount: result.rows.length,
           duration,
           columns: result.fields?.map(f => f.name) || [],
+          emptyReason,
+          dataThroughDate: dataThroughDate || null,
+          coverage,
         };
 
       } catch (error) {
@@ -161,10 +194,16 @@ class DataQueryService {
 
         // Retry on a fixable (non-timeout) error while attempts remain; timeouts get one
         // retry too (the model may rewrite to a materialized view), but no more.
-        const canRetry = attempt < MAX_ATTEMPTS && (!isTimeout || attempt < 2);
+        // A timeout retry is only worth taking if there is time left to take it.
+        // Two full 75s timeouts plus generation overhead is ~3 minutes of dead
+        // wall-clock for a question that is expensive for structural reasons —
+        // the budget stops that at the point it stops being a retry and starts
+        // being a second failure.
+        const budgetLeft = (Date.now() - startTime) + timeout <= timeout * BUDGET_MULTIPLIER;
+        const canRetry = attempt < MAX_ATTEMPTS && (!isTimeout || (attempt < 2 && budgetLeft));
         if (canRetry) {
           console.log(`   [attempt ${attempt}] SQL ${isTimeout ? 'timeout' : 'error'}, retrying: ${error.message}`);
-          prevError = isTimeout ? `Query timed out after ${timeout}ms — rewrite it to be cheaper (use a materialized view, narrow the date range).` : error.message;
+          prevError = isTimeout ? await this._timeoutHint(customerSchema, timeout) : error.message;
           prevSql = sql;
           continue;
         }
@@ -292,6 +331,30 @@ class DataQueryService {
   }
 
   /** @private */
+  /**
+   * A timeout is not a fixable-error retry: the shape is expensive for
+   * structural reasons, so "try again" without telling the model what is
+   * cheaper just buys the same timeout twice. The schema's real
+   * pre-aggregated views are read live from pg_matviews rather than named in
+   * a per-client string — every dataset gets whatever it actually has, and a
+   * schema with no views gets honest advice instead of a phantom table name.
+   */
+  async _timeoutHint(customerSchema, timeout) {
+    let views = [];
+    try {
+      const { rows } = await this.pool.query(
+        'SELECT matviewname FROM pg_matviews WHERE schemaname = $1 ORDER BY matviewname',
+        [customerSchema]
+      );
+      views = rows.map(r => `${customerSchema}.${r.matviewname}`);
+    } catch { /* the hint is best-effort; a failed lookup must not mask the timeout */ }
+
+    const base = `Query timed out after ${timeout}ms. Do NOT re-send the same shape — it will time out again. Rewrite it to read less data.`;
+    return views.length
+      ? `${base} This schema has pre-aggregated materialized views that are far cheaper than the raw fact table: ${views.join(', ')}. Use the one whose grain matches the question. If none matches the grain, aggregate from the closest coarser view rather than the fact table, or narrow the date range.`
+      : `${base} There are no pre-aggregated views in this schema, so narrow the date range, reduce the number of grouping columns, or drop joins that are not needed for the answer.`;
+  }
+
   _getTimeoutMessage(timeoutMs = QUERY_TIMEOUT_MS) {
     return `The query took too long and was automatically stopped after ${Math.round(timeoutMs / 1000)} seconds.\n\nIt has been logged in the Query Optimizer dashboard where an admin can analyze it and create the necessary database indexes to make similar queries much faster.\n\nIn the meantime, try asking a more specific question or narrowing the time range (e.g. "last week" instead of "last year").`;
   }

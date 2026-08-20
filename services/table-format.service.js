@@ -209,7 +209,14 @@ function buildFetchResult({ question, tableTitle, schema, result }) {
   let hasViewer = false;
 
   if (rowCount === 0) {
-    summary = 'No data found.';
+    // "No data found" is the right answer only when the data really is
+    // absent. When the query filtered on a column that is empty for the rows
+    // in question, the filter could never have matched — saying "no data"
+    // there tells the user something false about their business.
+    summary = result.emptyReason
+      ? 'No rows came back, and the reason is structural, not a business fact: ' + result.emptyReason.message
+        + ' Tell the user this is a gap in the recorded data — do NOT say the business has no such records.'
+      : 'No data found.';
   } else {
     displayColumns = buildDisplayColumns(result.columns, data, hebrew);
     const previewTable = buildMarkdownTable(displayColumns, data, PREVIEW_ROW_LIMIT);
@@ -233,6 +240,17 @@ function buildFetchResult({ question, tableTitle, schema, result }) {
         + 'numbers.\n\n' + previewTable + '\n';
     }
     summary += buildNumericTotalsText(displayColumns, data);
+
+    // Reports have caveated partial periods for a while; chat did not, and
+    // reported a store "down 87%" between a full month and a 4-day one. This
+    // is a computed fact about the data (see period-coverage.service.js), not
+    // a judgement call, so it is stated to the model as a requirement.
+    if (result.coverage?.partial) {
+      summary += '\n\nIMPORTANT — INCOMPLETE PERIOD. ' + result.coverage.note
+        + ' You MUST say this in your reply, in the user\'s language, wherever you quote a figure for '
+        + result.coverage.period + '. Do NOT present a change into that period as growth or decline —'
+        + ' a ' + result.coverage.daysCovered + '-day period cannot be compared with a full month.';
+    }
   }
 
   return {

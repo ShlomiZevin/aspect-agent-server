@@ -124,9 +124,18 @@ const thinkingSteps = pgTable('thinking_steps', {
 // Message feedback - stores feedback/comments on assistant messages
 const messageFeedback = pgTable('message_feedback', {
   id: serial('id').primaryKey(),
-  assistantMessageId: integer('assistant_message_id').references(() => messages.id).notNull(),
+  // Nullable since 003_general_feedback: feedback volunteered from the sidebar
+  // is not about any one reply, so it has no message to reference.
+  assistantMessageId: integer('assistant_message_id').references(() => messages.id),
   userMessageId: integer('user_message_id').references(() => messages.id), // preceding user message (auto-resolved)
+  // Recorded directly so general feedback knows its portal, and so every
+  // feedback query filters on one column instead of walking message ->
+  // conversation -> agent. Backfilled for pre-existing rows.
+  agentId: integer('agent_id').references(() => agents.id),
+  source: varchar('source', { length: 20 }).default('message').notNull(), // 'message' | 'general'
   feedbackText: text('feedback_text'),
+  contact: varchar('contact', { length: 200 }), // optional, so we can follow up
+  contextUrl: text('context_url'), // the page the user was on when they wrote it
   tags: jsonb('tags'), // Array of { name: string, color: string }
   crewMember: varchar('crew_member', { length: 100 }), // denormalized from message metadata
   createdBy: integer('created_by').references(() => users.id),
