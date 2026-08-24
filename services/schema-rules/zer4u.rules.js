@@ -6,8 +6,8 @@
  * materialized views that do not exist: mv_sales_by_month, mv_sales_by_store,
  * mv_sales_by_store_month, mv_sales_by_year, mv_sales_by_category_month,
  * mv_sales_by_store_product, mv_sales_by_customer, mv_sales_by_city and
- * mv_sales_by_day. Only mv_sales_by_product and mv_sales_by_product_month are
- * real. Because these rules carry the highest authority in the prompt
+ * mv_sales_by_day. Only mv_sales_by_product remains real today
+ * (mv_sales_by_product_month existed then, gone since the 2026-08-24 reload). Because these rules carry the highest authority in the prompt
  * ("CRITICAL — follow exactly"), every zer4u store / revenue / target question
  * failed with "relation does not exist" or silently fell back to a zero-row
  * query — for months, undetected, because nothing validated them.
@@ -29,9 +29,10 @@ function zer4uRules(schemaName) {
 ### RULE 1 — Query \`sales\` DIRECTLY. It is small.
 \`sales\` holds ~918,000 rows covering 2026-03-01 to 2026-08-09 — roughly five months, which is ALL the data that exists. It aggregates in well under a second, so there is no need to route around it.
 
-Only TWO materialized views exist in this schema, both product-level and both ALL-TIME (they have no date column, so they cannot answer any question about a period):
+Only ONE materialized view exists in this schema, product-level and ALL-TIME (no date column, so it cannot answer any question about a period):
 - \`${schemaName}.mv_sales_by_product\` — (item_code, item_name, total_quantity, total_revenue)
-- \`${schemaName}.mv_sales_by_product_month\` — the same, broken down by month
+
+(\`mv_sales_by_product_month\` no longer exists — verified 2026-08-24 by the schema-contract test after that day's reload. For per-month product questions aggregate \`sales\` directly; it is small.)
 
 There is NO store-level, customer-level, city-level, daily or monthly materialized view in this schema. Do not use one.
 
