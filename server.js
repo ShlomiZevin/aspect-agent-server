@@ -3571,6 +3571,11 @@ app.post('/api/admin/optimization-jobs', async (req, res) => {
 // agent's URL slug (V2 builder rows). When both are present a row
 // matches if its agent_name equals EITHER value — lets the dashboard
 // surface old + new rows together without a schema change.
+//
+// HQ is EXCLUDED unless asked for by name. Its workers log here so their spend
+// is auditable in one place, but they are not customer agents — leaving them in
+// inflates every "usage per agent" figure with our own internal tooling. Pass
+// agent=hq (or use /api/hq/usage) to see it deliberately.
 app.get('/api/admin/usage', async (req, res) => {
   try {
     const drizzle = db.getDrizzle();
@@ -3589,6 +3594,9 @@ app.get('/api/admin/usage', async (req, res) => {
       conditions.push(eq(llmUsage.agentName, agentValues[0]));
     } else if (agentValues.length > 1) {
       conditions.push(inArray(llmUsage.agentName, agentValues));
+    } else {
+      // No agent asked for: hide HQ's own internal workers.
+      conditions.push(sql`${llmUsage.agentName} IS DISTINCT FROM 'hq'`);
     }
     if (proc) conditions.push(eq(llmUsage.process, proc));
     if (model) conditions.push(eq(llmUsage.model, model));
@@ -3630,6 +3638,9 @@ app.get('/api/admin/usage/summary', async (req, res) => {
       conditions.push(eq(llmUsage.agentName, agentValues[0]));
     } else if (agentValues.length > 1) {
       conditions.push(inArray(llmUsage.agentName, agentValues));
+    } else {
+      // No agent asked for: hide HQ's own internal workers.
+      conditions.push(sql`${llmUsage.agentName} IS DISTINCT FROM 'hq'`);
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 

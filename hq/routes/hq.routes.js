@@ -297,4 +297,10 @@ router.post('/ask', async (req, res) => {
 // Integrations live in their own router — see integrations.routes.js.
 router.use('/integrations', require('./integrations.routes'));
 
+// Employees and what they make — see hq/services/workers.service.js.
+router.use('/workers', require('./workers.routes'));
+router.use('/media', require('./media.routes'));
+router.use('/reports', require('./reports.routes'));
+router.use('/usage', require('./usage.routes'));
+
 module.exports = router;

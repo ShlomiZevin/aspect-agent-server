@@ -69,7 +69,18 @@ function isCancelled(runId) {
  * `running` forever and the UI spins. Same lesson as the Scribe: anything
  * fire-and-forget needs a way to notice it died.
  */
-async function reclaimStaleRuns(staleMinutes = 10) {
+// This is a janitor for runs orphaned by a restart, and it is called from
+// every `listRuns`. The UI polls that endpoint, so it was firing an UPDATE
+// every few seconds per open tab — writes and pool pressure forever, for a
+// sweep that only matters after a crash. Once a minute per process is plenty.
+let lastSweep = 0;
+const SWEEP_EVERY_MS = 60_000;
+
+async function reclaimStaleRuns(staleMinutes = 10, { force = false } = {}) {
+  const now = Date.now();
+  if (!force && now - lastSweep < SWEEP_EVERY_MS) return [];
+  lastSweep = now;
+
   const { rows } = await db.query(
     `UPDATE hq_sync_runs
         SET status = 'failed',

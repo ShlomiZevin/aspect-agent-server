@@ -6,6 +6,29 @@
 # known-good patch restores it. Bump deliberately after verifying.
 FROM node:22.13.1-slim
 
+# Headless Chromium, for HQ's HTML -> PNG rendering (hq/services/render.service.js).
+#
+# The image models render Hebrew well, so this is NOT a workaround for weak
+# typography — it is for output that must be pixel-exact and repeatable: a logo,
+# a real URL, a price, or the same template across thirty posts. Without a
+# browser in the image that whole path is unavailable on Cloud Run, and the
+# worker correctly refuses rather than failing obscurely.
+#
+# Debian's `chromium` package pulls its own font and library deps. The Hebrew
+# font is not optional: without it every Hebrew glyph renders as a box, which
+# looks like a code bug and is not one.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      chromium \
+      fonts-liberation \
+      fonts-noto-core \
+      fonts-noto-color-emoji \
+      fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+# render.service probes this first; setting it explicitly avoids depending on
+# where the distro happens to put the binary.
+ENV CHROME_PATH=/usr/bin/chromium
+
 # Create app directory
 WORKDIR /app
 
