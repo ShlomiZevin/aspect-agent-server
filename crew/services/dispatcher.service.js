@@ -735,7 +735,7 @@ class DispatcherService {
       resolvedPrompt = crew.guidance;
       crew._useMinimalGuidance = false; // Reset after reading
     }
-    const { characterGuidance, promptNotes, thinkingAdvice, ...remainingContext } = context;
+    const { characterGuidance, dataDiscipline, promptNotes, thinkingAdvice, ...remainingContext } = context;
     let assembledPrompt;
 
     // === thinkerOnly override DISABLED — talker now uses full guidance ===
@@ -760,6 +760,9 @@ class DispatcherService {
       assembledPrompt = resolvedPrompt;
       if (characterGuidance) {
         assembledPrompt += `\n\n## Persona\n${characterGuidance}`;
+      }
+      if (dataDiscipline) {
+        assembledPrompt += `\n\n## Data discipline\n${dataDiscipline}`;
       }
       if (Object.keys(remainingContext).length > 0) {
         assembledPrompt += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;

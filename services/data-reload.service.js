@@ -588,10 +588,17 @@ class DataReloadService {
         // ── Atomic schema swap (hardened; shared with self-heal) ──
         const swapPool = reloader.pool || this.db;
         await this._swapSchemas(schemaName, shadowSchema, swapPool, emitLog);
+
+        // Post-swap freshness assertion (Stage 3) — log-and-surface only,
+        // manifest-gated, never throws. See services/reload-freshness.service.js.
+        await require('./reload-freshness.service')
+          .assertFreshness(schemaName, swapPool, emitLog);
       } else {
         // Manual re-index: index live schema directly
         emitLog('creating_indexes', `Re-indexing live schema ${schemaName}...`);
         await reloader.indexFn(schemaName, emitLog);
+        await require('./reload-freshness.service')
+          .assertFreshness(schemaName, reloader.pool || this.db, emitLog);
       }
 
       emitLog('completed', 'Indexing complete');

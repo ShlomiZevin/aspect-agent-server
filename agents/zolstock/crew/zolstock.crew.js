@@ -23,6 +23,10 @@ class ZolStockCrew extends CrewMember {
       displayName: 'Zol Stock',
       description: 'Business intelligence advisor with access to real Zol Stock retail data',
       isDefault: true,
+      // Stage 3: injects the capability manifest's data-discipline block
+      // (answer-first, user-figure discipline, VAT-basis matching, ambiguity
+      // clarification) into every turn — see crew/base/CrewMember.js.
+      datasetSchema: 'zolstock',
 
       guidance: `You are a business intelligence advisor for Zol Stock (זול סטוק), a discount retail chain in Israel (website zolstock.co.il).
 

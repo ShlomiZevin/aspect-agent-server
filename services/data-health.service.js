@@ -129,11 +129,55 @@ async function getDataHealth(schemaName, { dataReloadService, pool, force = fals
   }
   files.sort((a, b) => (b.rows || 0) - (a.rows || 0));
 
+  // ── Stage 3: catalog-driven table inventory ──────────────────────────────
+  // The `files` list above only covers tables mapped from a CURRENT source
+  // file — derived tables, materialized views, and anything whose file was
+  // renamed/retired drop out, which is exactly what made the panel read as
+  // incomplete. This lists EVERY relation actually in the live schema, each
+  // with the period it stores (or an explicit "snapshot" label when it has
+  // no date column — an honest label beats a dash).
+  const tables = [];
+  try {
+    const { rows: rels } = await dbPool.query(
+      `SELECT table_name AS name, 'table' AS kind
+         FROM information_schema.tables
+        WHERE table_schema = $1 AND table_type = 'BASE TABLE'
+       UNION ALL
+       SELECT matviewname AS name, 'view' AS kind
+         FROM pg_matviews WHERE schemaname = $1
+       ORDER BY 2, 1`, [schemaName]);
+    for (const rel of rels) {
+      const entry = { name: rel.name, kind: rel.kind, rows: null, from: null, through: null, dateless: false };
+      try {
+        const [count, range] = await Promise.all([
+          rowCount(dbPool, schemaName, rel.name),
+          dataThrough.rangeForRelation(dbPool, schemaName, rel.name),
+        ]);
+        entry.rows = count.rows;
+        if (range?.first || range?.last) {
+          entry.from = range.first;
+          entry.through = range.last;
+        } else {
+          entry.dateless = true; // snapshot / dimension — no date column or all-NULL dates
+        }
+      } catch { entry.dateless = true; }
+      tables.push(entry);
+    }
+  } catch { /* catalog listing is additive — the panel still works without it */ }
+
+  // Last MV freshness assertion, when one has run since boot (Stage 3, item C).
+  let freshness = null;
+  try {
+    freshness = require('./reload-freshness.service').lastResult(schemaName);
+  } catch { /* absent = simply not shown */ }
+
   const value = {
     schema: schemaName,
     lastSync,
     coverage,
     files,
+    tables,
+    freshness,
     // Files sitting in the source folder that this dataset does NOT load.
     // Worth showing: zolstock's folder still holds the retired 7.8GB sales
     // export, and someone comparing folder contents to the panel would

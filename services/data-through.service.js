@@ -27,7 +27,13 @@ const KNOWN_FACT_TABLES = {
 };
 
 /** Date column candidates, most specific first. */
-const DATE_COLUMNS = ['transaction_date', 'sale_date', 'order_date', 'row_date'];
+// Priority-ordered: fact-grain columns first. 'month' and 'cal_date' are
+// LAST on purpose (Stage 3) — they only resolve for relations that carry no
+// day-grain column at all (monthly roll-up MVs, calendar dimensions), so the
+// data-status panel can show their stored period instead of "snapshot".
+// pickDateColumn takes the first match, so appending here cannot change any
+// existing fact-table resolution.
+const DATE_COLUMNS = ['transaction_date', 'sale_date', 'order_date', 'row_date', 'cal_date', 'month'];
 
 const TTL_MS = 30 * 60 * 1000; // the answer can only change when a load lands
 const cache = new Map(); // schema -> { at, value }
