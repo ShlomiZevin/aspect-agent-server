@@ -222,7 +222,7 @@ Generate a PostgreSQL query that answers the user's question based on the schema
 9. **Limits**: Add a LIMIT ONLY when the user explicitly asked for a specific count ("top 10", "the 5 highest", "first 20"). For "all", "every", "the full list", "don't limit", or any plain unqualified listing question — DO NOT add a LIMIT yourself, no matter how large the table is (not even a "safety" LIMIT 500/1000/5000). This applies even to the biggest tables listed below. The application enforces its own upstream safety cap after your query runs, so row count is never your problem to solve — a query with no LIMIT clause at all is the CORRECT answer for these questions, not a risk to protect against.
 10. **PARTIAL vs COMPLETE period comparisons — check this on EVERY "latest/most recent day/week/month" question**: before comparing the most recent bucket (day/week/month) against prior buckets — a trend, a "declining" ranking, "who's behind" — check whether that most recent bucket actually has a FULL period's worth of data. If the data's last date (see DATA RECENCY below) falls mid-week or mid-month, the final bucket is PARTIAL: e.g. a week bucket ending on the last loaded date may hold only 4 of 7 days. Comparing a partial bucket's raw total against complete buckets' totals/averages mechanically produces a large "decline" for almost every entity, in direct proportion to the missing day-count — that is a methodology artifact, not a real finding (a bucket missing 3 of 7 days will show roughly a 40-45% "drop" no matter how the business is actually doing). Fix it one of two ways: (a) exclude the partial trailing bucket and compare using the LAST COMPLETE bucket instead, or (b) explicitly prorate — divide by \`COUNT(DISTINCT date)\` within each bucket before comparing, not by the raw period total. Never present a partial-bucket-vs-complete-bucket comparison as a "decline" without one of these adjustments; if you do use a partial period, say so explicitly in your reasoning so the caller isn't misled. Applies to any grain (day, week, month, quarter) and any dataset — not just the one used in the worked example under RULE 3.8 below.
 ${this._getSchemaSpecificRules(schemaName)}${ruleCorrections}
-${this._buildAntiPatternsSection(antiPatterns)}
+${this._buildManifestSection(schemaName)}${this._buildAntiPatternsSection(antiPatterns)}
 ## Output Format
 
 Respond with ONLY a JSON object (no markdown, no explanation):
@@ -1074,6 +1074,23 @@ This is a periodic export, not a live feed. \`CURRENT_DATE\` is NOT the end of t
 - RIGHT: \`WHERE d >= DATE '${dataThroughDate}' - INTERVAL '4 weeks' AND d <= DATE '${dataThroughDate}'\`
 
 Apply this to every relative expression — "recent", "last N weeks/months", "this quarter", "year to date", "the trailing 12 months", and to both sides of any period-over-period comparison. "This quarter" means the quarter containing ${dataThroughDate}, not the quarter containing today's date.`;
+  }
+
+  /**
+   * Dataset capability manifest section (Stage 2). Datasets without a
+   * manifest get an empty string — behavior unchanged. See
+   * services/dataset-manifest/index.js.
+   * @private
+   */
+  _buildManifestSection(schemaName) {
+    try {
+      const manifest = require('./dataset-manifest').get(schemaName);
+      if (!manifest) return '';
+      return `\n${require('./dataset-manifest').renderForPrompt(manifest)}\n`;
+    } catch (err) {
+      console.warn(`⚠️  Manifest render failed for ${schemaName}: ${err.message}`);
+      return '';
+    }
   }
 
   /**

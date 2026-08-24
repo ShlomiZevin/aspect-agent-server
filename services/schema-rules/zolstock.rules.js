@@ -59,6 +59,31 @@ discounts and promotions**. They are precomputed in the materialized views as
 - When a question asks for "revenue" or "sales", answer with
   \`revenue_list_ex_vat\` and say in your explanation that it is a list-price
   figure excluding discounts.
+- **VAT is exactly 18% — the ONLY conversion factor is 1.18** (÷1.18 to strip
+  VAT, ×1.18 to add it). Never use 1.17 or any other rate: a generated query
+  using 1.17 once produced the single wrong figure in an otherwise-exact
+  16-check audit (2026-08-20).
+- **When the question compares against a figure the USER quoted** (a
+  reconciliation question), return BOTH bases in one row —
+  \`revenue_list_ex_vat\` AND \`ROUND(revenue_list_ex_vat * 1.18, 2) AS
+  revenue_list_inc_vat_estimate\` — so the answer can match the user's basis
+  instead of guessing it. Users' own reports are usually labelled
+  "כולל מעמ" (inc-VAT); ours default to ex-VAT — comparing across bases
+  produced a misleading "5.3% gap" in one audited answer that was really
+  −19.5% on a like-for-like basis.
+
+### Replenishment / reorder / transfer questions — THE ONLY workable shape
+For "what should we reorder / restock / transfer" questions, compute need from
+**stock vs open orders vs safety stock** using ONLY the small views:
+\`mv_warehouse_inventory\` (has \`safety_stock\`) + \`mv_open_orders\`
+(\`order_kind\` = 'customer' | 'purchase') — need ≈ customer orders + safety
+stock − warehouse qty − open purchase orders. This answers in seconds.
+If the question insists on recent SALES VELOCITY per item, take it from
+\`mv_sales_monthly_item\` (month grain) — **NEVER scan \`facts\` grouped by
+item for a date window**: 26.9M rows at item grain is a guaranteed timeout
+(measured: 174s vs 37s for the same business question with and without the
+facts scan). A month of \`mv_sales_monthly_item\` is an acceptable proxy for
+"last 30 days" here; say so in the explanation.
 
 ### Materialized views — PREFER THESE for every aggregate
 | view | grain | rows | use for |

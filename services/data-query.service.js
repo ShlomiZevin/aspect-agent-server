@@ -4,6 +4,7 @@ const slowQueryService = require('./slow-query.service');
 const emptyResultDiagnosis = require('./empty-result-diagnosis.service');
 const periodCoverage = require('./period-coverage.service');
 const dataThrough = require('./data-through.service');
+const coverageService = require('./coverage.service');
 
 const QUERY_TIMEOUT_MS = parseInt(process.env.QUERY_TIMEOUT_MS || '15000');
 const SCHEMA_RE = /^[a-z0-9_]+$/i;
@@ -67,6 +68,34 @@ class DataQueryService {
     } = options;
 
     console.log(`Data Query: question for schema "${customerSchema}": "${question}"`);
+
+    // ── Capability gate (Stage 2) — datasets with a manifest only ─────────
+    // Deterministic, zero-LLM pre-flight: unambiguous questions about absent
+    // dimensions refuse structurally BEFORE any SQL is generated (invariant
+    // across runs, ~0s instead of a generation+query round-trip), and
+    // unresolved client vocabulary is detected so the answer names it
+    // instead of hunting for fields that do not exist. Datasets without a
+    // manifest skip all of this — behavior unchanged.
+    const manifest = require('./dataset-manifest').get(customerSchema);
+    let gateUnresolvedTerms = [];
+    if (manifest) {
+      const gate = require('./capability-gate.service').check(question, manifest);
+      if (gate.action === 'refuse') {
+        console.log(`   Capability gate: refused ("${gate.refusal.dimension}" is absent) — no SQL generated`);
+        return {
+          error: false, refused: true,
+          refusal: gate.refusal,
+          message: `${gate.refusal.reason} ${gate.refusal.roadmap}`,
+          sql: null, explanation: null, confidence: null,
+          data: [], rowCount: 0,
+          annotations: { capabilityRefusal: gate.refusal },
+        };
+      }
+      gateUnresolvedTerms = gate.unresolvedTerms;
+      if (gateUnresolvedTerms.length) {
+        console.log(`   Capability gate: unresolved vocabulary detected — ${gateUnresolvedTerms.map(t => t.terms[0]).join('; ')}`);
+      }
+    }
 
     // Anchor relative expressions to the data, not the wall clock. Insights
     // has always passed this; chat never did, so "the last 7 days" asked in
@@ -175,6 +204,14 @@ class DataQueryService {
         // long must say so in both surfaces, and a model cannot forget a field.
         const coverage = periodCoverage.computeCoverage({ dataThroughDate, sql, rows: result.rows });
 
+        // Stage-2 answer-contract annotations (manifest datasets only) —
+        // deterministic facts the renderer MUST surface: measure basis,
+        // partial last day, known exclusions, entity/scope mismatches,
+        // unresolved vocabulary. Never blocks: a failure yields null.
+        const annotations = manifest
+          ? await this._buildAnnotations({ manifest, question, sql, dataThroughDate, unresolvedTerms: gateUnresolvedTerms })
+          : null;
+
         return {
           sql, explanation, confidence,
           data: result.rows,
@@ -184,6 +221,10 @@ class DataQueryService {
           emptyReason,
           dataThroughDate: dataThroughDate || null,
           coverage,
+          annotations,
+          // Stage 3: lets the renderer apply manifest-gated presentation rules
+          // (answer-first line) even when nothing else was annotated.
+          manifestActive: !!manifest,
         };
 
       } catch (error) {
@@ -221,6 +262,10 @@ class DataQueryService {
           // 15 seconds" sent anyone debugging it looking in the wrong place.
           message: isTimeout ? this._getTimeoutMessage(timeout) : error.message,
           sql, explanation, confidence, data: [], rowCount: 0,
+          // On failure, unresolved vocabulary is the most valuable thing we
+          // can say — "the field you named does not exist in this feed" ends
+          // a retry marathon; a bare SQL error invites another attempt.
+          annotations: gateUnresolvedTerms.length ? { unresolvedTerms: gateUnresolvedTerms } : null,
         };
 
       } finally {
@@ -357,6 +402,148 @@ class DataQueryService {
 
   _getTimeoutMessage(timeoutMs = QUERY_TIMEOUT_MS) {
     return `The query took too long and was automatically stopped after ${Math.round(timeoutMs / 1000)} seconds.\n\nIt has been logged in the Query Optimizer dashboard where an admin can analyze it and create the necessary database indexes to make similar queries much faster.\n\nIn the meantime, try asking a more specific question or narrowing the time range (e.g. "last week" instead of "last year").`;
+  }
+
+  /**
+   * Stage-2 answer-contract annotations for manifest datasets — deterministic
+   * post-checks computed in code, never by the model. Each key is a fact the
+   * renderer must surface (table-format.service embeds them in the fetch
+   * result so the conversation model cannot omit them).
+   *
+   * All checks are best-effort: any failure returns what was computed so far
+   * — annotations inform, they never block an answer.
+   * @private
+   */
+  async _buildAnnotations({ manifest, question, sql, dataThroughDate, unresolvedTerms }) {
+    const a = {};
+    try {
+      const sqlL = (sql || '').toLowerCase();
+
+      // 1. Measure basis — any list-price money column in the SQL means the
+      // figures are estimates; say so with the measured delta, every time.
+      if (/revenue_list|profit_list/.test(sqlL)) {
+        const rev = manifest.measures?.['revenue'];
+        if (rev) {
+          a.basis = { fidelity: rev.fidelity, detail: rev.basis, knownDelta: rev.knownDelta || null };
+        }
+        const excl = (manifest.dataFacts || []).find(f => /revenue/i.test(f.appliesTo || ''));
+        if (excl) a.exclusions = excl.fact;
+      }
+
+      // 2. Unresolved client vocabulary detected by the gate.
+      if (unresolvedTerms && unresolvedTerms.length) a.unresolvedTerms = unresolvedTerms;
+
+      // 3. Data-through: EVERY money answer carries it (Stage 3, A4e — was
+      // recency-targeting only, which left period-scoped money answers at
+      // 78% coverage). Partial-day detection stays recency-scoped: an
+      // all-time total is not materially affected by a short last day.
+      if (a.basis && dataThroughDate) a.dataThrough = String(dataThroughDate);
+      const targetsLatest =
+        /אתמול|היום|yesterday|today|latest|אחרון|העדכני|this week|השבוע/i.test(question || '')
+        || (dataThroughDate && sqlL.includes(String(dataThroughDate)))
+        || /max\s*\(\s*(row_date|transaction_date)/.test(sqlL);
+      if (targetsLatest && manifest.coverage) {
+        const cov = await coverageService.get(this.pool, manifest);
+        if (cov) {
+          a.dataThrough = cov.dataThrough;
+          if (cov.partialLastDay) a.partialLastDay = cov.partialLastDay;
+        }
+      }
+
+      // 3b. Asked beyond the data (Stage 3, A1): the question names a day or
+      // period that ends AFTER the data does — the answer's first line must
+      // say so, and the only suggestions offered are re-anchored to dates
+      // that actually exist (A3: a suggested request must never fail).
+      if (dataThroughDate) {
+        const asked = this._askedPeriodEnd(question || '');
+        if (asked && asked.end > String(dataThroughDate)) {
+          a.askedBeyondData = { asked: asked.label, dataThrough: String(dataThroughDate) };
+          a.suggestedRequests = this._buildSuggestions(String(dataThroughDate));
+        }
+      }
+
+      // 4. Entity match (D3 guard): question names an entity, SQL has a GROUP
+      // BY, and none of that entity's expected columns appear in it.
+      const groupBy = /group\s+by\s+([^)]+?)(order\s+by|limit|$)/is.exec(sql || '');
+      if (groupBy) {
+        for (const marker of manifest.entityMarkers || []) {
+          if (!marker.pattern.test(question || '')) continue;
+          const grouped = groupBy[1].toLowerCase();
+          if (!marker.expectGroupByAny.some(c => grouped.includes(c))) {
+            a.entityMismatch = {
+              asked: marker.entity,
+              delivered: groupBy[1].trim().split(',').map(s => s.trim()).slice(0, 3).join(', '),
+            };
+          }
+          break; // first matching marker decides
+        }
+      }
+
+      // 5. Scope added (D4 guard): the question named no period, but the SQL
+      // filters on a date — the answer's scope must be stated, not implied.
+      const questionHasPeriod =
+        /20\d\d|month|year|week|day|quarter|ytd|last|recent|today|yesterday|חודש|שנה|שבוע|יום|רבעון|היום|אתמול|אחרון|תקופה|מתחילת/i.test(question || '');
+      const sqlHasDateFilter = /(row_date|transaction_date|month)\s*(>=|<=|=|between)/.test(sqlL);
+      if (!questionHasPeriod && sqlHasDateFilter) {
+        const range = (sql.match(/'\d{4}-\d{2}-\d{2}'/g) || []).join(' … ');
+        a.scopeAdded = { detail: range || 'a date filter was applied', };
+      }
+    } catch (err) {
+      console.warn(`⚠️  Annotation build failed (${manifest?.id}): ${err.message}`);
+    }
+    return Object.keys(a).length ? a : null;
+  }
+
+  /**
+   * When the question names a specific day or a relative recent period,
+   * return {end: 'YYYY-MM-DD', label} for the LATEST date it refers to —
+   * null when no period (or only a past/explicit range) is named.
+   * Deterministic: explicit dd.mm.yyyy / yyyy-mm-dd dates, and the
+   * today/yesterday/this-week/this-month vocabulary in both languages.
+   * @private
+   */
+  _askedPeriodEnd(question) {
+    const iso = d => d.toISOString().slice(0, 10);
+    const today = new Date();
+    // Explicit dates: dd.mm.yyyy / dd/mm/yyyy / yyyy-mm-dd — take the latest named.
+    const found = [];
+    const dm = question.matchAll(/\b(\d{1,2})[./](\d{1,2})[./](\d{4})\b/g);
+    for (const m of dm) found.push(`${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`);
+    const ymd = question.matchAll(/\b(\d{4})-(\d{2})-(\d{2})\b/g);
+    for (const m of ymd) found.push(`${m[1]}-${m[2]}-${m[3]}`);
+    if (found.length) {
+      const end = found.sort().pop();
+      return { end, label: end };
+    }
+    if (/\b(today)\b|היום/i.test(question)) return { end: iso(today), label: 'today' };
+    if (/\b(yesterday)\b|אתמול/i.test(question)) {
+      const y = new Date(today); y.setDate(y.getDate() - 1);
+      return { end: iso(y), label: 'yesterday' };
+    }
+    if (/this week|השבוע/i.test(question) || /this month|החודש/i.test(question)) {
+      return { end: iso(today), label: 'current period' };
+    }
+    return null;
+  }
+
+  /**
+   * Suggestions that CANNOT fail (Stage 3, A3): built only from dates the
+   * data actually contains — the last loaded day and the last complete
+   * month. The model may offer these re-anchorings; it may not invent its
+   * own. @private
+   */
+  _buildSuggestions(dataThrough) {
+    const [y, m, d] = dataThrough.split('-').map(Number);
+    // Last complete month: the month before dataThrough's month, unless
+    // dataThrough IS that month's final day.
+    const lastOfMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    let cy = y, cm = m;
+    if (d < lastOfMonth) { cm = m - 1; if (cm === 0) { cm = 12; cy = y - 1; } }
+    const month = `${cy}-${String(cm).padStart(2, '0')}`;
+    return [
+      { type: 'reanchor_date', date: dataThrough, hint: `the same view for ${dataThrough} (the last loaded day)` },
+      { type: 'reanchor_month', month, hint: `the same view for ${month} (the last complete month)` },
+    ];
   }
 
   async close() {
