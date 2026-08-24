@@ -280,3 +280,24 @@ node scripts/zolstock-qa-run.js chat 1 30
 ```
 
 After each change: a spot regression on hypertoy plus zer4u, to prove no cross-client impact.
+
+---
+
+## Continuation (added 2026-08-24 at close-out)
+
+This work continued as two further stages, both complete and verified:
+
+- **Stage 2** (`zolstock-and-other-accuracy-improvements-stage-2.md`, closed 21-08) — the
+  processing-flow hardening: per-dataset **capability manifest** (truth card), deterministic
+  **capability gate** (absent-dimension refusals in ~1ms, pre-SQL), coverage/basis/entity/scope
+  **annotations** enforced by an answer contract, ops invariants. Verified by a frozen 74-question
+  **real-customer replay corpus**: 74/74 answered, verdicts better 12 / worse 0 vs baseline.
+- **Stage 3** (`…-stage-3.md`, closed 24-08) — answer directness ("no data for today" first lines),
+  **validated suggestions** (only re-anchored to dates that exist — proven by re-asking them),
+  partial-day guard (caught the near-empty 23-08 delivery live), VAT-basis matching, user-figure
+  discipline, per-table data-status panel, post-reload MV freshness assertion. Final replay:
+  74/74, better 13 / worse 0, money answers 100% basis + 100% data-coverage disclosure.
+
+Root-cause closure on the data side: the client's Qlik runs on the retired transaction export
+(May 2026 matches ₪31,270,689 to the shekel) — the standing ask to the client is resuming that
+export; see the Qlik evidence artifact referenced in stage-3.
