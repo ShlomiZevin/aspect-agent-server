@@ -1,0 +1,17 @@
+-- Where a job's thinking starts, as a row id rather than a timestamp.
+--
+-- The obvious implementation — "usage rows created after the job started" —
+-- silently returns nothing, because hq_jobs.started_at is timestamptz while
+-- llm_usage.created_at is still `timestamp without time zone`. node-postgres
+-- reads the naive column in the server's local zone, so the same instant reads
+-- three hours earlier and the comparison never matches. The worker then
+-- reported "$0 in thinking" for a job that had just spent nine cents.
+--
+-- A serial id is monotonic and has no zone, so it cannot drift. Record where
+-- the job began and count forward from there.
+--
+-- NOTE: llm_usage carries the same naive-timestamp problem HQ's own tables had
+-- before migration 004. It is a shared platform table (billing and the usage
+-- page read it), so it is not migrated here — but anything comparing its
+-- timestamps against a timestamptz column will be wrong by the UTC offset.
+ALTER TABLE hq_jobs ADD COLUMN IF NOT EXISTS llm_usage_from_id BIGINT;

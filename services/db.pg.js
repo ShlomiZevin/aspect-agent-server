@@ -7,6 +7,21 @@ const { Pool } = require('pg');
  * Provides PostgreSQL connection with Drizzle ORM for type-safe queries.
  * Supports multiple agent domains and conversations.
  */
+/**
+ * First stack frame outside this file — i.e. whoever actually asked for the
+ * query. Used only when DB_LOG_SQL is on; building a stack per query is not
+ * free, so it stays behind the flag.
+ */
+function callerOf() {
+  const lines = (new Error().stack || '').split('\n').slice(2);
+  for (const line of lines) {
+    if (line.includes('db.pg.js') || line.includes('node:internal')) continue;
+    const m = line.match(/([\w.-]+\.js):(\d+):\d+/);
+    if (m) return `${m[1]}:${m[2]}`;
+  }
+  return 'unknown';
+}
+
 class DatabaseService {
   constructor() {
     this.pool = null;
@@ -112,11 +127,25 @@ class DatabaseService {
       const result = await this.pool.query(text, params);
       const duration = Date.now() - start;
 
-      console.log('📊 Query executed', {
-        duration: `${duration}ms`,
-        rows: result.rowCount,
-        command: result.command
-      });
+      // `DB_LOG_SQL=true` adds the statement and the calling file:line.
+      // Without it the log says "SELECT, 5 rows" and nothing about WHERE it
+      // came from, which makes a repeating background query impossible to
+      // trace. Off by default — this is one line per query in production.
+      if (process.env.DB_LOG_SQL === 'true') {
+        console.log('📊 Query executed', {
+          duration: `${duration}ms`,
+          rows: result.rowCount,
+          command: result.command,
+          from: callerOf(),
+          sql: String(text).replace(/\s+/g, ' ').trim().slice(0, 160),
+        });
+      } else {
+        console.log('📊 Query executed', {
+          duration: `${duration}ms`,
+          rows: result.rowCount,
+          command: result.command
+        });
+      }
 
       return result;
     } catch (error) {

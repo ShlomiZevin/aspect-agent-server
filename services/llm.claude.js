@@ -29,6 +29,46 @@ class ClaudeService {
     return this._client;
   }
 
+
+  /**
+   * One turn of an agentic tool loop.
+   *
+   * `sendOneShot` with `tools` is built for a single forced tool call: it
+   * returns the first tool_use block and discards everything else. An agent
+   * that plans, narrates and calls several tools needs the whole reply —
+   * text AND every tool_use block AND the stop reason — so it can append the
+   * assistant turn verbatim and feed tool results back. Hence this, rather
+   * than bending the existing method and changing its contract.
+   *
+   * Purely additive: no existing caller is affected.
+   *
+   * @returns {Promise<{ content: Array, stopReason: string, usage: Object }>}
+   */
+  async sendAgentTurn({ system, messages, tools = [], model, maxTokens = 8192, temperature } = {}) {
+    const params = {
+      model: model || this.model,
+      max_tokens: maxTokens,
+      system,
+      messages,
+    };
+    if (tools.length) params.tools = tools;
+    if (temperature !== undefined) params.temperature = temperature;
+
+    const response = await this.client.messages.create(params);
+
+    return {
+      // Raw blocks, so the caller can push this straight back as the
+      // assistant message — Anthropic requires the tool_use blocks to be
+      // echoed exactly alongside their tool_result replies.
+      content: response.content,
+      stopReason: response.stop_reason,
+      usage: {
+        inputTokens: response.usage?.input_tokens ?? 0,
+        outputTokens: response.usage?.output_tokens ?? 0,
+      },
+    };
+  }
+
   /**
    * Send a stateless, non-streaming one-shot request.
    * Similar to OpenAI's sendOneShot method.

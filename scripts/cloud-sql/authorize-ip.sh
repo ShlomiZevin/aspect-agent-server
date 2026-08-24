@@ -6,11 +6,14 @@
 # Adds your public IP(s) to Cloud SQL authorized networks.
 #
 # Usage:
-#   ./authorize-ip.sh                          # auto-detect IPs, default instance
-#   ./authorize-ip.sh -a                       # auto-detect IPs, ALL instances in the project
+#   ./authorize-ip.sh                          # auto-detect IPs, ALL instances (the usual case)
+#   ./authorize-ip.sh -a                       # same thing, kept for habit
 #   ./authorize-ip.sh -i 77.137.64.21          # use explicit IP
 #   ./authorize-ip.sh -i 77.137.64.21 myinst   # explicit IP + instance
 #   ./authorize-ip.sh myinst                   # explicit instance, auto-detect IPs
+#
+# Targets the `aspect-agents` project whatever your active gcloud config says.
+# Override with: CLOUD_SQL_PROJECT=other ./authorize-ip.sh
 #
 # Auto-detection queries THREE services and authorizes EVERY distinct
 # IPv4 they return. Rationale: some ISPs / routers egress different
@@ -18,8 +21,10 @@
 # services can each see a different one, and the DB connection may use
 # yet another of them. Authorizing the union covers all of them.
 #
-# Tip: your machine likely talks to TWO instances (operational
-# aspect-agents-db + data aspect-data-db) — use -a to fix both at once.
+# With no instance argument this patches EVERY instance in the project. Your
+# machine talks to two (operational aspect-agents-db + data aspect-data-db) and
+# an ISP IP rotation breaks both at once, so fixing both is the sane default.
+# Name an instance explicitly to narrow it.
 ###############################################################################
 
 set -e
@@ -69,6 +74,15 @@ if [ -f "$ENV_FILE" ]; then
     source "$ENV_FILE"
 fi
 
+# Pin the project rather than trusting whatever `gcloud config` happens to hold.
+# The active project is global to the machine, so any other repo's script can
+# leave it pointing elsewhere — and this one then fails with "Cloud SQL Admin
+# API has not been used in project <someone else's>", which reads like a
+# permissions problem rather than simply the wrong target.
+PROJECT="${CLOUD_SQL_PROJECT:-aspect-agents}"
+GC=(gcloud --project="$PROJECT")
+print_info "Project: $PROJECT"
+
 # ── Resolve the IP LIST to authorize ─────────────────────────────────
 IPS_TO_ADD=()
 if [ -n "$EXPLICIT_IP" ]; then
@@ -114,32 +128,44 @@ fi
 # ── Resolve the INSTANCE LIST to patch ───────────────────────────────
 INSTANCES=()
 if [ "$ALL_INSTANCES" = true ]; then
-    print_info "Listing every Cloud SQL instance in the active project..."
+    print_info "Listing every Cloud SQL instance in $PROJECT..."
     # tr -d '\r' — on Windows (git-bash) gcloud emits CRLF line endings;
     # a trailing \r makes the instance name invalid for the API.
     while IFS= read -r name; do
         [ -n "$name" ] && INSTANCES+=("$name")
-    done < <(gcloud sql instances list --format="value(name)" | tr -d '\r')
+    done < <("${GC[@]}" sql instances list --format="value(name)" | tr -d '\r')
     if [ ${#INSTANCES[@]} -eq 0 ]; then
-        print_error "No Cloud SQL instances found in the active gcloud project"
+        print_error "No Cloud SQL instances found in project $PROJECT"
         exit 1
     fi
     print_info "Instances: ${INSTANCES[*]}"
 else
     INSTANCE_NAME="${POSITIONAL_ARGS[0]:-$CLOUD_SQL_INSTANCE_NAME}"
     if [ -z "$INSTANCE_NAME" ]; then
-        print_error "Instance name not provided"
-        print_info "Usage: ./authorize-ip.sh [-i <ip>] [-a|--all] [instance-name]"
-        exit 1
+        # No instance named anywhere: do them ALL rather than fail.
+        # This machine talks to both (operational aspect-agents-db and data
+        # aspect-data-db), and an IP rotation breaks both at once — so the
+        # bare `./authorize-ip.sh` should fix everything, not error out
+        # asking which one you meant.
+        print_info "No instance given — authorizing on every instance in the project."
+        while IFS= read -r name; do
+            [ -n "$name" ] && INSTANCES+=("$name")
+        done < <("${GC[@]}" sql instances list --format="value(name)" | tr -d '\r')
+        if [ ${#INSTANCES[@]} -eq 0 ]; then
+            print_error "No Cloud SQL instances found in project $PROJECT"
+            exit 1
+        fi
+        print_info "Instances: ${INSTANCES[*]}"
+    else
+        INSTANCES=("$INSTANCE_NAME")
     fi
-    INSTANCES=("$INSTANCE_NAME")
 fi
 
 # ── Patch each instance (append-only) ────────────────────────────────
 for INSTANCE in "${INSTANCES[@]}"; do
     echo ""
     print_info "── Instance: $INSTANCE ──"
-    EXISTING_IPS=$(gcloud sql instances describe "$INSTANCE" \
+    EXISTING_IPS=$("${GC[@]}" sql instances describe "$INSTANCE" \
         --format="value(settings.ipConfiguration.authorizedNetworks[].value)" \
         | tr ';' ',' | tr -d '[:space:]')
 
@@ -163,7 +189,7 @@ for INSTANCE in "${INSTANCES[@]}"; do
     print_info "Existing: ${EXISTING_IPS:-<none>}"
     print_info "Adding:   ${MISSING[*]}"
 
-    gcloud sql instances patch "$INSTANCE" \
+    "${GC[@]}" sql instances patch "$INSTANCE" \
         --authorized-networks="$NEW_IPS" \
         --quiet
 
