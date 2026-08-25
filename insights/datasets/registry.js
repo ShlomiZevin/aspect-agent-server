@@ -133,17 +133,21 @@ const REGISTRY = {
       gradientTo: '#FACC15',
     },
     defaultBrandLabel: 'Zol Stock, a discount retail chain',
-    defaultDataModelDescription: 'a wide facts table mixing sales, inventory, and wholesale-agent rows by record type, pre-aggregated into daily materialized views by item, store, and seller. Common measures: revenue and profit (ex VAT), quantity sold, inventory quantity. Common dimensions: store name, item name/category, seller, date (day/week/month) — item and store dimension tables (names, categories, subcategories) landed 2026-08-10, so questions can group and display by real names, not just numeric ids. A separate recommendation_facts table (warehouse stock snapshots, customer orders, purchase orders — no discriminator column, filtered by which columns are populated) supports overstock/understock and order-fulfilment questions.',
+    // Rewritten 2026-08-19 for the four-file delivery. The previous text
+    // described sellers, wholesale rows and a separate recommendation_facts
+    // table, none of which exist any more — and it promised revenue and profit
+    // as if they were recorded, when the new feed carries no money at all.
+    defaultDataModelDescription: 'a single facts table (29.9M rows) holding five kinds of row, separated by a record_type column: retail sales (26.9M), store inventory, warehouse inventory, customer orders and purchase orders. Sales are pre-aggregated into materialized views by day, by store, by month-and-item, by category, and as lifetime item totals. IMPORTANT: the source data contains NO monetary columns — revenue and gross profit are DERIVED from the item master list prices (consumer price ex-VAT minus cost), so every money figure is a list-price estimate that excludes discounts and promotions, and must be described that way. Measures: units sold, list-price revenue, list-price gross profit, stock on hand, quantity on order. Dimensions: store (139 stores, 96 with sales), item (139k items sold, with name, category, subcategory and supplier), category, and date (day/month) covering 2025-01-01 to 2026-08-17. Inventory rows carry NO date — they are a current snapshot, not a history, and cannot be trended. There is no seller, campaign, discount, invoice or customer dimension for retail sales.',
     defaultBootstrapPrompts: [
       'Which stores have the steepest sales decline recently',
       'Which items are below their safety stock level in the warehouse',
-      'What is the daily revenue trend over the last several weeks',
-      'Which sellers have the highest sales volume',
+      'What is the monthly sales trend across the chain',
+      'Which product categories generate the most gross profit',
     ],
     defaultExamplePrompts: [
       'Main risks for the next few months',
       'What are the top 10 items by quantity sold',
-      'Which product family has the steepest margin decline',
+      'Which product category has the steepest margin decline',
     ],
   },
   tevanaot: {

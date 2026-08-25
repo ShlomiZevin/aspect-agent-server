@@ -3404,6 +3404,31 @@ app.delete('/api/feedback/:feedbackId', async (req, res) => {
 });
 
 // Get all feedback for an agent (dashboard)
+// POST /api/agents/:agentName/feedback/general — feedback volunteered from the
+// sidebar, not attached to any one reply. Lands in the same inbox as
+// message-scoped feedback (see db/migrations/003_general_feedback.sql).
+app.post('/api/agents/:agentName/feedback/general', async (req, res) => {
+  try {
+    const { agentName } = req.params;
+    const { feedbackText, tags, contact, contextUrl, createdBy } = req.body || {};
+    if (!feedbackText || !String(feedbackText).trim()) {
+      return res.status(400).json({ error: 'feedbackText is required' });
+    }
+    const feedback = await feedbackService.createGeneralFeedback({
+      agentName,
+      feedbackText,
+      tags: Array.isArray(tags) ? tags : [],
+      contact,
+      contextUrl,
+      createdBy: createdBy || null,
+    });
+    res.status(201).json({ feedback });
+  } catch (err) {
+    console.error('❌ general feedback error:', err.message);
+    res.status(err.message?.includes('not found') ? 404 : 500).json({ error: err.message });
+  }
+});
+
 app.get('/api/agents/:agentName/feedback', async (req, res) => {
   const { agentName } = req.params;
   const { limit } = req.query;
@@ -3804,6 +3829,26 @@ app.get('/api/admin/data-loader/:schema/data-info', async (req, res) => {
     res.json(info);
   } catch (err) {
     console.error('❌ data-loader data-info error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/data-loader/:schema/data-health — what data is in scope right
+// now: which delivered files are loaded, the span each one covers, the last
+// sync, and the overall range. Powers the panel behind the Last sync label so a
+// user can see the shape of the dataset before asking a question of it.
+app.get('/api/admin/data-loader/:schema/data-health', async (req, res) => {
+  try {
+    const { schema } = req.params;
+    const dataReloadService = req.app.get('dataReloadService');
+    if (!dataReloadService?.reloaders[schema]) {
+      return res.status(404).json({ error: `Unknown schema: ${schema}` });
+    }
+    const health = await require('./services/data-health.service')
+      .getDataHealth(schema, { dataReloadService, force: req.query.force === 'true' });
+    res.json(health);
+  } catch (err) {
+    console.error('❌ data-loader data-health error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

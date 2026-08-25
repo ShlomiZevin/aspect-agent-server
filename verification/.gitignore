@@ -5,3 +5,9 @@
 # behind it, reproducible with the commands the README lists.
 *.json
 !.gitignore
+
+# The representative-dataset slice is ~975MB of raw client CSVs kept locally for
+# inspecting delivered data shape without opening multi-GB files. It is source
+# data, not a verification result, and has never been committed — ignoring it
+# explicitly so a blanket `git add -A` cannot sweep it into a push.
+representative-dataset/

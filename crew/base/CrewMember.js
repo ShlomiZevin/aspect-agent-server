@@ -130,6 +130,14 @@ class CrewMember {
     // All crews of an agent can share the same persona by importing a shared module.
     this.persona = options.persona || null;
 
+    // Stage 3: dataset this crew fronts (e.g. 'zolstock'). When set AND the
+    // dataset has a capability manifest (services/dataset-manifest/), a
+    // manifest-rendered "data discipline" block is injected into every turn's
+    // prompt (see buildContext / dispatcher's dataDiscipline handling).
+    // Optional and inert for crews that don't set it — same opt-in pattern
+    // as persona.
+    this.datasetSchema = options.datasetSchema || null;
+
     // Transition rules for debug visualization (optional)
     // If defined, debug panel shows structured pass/fail evaluation
     // If not defined, debug panel shows raw function code as fallback
@@ -339,6 +347,18 @@ class CrewMember {
     // Auto-inject persona as characterGuidance when set
     if (this.persona) {
       context.characterGuidance = this.persona;
+    }
+
+    // Stage 3: manifest-driven data discipline for dataset-fronting crews.
+    // Failure here must never break a turn — the block is guidance, not data.
+    if (this.datasetSchema) {
+      try {
+        const manifestSvc = require('../../services/dataset-manifest');
+        const m = manifestSvc.get(this.datasetSchema);
+        if (m) context.dataDiscipline = manifestSvc.renderForCrew(m);
+      } catch (err) {
+        console.warn(`   ⚠️ [${this.name}] dataDiscipline injection failed: ${err.message}`);
+      }
     }
 
     // Auto-wire thinker if configured

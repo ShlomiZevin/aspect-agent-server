@@ -1,0 +1,112 @@
+I traced the full path using the two most recent onboardings (Zol Stock, Aug 2026, and Teva Naot, Jun 2026) as the reference cases. Here's how it actually works.
+
+What "client onboarding" means in this codebase
+There's no wizard, no admin flow, and no generic tenant record. A new client = a new Postgres schema inside the shared aspect-data-db + a new agent + a matched set of ~20 hand-written files across both repos. It's a developer-executed runbook, and the runbook itself is checked in as a task file:
+
+tasks/pending/task-zolstock-agent-setup.md — the canonical, most recent one
+tasks/pending/task-tevanaot-agent-setup.md — same shape, different data model
+Both are structured identically: Phase A = scaffolding (data-independent), Phase B = data load + tuning. That split is deliberate — Phase A ships before the client has delivered a single CSV.
+
+The file you're thinking of: the client data schema
+It's scripts/column-aliases-<client>.js — one per client, six exist today (zer4u, hypertoy, newdeli, thestock, zolstock, tevanaot).
+
+It exports a COLUMN_MAP keyed by table, each entry being { csvName, dbName, type }:
+
+
+facts: [
+  { csvName: 'Fact Type',        dbName: 'record_type',      type: 'TEXT'    },
+  { csvName: 'סך סכום לשורה',    dbName: 'line_total',       type: 'NUMERIC' },
+  { csvName: 'עלות המכר',        dbName: 'cogs',             type: 'NUMERIC' },
+  { csvName: 'תאריך',            dbName: 'transaction_date', type: 'DATE'    },
+  ...
+]
+Three things make this file the real center of gravity:
+
+It is the only Hebrew→English translation layer. Source CSVs are QlikSense exports with Hebrew headers. Anything not listed here still loads — as TEXT, under its raw Hebrew column name. So an unmapped column is silently degraded, not an error.
+It carries the data-quality archaeology as comments. column-aliases-zolstock.js:57-63 aliases a corrupted header (סך ס��ום לשורה — an invalid UTF-8 byte in the source export) to the same line_total column so the load doesn't lose revenue. It also documents that gcsService.getCSVHeaders strips all " chars, which changes what key you must write for quoted headers.
+It's dated. Each block records when the client delivered which files and who delivered them ("2026-08-10: order recommendation data delivered by Reut (BI dev), loaded EXACTLY the 5 files she shared — no invented/pre-split files").
+Supporting/adjacent schema references:
+
+docs/product/CLIENT_DATASETS.md — business-facing table/scale reference, but only covers Zer4U + Hyper Toy and is stamped "as of 2026-07-16"
+verification/representative-dataset/ — a verified one-month slice of the raw source CSVs for 3 clients, for inspecting delivered data shape without opening multi-GB files
+The artifacts created per client
+Server — aspect-agent-server
+Data pipeline (5 scripts, one set per client):
+
+File	Role
+scripts/column-aliases-<c>.js	CSV header → DB column + type (the schema file above)
+scripts/create-<c>-schema.js	DROP SCHEMA … CREATE TABLE from the column list. Data-agnostic — copied verbatim per client, never edited
+scripts/create-<c>-indexes.js	Per-client index set
+scripts/create-<c>-mvs.js	Materialized views — mandatory, this is what keeps top-N/revenue queries inside the 15s chat timeout
+scripts/reload-<c>.js	Orchestrator: FILE_TO_TABLE map + GCS prefix + loadX (Phase 1) / indexX (Phase 2) / getXDataInfo
+FILE_TO_TABLE is where filename→table binding lives, and it's booby-trapped by source naming: zolstock has both Facts_ZolStock_CSV.csv → facts and Fact_ZolStock_CSV.csv → recommendation_facts. Singular vs plural, different files, overlapping content. Also Calander_ZolStock_CSV.csv (sic) — the misspelling is preserved because that's what's in the client's folder.
+
+getXDataInfo() returns the dataset's real last data date. reload-zolstock.js:~1290 documents why it must be day precision, not month: at month precision, Insights normalized "2026-06" to 2026-06-30 while data actually stopped 2026-06-04, and every "last 4 weeks" question reported a fake network-wide ~90% revenue collapse across all 84 stores.
+
+Wiring (4 files):
+
+services/db.<c>.js — re-exports the db.zer4u pool. Every dataset is a schema in one database; this file exists purely so a future migration to a dedicated instance is a one-file change.
+agents/<c>/data-reload.js — registers the reloader with DataReloadService, gated behind <C>_RELOAD_ENABLED !== 'true' so empty skeletons never execute
+server.js — one line registering that module
+scripts/seed-<c>-agent.js — inserts the agents row (name, url_slug, domain, description). Idempotent.
+Agent (3 files):
+
+agents/<c>/AGENT.md — per-agent documentation including a live status block and the full schema/record-type table
+agents/<c>/crew/<c>.crew.js — the BI crew + its single fetch_<c>_data tool
+agents/<c>/crew/index.js
+The rules block — where most of the ongoing work goes:
+services/sql-generator.service.js has a per-schema branch in _getSchemaSpecificRules() (1403 lines, ~250 lines per client). This is the prompt text teaching the model that dataset's quirks: record-type filters, which MV to use, join paths, dedupe requirements, worked query examples. Phase A ships a placeholder returning ''; Phase B fills it against real data.
+
+CLAUDE.md flags this as the highest-rot component, and it's earned that: zer4u's block named 9 materialized views that no longer existed, silently breaking every store/revenue question for months. scripts/test-schema-contract.js now fails the build on that, and a runtime corrector overrides stale references. New clients are supposed to go into their own module under services/schema-rules/ — only zer4u.rules.js has migrated so far.
+
+Product-surface registration (3 places):
+
+insights/datasets/registry.js — one entry: schema name, pool getter, brand gradient/logo text, defaultDataModelDescription (a prose paragraph the investigation LLM reads), defaultBootstrapPrompts, defaultExamplePrompts. Its own header comment says "adding a 7th dataset later: add one entry here — nothing else needs to change."
+services/provider-config.service.js — 4 keys per client: <c>_import_months, <c>_reload_enabled, <c>_gcs_folder, <c>_drive_folder_id
+services/schedule-config.service.js:16 — client id added to the SCHEMAS array, enabling its import + drive_sync cron jobs
+Test harness: scripts/test-<c>-flow.js (~21 questions), plus the client gets folded into the shared batteries — test-insights-suite.js, test-chat-regression.js, and their Hebrew variants. Results land in verification/ — every client has a row in insights-accuracy/, chat-regression/, and hebrew-language/.
+
+Client — aspect-agent-client-react
+Seven touch points, all listed as checkboxes in the setup task:
+
+public/img/<c>-logo.png|svg — pulled from the client's actual website
+src/styles/themes/<c>-theme.css + an @import in global.css — palette derived from the logo
+src/agents/<c>.config.ts — display names, page title, favicon, welcome copy, ~12 quick-question keys, and 3 rotating thinkingSteps sets
+src/agents/index.ts + src/agents/agentRegistry.ts — the registry entry. Client CLAUDE.md: "Adding an agent end-to-end = adding one registry entry." The slug is also the tenant value stamped on users.
+src/pages/<C>Page.tsx + export
+src/App.tsx — /<c> and /<c>/conversations/:id routes
+src/i18n/translations.ts — EN + HE blocks for every quick-question key
+How the data actually arrives
+
+Client's BI dev (e.g. Reut) exports from QlikSense
+  → drops CSVs in a shared Google Drive folder
+  → drive-to-gcs.service.js mirrors them to gs://aspect-clients-data/<prefix>/
+  → reload-<c>.js Phase 1: read GCS headers → CREATE TABLE → COPY into <c>_new
+  → Phase 2: indexes → materialized views
+  → DataReloadService: atomic schema swap <c>_new → <c>
+services/drive-to-gcs.service.js closed what its own header calls "the previously-MANUAL 'BI exports to Drive → someone uploads to GCS' gap." It has a hardcoded CLIENTS map with two modes — passthrough (keep the *_CSV.csv Drive names) and canonical-match (rename to the clean Hebrew names the loader expects). Only zer4u and hypertoy are in the code map; newer clients get their folderId/gcsPrefix from DB overrides via provider_config.
+
+The swap in services/data-reload.service.js is genuinely zero-downtime and self-healing — if a worker dies after building the shadow but before swapping, _isShadowBuilt() detects the completed MVs and finishes the swap rather than redoing 15+ minutes of work.
+
+The human sequence
+Phase A — a developer builds every scaffold file above with empty maps (FILE_TO_TABLE = {}, COLUMN_MAP = {}, INDEXES = [], rules block returns ''). Reload stays disabled, so nothing executes and server boot is unaffected. Both setup tasks show Phase A fully checked off before any data existed.
+
+Phase B, once files land:
+
+Analyze the delivered CSVs → decide the model (zolstock: one wide facts table with a Fact Type discriminator, explicitly not split per record type; tevanaot: resolve QlikSense composite keys via split_part/regexp_match and skip the 1.2GB LINK_TABLE entirely)
+Fill COLUMN_MAP, FILE_TO_TABLE, INDEXES, MVs
+Run the seed script (needs cloud-sql-proxy.exe on 5433)
+Capacity check on aspect-data-db — the two-phase reload doubles storage
+Set <C>_RELOAD_ENABLED=true in .env.production.aspect
+Kosta runs Phase 1 + Phase 2 from the prod admin Data Loader UI — never via API. Both task files state this explicitly.
+Smoke test with test-<c>-flow.js, tune the sql-generator rules block against real numbers
+Enable in Aspect Intelligence, write the data-model description + bootstrap prompts
+Deploy — client via Firebase, server via ./deploy.sh aspect. Both runbooks: ask the user first, never auto-deploy.
+Things worth flagging
+The runbooks live in tasks/pending/ and are stale. Both zolstock and tevanaot are in production — zolstock is default-enabled in Insights, has QA cases, chip prompts, and a verification/zolstock-quality/ folder — but their setup tasks still sit in pending/ with unchecked boxes that were long since completed. There's no template file; onboarding #7 means copying whichever of these two is closest.
+
+BI is not part of onboarding. bi/datasets/ contains exactly one file — hypertoy.dataset.js. Chat and Insights get every client; the spec-driven BI semantic layer has only ever been built for one. That's a separate, larger effort per client (declaring dimensions, measures, joins, and dedupeOn flags).
+
+The rot surface is the per-client rules text, not the code. The scaffolding is boilerplate and safe. The parts that break silently are prose in _getSchemaSpecificRules() and defaultDataModelDescription — both are prompt text that can reference tables and views that no longer exist without anything throwing. test-schema-contract.js is the only guard, and it covers the rules block, not the Insights descriptions.
+
+A fair amount of per-client knowledge exists only as comments. The corrupted-UTF-8 header alias, the singular/plural fact-file trap, the day-vs-month dataInfoFn precision bug, the getCSVHeaders quote-stripping behavior — each cost a real incident, and each is recorded as a comment in the file where it bit. Someone onboarding client #7 by copying zolstock inherits the workarounds but not necessarily the reasoning.

@@ -7,7 +7,7 @@
  * complete FILE_TO_TABLE + column aliases + indexes once Itzik delivers the data.
  */
 
-const { loadZolStock, indexZolStock, getZolStockDataInfo } = require('../../scripts/reload-zolstock');
+const { loadZolStock, indexZolStock, getZolStockDataInfo, FILE_TO_TABLE } = require('../../scripts/reload-zolstock');
 const { getPool } = require('../../services/db.zolstock');
 const { guardReloadFn } = require('../../services/reload-guard');
 
@@ -16,6 +16,9 @@ function register(dataReloadService) {
     loadFn:          guardReloadFn('zolstock', 'Zol Stock', loadZolStock),
     indexFn:         guardReloadFn('zolstock', 'Zol Stock', indexZolStock),
     gcsFolderPrefix: 'zolstock/',
+    // Which delivered files this dataset actually loads — the GCS folder can
+    // also hold retired exports, so listing the folder is not the same thing.
+    fileMap:         FILE_TO_TABLE,
     dataInfoFn:      getZolStockDataInfo,
     pool:            getPool(),
   });

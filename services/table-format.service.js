@@ -195,6 +195,28 @@ function buildNumericTotalsText(displayColumns, rows) {
  * @returns {Object} tool-result payload (success case only — caller still handles result.error/result.timeout)
  */
 function buildFetchResult({ question, tableTitle, schema, result }) {
+  // Capability-gate refusal (Stage 2): the dataset's manifest declares the
+  // asked dimension absent, so no SQL was generated at all. Return a
+  // structured instruction instead of a "No data found" — the difference
+  // between "we hold no such records" (false) and "this data does not carry
+  // that dimension" (true) is the whole point of the gate.
+  if (result.refused && result.refusal) {
+    const r = result.refusal;
+    return {
+      success: false,
+      refused: true,
+      question,
+      schema,
+      rowCount: 0,
+      summary: `CANNOT ANSWER — the "${r.dimension}" dimension does not exist in this dataset. `
+        + `Reason: ${r.reason} `
+        + (r.roadmap ? `What would unlock it: ${r.roadmap} ` : '')
+        + (r.alternatives ? `Offer the user these instead: ${r.alternatives}. ` : '')
+        + `Tell the user this plainly in their language. Do NOT attempt another data fetch for the same dimension — `
+        + `no rephrasing will make the data exist.`,
+    };
+  }
+
   const data = result.data || [];
   const rowCount = result.rowCount ?? data.length;
   // `question` is often the model's own English paraphrase (several crews'
@@ -209,7 +231,14 @@ function buildFetchResult({ question, tableTitle, schema, result }) {
   let hasViewer = false;
 
   if (rowCount === 0) {
-    summary = 'No data found.';
+    // "No data found" is the right answer only when the data really is
+    // absent. When the query filtered on a column that is empty for the rows
+    // in question, the filter could never have matched — saying "no data"
+    // there tells the user something false about their business.
+    summary = result.emptyReason
+      ? 'No rows came back, and the reason is structural, not a business fact: ' + result.emptyReason.message
+        + ' Tell the user this is a gap in the recorded data — do NOT say the business has no such records.'
+      : 'No data found.';
   } else {
     displayColumns = buildDisplayColumns(result.columns, data, hebrew);
     const previewTable = buildMarkdownTable(displayColumns, data, PREVIEW_ROW_LIMIT);
@@ -233,6 +262,74 @@ function buildFetchResult({ question, tableTitle, schema, result }) {
         + 'numbers.\n\n' + previewTable + '\n';
     }
     summary += buildNumericTotalsText(displayColumns, data);
+
+    // Reports have caveated partial periods for a while; chat did not, and
+    // reported a store "down 87%" between a full month and a 4-day one. This
+    // is a computed fact about the data (see period-coverage.service.js), not
+    // a judgement call, so it is stated to the model as a requirement.
+    if (result.coverage?.partial) {
+      summary += '\n\nIMPORTANT — INCOMPLETE PERIOD. ' + result.coverage.note
+        + ' You MUST say this in your reply, in the user\'s language, wherever you quote a figure for '
+        + result.coverage.period + '. Do NOT present a change into that period as growth or decline —'
+        + ' a ' + result.coverage.daysCovered + '-day period cannot be compared with a full month.';
+    }
+  }
+
+  // ── Stage-2 answer contract: annotations ALWAYS render ─────────────────
+  // Deterministic facts computed by data-query.service._buildAnnotations
+  // (basis, exclusions, partial last day, entity/scope mismatch, unresolved
+  // vocabulary). They are embedded into `summary` — the text the talker model
+  // quotes from — so a disclosure cannot be silently omitted; the model may
+  // rephrase into the user's language but the fact is part of its source.
+  // Datasets without a manifest never have `annotations` → output unchanged.
+  if (result.annotations) {
+    const a = result.annotations;
+    const lines = [];
+    if (a.basis && a.basis.fidelity !== 'exact') {
+      lines.push(`Money figures are ESTIMATES: ${a.basis.detail}.`
+        + (a.basis.knownDelta ? ` Measured gap vs the client's own reports: ${a.basis.knownDelta}.` : ''));
+    }
+    if (a.exclusions) lines.push(`Known exclusion: ${a.exclusions}.`);
+    if (a.dataThrough) lines.push(`Data runs through ${a.dataThrough}.`);
+    if (a.askedBeyondData) {
+      lines.push(`THE ASKED PERIOD (${a.askedBeyondData.asked}) ENDS AFTER THE DATA DOES (${a.askedBeyondData.dataThrough}). `
+        + `Your FIRST sentence must state plainly that there is no data for the asked period and that data ends ${a.askedBeyondData.dataThrough}. `
+        + `Do not present older figures as if they answered the asked period.`);
+    }
+    if (a.suggestedRequests && a.suggestedRequests.length) {
+      lines.push('Offer the user ONLY these follow-ups (they are guaranteed to have data — do NOT invent other suggestions): '
+        + a.suggestedRequests.map(s => s.hint).join('; ') + '.');
+    }
+    if (a.partialLastDay) {
+      lines.push(`The last day (${a.partialLastDay.date}) appears PARTIAL — ${a.partialLastDay.pctOfNormal}% of its normal volume `
+        + `(${a.partialLastDay.volume} vs a typical ${a.partialLastDay.medianVolume}). Say this wherever you quote that day, `
+        + `and NEVER use it silently in a trend or day-vs-day comparison — exclude it or label it partial.`);
+    }
+    if (a.entityMismatch) {
+      lines.push(`ENTITY CHECK FAILED: the user asked about "${a.entityMismatch.asked}" but this result groups by `
+        + `${a.entityMismatch.delivered}. Either re-fetch grouped by the asked entity, or state explicitly that the `
+        + `breakdown shown is NOT the one requested.`);
+    }
+    if (a.scopeAdded) {
+      lines.push(`SCOPE WAS NARROWED: the user did not name a period, but this result is filtered to ${a.scopeAdded.detail}. `
+        + `State the period explicitly in your reply.`);
+    }
+    if (a.unresolvedTerms) {
+      for (const t of a.unresolvedTerms) {
+        lines.push(`The user's term "${t.terms[0]}" has NO counterpart in this data: ${t.detail}`);
+      }
+    }
+    if (lines.length) {
+      summary += '\n\nDATA CONTRACT — you MUST convey each point below in your reply, in the user\'s language '
+        + '(rephrase freely, omit nothing):\n- ' + lines.join('\n- ');
+    }
+  }
+
+  // Stage 3, A4a (manifest-gated): direct answers first. Applies to every
+  // manifest dataset's fetch results — presentation, not semantics.
+  if (result.manifestActive) {
+    summary += '\n\nPRESENTATION: begin your reply with ONE direct sentence answering the question '
+      + '(the key figure or fact) BEFORE any table, breakdown, or caveat detail.';
   }
 
   return {
@@ -244,6 +341,7 @@ function buildFetchResult({ question, tableTitle, schema, result }) {
     explanation: result.explanation,
     confidence: result.confidence,
     rowCount,
+    annotations: result.annotations || null,
     // IMPORTANT: this object is JSON.stringified verbatim into the talker
     // model's context (see llm.openai.js — the tool handler's full return
     // value becomes the tool_result content, with no cap of its own).

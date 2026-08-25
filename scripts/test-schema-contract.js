@@ -101,6 +101,46 @@ async function main() {
       console.log(`  --   ${schema}: no hand-written SQL rules`);
     }
 
+    // ── 1b. Capability manifest, when one exists (Stage 2) ────────────
+    // Same rot-guard as the rules: every relation/column the manifest names
+    // must exist, the coverage config must point at a real view+columns, and
+    // the rendered prompt section must stay inside its token budget.
+    const manifestSvc = require('../services/dataset-manifest');
+    const manifest = manifestSvc.get(schema);
+    if (manifest) {
+      const manifestText = JSON.stringify(manifest);
+      const referenced = new Set();
+      const re2 = new RegExp(`\\b${schema}\\.([a-z0-9_]+)`, 'gi');
+      let mm;
+      while ((mm = re2.exec(manifestText)) !== null) referenced.add(mm[1].toLowerCase());
+      // Bare table.column mentions (items.consumer_price style) — check the table half.
+      const knownTables = ['facts', 'items', 'stores', 'calendar'];
+      for (const t of knownTables) if (manifestText.includes(`${t}.`)) referenced.add(t);
+      const missingM = [...referenced].filter(r => !relations.has(r));
+      report(missingM.length === 0,
+        `${schema}: ${referenced.size} relation(s) named in capability manifest exist`,
+        missingM.map(r => `${schema}.${r} — DOES NOT EXIST`));
+
+      if (manifest.coverage) {
+        const { dailyView, dateColumn, volumeColumn } = manifest.coverage;
+        const viewName = dailyView.replace(`${schema}.`, '').toLowerCase();
+        const covIssues = [];
+        if (!relations.has(viewName)) covIssues.push(`coverage.dailyView ${dailyView} DOES NOT EXIST`);
+        else {
+          const cols = columns.get(viewName);
+          if (!cols?.has(dateColumn.toLowerCase())) covIssues.push(`coverage.dateColumn "${dateColumn}" not in ${dailyView}`);
+          if (!cols?.has(volumeColumn.toLowerCase())) covIssues.push(`coverage.volumeColumn "${volumeColumn}" not in ${dailyView}`);
+        }
+        report(covIssues.length === 0, `${schema}: manifest coverage config is live`, covIssues);
+      }
+
+      const rendered = manifestSvc.renderForPrompt(manifest);
+      const approxTokens = Math.ceil(rendered.length / 3.5); // Hebrew-heavy text ≈3.5 chars/token
+      report(approxTokens <= 1500,
+        `${schema}: manifest prompt section within budget (~${approxTokens} tokens)`,
+        approxTokens > 1500 ? [`rendered section ≈${approxTokens} tokens — trim dataFacts/vocabulary`] : []);
+    }
+
     // ── 2. BI semantic-layer definition, when one exists ──────────────
     let dataset = null;
     try {

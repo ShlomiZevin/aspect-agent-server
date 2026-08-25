@@ -12,6 +12,7 @@
 
 const scheduleConfig = require('./schedule-config.service');
 const insightsRefresh = require('../insights/services/insights-refresh.service');
+const mvRefresh = require('../insights/services/mv-refresh.service');
 
 const IMPORT_WINDOW_MINUTES = 5 * 60; // retry every tick for up to 5h, mirrors the old ensure-loaded sweep
 const DRIVE_SYNC_WINDOW_MINUTES = 15; // a few retries, then stop - sync failures are rarer/cheaper to just re-trigger manually
@@ -72,6 +73,37 @@ async function runTick({ dataReloadService, driveToGcs, log = console.log }) {
     if (!dataReloadService.reloaders[schemaName]) continue;
     dataReloadService.ensureIndexed(schemaName).catch(err =>
       log(`[tick] ${schemaName} ensureIndexed error: ${err.message}`));
+  }
+
+  // Materialized views, refreshed when they fall behind their source.
+  //
+  // DELIBERATELY OFF BY DEFAULT (MV_REFRESH_ENABLED). A plain REFRESH takes
+  // ACCESS EXCLUSIVE and blocks every read of that view for its whole
+  // duration, and none of zolstock's four views has the UNIQUE index that
+  // CONCURRENTLY requires — so on that client this is a full-outage rebuild
+  // of an 868 MB view whose cost has not been measured yet. Enabling a job
+  // like that by default, on every tenant at once, is how a correctness fix
+  // turns into an availability incident.
+  //
+  // It also refuses to run while an import window is open for that schema:
+  // rebuilding a view from a table that is actively being written is both
+  // wasted work (the result is stale on arrival) and load applied at exactly
+  // the moment the database has least to spare.
+  if (process.env.MV_REFRESH_ENABLED === 'true') {
+    const importing = new Set(
+      schedules
+        .filter(e => e.enabled && e.jobType === 'import' && isWithinWindow(now, { hour: e.hour, minute: e.minute }, IMPORT_WINDOW_MINUTES))
+        .map(e => e.schemaName)
+    );
+    for (const schemaName of scheduleConfig.SCHEMAS) {
+      if (importing.has(schemaName)) continue;
+      try {
+        const r = await mvRefresh.ensureMVsRefreshed(schemaName, { log });
+        if (r.action === 'refreshed') fired.push(`${schemaName}:mv_refresh`);
+      } catch (err) {
+        log(`[tick] ${schemaName} mv-refresh error: ${err.message}`);
+      }
+    }
   }
 
   // Suggested reports, regenerated once a day PER SCHEMA — the same

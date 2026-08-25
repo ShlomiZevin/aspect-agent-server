@@ -12,6 +12,7 @@
 const gcsService = require('./gcs.service');
 const providerConfigService = require('./provider-config.service');
 const { getGcsFolder } = require('./gcs-folder.service');
+const dataThroughService = require('./data-through.service');
 
 class DataReloadService {
   constructor(db) {
@@ -433,6 +434,18 @@ class DataReloadService {
       }
     }
 
+    // Fall back to live introspection when the reloader defines no dataRangeFn.
+    // Without this, every dataset lacking one (zolstock among them) reported a
+    // null start date and the chat's own status bar silently dropped its
+    // "Data from" field — the range is derivable from the fact table anyway.
+    if (firstDataDate == null && reloader) {
+      try {
+        const range = await dataThroughService.resolveDataRange(reloader.pool || this.db, schemaName);
+        firstDataDate = range.first || null;
+        if (lastDataDate == null) lastDataDate = range.last || null;
+      } catch { /* best effort */ }
+    }
+
     // Fall back to dataInfoFn for the end date when no range fn is available.
     if (lastDataDate == null && reloader?.dataInfoFn) {
       try {
@@ -575,10 +588,17 @@ class DataReloadService {
         // ── Atomic schema swap (hardened; shared with self-heal) ──
         const swapPool = reloader.pool || this.db;
         await this._swapSchemas(schemaName, shadowSchema, swapPool, emitLog);
+
+        // Post-swap freshness assertion (Stage 3) — log-and-surface only,
+        // manifest-gated, never throws. See services/reload-freshness.service.js.
+        await require('./reload-freshness.service')
+          .assertFreshness(schemaName, swapPool, emitLog);
       } else {
         // Manual re-index: index live schema directly
         emitLog('creating_indexes', `Re-indexing live schema ${schemaName}...`);
         await reloader.indexFn(schemaName, emitLog);
+        await require('./reload-freshness.service')
+          .assertFreshness(schemaName, reloader.pool || this.db, emitLog);
       }
 
       emitLog('completed', 'Indexing complete');
@@ -694,7 +714,14 @@ class DataReloadService {
        )
        SELECT CASE
          WHEN (SELECT n FROM live_mv) > 0 THEN
-           (SELECT n FROM shadow_mv) > 0 AND (SELECT n FROM shadow_mv_unpop) = 0
+           -- Was "shadow_mv > 0", which declared the shadow finished the moment
+           -- its FIRST view was created. On 2026-08-19 that let the self-heal
+           -- sweep swap a zolstock shadow that had built 1 of 8 views — and
+           -- because the swap kills every other backend to take its lock, it
+           -- also killed the builder mid-view and promoted a half-built schema
+           -- into production. The live schema's own view count is the only
+           -- generic lower bound available here, so require at least that many.
+           (SELECT n FROM shadow_mv) >= (SELECT n FROM live_mv) AND (SELECT n FROM shadow_mv_unpop) = 0
          ELSE
            (SELECT count(*) FROM live_idx) > 0
            AND NOT EXISTS (
@@ -763,6 +790,31 @@ class DataReloadService {
       return { action: 'skipped', reason: `check failed: ${e.message}` };
     }
     if (!hasShadow) return { action: 'skipped', reason: 'no shadow schema' };
+
+    // CROSS-PROCESS BUILD CHECK. The `currentRuns` guard above only knows about
+    // runs started by THIS process. On 2026-08-19 a zolstock rebuild was driven
+    // by a standalone script while a server instance was also running: the
+    // server's sweep saw a shadow it had no in-memory record of, judged it
+    // built, and swapped — and since the swap terminates every other backend to
+    // take its lock, it killed the builder mid-view and promoted a schema with
+    // 1 of 8 materialized views into production.
+    //
+    // pg_stat_activity is the only state both processes share, so an active
+    // CREATE/REFRESH statement against the shadow is what "someone else is
+    // still building this" actually looks like.
+    try {
+      const { rowCount } = await pool.query(
+        `SELECT 1 FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND pid <> pg_backend_pid()
+            AND state = 'active'
+            AND query ILIKE '%' || $1 || '%'
+            AND (query ILIKE 'CREATE %' OR query ILIKE 'REFRESH %' OR query ILIKE 'ALTER %' OR query ILIKE 'COPY %')
+          LIMIT 1`,
+        [shadow]
+      );
+      if (rowCount > 0) return { action: 'skipped', reason: 'another process is still building this shadow' };
+    } catch { /* if the check itself fails, fall through to the built test */ }
 
     let built;
     try {

@@ -5,28 +5,31 @@
  * Phase 1 — loadZolStock(targetSchema, emitLog):
  *   Scan GCS → read CSV headers → create tables → COPY data
  * Phase 2 — indexZolStock(targetSchema, emitLog):
- *   Create indexes. DataReloadService handles the atomic schema swap.
+ *   Derived record_type column → indexes → materialized views.
+ *   DataReloadService handles the atomic schema swap.
  *
- * 2026-08-10: added the "order recommendation" data Reut (BI dev) delivered —
- * loaded EXACTLY the 5 files she shared, no invented/pre-split files. New:
- * items/stores/calendar dimensions + recommendation_facts (the real
- * Fact_ZolStock_CSV.csv, 902.5MB/29,450,600 rows, loaded whole). This is a
- * DIFFERENT file from the original Facts_ZolStock_CSV.csv already mapped to
- * `facts` below (note singular/plural) — recommendation_facts mixes 5 record
- * kinds with NO discriminator column (unlike `facts`' `Fact Type`): see
- * scripts/column-aliases-zolstock.js for the full breakdown/data-quality
- * notes. Its sales/store-inventory rows duplicate `facts` (fewer columns,
- * same broken store_number) — guidance steers those questions to `facts`
- * instead.
+ * 2026-08-19 — REBUILT FOR THE 4-FILE DELIVERY. The client reduced the feed to
+ * Fact / Items / Stores / Calander. Two sources are retired and no longer
+ * mapped: Facts_ZolStock_CSV.csv (plural, 7.8GB, last exported 2026-06-05 —
+ * the old retail sales table and the ONLY source of actual money) and
+ * Inventory_ZolStock_CSV.csv (3.1GB in-stock flag).
  *
- * 2026-08-17: added Inventory_ZolStock_CSV.csv (Kosta's call — additive, does
- * NOT replace `facts`; `facts` stays as the sole revenue/profit/margin source
- * for now, see zolstock.rules in sql-generator.service.js). Column names below
- * are based on a local sample (`Inventory_ZolStock_CSV-001.csv`, 4 cols: date/
- * item/store/in-stock-flag) — the live Drive file is a different size (2.59GB
- * vs the local 2.16GB sample), so re-check `column-aliases-zolstock.js`'s
- * `inventory` mapping against the real headers after the first import (any
- * unmapped column still loads fine as TEXT under its raw Hebrew name).
+ * Both retired files are still sitting in the GCS folder. They are excluded
+ * here by omission from FILE_TO_TABLE rather than deleted, because the loader
+ * silently skips anything unmapped — so leaving them in place costs nothing and
+ * keeps the raw delivery intact for audit. Do NOT re-add them without also
+ * revisiting the rules block: the two fact files disagree on store numbers and
+ * overlap on sales, and having both loaded is what made "which table is
+ * authoritative" an open question for weeks.
+ *
+ * What changed for consumers of this data:
+ *   - The surviving fact file has NO monetary columns. Revenue and margin are
+ *     derived in the materialized views from the item master's list prices, so
+ *     they exclude discounts and promotions. See create-zolstock-mvs.js.
+ *   - Data now runs to 2026-08-17 (was 2026-06-04).
+ *   - store_number is clean in this delivery, so the SPLIT_PART workaround is
+ *     gone; sales rows join Stores at 100.00% (1 unmatched row in 26.9M).
+ *   - 96 of the 139 stores have sales.
  */
 
 require('dotenv').config();
@@ -42,13 +45,12 @@ const { getGcsFolder } = require('../services/gcs-folder.service');
 const GCS_FOLDER_DEFAULT = 'zolstock/';
 
 const FILE_TO_TABLE = {
-  'Facts_ZolStock_CSV.csv': 'facts',
+  'Fact_ZolStock_CSV.csv': 'facts',            // singular — the only fact file now
   'Items_ZolStock_CSV.csv': 'items',
   'Stores_ZolStock_CSV.csv': 'stores',
-  'Calander_ZolStock_CSV.csv': 'calendar',   // sic — source folder spells it this way
-  'Fact_ZolStock_CSV.csv': 'recommendation_facts',   // singular — NOT the same file as Facts_ZolStock_CSV.csv above
-  'Inventory_ZolStock_CSV.csv': 'inventory',   // added 2026-08-17, additive (see header note)
-  // customers — still not delivered.
+  'Calander_ZolStock_CSV.csv': 'calendar',     // sic — source folder spells it this way
+  // Deliberately NOT loaded (see header): Facts_ZolStock_CSV.csv (plural),
+  // Inventory_ZolStock_CSV.csv.
 };
 
 function formatBytes(bytes) {
@@ -208,23 +210,23 @@ async function indexZolStock(targetSchema, emitLog) {
 async function getZolStockDataInfo() {
   const pool = getPool();
   try {
-    // Was month-only ('YYYY-MM') — a leftover from before the real schema was
-    // known. Insights' getDataThroughDate() normalizes a bare month to its
-    // LAST day (e.g. "2026-06" -> 2026-06-30), which is wrong here: real data
-    // stops 2026-06-04, so every "last 4 weeks"-style question silently
-    // included ~26 trailing days with zero rows and reported it as a network-
-    // wide ~90% revenue collapse (all 84 stores) instead of a data-cutoff
-    // artifact. Day precision matches every other dataset's dataInfoFn
-    // (e.g. getHyperToyDataInfo) and removes the false "collapse".
+    // DAY precision, not month. Insights' getDataThroughDate() normalizes a
+    // bare 'YYYY-MM' to that month's LAST day, which previously reported data
+    // as running to 2026-06-30 when it actually stopped 2026-06-04 — every
+    // "last 4 weeks" question then silently included ~26 empty days and
+    // reported a network-wide ~90% revenue collapse that never happened.
+    //
+    // Restricted to SALES rows: the same table also holds purchase orders,
+    // whose dates run ahead of the last sale, so an unfiltered MAX() would
+    // anchor "now" to a date the business has no sales for.
     const result = await pool.query(
-      `SELECT TO_CHAR(MAX("transaction_date"), 'YYYY-MM-DD') AS last_date
-       FROM zolstock.facts
-       WHERE "record_type" = 'מכירות'`
+      `SELECT TO_CHAR(MAX("row_date"), 'YYYY-MM-DD') AS last_date
+         FROM zolstock.facts
+        WHERE "qty_sold" IS NOT NULL AND "item_number_sales" IS NOT NULL`
     );
     return result.rows[0]?.last_date || null;
   } catch {
     return null;
   }
 }
-
-module.exports = { loadZolStock, indexZolStock, getZolStockDataInfo };
+module.exports = { loadZolStock, indexZolStock, getZolStockDataInfo, FILE_TO_TABLE };

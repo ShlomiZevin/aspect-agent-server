@@ -185,4 +185,4 @@ async function getTheStockDataInfo() {
   }
 }
 
-module.exports = { loadTheStock, indexTheStock, getTheStockDataInfo };
+module.exports = { loadTheStock, indexTheStock, getTheStockDataInfo, FILE_TO_TABLE };

@@ -46,6 +46,7 @@
 const llmService = require('../../services/llm');
 const { DataQueryService } = require('../../services/data-query.service');
 const registry = require('../datasets/registry');
+const dataThroughService = require('../../services/data-through.service');
 const intelligenceConfigService = require('./intelligence-config.service');
 const store = require('./insights-store.service');
 const { buildResultDigest, formatForPrompt, SAMPLE_LIMIT } = require('./result-digest.service');
@@ -310,21 +311,65 @@ function detectSuspiciousResult(data) {
   return { flagged: false, reason: null, columns: [] };
 }
 
+/**
+ * The FIRST date the dataset holds. PLAN needs both ends: given only the end
+ * date it will happily propose "July 2026 vs July 2025" for a dataset that
+ * begins in March 2026, and every downstream step then executes a comparison
+ * against a period that does not exist — surfacing to the user as "data not
+ * available" when the real fault is the question. Best-effort: a null simply
+ * omits the lower bound, which is the previous behaviour.
+ */
+async function getDataFromDate(datasetId) {
+  try {
+    const entry = getDatasetEntry(datasetId);
+    const { first } = await dataThroughService.resolveDataRange(entry.getPool(), entry.schemaName);
+    return first || null;
+  } catch {
+    return null;
+  }
+}
+
 async function planQuestion(datasetId, config, prompt) {
-  const dataThrough = await getDataThroughDate(datasetId);
+  const [dataThrough, dataFrom] = await Promise.all([
+    getDataThroughDate(datasetId),
+    getDataFromDate(datasetId),
+  ]);
   const systemPrompt = `You are planning a proactive business-intelligence investigation for ${config.brandLabel}. You will be given an open-ended investigation prompt (like "Main risks for the next 6 months" or "Bundle opportunities hiding in baskets"). Your job is NOT to answer it yet — it is to turn it into exactly ONE concrete, specific, SQL-answerable data question that a text-to-SQL engine could run against a single database table to gather the evidence needed.
 
-${dataThrough ? `The data runs through ${dataThrough} — treat that as "now" for anything relative ("recent," "this quarter," "next 6 months"). Do not assume any other year.\n\n` : ''}The data available: ${config.dataModelDescription}
+${dataThrough ? `The data runs through ${dataThrough} — treat that as "now" for anything relative ("recent," "this quarter," "next 6 months"). Do not assume any other year.\n` : ''}${dataFrom ? `The data STARTS on ${dataFrom} — there is nothing before that date. Every window you choose must fall inside ${dataFrom} to ${dataThrough}. If that span is shorter than a year then a year-on-year comparison is IMPOSSIBLE: it returns zero rows, which reaches the user as "your data is not available" when the real fault is the question. Compare against an earlier period that actually exists instead, and name the period you used.\n\n` : '\n'}The data available: ${config.dataModelDescription}
 
 Respond with ONLY a JSON object:
 {
   "category": one of "cross-sell" | "margin" | "inventory" | "trend" | "risk",
   "dataQuestion": "a single, specific, concrete question in English that can be answered with one SQL aggregate query — mention the measure(s), a breakdown dimension if useful (e.g. by store, by product family, by week), and a time window",
   "measures": ["the 1-3 business quantities being measured, each 1-2 plain words, e.g. \\"revenue\\", \\"units sold\\", \\"inventory value\\""],
-  "dimensions": ["the 1-2 entities the result is broken down BY, each 1-2 plain words SINGULAR, e.g. \\"store\\", \\"product family\\", \\"month\\", \\"campaign\\". Use [] if the answer is a single overall figure with no breakdown."]
+  "dimensions": ["the 1-2 entities the result is broken down BY, each 1-2 plain words SINGULAR, e.g. \\"store\\", \\"product family\\", \\"month\\", \\"campaign\\". Use [] if the answer is a single overall figure with no breakdown."],
+  "substitution": null OR { "asked": "the entity the prompt asked about", "used": "the entity you are actually reporting on", "reason": "one short clause saying why" },
+  "scopeAdded": null OR { "scope": "the restriction you added, e.g. \\"the most recent complete month\\"", "reason": "one short clause saying why" }
 }
 
 "measures" and "dimensions" are a machine-readable restatement of the SAME question — they are used to re-aggregate the result in code, so they must match "dataQuestion" exactly. List ONLY the entity the question is really about: if the question asks for revenue per campaign, dimensions is ["campaign"] — not ["campaign","discount level"] — even if the underlying table happens to store a finer breakdown.
+
+FIDELITY — the two rules that matter most.
+
+1. ANSWER THE ENTITY THAT WAS ASKED ABOUT. If the prompt names an entity (customers, categories, suppliers, regions) and the data model has no such entity, do NOT quietly answer about a near-neighbour instead. Either say so — set "dataQuestion" to the closest honest question AND fill in "substitution" — or, if nothing reasonable exists, still fill in "substitution" so the write-up can lead with the gap. Answering about sellers when the prompt said customers, or grouping by item ID when the prompt said category, is the single worst thing you can do here: every downstream check will pass and the reader will be told something true about the wrong thing.
+
+2. DO NOT NARROW THE SCOPE THE PROMPT CHOSE. If the prompt asks for a total ("what is our total gross profit"), the data question is the total — over all data, not the last month, not the most recent complete period. Add a time window ONLY when the prompt implies one ("recently", "this quarter", "trend"). If you do restrict a question that did not ask to be restricted, you MUST fill in "scopeAdded".
+
+MANDATORY SELF-CHECK before you answer. Read your own "dataQuestion" back and compare it, word by word, against the investigation prompt:
+
+- Does the prompt name an entity (staff, sellers, customers, discounts, invoices, channels, suppliers, regions) that your dataQuestion does NOT group by or measure? Then you have substituted. Set "substitution" with what was asked and what you used. "The entity does not exist so I measured something else" IS a substitution — it is the single most common case, not an exception to the rule.
+- Does the prompt ask how something CHANGED, or over a period, while your dataQuestion asks for a current or total figure? That is also a substitution: a snapshot is not a change. Set it.
+- Did you add a period, a "most recent month", a "latest snapshot" or a top-N cut the prompt did not ask for? Set "scopeAdded".
+
+Worked examples of what MUST be declared:
+- prompt "Which sales staff sell the most?" -> dataQuestion about chain-wide totals => substitution {asked: "sales staff", used: "chain-wide totals", reason: "no staff or seller dimension exists in this data"}
+- prompt "Which retail customers buy the most?" -> dataQuestion about top items => substitution {asked: "retail customers", used: "items", reason: "no retail customer dimension exists"}
+- prompt "How did warehouse stock change over the last three months?" -> dataQuestion about current stock => substitution {asked: "change over three months", used: "current stock level", reason: "inventory rows carry no date, so there is no history to compare"}
+
+Writing a caveat into the headline is NOT a substitute for setting the field: the field is what the interface renders and what caps the confidence score, and prose can be dropped. If you are unsure whether something counts, set it — an unnecessary declaration is harmless, a missing one is not.
+
+Both fields are null only when your dataQuestion measures exactly the entity and period the prompt named. They are shown to the reader verbatim, so write them as plain statements of fact.
 
 Pick the category that best matches what the investigation prompt is actually about. Do not hedge or ask a follow-up question — commit to one specific, well-scoped data question.`;
 
@@ -344,6 +389,17 @@ Pick the category that best matches what the investigation prompt is actually ab
       const parsed = parseJSON(response);
       if (!parsed.dataQuestion) throw new Error('Plan step returned no dataQuestion');
       const category = VALID_CATEGORIES.includes(parsed.category) ? parsed.category : 'trend';
+      // A departure object is only trusted when it actually carries its
+      // required fields — the model sometimes emits {} or "none" instead of
+      // null, and an empty object would otherwise cap confidence forever.
+      const asDeparture = (v, required) => {
+        if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+        const out = {};
+        for (const k of ['asked', 'used', 'scope', 'reason']) {
+          if (typeof v[k] === 'string' && v[k].trim()) out[k] = v[k].trim().slice(0, 200);
+        }
+        return required.every(k => out[k]) ? out : null;
+      };
       const asStrings = v => (Array.isArray(v) ? v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim()).slice(0, 3) : []);
       return {
         category,
@@ -351,6 +407,12 @@ Pick the category that best matches what the investigation prompt is actually ab
         // The machine-readable half of the plan — drives result-digest's
         // re-aggregation back to the grain that was actually asked for.
         spec: { measures: asStrings(parsed.measures), dimensions: asStrings(parsed.dimensions) },
+        // PLAN's own declaration that it departed from the prompt. No numeric
+        // guard can catch a rewritten question — the arithmetic is correct,
+        // the entity or the period is not — so the departure has to be
+        // declared here and carried structurally rather than inferred later.
+        substitution: asDeparture(parsed.substitution, ['asked', 'used']),
+        scopeAdded: asDeparture(parsed.scopeAdded, ['scope']),
       };
     } catch (err) {
       lastErr = err;
@@ -361,7 +423,7 @@ Pick the category that best matches what the investigation prompt is actually ab
   throw lastErr;
 }
 
-async function synthesizeInsight({ datasetId, config, prompt, category, dataQuestion, queryResult, dataAnomaly, verifierFeedback, digest }) {
+async function synthesizeInsight({ datasetId, config, prompt, category, dataQuestion, queryResult, dataAnomaly, verifierFeedback, digest, substitution, scopeAdded }) {
   const { sql, explanation, data, rowCount } = queryResult;
   // Cap what we feed back — enough rows to see the shape/pattern, not the whole table.
   // These are ILLUSTRATIVE ONLY: every total/ranking/percentage must come from
@@ -377,6 +439,11 @@ LANGUAGE — MIRROR THE PROMPT, NOTHING ELSE. Write EVERY user-visible string (h
 Decide from the prompt's own words alone. Hebrew appearing in the DATA (store names, product names, record types) says nothing about the requested language — the data is Hebrew regardless of what was asked, so it must not pull the write-up toward Hebrew. Keep entity names exactly as they appear in the data and keep ₪ as the currency symbol in both languages. Never translate a value that came from the database.
 
 ${dataThrough ? `The data runs through ${dataThrough} — that is "now." When your headline/title/description says something like "as of," "currently," "this quarter," or names a year, it MUST be consistent with that real date, not a guess from any other year.\n` : ''}
+${substitution ? `DEPARTURE — THE READER ASKED ABOUT SOMETHING ELSE. The prompt asked about "${substitution.asked}", but this data answers about "${substitution.used}"${substitution.reason ? ` (${substitution.reason})` : ''}. Your FIRST sentence — the headline — must say so plainly before it says anything else, in the prompt's language. Do not bury it in a caveat at the bottom, do not imply the numbers are about ${substitution.asked}, and do not use a confident business-opportunity tag. The reader needs to know they are looking at a different thing than they asked for.
+` : ''}${scopeAdded ? `DEPARTURE — NARROWED SCOPE. The prompt did not ask for a time restriction, but this data covers ${scopeAdded.scope} only${scopeAdded.reason ? ` (${scopeAdded.reason})` : ''}. Every figure you quote must name that scope where it appears — a headline number presented as a total when it is one period's number is a wrong answer, not a partial one.
+` : ''}
+${queryResult.coverage ? `PARTIAL PERIOD — THIS IS NOT OPTIONAL. ${queryResult.coverage.note} Every figure you quote for ${queryResult.coverage.period} must carry that fact where it appears, and you must NOT describe a change into that period as growth or decline: a 4-day period against a 30-day one is not a comparison. Say how many days it covers, in the prompt's language.
+` : ''}
 SANITY CHECK before writing anything: if EVERY row shows the key metric at exactly 0 (or some other suspiciously uniform value across 100% of rows), that is a strong signal of a JOIN/pipeline/data-gap bug, not a genuine uniform business outcome — real business data almost never produces the identical extreme value on every single row. In that case do NOT write a confident business-risk headline with a specific dollar figure. Instead: use tag "DATA QUALITY" (not "RISK" or any other category tag), keep the headline factual and hedged ("N rows show $0 — likely a data or pipeline issue, not confirmed store performance"), cap confidence at 40, and make the FIRST confidenceChecks entry the specific caveat explaining what looks broken (e.g. a join key that shouldn't match, a null field that should be populated). Only write a normal confident finding when the pattern varies across rows the way real business data does.
 
 
@@ -585,7 +652,7 @@ chart: ${JSON.stringify(synthesized.chart)}`;
  *
  * @returns {{ceiling: number, reasons: Array<{positive: boolean, text: string}>}}
  */
-function confidenceCeiling({ queryResult, digest, verification, dataAnomaly }) {
+function confidenceCeiling({ queryResult, digest, verification, dataAnomaly, substitution, scopeAdded }) {
   let ceiling = 95; // nothing is ever certain enough for 100
   const reasons = [];
   const cap = (value, text) => {
@@ -612,6 +679,16 @@ function confidenceCeiling({ queryResult, digest, verification, dataAnomaly }) {
   // noise unless the write-up used the material list.
   if (digest?.materiality && digest.materiality.dropped > digest.materiality.kept) {
     cap(80, `${digest.materiality.dropped} of ${digest.rowCount} rows are below the materiality threshold, so percentage rankings across the full set are noise-dominated.`);
+  }
+
+  // An answer about a different entity than the one asked about, or one
+  // silently narrowed to a sub-period, is not a high-confidence answer to the
+  // question that was actually put — however sound its arithmetic.
+  if (substitution) {
+    cap(55, `Asked about ${substitution.asked}, answered about ${substitution.used}${substitution.reason ? ` — ${substitution.reason}` : ''}.`);
+  }
+  if (scopeAdded) {
+    cap(75, `The question did not specify a period; this answer covers ${scopeAdded.scope} only.`);
   }
 
   if (reasons.length === 0) {
@@ -905,7 +982,7 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   progress.start(jobId);
   const actualPrompt = prompt && prompt.trim() ? prompt.trim() : await proposeInvestigationPrompt(datasetId, userId, config);
 
-  const { category, dataQuestion, spec } = await planQuestion(datasetId, config, actualPrompt);
+  const { category, dataQuestion, spec, substitution, scopeAdded } = await planQuestion(datasetId, config, actualPrompt);
 
   progress.set(jobId, 'query', dataQuestion);
   const queryResult = await getDataQueryService(datasetId).queryByQuestion(dataQuestion, entry.schemaName, {
@@ -936,7 +1013,12 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   // unflagged below 3 rows. Fail loudly instead — the UI already has an error
   // state, and no insight is strictly better than an invented one.
   if (queryResult.rowCount === 0) {
-    const err = new Error(`The data needed to answer this isn't available in this dataset — the query for "${dataQuestion}" returned no rows.`);
+    // An unsatisfiable predicate and a genuine "none" both return zero rows.
+    // Saying "not available in this dataset" for the first one is wrong: the
+    // records exist, the filter just could not match them.
+    const err = new Error(queryResult.emptyReason
+      ? `${queryResult.emptyReason.message} (asked: "${dataQuestion}")`
+      : `The data needed to answer this isn't available in this dataset — the query for "${dataQuestion}" returned no rows.`);
     err.status = 422;
     throw err;
   }
@@ -971,7 +1053,7 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   }
 
   progress.set(jobId, 'synthesize');
-  let synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest });
+  let synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest, substitution, scopeAdded });
   synthesized = reconcileImpactValue(synthesized, digest);
 
   // Step 4, VERIFY: an independent LLM pass fact-checks step 3's own output
@@ -983,13 +1065,28 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   // retry already works.
   progress.set(jobId, 'verify');
   let verification = await verifyInsight({ config, queryResult, synthesized, digest });
-  if (!verification.verified) {
-    console.log(`   Verify rejected first synthesis attempt, regenerating once: ${verification.issues.join('; ')}`);
-    progress.set(jobId, 'synthesize', 'Rewriting after fact-check');
-    synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest, verifierFeedback: verification.issues });
+
+  // Up to TWO regeneration attempts, not one. Measured on the 2026-08-19
+  // zolstock suite: 5 of 35 reports still failed the fact-check after a single
+  // retry, and three of those shipped a genuinely wrong number in the headline
+  // — one understated a year-on-year decline by roughly 9x (-0.5% against a
+  // true -4.5%). A second attempt costs one LLM call and ~30s, and ONLY on a
+  // case that has already failed, so a clean run pays nothing for it.
+  //
+  // Each attempt is fed the CURRENT complaint rather than the original one:
+  // the second rejection is usually about a different figure than the first,
+  // and re-sending a stale complaint just reproduces the same rewrite.
+  const MAX_SYNTH_RETRIES = 2;
+  for (let retry = 1; retry <= MAX_SYNTH_RETRIES && !verification.verified; retry++) {
+    console.log(`   Verify rejected synthesis (attempt ${retry}/${MAX_SYNTH_RETRIES}), regenerating: ${verification.issues.join('; ')}`);
+    progress.set(jobId, 'synthesize', `Rewriting after fact-check (${retry}/${MAX_SYNTH_RETRIES})`);
+    synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest, substitution, scopeAdded, verifierFeedback: verification.issues });
     synthesized = reconcileImpactValue(synthesized, digest);
     progress.set(jobId, 'verify');
     verification = await verifyInsight({ config, queryResult, synthesized, digest });
+  }
+  if (!verification.verified) {
+    console.log(`   Verify still unsatisfied after ${MAX_SYNTH_RETRIES} rewrites — shipping downgraded: ${verification.issues.join('; ')}`);
   }
 
   // Hard enforcement, not just a prompt hint: cap confidence and mark the tag
@@ -1007,7 +1104,7 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   // confirm per-entity numbers, materiality) and is surfaced in
   // confidenceChecks, so the number shown is explainable instead of asserted.
   const claimed = Math.max(0, Math.min(100, Math.round(synthesized.confidence ?? 70)));
-  const { ceiling, reasons } = confidenceCeiling({ queryResult, digest, verification, dataAnomaly });
+  const { ceiling, reasons } = confidenceCeiling({ queryResult, digest, verification, dataAnomaly, substitution, scopeAdded });
   const confidence = Math.min(claimed, ceiling);
   let tag = synthesized.tag || category.toUpperCase();
   const confidenceChecks = [...reasons, ...(synthesized.confidenceChecks || [])];
@@ -1068,6 +1165,11 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
     evidence: {
       prompt: actualPrompt,
       dataQuestion,
+      // Structural, not prose: the client renders these as a fixed banner so a
+      // departure cannot be lost by a model that chose not to mention it.
+      substitution: substitution || null,
+      coverage: queryResult.coverage || null,
+      scopeAdded: scopeAdded || null,
       sql: queryResult.sql,
       sqlConfidence: queryResult.confidence,
       // What the model asked for vs what the evidence allowed — makes the

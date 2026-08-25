@@ -215,4 +215,4 @@ async function getTevaNaotDataInfo() {
   }
 }
 
-module.exports = { loadTevaNaot, indexTevaNaot, getTevaNaotDataInfo };
+module.exports = { loadTevaNaot, indexTevaNaot, getTevaNaotDataInfo, FILE_TO_TABLE };

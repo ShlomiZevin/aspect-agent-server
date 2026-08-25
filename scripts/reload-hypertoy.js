@@ -204,4 +204,4 @@ async function getHyperToyDataRange() {
   }
 }
 
-module.exports = { loadHyperToy, indexHyperToy, getHyperToyDataInfo, getHyperToyDataRange };
+module.exports = { loadHyperToy, indexHyperToy, getHyperToyDataInfo, getHyperToyDataRange, FILE_TO_TABLE };
