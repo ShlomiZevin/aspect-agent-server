@@ -150,11 +150,34 @@ async function generate({
         ...dims,
       };
     }
-    if (gen?.status === 'FAILED') throw new Error('Leonardo failed to generate the image');
+    if (gen?.status === 'FAILED') {
+      // Two things were invisible when this happened in production: WHY it
+      // failed, and that Leonardo had already quoted a price at queue time
+      // which we then threw away. A retry that silently costs money is the
+      // worst version of this, so both are surfaced.
+      //
+      // stderr rather than a return value: by the time the worker decides to
+      // retry, nothing is left to inspect, and Cloud Run keeps stderr.
+      const why = gen.status_reason || gen.statusReason || gen.error || null;
+      console.error('[leonardo] generation FAILED', JSON.stringify({
+        generationId, model: chosen.id, quotedCost: cost, reason: why,
+        dims: `${dims.width}x${dims.height}`,
+      }));
+      const err = new Error(
+        `Leonardo failed to generate the image${why ? `: ${why}` : ''}` +
+        `${cost ? ` (it had quoted $${cost.toFixed(4)}; that may still be charged)` : ''}`
+      );
+      err.generationId = generationId;
+      err.quotedCost = cost;
+      throw err;
+    }
     onProgress?.({ waitedMs: (attempt + 1) * 2500, generationId });
   }
 
   // It has almost certainly finished server-side; the caller can recover it.
+  console.error('[leonardo] generation TIMED OUT', JSON.stringify({
+    generationId, model: chosen.id, quotedCost: cost, waitedMs: 70 * 2500,
+  }));
   throw new Error(`Leonardo timed out (generation ${generationId} may still have completed)`);
 }
 

@@ -75,7 +75,7 @@ const startJob = {
       },
       image_model: {
         type: 'string',
-        enum: ['nano-banana-2', 'nano-banana-pro', 'gpt-image-2', 'lucid-origin', 'flux-pro-2.0'],
+        enum: ['nano-banana-2', 'nano-banana-pro', 'gpt-image-2'],
         description: 'Which model you plan to use, so the cost estimate is for the real thing.',
       },
       image_size: {
@@ -329,10 +329,41 @@ const generateImage = {
       catch (err) { ctx.onEvent?.({ type: 'tool_progress', tool: 'generate_image', note: `brand reference unavailable: ${err.message}` }); }
     }
 
-    const result = await leonardo.generate({
-      prompt, model, size, referenceImageId,
-      onProgress: p => ctx.onEvent?.({ type: 'tool_progress', tool: 'generate_image', ...p }),
-    });
+    let result;
+    try {
+      result = await leonardo.generate({
+        prompt, model, size, referenceImageId,
+        onProgress: p => ctx.onEvent?.({ type: 'tool_progress', tool: 'generate_image', ...p }),
+      });
+    } catch (err) {
+      // A failed generation was free as far as HQ was concerned: no media row,
+      // no cost, and no increment on either cap. Leonardo quotes a price when
+      // it QUEUES, so a run of failures can be billed while every ceiling here
+      // still reads zero — the one hole in the spend guard.
+      //
+      // So a failure costs a retry and its quoted price, exactly like a picture
+      // that came out wrong. The caps then do their job either way.
+      if (ctx.jobId) {
+        await db.query(
+          `UPDATE hq_jobs
+              SET retry_count = retry_count + 1,
+                  cost_usd = cost_usd + $2
+            WHERE id = $1`,
+          [ctx.jobId, Number(err.quotedCost || 0)]
+        ).catch(() => {});
+      }
+      ctx.onEvent?.({
+        type: 'tool_progress', tool: 'generate_image',
+        note: `generation failed — ${err.message}`,
+      });
+      return {
+        error:
+          `${err.message}
+` +
+          'This counted against your retry budget. Try ONCE more, and if it fails again ' +
+          'stop, tell the person what happened, and carry on with what you have.',
+      };
+    }
 
     const saved = [];
     const blocks = [];
