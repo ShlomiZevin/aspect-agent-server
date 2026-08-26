@@ -80,13 +80,22 @@ async function run({
     });
 
     // Anything the model said out loud this turn.
+    //
+    // A turn can contain SEVERAL text blocks — a sentence and then a trailing
+    // emoji, say. Overwriting on each one meant the saved answer was whatever
+    // block happened to come last, which is how a message reading only "😊"
+    // reached the transcript. They are one utterance, so they are joined.
+    const spoken = [];
     for (const block of reply.content) {
       if (block.type === 'text' && block.text.trim()) {
-        finalText = block.text;
+        spoken.push(block.text);
         log.said(who, block.text);
         onEvent?.({ type: 'text', text: block.text });
       }
     }
+    // A later turn's speech replaces an earlier one: mid-run narration is not
+    // the answer, and only the final utterance is kept as the reply.
+    if (spoken.length) finalText = spoken.join('\n\n');
 
     // The assistant turn must be echoed back verbatim — Anthropic requires the
     // original tool_use blocks to sit alongside their tool_result replies.
