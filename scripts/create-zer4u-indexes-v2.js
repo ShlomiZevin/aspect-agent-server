@@ -261,17 +261,40 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSche
     let globalIdx = 0;
 
     const createOne = async (idx, displayIdx) => {
-      const c = await pool.connect();
       const startTime = Date.now();
+      let c;
+      let heartbeat;
       try {
+        // pool.connect() itself can fail (pool exhausted / DB refusing new
+        // connections - e.g. "timeout exceeded when trying to connect", seen
+        // 2026-08-25/26 when 3 schemas' reloads collided on the shared pool).
+        // Kept inside this try so that failure is handled like any other
+        // per-index failure below, instead of escaping createOne entirely and
+        // hitting the outer catch (see note there on why that used to exit
+        // the whole process).
+        c = await pool.connect();
+
         // Disable statement timeout: index builds can take hours on large tables.
         // The 30s DB-level killer must not abort index creation.
         await c.query(`SET statement_timeout = 0`);
+        // But DO cap how long we wait to even ACQUIRE the lock: a build that
+        // can't get its lock within 2min is stuck behind something else (a
+        // stale connection, a concurrent build on the same table), not doing
+        // real work — statement_timeout=0 alone would let that wait forever,
+        // which is exactly how run #564 sat "running" with zero log output
+        // for 5 hours on 2026-08-26.
+        await c.query(`SET lock_timeout = '2min'`);
         // 1GB sort memory for the single active index build.
         // Sequential mode means no competition — full IOPS to one process.
         await c.query(`SET maintenance_work_mem = '1GB'`);
         await c.query(`SET max_parallel_maintenance_workers = 2`);
         log(`[${displayIdx}/${targetIndexes.length}] Building ${idx.name}...`);
+
+        heartbeat = setInterval(() => {
+          const elapsed = Math.round((Date.now() - startTime) / 1000);
+          log(`    ${idx.name} still building... (${elapsed}s elapsed)`);
+        }, 30000);
+
         await c.query(idx.sql);
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
         log(`[${displayIdx}/${targetIndexes.length}] ${idx.name} done — ${duration}s`);
@@ -287,7 +310,8 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSche
           results.errors.push({ index: idx.name, error: err.message });
         }
       } finally {
-        c.release();
+        if (heartbeat) clearInterval(heartbeat);
+        if (c) c.release();
       }
     };
 
@@ -331,8 +355,20 @@ async function createIndexes(schemaName = 'zer4u', emitLog = null, referenceSche
     console.log('='.repeat(70));
 
   } catch (error) {
+    // NOTE: this used to be `process.exit(1)` here. That's the right thing
+    // for a one-off CLI script, which is what this function originally was -
+    // but it is now also `require`'d and called in-process by the live
+    // server (data-reload.service.js -> indexZer4u -> createIndexes, wired
+    // up in agents/zer4u/data-reload.js). An exit() here kills the whole
+    // Node process serving live chat/WhatsApp traffic, not just this reload
+    // job. Throwing instead lets it propagate to _executeIndexing's own
+    // try/catch, which already handles a failed index run correctly (marks
+    // the DB run 'failed', logs it, and the next scheduler tick retries).
+    // create-materialized-views.js already gets this right (throws here,
+    // only exits under `require.main === module` at the bottom) - this
+    // matches that pattern.
     console.error('\nFatal error:', error.message);
-    process.exit(1);
+    throw error;
   } finally {
     client.release();
   }

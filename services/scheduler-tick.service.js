@@ -55,7 +55,14 @@ async function runTick({ dataReloadService, driveToGcs, log = console.log }) {
 
     if (entry.jobType === 'import' && isWithinWindow(now, start, IMPORT_WINDOW_MINUTES)) {
       fired.push(`${entry.schemaName}:import`);
-      dataReloadService.ensureLoaded(entry.schemaName).catch(err =>
+      // Awaited (not fire-and-forget): ensureLoaded's own busy-check only
+      // becomes true once its DB row is actually committed. Firing every
+      // schema's check in parallel let them all read "nobody running yet"
+      // before any of them had written that row - on 2026-08-25/26 this let
+      // zer4u/hypertoy/zolstock all start indexing in the same tick, exactly
+      // the pile-up _otherSchemaBusy exists to prevent. Awaiting here makes
+      // each schema's start-or-skip decision land before the next one checks.
+      await dataReloadService.ensureLoaded(entry.schemaName).catch(err =>
         log(`[tick] ${entry.schemaName} ensureLoaded error: ${err.message}`));
     }
 
@@ -69,9 +76,17 @@ async function runTick({ dataReloadService, driveToGcs, log = console.log }) {
   // Indexing always self-checks for "import done, not yet indexed" - no
   // schedule needed, every schema, every tick (cheap no-op when there's
   // nothing to do).
+  //
+  // Awaited sequentially, same reasoning as the import branch above: this
+  // loop is what actually raced on 2026-08-25/26 (zer4u/hypertoy/zolstock
+  // cron-index all started within 4ms of each other, all reading "no other
+  // schema busy" before any of them had written its own running row). One
+  // schema's ensureIndexed() only resolves after its start/skip decision -
+  // including the DB insert if it started - is committed, so awaiting here
+  // closes the race instead of firing all schemas' checks in parallel.
   for (const schemaName of scheduleConfig.SCHEMAS) {
     if (!dataReloadService.reloaders[schemaName]) continue;
-    dataReloadService.ensureIndexed(schemaName).catch(err =>
+    await dataReloadService.ensureIndexed(schemaName).catch(err =>
       log(`[tick] ${schemaName} ensureIndexed error: ${err.message}`));
   }
 
