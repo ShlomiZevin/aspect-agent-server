@@ -36,6 +36,26 @@ function report(ok, label, detail) {
   if (detail) for (const d of detail) console.log(`         ${d}`);
 }
 
+/**
+ * Lines that CLAIM data freshness with a literal date — the rot class behind
+ * the 2026-08-26 incident (a hardcoded "runs to 2026-08-17" in crew guidance
+ * went 8 days stale and was quoted to a customer). A date alone is fine (SQL
+ * syntax examples, column-format samples, changelog notes); a date on a line
+ * that talks about coverage/recency is a claim that the next reload falsifies.
+ * `date-ok` on the line is the explicit, reviewable escape hatch.
+ */
+const FRESHNESS_WORDS = /(runs?|covering|through|until|up to|ends?|latest|all the data|data exists|loaded|עד |נכון ל)/i;
+function findFreshnessClaims(text) {
+  const out = [];
+  for (const line of text.split('\n')) {
+    if (line.includes('date-ok')) continue;
+    if (/\b20\d{2}-\d{2}-\d{2}\b/.test(line) && FRESHNESS_WORDS.test(line)) {
+      out.push(line.trim().slice(0, 110));
+    }
+  }
+  return out;
+}
+
 async function relationsFor(pool, schema) {
   const { rows } = await pool.query(
     `SELECT table_name AS name FROM information_schema.tables WHERE table_schema = $1
@@ -99,6 +119,19 @@ async function main() {
       );
     } else {
       console.log(`  --   ${schema}: no hand-written SQL rules`);
+    }
+
+    // ── 1a-dates. No literal dates in the rendered rules ───────────────
+    // A hardcoded "data runs to YYYY-MM-DD" is true the day it is written and
+    // silently wrong after the next reload. 2026-08-26: a stale date in crew
+    // guidance told a customer data ended 8 days earlier than it did. Live
+    // dates are injected per-prompt (DATA RECENCY / data-through) — prose
+    // must state policy, never a date.
+    if (rules && rules.trim()) {
+      const staleClaims = findFreshnessClaims(rules);
+      report(staleClaims.length === 0,
+        `${schema}: rendered SQL rules contain no hardcoded freshness dates`,
+        staleClaims.map(c => `"${c}" — a data-end claim rots on every reload; state the policy and let DATA RECENCY carry the live date (or mark the line date-ok if it is a fixed fact)`));
     }
 
     // ── 1b. Capability manifest, when one exists (Stage 2) ────────────
@@ -201,6 +234,36 @@ async function main() {
     }
     console.log('');
   }
+
+  // ── 4. Crew guidance files: no literal dates in prompt text ─────────────
+  // Same rot class as the rules (see 1a-dates). JS comments are exempt —
+  // dated changelog notes in comments are fine; dates inside the template
+  // strings that BECOME the prompt are not.
+  console.log('crew guidance date-literal scan');
+  const fs = require('fs');
+  const path = require('path');
+  const crewFiles = [];
+  for (const agentDir of fs.readdirSync(path.join(__dirname, '..', 'agents'))) {
+    const crewDir = path.join(__dirname, '..', 'agents', agentDir, 'crew');
+    if (!fs.existsSync(crewDir)) continue;
+    for (const f of fs.readdirSync(crewDir)) if (f.endsWith('.crew.js')) crewFiles.push(path.join(crewDir, f));
+  }
+  const offenders = [];
+  for (const file of crewFiles) {
+    const src = fs.readFileSync(file, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')        // block comments
+      .replace(/^\s*\/\/.*$/gm, '')            // whole-line comments
+      .replace(/([^:'"])\/\/[^\n]*$/gm, '$1'); // trailing comments (not ://)
+    const lines = src.split('\n');
+    lines.forEach((line, i) => {
+      if (line.includes('date-ok')) return;
+      if (/\b20\d{2}-\d{2}-\d{2}\b/.test(line) && /(runs?|covering|through|until|up to|ends?|latest|all the data|data exists|loaded|עד |נכון ל)/i.test(line)) {
+        offenders.push(`${path.relative(path.join(__dirname, '..'), file)}:${i + 1} — ${line.trim().slice(0, 100)}`);
+      }
+    });
+  }
+  report(offenders.length === 0, `crew files: ${crewFiles.length} scanned, no hardcoded freshness dates in prompt text`, offenders);
+  console.log('');
 
   console.log('─────────────────────────────────────────────────────────');
   console.log(`${checks - failures}/${checks} checks passed`);

@@ -27,7 +27,7 @@ function zer4uRules(schemaName) {
 **Zer4U is a florist / gift retail chain. The fact table is \`${schemaName}.sales\`.**
 
 ### RULE 1 — Query \`sales\` DIRECTLY. It is small.
-\`sales\` holds ~918,000 rows covering 2026-03-01 to 2026-08-09 — roughly five months, which is ALL the data that exists. It aggregates in well under a second, so there is no need to route around it.
+\`sales\` holds roughly five months of data starting 2026-03-01 (a fixed fact of this dataset — date-ok) and running to the current data-through date given in the DATA RECENCY section — never state the end date from memory. It is small (~1M rows), aggregates in well under a second, so there is no need to route around it.
 
 Only ONE materialized view exists in this schema, product-level and ALL-TIME (no date column, so it cannot answer any question about a period):
 - \`${schemaName}.mv_sales_by_product\` — (item_code, item_name, total_quantity, total_revenue)
