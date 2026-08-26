@@ -226,6 +226,13 @@ async function update(id, { active, label } = {}) {
   return present(rows[0]);
 }
 
+/** A short-lived link for actually looking at the file. */
+async function viewUrl(id) {
+  const { rows } = await db.query(`SELECT gcs_path FROM hq_worker_files WHERE id = $1`, [id]);
+  const gcsPath = rows[0] && rows[0].gcs_path;
+  return gcsPath ? media.signedUrl(gcsPath) : null;
+}
+
 /**
  * Register an image with Leonardo so it can steer a generation.
  *
@@ -241,13 +248,18 @@ async function leonardoReference(id) {
     throw new Error('Only an image can be a visual reference');
   }
 
+  // Leonardo wants a bare extension ('jpg'), not a filename — it echoes it into
+  // a presigned upload and rejects anything else. It also has no 'jpeg'.
+  const ext = (path.extname(file.filename).slice(1).toLowerCase() || 'png')
+    .replace(/^jpeg$/, 'jpg');
+
   const buffer = await media.download(file.gcs_path);
-  const refId = await leonardo.uploadReference(buffer, file.filename);
+  const refId = await leonardo.uploadReference(buffer, ext);
   await db.query(`UPDATE hq_worker_files SET leonardo_ref_id = $2 WHERE id = $1`, [id, refId]);
   return refId;
 }
 
 module.exports = {
   SUPPORTED, KNOWN_UNSUPPORTED, MAX_BYTES,
-  add, list, forContext, remove, update, leonardoReference,
+  add, list, forContext, remove, update, viewUrl, leonardoReference,
 };

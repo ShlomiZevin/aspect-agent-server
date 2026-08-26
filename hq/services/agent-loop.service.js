@@ -21,6 +21,7 @@
  */
 
 const claude = require('../../services/llm.claude');
+const log = require('./log.service');
 const db = require('../../services/db.pg');
 
 /** Hard stop. A loop that can call tools forever must not be able to. */
@@ -56,11 +57,18 @@ async function run({
   let finalText = '';
   const usage = { inputTokens: 0, outputTokens: 0 };
 
+  const who = workerName || 'worker';
+  const runStarted = Date.now();
+  let turnsUsed = 0;
+
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     if (shouldStop()) {
       onEvent?.({ type: 'stopped', reason: 'cancelled' });
       break;
     }
+
+    turnsUsed = turn + 1;
+    log.turn(who, turnsUsed, model);
 
     const startedAt = Date.now();
     const reply = await claude.sendAgentTurn({ system, messages: working, tools: schemas, model });
@@ -75,6 +83,7 @@ async function run({
     for (const block of reply.content) {
       if (block.type === 'text' && block.text.trim()) {
         finalText = block.text;
+        log.said(who, block.text);
         onEvent?.({ type: 'text', text: block.text });
       }
     }
@@ -90,17 +99,21 @@ async function run({
 
     for (const call of requests) {
       const tool = byName.get(call.name);
+      log.toolStart(who, call.name, call.input);
       onEvent?.({ type: 'tool_start', tool: call.name, input: call.input, id: call.id });
 
+      const toolStartedAt = Date.now();
       let result;
       try {
         if (!tool) throw new Error(`No such tool: ${call.name}`);
         result = await tool.handler(call.input, { onEvent, conversationId });
+        log.toolDone(who, call.name, Date.now() - toolStartedAt, result);
         onEvent?.({ type: 'tool_done', tool: call.name, id: call.id, result });
       } catch (err) {
         // A failing tool is information, not a crash: hand the model the error
         // so it can adapt, exactly as a person would on hitting a wall.
         result = { error: err.message };
+        log.toolFailed(who, call.name, Date.now() - toolStartedAt, err.message);
         onEvent?.({ type: 'tool_failed', tool: call.name, id: call.id, error: err.message });
       }
 
@@ -122,8 +135,17 @@ async function run({
     }
 
     working.push({ role: 'user', content: results });
+
+    // The model now has every result and is composing. This is the gap the UI
+    // used to sit blank through — after finish_job especially, where the job
+    // card has gone quiet and the answer has not arrived yet.
+    onEvent?.({
+      type: 'composing',
+      after: requests[requests.length - 1]?.name || null,
+    });
   }
 
+  log.finished(who, turnsUsed, toolCalls.length, Date.now() - runStarted, usage);
   return { messages: working, text: finalText, toolCalls, usage };
 }
 

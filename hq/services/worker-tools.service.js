@@ -21,6 +21,7 @@ const brand = require('./brand.service');
 const ingest = require('./ingest.service');
 const reports = require('./reports.service');
 const phrasing = require('./phrasing.service');
+const log = require('./log.service');
 const workerFiles = require('./worker-files.service');
 
 /** Above this, a job asks before spending. Cheap work shouldn't need a nod. */
@@ -112,6 +113,8 @@ const startJob = {
     );
     const job = rows[0];
     ctx.jobId = job.id;
+    log.jobStarted(ctx.worker?.slug || 'worker', job.id, title, plan.length, estimate);
+    plan.forEach(p => log.jobStep(ctx.worker?.slug || 'worker', job.id, p.n, plan.length, 'planned', p.title));
     ctx.onEvent?.({ type: 'job_started', job });
 
     return {
@@ -158,6 +161,7 @@ const updateStep = {
       `UPDATE hq_jobs SET steps = $2, current_step = $3, updated_at = NOW() WHERE id = $1`,
       [ctx.jobId, JSON.stringify(steps), Math.min(step + 1, steps.length)]
     );
+    log.jobStep(ctx.worker?.slug || 'worker', ctx.jobId, step, steps.length, status, detail || target.title);
     ctx.onEvent?.({ type: 'job_step', jobId: ctx.jobId, steps, done, total: steps.length });
     return { ok: true, done, total: steps.length };
   },

@@ -22,6 +22,8 @@ async function list() {
     `SELECT w.*,
             (SELECT COUNT(*)::int FROM hq_jobs j
               WHERE j.worker_id = w.id AND j.status = 'running') AS running_jobs,
+            (SELECT COUNT(*)::int FROM hq_jobs j
+              WHERE j.worker_id = w.id AND j.status = 'waiting') AS waiting_jobs,
             (SELECT COUNT(*)::int FROM hq_worker_conversations c
               WHERE c.worker_id = w.id) AS conversations
        FROM hq_workers w WHERE enabled ORDER BY w.id`);
@@ -111,6 +113,44 @@ async function setConversationModels(id, { model, phrasingModel, imageModel } = 
   const { rows } = await db.query(
     `UPDATE hq_worker_conversations SET ${sets.join(', ')} WHERE id = $1 RETURNING *`, params);
   return rows[0] || null;
+}
+
+/**
+ * Delete a conversation and everything it produced.
+ *
+ * Messages and attached files cascade, but jobs, media and reports are declared
+ * ON DELETE SET NULL — so deleting the row would leave them alive with a null
+ * conversation, which is precisely what the "made in the chat" list shows. They
+ * are removed explicitly rather than by changing the FK rules, which would
+ * rewrite the behaviour of tables this feature does not own.
+ *
+ * The two things living OUTSIDE this database do not cascade at all: the bytes
+ * in GCS and the copies held by Anthropic. A delete that leaves a brand document
+ * in a provider's storage is not a delete.
+ */
+async function deleteConversation(id) {
+  const media = require('./media.service');
+  const anthropicFiles = require('../../services/kb.anthropic.service');
+
+  const { rows: files } = await db.query(
+    `SELECT anthropic_file_id FROM hq_worker_files
+      WHERE conversation_id = $1 AND anthropic_file_id IS NOT NULL`, [id]);
+  const { rows: blobs } = await db.query(
+    `SELECT gcs_path FROM hq_media WHERE conversation_id = $1 AND gcs_path IS NOT NULL`, [id]);
+
+  await db.query(`DELETE FROM hq_reports WHERE conversation_id = $1`, [id]);
+  await db.query(`DELETE FROM hq_media   WHERE conversation_id = $1`, [id]);
+  await db.query(`DELETE FROM hq_jobs    WHERE conversation_id = $1`, [id]);
+  await db.query(`DELETE FROM hq_worker_conversations WHERE id = $1`, [id]);
+
+  // After the row is gone: a storage hiccup must not keep a conversation alive
+  // that the person has already been told is deleted.
+  await Promise.all([
+    ...files.map(f => anthropicFiles.deleteFile(f.anthropic_file_id).catch(() => {})),
+    ...blobs.map(b => media.removeByPath(b.gcs_path).catch(() => {})),
+  ]);
+
+  return { ok: true, files: files.length, blobs: blobs.length };
 }
 
 async function messages(conversationId) {
@@ -324,6 +364,15 @@ async function send({ worker, conversationId, message, onEvent = null }) {
     return null;
   });
 
+  require('./log.service').message(worker.slug, conversationId, message);
+
+  // Answering her question resumes the job she paused, rather than orphaning it.
+  await db.query(
+    `UPDATE hq_jobs SET status = 'running', updated_at = NOW()
+      WHERE conversation_id = $1 AND status = 'waiting'`,
+    [conversationId]
+  ).catch(() => {});
+
   const history = await messages(conversationId);
   const priorTurns = history
     .filter(m => m.content && m.content.trim())
@@ -371,6 +420,34 @@ async function send({ worker, conversationId, message, onEvent = null }) {
 
   const lessons = await lessonsFor(worker.id).catch(() => []);
 
+  // What already exists in this conversation, with ids.
+  //
+  // History is rebuilt from message TEXT, so tool results never survive a turn —
+  // meaning an image she made in one job was unreachable in the next and she
+  // said so out loud ("the id from the previous step was not saved"). The ids
+  // have to be restated every turn or they are gone.
+  const { rows: made } = await db.query(
+    `SELECT id, title, width, height, model, kind
+       FROM hq_media
+      WHERE conversation_id = $1 AND COALESCE(metadata->>'role','') <> 'given'
+      ORDER BY id`,
+    [conversationId]
+  );
+
+  const inventory = made.length
+    ? [
+        '',
+        '',
+        'ALREADY MADE IN THIS CONVERSATION — use these ids, do not regenerate:',
+        ...made.map(m => {
+          const size = m.width ? ` (${m.width}x${m.height}${m.model ? `, ${m.model}` : ''})` : '';
+          return `- id ${m.id}: "${m.title}"${size}`;
+        }),
+        'Put one into a page with {{media:ID}} in render_html. If you are asked to build on',
+        'something you already made, reach for its id here rather than making it again.',
+      ].join('\n')
+    : '';
+
   // Say it in the prompt as well as enforcing it in the tool: enforcement alone
   // makes her narrate the wrong model in the reply she writes before the call.
   const pinned = imageModel
@@ -382,7 +459,7 @@ FOR THIS CONVERSATION: every image must be generated with ` +
     : '';
 
   const result = await loop.run({
-    system: systemPrompt(worker, lessons) + pinned,
+    system: systemPrompt(worker, lessons) + pinned + inventory,
     messages: [...opening, ...priorTurns],
     tools: bound,
     model: thinkingModel,
@@ -391,6 +468,23 @@ FOR THIS CONVERSATION: every image must be generated with ` +
     onEvent,
     shouldStop: () => ctx.jobId && active.get(ctx.jobId)?.cancelled,
   });
+
+  // A job she stopped mid-way to ask you something is NOT running.
+  //
+  // The loop ends whenever she produces text instead of another tool call — and
+  // asking a question is text. The job then sat at 'running' forever: the rail
+  // showed a live step, the sidebar said "working", and nothing ever cleared it
+  // because nothing was going to happen without an answer.
+  //
+  // 'waiting' is the honest state. Her next message in this conversation puts it
+  // back to 'running', so a paused job resumes rather than being replaced.
+  if (ctx.jobId) {
+    await db.query(
+      `UPDATE hq_jobs SET status = 'waiting', updated_at = NOW()
+        WHERE id = $1 AND status = 'running'`,
+      [ctx.jobId]
+    ).catch(() => {});
+  }
 
   // Charge the token spend to the job, split by what it was for.
   //
@@ -439,7 +533,7 @@ FOR THIS CONVERSATION: every image must be generated with ` +
 }
 
 module.exports = {
-  conversation, setConversationModels,
+  conversation, setConversationModels, deleteConversation,
   list, get, update,
   conversations, createConversation, messages, addMessage,
   jobs, cancelJob, reclaimStaleJobs, spend,

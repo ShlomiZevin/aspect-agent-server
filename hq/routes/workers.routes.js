@@ -178,6 +178,13 @@ router.patch('/:slug/conversations/:id', async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+/** Removes the conversation and everything it produced. */
+router.delete('/:slug/conversations/:id', async (req, res) => {
+  try {
+    res.json(await workers.deleteConversation(parseInt(req.params.id, 10)));
+  } catch (err) { fail(res, err); }
+});
+
 // ─── What she has been given ─────────────────────────────────────────────────
 
 /**
@@ -227,6 +234,21 @@ router.get('/:slug/files', async (req, res) => {
     const conversationId = req.query.conversationId
       ? parseInt(req.query.conversationId, 10) : null;
     res.json({ files: await workerFiles.list({ workerId: worker.id, conversationId }) });
+  } catch (err) { fail(res, err); }
+});
+
+/**
+ * Open a file you gave her.
+ *
+ * Redirects to a freshly signed URL rather than returning one: a signed URL
+ * expires, so anything we handed the client to store would be dead by the time
+ * someone clicked it.
+ */
+router.get('/files/:id/open', async (req, res) => {
+  try {
+    const url = await workerFiles.viewUrl(parseInt(req.params.id, 10));
+    if (!url) return res.status(404).json({ error: 'That file is no longer stored' });
+    res.redirect(url);
   } catch (err) { fail(res, err); }
 });
 

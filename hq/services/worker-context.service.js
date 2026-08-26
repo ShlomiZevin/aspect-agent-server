@@ -18,6 +18,7 @@
  */
 
 const files = require('./worker-files.service');
+const media = require('./media.service');
 
 /** Trimmed so one long document cannot crowd out the conversation itself. */
 const MAX_TEXT_CHARS = 40_000;
@@ -56,12 +57,32 @@ async function briefing({ workerId, conversationId = null, workerName = 'You' } 
         source: { type: 'file', file_id: file.anthropic_file_id },
       });
     } else if (String(file.mime_type).startsWith('image/')) {
-      // Images are referenced by id at generation time, not embedded here —
-      // see the note in generate_image. What she needs now is to SEE it.
-      blocks.push({
-        type: 'text',
-        text: `[visual reference, file id ${file.id} — pass reference_file: ${file.id} to generate_image to match it]`,
-      });
+      // The actual picture. This used to be a text placeholder saying an image
+      // existed, which meant a brand sheet with rules written ON it was
+      // unreadable — she was told it was there and never shown it, so of course
+      // she did not follow it.
+      try {
+        const bytes = await media.download(file.gcs_path);
+        blocks.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: file.mime_type === 'image/jpg' ? 'image/jpeg' : file.mime_type,
+            data: bytes.toString('base64'),
+          },
+        });
+        blocks.push({
+          type: 'text',
+          text:
+            `Read this image. Anything written on it is an instruction. ` +
+            `To make a new picture in this style, pass reference_file: ${file.id} to ` +
+            `generate_image — that feeds this exact image to the generator, so its ` +
+            `colours and composition are matched rather than approximated.`,
+        });
+      } catch (err) {
+        console.error('[worker-context] could not load a reference image', file.id, err.message);
+        blocks.push({ type: 'text', text: `[reference image ${file.id} could not be loaded]` });
+      }
     } else if (file.extracted_text) {
       const text = file.extracted_text.length > MAX_TEXT_CHARS
         ? `${file.extracted_text.slice(0, MAX_TEXT_CHARS)}\n\n[…trimmed]`

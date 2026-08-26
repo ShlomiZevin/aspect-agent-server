@@ -88,8 +88,18 @@ async function withUrl(row) {
   }
 }
 
+/**
+ * Files a worker was GIVEN are stored here too — same bucket, same table — but
+ * they are not her work. Without this every gallery showed the brand PDFs you
+ * uploaded as broken image thumbnails next to the posters she made.
+ *
+ * Filtered at the source rather than in each caller: there are four galleries
+ * and they would drift.
+ */
+const NOT_GIVEN = `COALESCE(metadata->>'role', '') <> 'given'`;
+
 async function list({ conversationId = null, folderId = null, jobId = null, workerId = null, limit = 200 } = {}) {
-  const where = [];
+  const where = [NOT_GIVEN];
   const params = [];
   const add = (sql, value) => { params.push(value); where.push(sql.replace('$?', `$${params.length}`)); };
 
@@ -101,7 +111,7 @@ async function list({ conversationId = null, folderId = null, jobId = null, work
 
   const { rows } = await db.query(
     `SELECT * FROM hq_media
-      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC LIMIT $${params.length}`,
     params
   );
@@ -114,7 +124,7 @@ async function byConversation({ limit = 40 } = {}) {
     `SELECT c.id, c.title, c.updated_at, w.name AS worker_name, w.avatar,
             COUNT(m.id)::int AS media_count
        FROM hq_worker_conversations c
-       JOIN hq_media m ON m.conversation_id = c.id
+       JOIN hq_media m ON m.conversation_id = c.id AND ${NOT_GIVEN}
        LEFT JOIN hq_workers w ON w.id = c.worker_id
       GROUP BY c.id, c.title, c.updated_at, w.name, w.avatar
       ORDER BY c.updated_at DESC
@@ -126,7 +136,7 @@ async function byConversation({ limit = 40 } = {}) {
 
 async function listFolders() {
   const { rows } = await db.query(
-    `SELECT f.*, (SELECT COUNT(*)::int FROM hq_media m WHERE m.folder_id = f.id) AS media_count
+    `SELECT f.*, (SELECT COUNT(*)::int FROM hq_media m WHERE m.folder_id = f.id AND ${NOT_GIVEN}) AS media_count
        FROM hq_media_folders f ORDER BY f.name`);
   return rows;
 }
@@ -147,6 +157,11 @@ async function remove(id) {
   if (gcsPath) await client().bucket(BUCKET).file(gcsPath).delete().catch(() => {});
 }
 
+/** Delete the bytes when the row is already gone — used by conversation delete. */
+async function removeByPath(gcsPath) {
+  if (gcsPath) await client().bucket(BUCKET).file(gcsPath).delete().catch(() => {});
+}
+
 /** Raw bytes, for compositing — a signed URL cannot be inlined into a page. */
 async function download(gcsPath) {
   const [buffer] = await client().bucket(BUCKET).file(gcsPath).download();
@@ -155,5 +170,5 @@ async function download(gcsPath) {
 
 module.exports = {
   BUCKET, store, list, byConversation, listFolders, createFolder, moveToFolder,
-  remove, signedUrl, download,
+  remove, removeByPath, signedUrl, download,
 };
