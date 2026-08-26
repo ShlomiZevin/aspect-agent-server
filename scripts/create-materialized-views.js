@@ -99,15 +99,35 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
           skipped++;
           return;
         }
-        const c = await pool.connect();
         const start = Date.now();
-        log(`[${num}/${total}] Creating ${name}...`);
+        let c;
+        let heartbeat;
         try {
+          // pool.connect() itself can fail (pool exhausted / DB refusing new
+          // connections - "timeout exceeded when trying to connect", seen
+          // 2026-08-25/26 when 3 schemas' reloads collided on the shared
+          // pool). Kept inside this try so it's handled like any other
+          // per-view failure below instead of escaping makeView uncaught.
+          c = await pool.connect();
+          log(`[${num}/${total}] Creating ${name}...`);
+
           // Disable statement timeout: MV creation on large tables takes up to 17 min.
           await c.query(`SET statement_timeout = 0`);
+          // But cap the wait to ACQUIRE a lock at 2min - a view that can't get
+          // its lock promptly is stuck behind something else, not doing real
+          // work. statement_timeout=0 alone lets that wait forever, which is
+          // how run #564 sat "running" with zero log output for 5 hours on
+          // 2026-08-26.
+          await c.query(`SET lock_timeout = '2min'`);
           await c.query(`SET work_mem = '${workMem}'`);
           await c.query(`SET max_parallel_workers_per_gather = 0`);
           await c.query(`SET max_parallel_maintenance_workers = 0`);
+
+          heartbeat = setInterval(() => {
+            const elapsed = Math.round((Date.now() - start) / 1000);
+            log(`    ${name} still building... (${elapsed}s elapsed)`);
+          }, 30000);
+
           await fn(c);
           const elapsed = ((Date.now() - start) / 1000).toFixed(0);
           log(`[${num}/${total}] ${name} done — ${elapsed}s`);
@@ -116,7 +136,8 @@ async function createViews(schemaName = 'zer4u', emitLog = null, options = {}) {
           log(`[${num}/${total}] ${name} FAILED — ${err.message}`);
           skipped++;
         } finally {
-          c.release();
+          if (heartbeat) clearInterval(heartbeat);
+          if (c) c.release();
         }
       }
 
