@@ -8,7 +8,16 @@
  */
 
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
+
+const workerFiles = require('../services/worker-files.service');
+
+/** Memory storage: every file is uploaded onward, never written to disk. */
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: workerFiles.MAX_BYTES },
+});
 
 const workers = require('../services/workers.service');
 const media = require('../services/media.service');
@@ -44,6 +53,11 @@ router.get('/', async (_req, res) => {
         htmlRender: render.isAvailable(),
         imageModels: leonardo.OFFERED.map(k => ({ ...leonardo.MODELS[k], id: k })),
         phrasingModels: phrasing.PHRASING_MODELS,
+        // Said BEFORE anyone picks a file. An upload that fails afterwards is
+        // worse than a list that says up front what works.
+        fileTypes: [...new Set(workerFiles.SUPPORTED.map(f => f.label))],
+        fileExtensions: [...new Set(workerFiles.SUPPORTED.map(f => `.${f.ext}`))],
+        maxFileBytes: workerFiles.MAX_BYTES,
       },
     });
   } catch (err) { fail(res, err); }
@@ -161,6 +175,74 @@ router.patch('/:slug/conversations/:id', async (req, res) => {
     if ('imageModel' in (req.body || {})) patch.imageModel = imageModel;
 
     res.json({ conversation: await workers.setConversationModels(id, patch) });
+  } catch (err) { fail(res, err); }
+});
+
+// ─── What she has been given ─────────────────────────────────────────────────
+
+/**
+ * Her briefcase: no conversation id, so it applies to every message forever.
+ * A label is required here — see the service for why.
+ */
+router.post('/:slug/files', upload.single('file'), async (req, res) => {
+  try {
+    const worker = await workers.get(req.params.slug);
+    if (!worker) return res.status(404).json({ error: 'No such employee' });
+    if (!req.file) return res.status(400).json({ error: 'No file was sent' });
+
+    const file = await workerFiles.add(req.file.buffer, {
+      workerId: worker.id,
+      filename: req.file.originalname,
+      mimeType: req.file.mimetype,
+      label: req.body.label,
+      kind: req.body.kind,
+    });
+    res.json({ file });
+  } catch (err) { fail(res, err); }
+});
+
+/** Attached to one conversation, in context for that whole chat. */
+router.post('/:slug/conversations/:id/files', upload.single('file'), async (req, res) => {
+  try {
+    const worker = await workers.get(req.params.slug);
+    if (!worker) return res.status(404).json({ error: 'No such employee' });
+    if (!req.file) return res.status(400).json({ error: 'No file was sent' });
+
+    const file = await workerFiles.add(req.file.buffer, {
+      workerId: worker.id,
+      conversationId: parseInt(req.params.id, 10),
+      filename: req.file.originalname,
+      mimeType: req.file.mimetype,
+      label: req.body.label,
+      kind: req.body.kind,
+    });
+    res.json({ file });
+  } catch (err) { fail(res, err); }
+});
+
+router.get('/:slug/files', async (req, res) => {
+  try {
+    const worker = await workers.get(req.params.slug);
+    if (!worker) return res.status(404).json({ error: 'No such employee' });
+    const conversationId = req.query.conversationId
+      ? parseInt(req.query.conversationId, 10) : null;
+    res.json({ files: await workerFiles.list({ workerId: worker.id, conversationId }) });
+  } catch (err) { fail(res, err); }
+});
+
+/** Name it, or switch it off without losing it. */
+router.patch('/files/:id', async (req, res) => {
+  try {
+    const patch = {};
+    if ('active' in (req.body || {})) patch.active = req.body.active;
+    if ('label' in (req.body || {})) patch.label = req.body.label;
+    res.json({ file: await workerFiles.update(parseInt(req.params.id, 10), patch) });
+  } catch (err) { fail(res, err); }
+});
+
+router.delete('/files/:id', async (req, res) => {
+  try {
+    res.json(await workerFiles.remove(parseInt(req.params.id, 10)));
   } catch (err) { fail(res, err); }
 });
 

@@ -153,6 +153,12 @@ app.use('/api/admin/intelligence', require('./insights/routes/insights-admin.rou
 // See docs/guides/LYBI_HQ.md.
 app.use('/api/hq', require('./hq/routes/hq.routes'));
 
+// ─── Page comments ─────────────────────────────────────────────────
+// Review notes on internal spec/explainer pages (/aspect/*, /lybi/*).
+// Name + comment, anchored to a page section. No auth on purpose — these
+// are internal documents shared by link. See routes/page-comments.routes.js.
+app.use('/api/page-comments', require('./routes/page-comments.routes'));
+
 // ========== MODELS REGISTRY ==========
 // Single source of truth for the LLM models the platform supports.
 // Server-hardcoded today (services/models.service.js); the client

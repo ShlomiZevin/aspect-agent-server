@@ -21,6 +21,7 @@ const brand = require('./brand.service');
 const ingest = require('./ingest.service');
 const reports = require('./reports.service');
 const phrasing = require('./phrasing.service');
+const workerFiles = require('./worker-files.service');
 
 /** Above this, a job asks before spending. Cheap work shouldn't need a nod. */
 const APPROVAL_THRESHOLD_USD = Number(process.env.HQ_JOB_APPROVAL_USD || 1.5);
@@ -278,10 +279,18 @@ const generateImage = {
           'Optional. Feeds our real logo in as a colour reference, so output matches the ' +
           'brand rather than approximating it. Get the keys from brand_kit.',
       },
+      reference_file: {
+        type: 'integer',
+        description:
+          'Optional. The id of a visual reference you were given (they are listed in your ' +
+          'materials at the start of this conversation). Feeds that actual image to the ' +
+          'generator, so its colours and style are MATCHED rather than described. Use it ' +
+          'whenever a reference exists for the kind of thing you are making.',
+      },
     },
     required: ['prompt'],
   },
-  async handler({ prompt, model = 'nano-banana-2', size = 'square', title, brand_reference, is_retry }, ctx) {
+  async handler({ prompt, model = 'nano-banana-2', size = 'square', title, brand_reference, reference_file, is_retry }, ctx) {
     // A conversation can pin the model. When it does, that decision is the
     // person's and overrides whatever the worker asked for — otherwise "use
     // Pro for this chat" would be a suggestion she could quietly ignore.
@@ -323,8 +332,18 @@ const generateImage = {
       return { error: err.message };
     }
 
+    // An uploaded reference wins over the stock brand asset: it was given for
+    // this worker deliberately, where the logo is a default.
     let referenceImageId = null;
-    if (brand_reference) {
+    if (reference_file) {
+      try {
+        referenceImageId = await workerFiles.leonardoReference(reference_file);
+        ctx.onEvent?.({ type: 'tool_progress', tool: 'generate_image', note: 'matching your reference image' });
+      } catch (err) {
+        ctx.onEvent?.({ type: 'tool_progress', tool: 'generate_image', note: `reference unavailable: ${err.message}` });
+      }
+    }
+    if (!referenceImageId && brand_reference) {
       try { referenceImageId = await brand.referenceId(brand_reference); }
       catch (err) { ctx.onEvent?.({ type: 'tool_progress', tool: 'generate_image', note: `brand reference unavailable: ${err.message}` }); }
     }
@@ -563,7 +582,10 @@ const writeCopy = {
         type: 'string',
         description:
           'Facts it must be accurate to — what the product does, what we agreed, a price. ' +
-          'Pull these from search_hq rather than inventing them.',
+          'Pull these from search_hq rather than inventing them. IMPORTANT: the writing ' +
+          'model cannot see the documents you were given, so if any of them governs this ' +
+          'copy — brand voice, forbidden words, a required claim — quote the relevant lines ' +
+          'here. You are its only route to them.',
       },
       language: { type: 'string', description: 'Hebrew or English' },
       tone: { type: 'string', description: 'Optional, e.g. "direct and clinical", "warm"' },
@@ -572,8 +594,15 @@ const writeCopy = {
   },
   async handler({ brief, context, language = 'Hebrew', tone }, ctx) {
     ctx.onEvent?.({ type: 'tool_progress', tool: 'write_copy' });
+    // Her materials are appended rather than substituted: what she quoted is
+    // the part she judged relevant, and this is the safety net under it.
+    const withMaterials = [
+      context,
+      ctx.materials && `Standing materials:\n${ctx.materials.slice(0, 6000)}`,
+    ].filter(Boolean).join('\n\n') || null;
+
     const result = await phrasing.write({
-      brief, context, language, tone,
+      brief, context: withMaterials, language, tone,
       worker: ctx.worker,
       conversationId: ctx.conversationId,
     });

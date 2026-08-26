@@ -313,10 +313,25 @@ async function send({ worker, conversationId, message, onEvent = null }) {
     [conversationId, message.slice(0, 80)]
   ).catch(() => {});
 
+  // What she has been given: her briefcase plus anything attached to this
+  // conversation. Injected as the first exchange rather than described in the
+  // prompt — a document block IS the file; a prompt can only summarise one.
+  const workerFiles = require('./worker-context.service');
+  const brief = await workerFiles.briefing({
+    workerId: worker.id, conversationId, workerName: worker.name,
+  }).catch(err => {
+    console.error('[workers] could not build the file briefing', err.message);
+    return null;
+  });
+
   const history = await messages(conversationId);
   const priorTurns = history
     .filter(m => m.content && m.content.trim())
     .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }));
+
+  // In front of real history, so it reads as the briefing she was given when
+  // she started rather than as something said mid-conversation.
+  const opening = brief ? brief.messages : [];
 
   const tools = toolbox.resolve(worker.tools || []);
   // What this conversation overrides. NULL anywhere means "use her default",
@@ -342,6 +357,9 @@ async function send({ worker, conversationId, message, onEvent = null }) {
   const ctx = {
     workerId: worker.id, worker: effectiveWorker, conversationId, jobId: null,
     brief: message, onEvent, imageModel,
+    // The voice model cannot read document blocks, so write_copy passes this
+    // through as the facts its copy must be accurate to.
+    materials: brief ? brief.digest : null,
   };
 
   // Tool handlers take (input, ctx) but the loop passes its own context, so
@@ -365,7 +383,7 @@ FOR THIS CONVERSATION: every image must be generated with ` +
 
   const result = await loop.run({
     system: systemPrompt(worker, lessons) + pinned,
-    messages: priorTurns,
+    messages: [...opening, ...priorTurns],
     tools: bound,
     model: thinkingModel,
     workerName: worker.slug,

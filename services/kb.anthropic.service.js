@@ -8,6 +8,20 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const providerConfigService = require('./provider-config.service');
 
+/**
+ * `File` only became a global in Node 20, and the SDK checks for it directly —
+ * constructing one from `node:buffer` is not enough. The container runs Node 22
+ * so this worked in production, but on Node 18 every upload threw "File is not
+ * defined" into whatever catch was nearest, which read as Anthropic refusing
+ * the file rather than the file never being built.
+ *
+ * The SDK's own error message names the fix, so take it: install the global
+ * from `node:buffer` when it is absent. Guarded, so on Node 20+ — which is what
+ * the container runs — this line does nothing at all and the upload path below
+ * is byte-for-byte what it always was. It only matters for local development.
+ */
+if (!globalThis.File) globalThis.File = require('node:buffer').File;
+
 class KBAnthropicService {
   get client() {
     const apiKey = providerConfigService.getCached('anthropic_api_key') || process.env.ANTHROPIC_API_KEY;

@@ -304,6 +304,19 @@ const taskComments = pgTable('task_comments', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Review comments on internal spec/explainer pages (/aspect/*, /lybi/*).
+// Anchored to a page and one of its section ids so a note lands back beside
+// the paragraph it is about. No auth and no threads on purpose — see
+// db/migrations/038_add_page_comments.sql.
+const pageComments = pgTable('page_comments', {
+  id: serial('id').primaryKey(),
+  pageKey: varchar('page_key', { length: 100 }).notNull(),
+  sectionId: varchar('section_id', { length: 100 }).default('general').notNull(),
+  author: varchar('author', { length: 100 }).notNull(),
+  body: text('body').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 // Task notifications
 const taskNotifications = pgTable('task_notifications', {
   id: serial('id').primaryKey(),
@@ -473,6 +486,7 @@ module.exports = {
   taskAssignees,
   tasks,
   taskComments,
+  pageComments,
   taskNotifications,
   demoMockups,
   providerConfig,
