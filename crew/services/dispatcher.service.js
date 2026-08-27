@@ -719,6 +719,14 @@ class DispatcherService {
       context.knowledgeBaseNote = 'You have access to an internal knowledge base for reference. These are NOT files uploaded by the user - never mention seeing uploaded files or documents. Use this information to answer questions accurately without referencing the source files directly.';
     }
 
+    // Aspect Modules: a live module may contribute crew tools (structured
+    // args, never generated SQL). MUST run before the handler map below —
+    // attaching after it would give the model a tool schema with no handler
+    // behind it. Idempotent and reversible: a module switched off loses its
+    // tool on the very next turn. A crew with no datasetSchema, or a dataset
+    // with no live module, is untouched.
+    await require('../../modules/services/module-tools.service').attachTo(crew);
+
     // Build tool handler map from crew member tools
     const toolHandlers = {};
     for (const tool of crew.tools) {

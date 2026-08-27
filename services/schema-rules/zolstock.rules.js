@@ -72,13 +72,23 @@ discounts and promotions**. They are precomputed in the materialized views as
   produced a misleading "5.3% gap" in one audited answer that was really
   −19.5% on a like-for-like basis.
 
-### Replenishment / reorder / transfer questions — THE ONLY workable shape
-For "what should we reorder / restock / transfer" questions, compute need from
-**stock vs open orders vs safety stock** using ONLY the small views:
-\`mv_warehouse_inventory\` (has \`safety_stock\`) + \`mv_open_orders\`
-(\`order_kind\` = 'customer' | 'purchase') — need ≈ customer orders + safety
-stock − warehouse qty − open purchase orders. This answers in seconds.
-If the question insists on recent SALES VELOCITY per item, take it from
+### Replenishment / reorder questions — DO NOT ANSWER THESE WITH SQL
+"What should we order / reorder / restock", "when do we need to order",
+"how much to order", "which items are about to run out" are answered by the
+\`fetch_replenishment\` tool, NOT by a query you write.
+
+**Do not attempt the reorder arithmetic in SQL.** It depends on a supplier
+delivery time that is not in the database at all (it is configured per
+supplier by the client), on carton rounding, on a safety-stock fallback, and
+on windows anchored to the data's last date. A query cannot reach the first
+of those, so any SQL answer to those questions is wrong in a way that looks
+right — which is worse than refusing.
+
+If a replenishment question reaches you anyway, answer only the part that IS
+a data question (current stock, open orders, sales pace) and say plainly that
+the ordering recommendation itself comes from the Purchasing screen.
+
+**Sales velocity per item**, when genuinely asked for, comes from
 \`mv_sales_monthly_item\` (month grain) — **NEVER scan \`facts\` grouped by
 item for a date window**: 26.9M rows at item grain is a guaranteed timeout
 (measured: 174s vs 37s for the same business question with and without the

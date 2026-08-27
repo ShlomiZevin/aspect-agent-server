@@ -802,7 +802,7 @@ actually passed and been recorded.
 - [x] C3 — supplier_settings + service
 - [x] D1 — Recommendations API
 - [x] D2 — Client situation page + nav links
-- [ ] D3 — Chat tool + schema rules + manifest fragment
+- [x] D3 — Chat tool + schema rules + manifest fragment
 - [ ] D4 — Intelligence report category
 - [x] E1 — Nightly hook in the reload pipeline **(ask before running against production reload)**
 - [x] E2 — Notification outbox provider

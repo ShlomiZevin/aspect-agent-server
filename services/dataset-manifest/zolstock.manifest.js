@@ -44,6 +44,15 @@ module.exports = {
     'payment type': { status: 'absent', detail: 'no payment fields in the feed', roadmap: 'same retired export' },
     'customer city / demographics / age': { status: 'absent', detail: 'no demographic data ever delivered' },
     'discounts / promotions / campaigns': { status: 'absent', detail: 'no monetary or campaign columns in the feed — this is WHY revenue is an estimate' },
+    // Measured by the replenishment audit, 2026-08-27: no column anywhere in
+    // the four files records goods arriving. This sits in the DATASET
+    // manifest, not the module's fragment, because it is a property of the
+    // feed and stays true whether or not any module is switched on — a
+    // refusal that only appears when a module happens to be enabled is not an
+    // honesty layer.
+    'goods receipt / arrival date': { status: 'absent',
+      detail: 'nothing records when ordered goods actually arrived. Two consequences: supplier lead time can never be measured (only entered by hand), and an order placed long ago still looks open, so "already on the way" may include stock that arrived months ago',
+      roadmap: 'client adds a receipt/GRN date, or an explicit rule for treating old orders as received' },
   },
 
   vocabulary: [
@@ -141,6 +150,26 @@ module.exports = {
       reason: 'No payment fields exist in the current feed.',
       roadmap: 'Payment analysis needs the payment columns from the retired export.',
       alternatives: 'sales totals by store or period',
+    },
+    'goods receipt / arrival date': {
+      // High-precision, like every other trigger here: only unambiguous
+      // arrival/receipt questions. "מתי הזמנו" (when did we ORDER) is
+      // answerable and must NOT match. Hebrew final-form letters are written
+      // as character classes — ן/נ, ם/מ — because a stem written with the
+      // regular form silently misses the singular that ends a word.
+      triggers: [
+        // The gap between the verb and the arrival word has to fit a real
+        // subject: "when did purchase order 4471 arrive" is 21 characters
+        // between them, and a .{0,20} window missed it by one — the question
+        // sailed through to SQL generation. Sized for a phrase, not a word.
+        /when\s+(did|was)\b.{0,40}?(arrive|arrived|received|delivered)/i,
+        /goods\s+receipt|grn\b|receiving\s+date|arrival\s+date|date\s+of\s+arrival/i,
+        /מתי\s+הגיע|מתי\s+התקבל|תאריך\s+קליטה|תאריך\s+הגעה/,
+        /האם\s+.{0,15}(הגיע|התקבל)/,
+      ],
+      reason: 'This data records orders being placed, but nothing records goods arriving — there is no receipt or arrival date in the feed.',
+      roadmap: 'Arrival tracking needs a goods-receipt date on the order rows, or a rule agreed with you for when an old order should be treated as received.',
+      alternatives: 'when an order was placed, its quantity, and current stock on hand',
     },
     'customer city / demographics / age': {
       triggers: [/age\s+distribution|customer\s+age|demographic/i, /התפלגות\s+גיל|גיל\s+הלקוחות|דמוגרפ/, /cities\s+.{0,25}customers|customers\s+.{0,25}cities/i, /ערים\s+.{0,20}לקוחות|לקוחות\s+.{0,20}ערים/],

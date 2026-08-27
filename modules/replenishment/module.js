@@ -160,10 +160,63 @@ module.exports = {
       return { statements };
     },
 
-    // Wired in D3. Off until then, and off entirely whenever the module is
-    // not enabled+ready — that is what keeps a dataset without this module
-    // byte-identical to today.
-    chatTools() { return []; },
-    manifestFragment() { return null; },
+    /**
+     * The crew tool — structured args, never generated SQL, so the same
+     * question asked five ways returns identical numbers.
+     *
+     * Returned only when the caller has already established the module is
+     * live; the crew asks for tools through moduleService, which filters.
+     */
+    chatTools(ctx) {
+      return [require('./chat-tool').buildTool(ctx.datasetId)];
+    },
+
+    /**
+     * Additions to the dataset's capability manifest.
+     *
+     * NOTE ON WHAT IS AND IS NOT HERE. The truths about the FEED — that no
+     * goods receipt exists, that a delivery time can only be configured
+     * rather than measured — are properties of the client's data and hold
+     * whether or not this module is switched on. Those live permanently in
+     * services/dataset-manifest/zolstock.manifest.js, not here, because a
+     * refusal that only appears when a module happens to be enabled is not
+     * an honesty layer.
+     *
+     * What IS here is what only exists BECAUSE the module exists: the two
+     * derived measures and the vocabulary for them.
+     */
+    manifestFragment() {
+      return {
+        measures: {
+          'replenishment need / order quantity': {
+            fidelity: 'estimate',
+            basis: 'computed from sales pace, stock, open orders and a CONFIGURED supplier delivery time — not a figure from the source system',
+          },
+          'estimated order cost': {
+            fidelity: 'estimate',
+            basis: 'order quantity x catalogue cost, excluding VAT and before discounts',
+          },
+        },
+        dimensions: {
+          'supplier lead time': {
+            // A status the base manifest vocabulary does not have: the value
+            // is real and used, but a human supplied it — it was not measured
+            // from the data and cannot be.
+            status: 'configured',
+            detail: 'user-supplied per supplier, with a dataset default for any not set. Every answer states which was used.',
+          },
+        },
+        vocabulary: [
+          { terms: ['זמן אספקה', 'לי טיים', 'lead time', 'delivery time'], resolution: 'field',
+            detail: 'configured per supplier on the Purchasing screen; not derivable from the data' },
+          { terms: ['נקודת הזמנה', 'reorder point'], resolution: 'field',
+            detail: 'computed: sales pace x delivery time + safety stock' },
+          { terms: ['מלאי ביטחון', 'safety stock'], resolution: 'field',
+            detail: 'items.safety_stock where present (5% of items); otherwise computed from sales pace' },
+          { terms: ['הזמנה פתוחה', 'open order', 'on order'], resolution: 'field',
+            detail: 'purchase_order rows — but with no goods-receipt data an old order still looks open' },
+        ],
+      };
+    },
   },
 };

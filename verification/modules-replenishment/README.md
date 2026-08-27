@@ -1153,3 +1153,91 @@ session's to do; the E1 hook rebuilds them on every reload from the same
 stored binding. The module is left `status=ready, enabled=false`: init is
 done, and enabling a client-facing surface is a decision, not a side effect
 of testing. No supplier_settings rows remain.
+
+---
+
+## D3 — Chat tool + schema rules + manifest fragment (2026-08-27)
+
+### Reproduce
+
+```bash
+node scripts/test-replenishment-chat.js
+```
+
+| Battery | Result |
+|---|---|
+| `test-replenishment-chat.js` | **43/43 PASS** |
+| Regression (8 batteries, after touching the dispatcher, manifest and rules) | 19/19 · 30/30 · 35/35 · 53/53 · 29/29 · 41/41 · 47/47 · 67/67 |
+
+### The assertion that matters
+
+**The same question asked five different ways returns identical numbers.**
+Five argument shapes a model could plausibly produce for "what should we
+order" all land on the same computation — same counts, same total, the
+identical most-urgent row, anchored to the same data date — and repeating a
+call is byte-identical. That invariance is the entire reason this is a
+structured tool and not a prompt: a model writing SQL for a reorder question
+produces a slightly different query, and therefore slightly different
+numbers, every time.
+
+### Tool registration follows the live gate
+
+| Check | Result |
+|---|---|
+| Module off ⇒ no tool attached, crew keeps exactly what it had | OK |
+| Module live ⇒ `fetch_replenishment` attached **alongside** the crew's own tool | OK |
+| …carrying a working handler | OK |
+| Switching the module off removes the tool on the **next turn** | OK |
+| A crew with no `datasetSchema` is untouched | OK |
+| A name collision is refused, never silently overridden | OK |
+
+The attach point is in the dispatcher, deliberately **before** the tool
+handler map is built — attaching after it would hand the model a tool schema
+with no handler behind it. It is idempotent and reversible, so a module
+switched off between turns leaves nothing behind rather than lingering until
+a restart.
+
+### The honesty layer, and where each piece belongs
+
+A judgement worth recording: **the goods-receipt absence went into the
+DATASET manifest, not the module's fragment.** That absence is a property of
+the client's feed and stays true whether or not any module is switched on — a
+refusal that only appears when a module happens to be enabled is not an
+honesty layer. The module's fragment carries only what exists *because* the
+module exists: the two derived measures, the new `configured` dimension
+status for a lead time a human supplied, and the Hebrew/English vocabulary.
+
+Refusals verified in both languages, with precision preserved:
+
+| Refused | Still answerable |
+|---|---|
+| "when did purchase order 4471 arrive" | "when did we order sku BH-34-240" |
+| "מתי הגיעה ההזמנה" | "מתי הזמנו את הפריט הזה" |
+| "what is the goods receipt date for sku …" | "how many open purchase orders are there" |
+| "מתי התקבלה הסחורה" | "כמה הזמנות רכש פתוחות יש" |
+
+The refusal names the missing data and offers what *is* answerable instead.
+
+### A trigger that missed by one character
+
+`when did purchase order 4471 arrive` sailed straight through to SQL
+generation. The trigger allowed `.{0,20}` between the verb and the arrival
+word; that phrase has **21**. Sized for a word rather than a phrase, it let
+exactly the question it existed for through. Widened to `.{0,40}?` and
+asserted. The Hebrew triggers were correct throughout.
+
+Three of the four "failures" in the first run were my own assertion being
+wrong — the gate returns `{action:'refuse', refusal:{…}}`, not a `refuse`
+flag — but the fourth was real, and a suite written to the wrong shape would
+have hidden it.
+
+### Schema rules
+
+The hand-written "compute need from stock vs open orders vs safety stock"
+recipe is **removed**. Generated SQL must not attempt the reorder arithmetic:
+it depends on a supplier delivery time that is not in the database at all
+(a human configures it), on carton rounding, on a safety-stock fallback, and
+on windows anchored to the data's last date. A query cannot reach the first
+of those, so any SQL answer to a reorder question is wrong in a way that
+looks right — worse than refusing. The rules now name the tool and say why.
+The item-grain fact-scan ban survives unchanged.
