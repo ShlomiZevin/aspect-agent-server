@@ -159,6 +159,13 @@ class FeedbackService {
       .values({
         assistantMessageId,
         userMessageId: userMessage?.id || null,
+        // agentId was resolved above (for tag registration) but never made it
+        // into this insert — every message-scoped feedback row landed with a
+        // NULL agent_id, invisible to every agent-scoped admin Feedback page
+        // (that view filters WHERE agent_id = ...). Old rows were papered
+        // over by a one-time backfill; this closes the gap at the source so
+        // new rows (e.g. from the "Reject answer" flow) don't need one.
+        agentId: conversation?.agentId ?? null,
         feedbackText,
         tags: tags || [],
         crewMember,
