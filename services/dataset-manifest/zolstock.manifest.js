@@ -125,7 +125,13 @@ module.exports = {
       alternatives: 'sales by store, by product, or by period',
     },
     'agent / seller': {
-      triggers: [/sellers?\s+by|top\s+\d*\s*sellers/i, /מוכרנים|מוכרן|קופאים|קופאי/, /מכירות\s+סוכנ|סוכני?ם?\s+(לפי|מכיר)|נתוני\s+מכירות\s+סוכנ/, /agent\s+sales|sales\s+agents?\s+(ranking|report|by)/i],
+      // NOTE the [נן] classes: Hebrew final-nun. The singular "סוכן" ends in
+      // final ן while the plural "סוכנים" carries regular נ — a pattern
+      // written with only נ matches the plural and silently misses the
+      // singular (caught 27-08 when the customer's bare "מכירות סוכן"
+      // slipped the gate; the talker still refused, but the deterministic
+      // layer must catch both).
+      triggers: [/sellers?\s+by|top\s+\d*\s*sellers/i, /מוכרנים|מוכר[נן]|קופאים|קופאי/, /מכירות\s+סוכ[נן]|סוכ[נן]י?ם?\s+(לפי|מכיר)|נתוני\s+מכירות\s+סוכ[נן]/, /agent\s+sales|sales\s+agents?\s+(ranking|report|by)/i],
       reason: 'No seller/agent dimension exists in the current four-file feed — sales cannot be attributed to a salesperson.',
       roadmap: 'Agent-sales analysis needs the seller columns from the retired export.',
       alternatives: 'sales by store, by product, or by category for the same period',

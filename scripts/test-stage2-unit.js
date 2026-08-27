@@ -35,6 +35,9 @@ const MUST_REFUSE = {
   18314: 'agent / seller', 18316: 'agent / seller',
   18546: 'agent / seller', 22669: 'agent / seller',
   24125: 'agent / seller', 24167: 'agent / seller',
+  // 26-08 production session (the agent-sales incident): these two name the
+  // absent seller dimension unambiguously — the gate MUST refuse them.
+  24939: 'agent / seller', 24941: 'agent / seller',
 };
 const allTurns = corpus.conversations.flatMap(c => c.turns.map(t => ({ ...t, conv: c.origConv })));
 for (const [mid, expectedDim] of Object.entries(MUST_REFUSE)) {
