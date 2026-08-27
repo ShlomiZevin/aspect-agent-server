@@ -39,7 +39,20 @@ function getPool(options = {}) {
     : { host, port: parseInt(port), database, user, password, ...options };
 
   _pool = new Pool({
-    max: 10,
+    // aspect-data-db is db-g1-small (max_connections=50, checked 2026-08-27).
+    // This ONE pool is shared by live chat traffic for all 6 datasets AND
+    // index/materialized-view building, because whichever module calls
+    // getPool() first (always a crew file, at server boot, always with no
+    // options) wins — every getPool({max: N}) call in the reload/index
+    // scripts below is silently a no-op once _pool exists (see the early
+    // `if (_pool) return _pool` above). 10 was too tight: zer4u alone runs up
+    // to 12 materialized views in parallel, so its OWN index job could
+    // exhaust the pool against live chat traffic with no other schema
+    // involved, surfacing as "timeout exceeded when trying to connect"
+    // (2026-08-25/26 crash loop). 20 leaves 30 of the DB's 50 slots free for
+    // the Cloud SQL Proxy, admin queries, and a manual CLI reload script
+    // (its own separate process/pool, up to +12) run alongside it.
+    max: 20,
     keepAlive: true,
     keepAliveInitialDelayMillis: 10000,
     connectionTimeoutMillis: 60000,

@@ -175,6 +175,16 @@ class DataReloadService {
     await this._assertNotBusy(schemaName);
 
     const { force = false } = options;
+    // Resolve the default HERE and write it back into `options`. Without this,
+    // the object passed downstream still has no `force` key, and
+    // createViews()'s OWN default (force = true, correct for a manual CLI
+    // run) silently wins for every caller — including cron, whose intent was
+    // exactly the opposite. This is what turned every automatic retry into a
+    // full rebuild of all 12 materialized views from scratch: a crashed cron
+    // index run just meant the next tick paid the ~15+ min cost again instead
+    // of skipping the views that already finished, which is how the zer4u
+    // nightly job crash-looped for days (2026-08-25 onward).
+    options = { ...options, force };
     const runType = force ? 'full-index' : 'index';
     const runId = await this._createRunInDB(schemaName, `${triggeredBy}-${runType}`);
 
