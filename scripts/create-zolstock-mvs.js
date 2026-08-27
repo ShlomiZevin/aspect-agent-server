@@ -66,7 +66,20 @@ const VAT = '1.18';
 const ITEM_DIM = schema => `
   SELECT DISTINCT ON (item_number)
          item_number, item_name, category, subcategory, item_family,
-         supplier, sku, consumer_price, cost_ex_vat, safety_stock
+         -- TWO supplier columns, and the obvious name is the wrong one.
+         -- items.positive_supplier is the SUPPLYING COMPANY, which is what a
+         -- buyer means by "ספק" and what "sales by supplier" must group by.
+         -- items.supplier is the manufacturer/importer, and its Latin values
+         -- are stored CHARACTER-REVERSED in the export ('GNIDART SBD' is
+         -- "DBS TRADING"), so it is unusable as a name.
+         -- Until now the sales views carried the manufacturer under the name
+         -- `supplier`, so every "sales by supplier" answer grouped by the
+         -- wrong dimension and displayed reversed text. `supplier` now means
+         -- what everyone reading it assumed it meant; the old value is still
+         -- available as `manufacturer` for anyone who genuinely wants it.
+         positive_supplier AS supplier,
+         supplier          AS manufacturer,
+         sku, consumer_price, cost_ex_vat, safety_stock
     FROM ${schema}.items
    WHERE item_number IS NOT NULL
    ORDER BY item_number, consumer_price DESC NULLS LAST`;
@@ -79,7 +92,8 @@ const SALES = schema => `
          f.qty_sold,
          f.qty_sold * i.consumer_price / ${VAT}                        AS revenue_list_ex_vat,
          f.qty_sold * (i.consumer_price / ${VAT} - i.cost_ex_vat)      AS profit_list_ex_vat,
-         i.item_name, i.category, i.subcategory, i.item_family, i.supplier
+         i.item_name, i.category, i.subcategory, i.item_family,
+         i.supplier, i.manufacturer, i.sku
     FROM ${schema}.facts f
     LEFT JOIN (${ITEM_DIM(schema)}) i ON i.item_number = f.item_number_sales
    WHERE f.record_type = 'sales'`;
@@ -133,6 +147,8 @@ function mvs(schema) {
                MIN(s.subcategory)           AS subcategory,
                MIN(s.item_family)           AS item_family,
                MIN(s.supplier)              AS supplier,
+               MIN(s.manufacturer)          AS manufacturer,
+               MIN(s.sku)                   AS sku,
                SUM(s.qty_sold)              AS total_qty,
                SUM(s.revenue_list_ex_vat)   AS revenue_list_ex_vat,
                SUM(s.profit_list_ex_vat)    AS profit_list_ex_vat
@@ -157,6 +173,8 @@ function mvs(schema) {
                MIN(s.subcategory)           AS subcategory,
                MIN(s.item_family)           AS item_family,
                MIN(s.supplier)              AS supplier,
+               MIN(s.manufacturer)          AS manufacturer,
+               MIN(s.sku)                   AS sku,
                COUNT(*)                     AS line_count,
                MIN(s.row_date)              AS first_sold,
                MAX(s.row_date)              AS last_sold,

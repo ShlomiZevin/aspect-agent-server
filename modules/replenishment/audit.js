@@ -161,6 +161,19 @@ async function audit(ctx) {
     catalogTable: catalog ? { name: catalog.table, approxRows: catalog.rows, matchScore: catalog.score } : null,
   };
 
+  // EVERY column of the tables that matter, with its type.
+  //
+  // The binding prompt whitelists columns ("name no others"), and the first
+  // real init returned a binding with no quantity columns at all — correctly,
+  // because the whitelist was built from the pattern-matched columns only and
+  // qty_sold / warehouse_qty / purchase_order_qty were never in it. The model
+  // cannot name what it was not shown. The full list is also simply the
+  // honest thing to report: the audit's job is "here is what exists".
+  findings.measurements.columnsByTable = {
+    [factTable.name]: factCols.map(c => ({ name: c.name, type: c.type })),
+    ...(catalog ? { [catalog.table]: catalog.columns.map(c => ({ name: c.name, type: c.type })) } : {}),
+  };
+
   // ── A9 / discriminator: what kinds of row does the fact table hold? ──
   const discriminator = await detectDiscriminator(pool, schema, factTable.name, factCols);
   findings.measurements.discriminator = discriminator;

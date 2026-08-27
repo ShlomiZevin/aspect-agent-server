@@ -262,11 +262,33 @@ async function runInitPipeline(datasetId, moduleId, runId, { updatedBy, onEvent 
 
     for (let round = 1; round <= MAX_ROUNDS; round++) {
       // ── propose binding ──
+      //
+      // A rejected proposal is a ROUND failure, not a fatal one. Structural
+      // validation catches a malformed binding in ~1s, before anything is
+      // built, and the errors name exactly which fields are wrong — which is
+      // the most actionable feedback the loop can possibly carry. Treating it
+      // as fatal (the first version did) threw away the retry the rounds
+      // exist for, and the very first real init died on round 1 with a
+      // perfectly recoverable "demand.qtyCol is required".
       await setStage(runId, round, 'propose_binding');
-      const binding = await descriptor.hooks.proposeBinding({
-        ...ctxBase, audit, round, previousFailures,
-      });
-      emit(`round ${round}: binding proposed`);
+      let binding;
+      try {
+        binding = await descriptor.hooks.proposeBinding({
+          ...ctxBase, audit, round, previousFailures,
+        });
+        emit(`round ${round}: binding proposed`);
+      } catch (proposeErr) {
+        const failures = (proposeErr.bindingErrors || [proposeErr.message])
+          .map(e => ({ probe: 'binding_shape', detail: e }));
+        rounds.push({
+          round, passed: false, probes: failures.map(f => ({ ...f, passed: false })),
+          binding: proposeErr.binding ?? null,
+          failedProbes: ['binding_shape'],
+        });
+        emit(`round ${round}: proposal rejected — ${failures.map(f => f.detail).join('; ')}`);
+        previousFailures = failures;
+        continue;
+      }
 
       // ── render + build in a scratch schema, then verify AGAINST it ──
       //

@@ -159,6 +159,21 @@ do NOT return an empty table with no explanation.
   a name the user typed and never present it as a company name without saying
   the source text is reversed. Hebrew values in this column are unaffected.
 
+**ON THE MATERIALIZED VIEWS THE NAMES ARE ALREADY RESOLVED.** The item-grain
+views (\`mv_sales_monthly_item\`, \`mv_sales_item_total\`) carry:
+- \`supplier\` — the SUPPLYING COMPANY (it is \`items.positive_supplier\`).
+  Group and filter by this for any "sales by supplier" question.
+- \`manufacturer\` — the old \`items.supplier\` value, reversed Latin and all.
+  Only use it if the question is explicitly about the manufacturer, and say
+  the source text is reversed.
+- \`sku\` — the replenishment key, so a sku-based question can be answered
+  from these views without bridging through \`items\`.
+
+Earlier versions of these views carried the MANUFACTURER under the name
+\`supplier\`, so every "sales by supplier" answer grouped by the wrong
+dimension and displayed reversed text. Do not reproduce that: on the views,
+\`supplier\` means the supplying company.
+
 ### items is NOT unique on item_number
 1,859 of 303,508 rows share an \`item_number\` with another row (same item,
 different barcode). A plain \`JOIN ${schemaName}.items\` MULTIPLIES aggregate

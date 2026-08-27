@@ -505,6 +505,25 @@ const moduleOutbox = pgTable('module_outbox', {
   createdAt:  timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+// Per-supplier replenishment settings — owned by the Smart Replenishment
+// module. See db/migrations/041_add_supplier_settings.sql. Every override is
+// NULLABLE on purpose: NULL means "not set", which resolves to the dataset
+// default and is reported as inherited, so a buyer can always tell a number
+// they gave us from one we assumed.
+const supplierSettings = pgTable('supplier_settings', {
+  id:            bigserial('id', { mode: 'number' }).primaryKey(),
+  datasetId:     text('dataset_id').notNull(),
+  supplierKey:   text('supplier_key').notNull(),
+  supplierLabel: text('supplier_label'),
+  leadTimeDays:  integer('lead_time_days'),
+  reviewDays:    integer('review_days'),
+  safetyDays:    integer('safety_days'),
+  minOrderUnits: integer('min_order_units'),
+  notes:         text('notes'),
+  updatedBy:     text('updated_by'),
+  updatedAt:     timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 // V2 builder tables (the JSON-based plugin builder; coexists with
 // the legacy `agents` / `crewMembers` above which power v1 chats).
 const builderSchema = require('./builder');
@@ -563,6 +582,7 @@ module.exports = {
   clientModules,
   moduleRuns,
   moduleOutbox,
+  supplierSettings,
   // V2 builder
   builderProjects:        builderSchema.builderProjects,
   builderWorkspaces:      builderSchema.builderWorkspaces,

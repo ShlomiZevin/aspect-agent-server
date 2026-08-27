@@ -117,6 +117,17 @@ function summariseAudit(auditDoc) {
  */
 function columnCatalogue(auditDoc) {
   const m = auditDoc?.measurements || {};
+
+  // EVERY column of the relevant tables, with its type. An earlier version
+  // assembled this from the pattern-matched columns only, so quantity columns
+  // were absent — and the first real init duly returned a binding with no
+  // qtyCol anywhere, because the model had been told to name no others. A
+  // whitelist narrower than the roles it must fill is a trap, not a guard.
+  if (m.columnsByTable && Object.keys(m.columnsByTable).length) {
+    return m.columnsByTable;
+  }
+
+  // Fallback for an audit taken before columnsByTable existed.
   const out = {};
   const add = (table, cols) => {
     if (!table || !cols) return;
