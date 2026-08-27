@@ -305,3 +305,111 @@ that sequence. Either could pass while the other fails.
   holding a multi-minute request open), and unlike the reload-scheduler race
   fixed earlier this session there is no cross-entity serialization to
   defeat — the guard is a per-(dataset, module) running-row check.
+
+---
+
+## A4 — Admin Modules tab (2026-08-27)
+
+A generic per-dataset admin tab that renders whatever the server's registry
+returns: module cards with status + enable toggle, a settings form built from
+`settingsSchema`, and an init-run modal with polled progress and the round
+history.
+
+### Reproduce
+
+```bash
+# server
+npm start                                     # aspect-agent-server, :3000
+# client
+npm run dev                                   # aspect-agent-client-react, :5173
+# then open, with the super-admin gate unlocked (localStorage super_admin_key=6724):
+#   http://localhost:5173/zolstock/admin/modules
+npx tsc -b && npx eslint .                    # in the client repo
+```
+
+### Result
+
+| Check | Result |
+|---|---|
+| Client typecheck (`npx tsc -b`) | **PASS** (exit 0) |
+| Client lint delta vs the A0 baseline | **0 new errors, 0 new warnings, 0 new files** (166/49/113 before and after) |
+| Tab renders in a real browser | **PASS** — verified headless, screenshots below |
+| Progress bar reflects a real run | **PASS** — 100% + `Failed` on the exhausted run, live polling asserted in A3 §5 |
+| Failure report is readable | **PASS** — all 5 rounds listed with `join_rate — stub: 61.9% < 95% threshold` |
+| Toggle state matches the API | **PASS** — `Enabled` checked, `Ready` + `Live for this client` only when both hold |
+
+### Verified in a real browser, not just by compiling
+
+Driven headless through the Chrome DevTools Protocol against the running dev
+server and the real platform DB (a compile-clean React page can still render
+nothing):
+
+- **Failed state** — red status dot, `Failed` pill, the warning strip
+  "Enabled, but not live yet — initialization has not completed
+  successfully", and the run modal listing every round with its probe
+  numbers.
+- **Ready state** — green dot, `Ready` + `Live for this client` pills,
+  `Binding stored · updated 27/08/2026, 15:10:25`, and `Re-init / run
+  report`.
+- **Settings modal** — the two-column form generated from the descriptor's
+  `settingsSchema`, per-field hints, a `default` source tag on the field
+  still resolving from the code default, the notice in its fixed-height slot,
+  and Cancel / Save settings.
+
+### Two real defects the browser check caught (and fixed)
+
+Both would have shipped had this step stopped at "it typechecks":
+
+1. **A failed module said "Configure settings, then run Init infrastructure to
+   begin."** — the message keyed off `binding`, and a failed run stores none,
+   so a module that *had* been initialized read as though nothing had been
+   attempted. Now distinguishes "never run" from "ran and stored no binding",
+   and the action button reads `Re-init / run report` in both cases.
+2. **A failed run drew a full blue progress bar.** A failed run also ends at
+   100%, so in the success colour it read as "done, fine". Failed runs now
+   draw the bar red.
+
+### Deviations from plan section 04, and why
+
+- **The tab is English-only, and deliberately does not call `useLanguage()`.**
+  `useLanguage()` **throws** outside a `LanguageProvider`, and the dashboard
+  admin routes have none — the provider is mounted only inside
+  `IntelligenceShell`. Calling it here would unmount the entire admin page:
+  exactly the hazard `CLAUDE.md` documents for `useAgentContext()`. Zero of
+  the ~28 existing dashboard components use it, so the admin dashboard has no
+  i18n infrastructure to join. The plan's "bilingual labels via
+  i18n/translations.ts" is therefore not implementable for this surface
+  today **without first internationalising the whole dashboard**, which is
+  not in scope for A4.
+  What was done instead: the descriptor's bilingual `name` / `label` / `hint`
+  are carried end-to-end (server → API → `LocalizedText` type → UI) and
+  rendered through one `localized()` helper. When the dashboard does gain a
+  provider, that helper is the single line that changes — no re-translation.
+  **This is the one open item from A4 worth a decision** (see below).
+- **Nav gating reuses `!!config.database?.schema`** — the same condition as
+  Query Optimizer / Data Loader, since a module binds to a dataset — but is
+  passed as its own `showModules` prop rather than reusing their flag, so the
+  two can diverge later without a rename.
+
+### House rules honoured
+
+- Modal editing, never inline; a **custom confirm modal**, never browser
+  `confirm()` (turning a *live* module off is confirmed; turning one on is
+  not — an uninitialized module going on is harmless because it still is not
+  live).
+- Notices render into a **fixed-height slot** in both the page and the
+  settings modal, so nothing shifts when a message appears.
+- Every hook is declared above the component's early returns.
+- Data loading is deduped by a ref key, not a per-closure `cancelled` flag —
+  React 19 StrictMode double-invokes effects and the naive version leaves the
+  UI stuck on a skeleton.
+- Polling runs **only while a run is in flight** and stops the moment it is
+  not.
+
+### Cleanup
+
+All `_stub` rows were deleted after the checks: `client_modules`,
+`module_runs` and `module_outbox` are back to **0 rows each**. Nothing was
+left enabled on `zolstock` — a `_stub` module left switched on in the shared
+dev DB is exactly the kind of test cruft the next person would find and have
+to reason about.
