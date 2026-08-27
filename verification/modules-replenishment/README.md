@@ -413,3 +413,148 @@ All `_stub` rows were deleted after the checks: `client_modules`,
 left enabled on `zolstock` — a `_stub` module left switched on in the shared
 dev DB is exactly the kind of test cruft the next person would find and have
 to reason about.
+
+---
+
+## B1 — Binding contract + templates + deterministic renderer (2026-08-27)
+
+`binding → SQL`, as a pure function. The LLM picks which columns go in the
+holes; it never writes the SQL.
+
+### Reproduce
+
+```bash
+node scripts/test-replenishment-render.js    # offline — no DB, no LLM, no network
+```
+
+### Result
+
+| Battery | Result |
+|---|---|
+| `test-replenishment-render.js` | **47/47 PASS** |
+
+### What each verify clause of B1 maps to
+
+| Plan clause | Evidence |
+|---|---|
+| "Golden-DDL unit test passes" | §6 — rendering the same binding twice is byte-identical, and the schema name is the ONLY thing that differs between two clients |
+| "rendering the ZolStock-shaped fixture produces DDL equivalent to the hand-written views in ZS-2" | §3–§4 — statement set and order, plus every ZS-2 correctness rule asserted as present in the emitted SQL |
+
+### The ZS-2 rules, each asserted in the emitted SQL
+
+A golden string alone would happily freeze a bug in place, so each rule is
+also checked for directly:
+
+| Rule | Origin | Assertion |
+|---|---|---|
+| Dedupe the catalog before every join | duplicate item rows once inflated another client's revenue by 44.6% | `GROUP BY sku` + `MAX()` in the catalog CTE, `GROUP BY item_number` in the bridge, and **`DISTINCT ON` never appears** (an untied one picks an arbitrary duplicate, so the same question returns different answers depending on how the query was written) |
+| Anchor to the demand max date | these feeds are periodic exports and can be months behind | a `data_through` CTE exists, all three windows measure back from it, and **`CURRENT_DATE` / `now()` appear nowhere** |
+| Two item keys, bridged | joining sales on the replenishment key returns almost nothing, which reads as "this product never sold" when it sold 71,421 units | demand joins `bridge` on the SALES key, stock joins on the REPLENISHMENT key, and the two are never conflated |
+| UNIQUE index on every view | required for `REFRESH … CONCURRENTLY`; without it a refresh takes ACCESS EXCLUSIVE and blocks live queries | asserted on both views |
+
+### Decisions taken here
+
+- **Identifier safety is enforced twice, deliberately.** `validateBinding()`
+  refuses anything that is not a plain unquoted identifier, and
+  `templates.js` refuses again at the point SQL is actually built. The second
+  check removes "did validation run on this path?" as a question a reviewer
+  has to answer. A binding needing an exotic identifier is treated as a
+  signal the mapping is wrong, not a case to accommodate.
+- **`rowFilter` is a SQL fragment and cannot be identifier-checked**, so it is
+  constrained instead: no semicolons, no comment markers, no statement
+  keywords, ≤300 chars. Asserted against four injection shapes in §2.
+- **Absent optional sections render typed constants, not missing columns.**
+  A view whose *shape* depended on the client's data completeness would make
+  every downstream consumer defensive; `on_order_qty` is `0::numeric` when
+  there is no purchase-order feed, and the column list is identical either
+  way (§5).
+- **`mv_suppliers` is built ON `mv_replenishment_base`**, not by re-scanning
+  the fact table — asserted. Re-deriving the dedup/bridge/window rules there
+  would be a second place for them to drift out of step.
+- **`replenishmentKeyRate` threshold is 0.001, not something demanding.** On
+  ZolStock only 4.9% of items carry a SKU at all; that is a documented
+  property of the feed, not a mapping error. The probe exists to catch
+  **zero** — a binding that mapped the wrong column entirely.
+
+---
+
+## B2 — The engine + unit battery (2026-08-27)
+
+The ZS-4 pure function: velocity → net available → reorder point → order-by
+date → carton-rounded quantity → status. `today` is a parameter; the stock
+source is passed in and never hardcoded to "warehouse".
+
+### Reproduce
+
+```bash
+node scripts/test-replenishment-unit.js      # offline — no DB, no LLM, no clock
+```
+
+### Result
+
+| Battery | Result |
+|---|---|
+| `test-replenishment-unit.js` | **63/63 PASS** |
+
+### It independently reproduces the design doc's worked example
+
+The strongest evidence available short of live data. The engine was written
+from the ZS-4 formula; the mockup in the Aspect Modules doc (§12.2) states a
+fully worked example. Every figure matches:
+
+| Mockup states | Engine computes |
+|---|---|
+| sales pace 60 / day | **60** |
+| in stock 2,300 warehouse | **2,300** |
+| on the way 1,000 | **1,000** |
+| reserved 100 | **100** |
+| safety buffer 840 (14 days of sales) | **840** |
+| stock covers 53 days | **53.33** |
+| you need 8,040 units | **8,040** |
+| 3,200 are available | **3,200** |
+| order 4,840 | **4,840** |
+| rounded to full cartons of 24 → 4,848 | **4,848** |
+| should have gone out on 19 Jul | **2026-07-19** |
+
+The only difference is "37 days late" vs the engine's **38** — 19 Jul to
+26 Aug is 38 days, so that is an arithmetic slip in an explicitly
+illustrative mockup value, not an engine defect.
+
+### The eight named edge cases (all asserted by name)
+
+| # | Case | Behaviour verified |
+|---|---|---|
+| 1 | Zero velocity, stock on hand | `no_demand`, quantity 0, described as **idle stock** in words |
+| 2 | Zero velocity, zero stock | **excluded from the list entirely** — there is no decision to make |
+| 3 | Negative net available | **reported, never clamped** (one ZolStock store carries −802,918 units; a `max(0,…)` would present broken data as a healthy zero) |
+| 4 | `unitsPerCarton` NULL or 0 | no rounding, `carton size unknown`, and a note saying so |
+| 5 | SKU missing from the catalogue | included (the stock is real), flagged `unmatched`, **no invented cost** |
+| 6 | New item, first sale inside the window | velocity over **days since first sale**, thin history flagged — dividing by the full window would understate a product that is actually selling |
+| 7 | `lastSold` older than the window | `no_demand` even with a non-zero 365-day figure; the item is **dormant, not slow** |
+| 8 | Lead time inherited | `leadTimeSource: 'dataset_default'` and stated in words **every time**; a supplier-set lead time is not nagged about |
+
+### Other properties asserted
+
+- **Omitting `today` throws.** The engine must never read a clock — the feed
+  lags the calendar, so a relative window measured from "now" is silently
+  wrong. §2.
+- **A different `today` moves the status but not the arithmetic**, and the
+  order-by date is unchanged, because it is anchored to the data date.
+- **`stockSource: 'store'` works today** — proof the later per-branch phase is
+  a new caller, not a second implementation (the spec page's explicit
+  instruction).
+- **A minimum order quantity raises a real order but never forces one** that
+  is not needed.
+- **A window the prepared views do not carry** (e.g. 60 days) falls back to
+  the nearest and the row **admits which window it actually used** — an
+  answer computed over 90 days must not claim to be a 60-day figure.
+- **Determinism**: identical inputs produce byte-identical output. That
+  invariance is the whole reason this is a function and not a prompt.
+
+### Regression after B1 + B2
+
+| Battery | Result |
+|---|---|
+| insights-unit · schema-contract · stage2 · stage3 · force-propagation | 53/53 · 19/19 · 30/30 · 35/35 · 3/3 |
+| modules-unit | 29/29 |
+| replenishment-render · replenishment-unit | 47/47 · 63/63 |

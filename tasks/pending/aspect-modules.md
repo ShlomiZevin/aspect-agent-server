@@ -793,8 +793,8 @@ actually passed and been recorded.
 - [x] A2 — Registry + module.service + router
 - [x] A3 — Init-run orchestrator with a stub module
 - [x] A4 — Admin Modules tab
-- [ ] B1 — Binding contract + templates + deterministic renderer
-- [ ] B2 — The engine + unit battery
+- [x] B1 — Binding contract + templates + deterministic renderer
+- [x] B2 — The engine + unit battery
 - [ ] B3 — Audit hook + Hebrew gap report
 - [ ] B4 — proposeBinding + verification probes
 - [ ] C1 — Run init on ZolStock; review the audit **(GATE — human review required)**
