@@ -19,12 +19,30 @@ const { validateBinding } = require('./binding-contract');
 const { renderReplenishmentBase, renderSuppliers, renderIndexes } = require('./templates');
 
 /**
- * @param {string} schemaName  the schema to build into (a shadow or scratch
- *                             schema during a reload/init, never live directly)
- * @param {object} binding     the mapping produced by init and stored on the module
- * @returns {string[]}         statements, in execution order
+ * TARGET vs SOURCE are separate, and the distinction is load-bearing.
+ *
+ * The views are CREATEd in the target schema but read their data from the
+ * source schema, and those are only the same schema on the nightly path:
+ *
+ *   nightly reload  target = <schema>_new (shadow)   source = <schema>_new
+ *                   — the shadow holds a full freshly-loaded copy of the data,
+ *                     so it is both, and the views swap in with it.
+ *
+ *   init / verify   target = <schema>_mod_..._scratch  source = <schema>
+ *                   — the scratch schema is EMPTY. An earlier version used one
+ *                     schema for both and every init failed with
+ *                     `relation "..._scratch.facts" does not exist`.
+ *
+ * @param {string|{target: string, source?: string}} schema
+ *        where to build, and where to read from (defaults to the same).
+ * @param {object} binding the mapping produced by init and stored on the module
+ * @returns {string[]} statements, in execution order
  */
-function renderInfra(schemaName, binding) {
+function renderInfra(schema, binding) {
+  const schemas = typeof schema === 'string'
+    ? { target: schema, source: schema }
+    : { target: schema.target, source: schema.source || schema.target };
+
   const { valid, errors } = validateBinding(binding);
   if (!valid) {
     // Refuse rather than render something partial: a half-built view that
@@ -37,15 +55,15 @@ function renderInfra(schemaName, binding) {
 
   // Drop dependents first. CASCADE covers indexes; naming both explicitly
   // keeps the intent readable rather than relying on cascade order.
-  statements.push(`DROP MATERIALIZED VIEW IF EXISTS ${schemaName}.mv_suppliers CASCADE`);
-  statements.push(`DROP MATERIALIZED VIEW IF EXISTS ${schemaName}.mv_replenishment_base CASCADE`);
+  statements.push(`DROP MATERIALIZED VIEW IF EXISTS ${schemas.target}.mv_suppliers CASCADE`);
+  statements.push(`DROP MATERIALIZED VIEW IF EXISTS ${schemas.target}.mv_replenishment_base CASCADE`);
 
-  statements.push(renderReplenishmentBase(schemaName, binding));
+  statements.push(renderReplenishmentBase(schemas, binding));
 
-  const suppliers = renderSuppliers(schemaName, binding);
+  const suppliers = renderSuppliers(schemas, binding);
   if (suppliers) statements.push(suppliers);
 
-  statements.push(...renderIndexes(schemaName, binding));
+  statements.push(...renderIndexes(schemas, binding));
 
   return statements;
 }

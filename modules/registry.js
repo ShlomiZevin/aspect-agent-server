@@ -19,6 +19,7 @@
  */
 
 const stub = require('./_stub/module');
+const replenishment = require('./replenishment/module');
 
 // The stub exists to test the framework, not to serve anyone. Keeping it out
 // of production means the client-facing admin panel never shows a module
@@ -27,7 +28,7 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 const DESCRIPTORS = [
   ...(IS_PRODUCTION ? [] : [stub]),
-  // Phase B adds: require('./replenishment/module')
+  replenishment,
 ];
 
 /**

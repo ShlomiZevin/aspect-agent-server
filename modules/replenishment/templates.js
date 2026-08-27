@@ -83,8 +83,9 @@ function optionalCol(col, alias, type, where_) {
 
 // ── mv_replenishment_base ────────────────────────────────────────────────
 
-function renderReplenishmentBase(schema, b) {
-  const s = ident(schema, 'schemaName');
+function renderReplenishmentBase(schemas, b) {
+  const s = ident(schemas.target, 'targetSchema');
+  const q = ident(schemas.source, 'sourceSchema');
 
   const dTable = ident(b.demand.table, 'demand.table');
   const dDate = ident(b.demand.dateCol, 'demand.dateCol');
@@ -115,7 +116,7 @@ function renderReplenishmentBase(schema, b) {
     store_stock AS (
       SELECT br.${ident(st.itemKey, 'stock.store.itemKey')} AS rkey,
              SUM(br.${ident(st.qtyCol, 'stock.store.qtyCol')}) AS store_qty_total
-        FROM ${s}.${ident(st.table || b.demand.table, 'stock.store.table')} br
+        FROM ${q}.${ident(st.table || b.demand.table, 'stock.store.table')} br
         ${where(filter(st.rowFilter, 'stock.store.rowFilter'), `br.${ident(st.itemKey, 'stock.store.itemKey')} IS NOT NULL`)}
        GROUP BY 1
     )` : '';
@@ -126,7 +127,7 @@ function renderReplenishmentBase(schema, b) {
              SUM(o.${ident(onOrder.qtyCol, 'onOrder.qtyCol')}) AS on_order_qty,
              COUNT(*) AS on_order_line_count,
              ${onOrder.dateCol ? `MAX(o.${ident(onOrder.dateCol, 'onOrder.dateCol')})` : 'NULL::date'} AS on_order_last_date
-        FROM ${s}.${ident(onOrder.table || b.demand.table, 'onOrder.table')} o
+        FROM ${q}.${ident(onOrder.table || b.demand.table, 'onOrder.table')} o
         ${where(filter(onOrder.rowFilter, 'onOrder.rowFilter'), `o.${ident(onOrder.itemKey, 'onOrder.itemKey')} IS NOT NULL`)}
        GROUP BY 1
     )` : '';
@@ -135,7 +136,7 @@ function renderReplenishmentBase(schema, b) {
     committed AS (
       SELECT c.${ident(committed.itemKey, 'committed.itemKey')} AS rkey,
              SUM(c.${ident(committed.qtyCol, 'committed.qtyCol')}) AS committed_qty
-        FROM ${s}.${ident(committed.table || b.demand.table, 'committed.table')} c
+        FROM ${q}.${ident(committed.table || b.demand.table, 'committed.table')} c
         ${where(filter(committed.rowFilter, 'committed.rowFilter'), `c.${ident(committed.itemKey, 'committed.itemKey')} IS NOT NULL`)}
        GROUP BY 1
     )` : '';
@@ -144,7 +145,7 @@ function renderReplenishmentBase(schema, b) {
 CREATE MATERIALIZED VIEW ${s}.mv_replenishment_base AS
   WITH data_through AS (
     SELECT MAX(${dDate}) AS data_through
-      FROM ${s}.${dTable}
+      FROM ${q}.${dTable}
       ${where(dFilter)}
   ),
   -- Rule 1: dedupe the catalog. One row per replenishment key, MAX() over
@@ -161,7 +162,7 @@ CREATE MATERIALIZED VIEW ${s}.mv_replenishment_base AS
            ${optionalCol(b.catalog.safetyCol, 'safety_stock_data', 'numeric', 'catalog.safetyCol')},
            ${optionalCol(b.catalog.priceCol, 'consumer_price', 'numeric', 'catalog.priceCol')},
            ${optionalCol(b.catalog.costCol, 'cost_ex_vat', 'numeric', 'catalog.costCol')}
-      FROM ${s}.${cTable}
+      FROM ${q}.${cTable}
      WHERE ${rKey} IS NOT NULL
      GROUP BY ${rKey}
   ),
@@ -169,7 +170,7 @@ CREATE MATERIALIZED VIEW ${s}.mv_replenishment_base AS
   -- grain through the catalog, deduped the same way.
   bridge AS (
     SELECT ${cKey} AS item_number, MAX(${rKey}) AS rkey
-      FROM ${s}.${cTable}
+      FROM ${q}.${cTable}
      WHERE ${rKey} IS NOT NULL AND ${cKey} IS NOT NULL
      GROUP BY ${cKey}
   ),
@@ -177,7 +178,7 @@ CREATE MATERIALIZED VIEW ${s}.mv_replenishment_base AS
     SELECT br.rkey,${windowCols},
            MIN(f.${dDate}) AS first_sold,
            MAX(f.${dDate}) AS last_sold
-      FROM ${s}.${dTable} f
+      FROM ${q}.${dTable} f
       JOIN bridge br ON br.item_number = f.${dKey}
      CROSS JOIN data_through dt
       ${where(dFilter)}
@@ -185,7 +186,7 @@ CREATE MATERIALIZED VIEW ${s}.mv_replenishment_base AS
   ),
   warehouse_stock AS (
     SELECT w.${whKey} AS rkey, SUM(w.${whQty}) AS warehouse_qty
-      FROM ${s}.${whTable} w
+      FROM ${q}.${whTable} w
       ${where(whFilter, `w.${whKey} IS NOT NULL`)}
      GROUP BY 1
   )${storeCte}${onOrderCte}${committedCte}
@@ -232,8 +233,8 @@ ${WINDOWS.map(n => `         COALESCE(d.qty_sold_${n}d, 0)                 AS qt
  * re-deriving any of it here would be a second place for the same rules to
  * drift out of step.
  */
-function renderSuppliers(schema, b) {
-  const s = ident(schema, 'schemaName');
+function renderSuppliers(schemas, b) {
+  const s = ident(schemas.target, 'targetSchema');
   const hasSupplier = Boolean(b.catalog.supplierCol);
   if (!hasSupplier) return null;
 
@@ -259,8 +260,8 @@ CREATE MATERIALIZED VIEW ${s}.mv_suppliers AS
  * Without one, a refresh takes ACCESS EXCLUSIVE and blocks every live query
  * against the view for its whole duration.
  */
-function renderIndexes(schema, b) {
-  const s = ident(schema, 'schemaName');
+function renderIndexes(schemas, b) {
+  const s = ident(schemas.target, 'targetSchema');
   const out = [
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_replenishment_base_sku
     ON ${s}.mv_replenishment_base (sku)`,

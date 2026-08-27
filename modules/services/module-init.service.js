@@ -160,7 +160,14 @@ async function hasRunningRun(datasetId, moduleId) {
 // ── the pipeline ─────────────────────────────────────────────────────────
 
 /**
- * Build the rendered DDL into a throwaway schema, then drop it.
+ * Build the rendered DDL into a throwaway schema and LEAVE IT STANDING.
+ *
+ * The caller drops it after verify() has run — see the round loop. An earlier
+ * version dropped it in this function's own `finally`, which meant the views
+ * were already gone by the time the probes queried them: every probe would
+ * have been checking an empty schema and passing or failing for the wrong
+ * reason. It did not surface in the stub's tests because the stub renders no
+ * DDL at all, which is exactly the kind of gap a test double leaves behind.
  *
  * Empty DDL means there is nothing to build (the stub, and any module whose
  * infrastructure is purely logical), so no schema is created at all — which
@@ -188,11 +195,24 @@ async function buildInScratch(pool, scratchSchema, statements, emit) {
     emit(`built ${statements.length} statement(s) in ${scratchSchema}`);
     return { built: statements.length, scratchSchema };
   } finally {
-    // Always drop it: this schema exists only to prove the DDL is valid and
-    // the probes pass. Leaving it behind would double storage on a shared
-    // data DB for no benefit.
-    await client.query(`DROP SCHEMA IF EXISTS ${scratchSchema} CASCADE`).catch(() => {});
     client.release();
+  }
+}
+
+/**
+ * Drop a scratch schema. Always called after verify, in a `finally`, so a
+ * failed round cannot leave one behind — on a shared data DB an abandoned
+ * scratch schema is duplicated storage nobody will think to look for.
+ */
+async function dropScratch(pool, scratchSchema, emit) {
+  if (!pool || !scratchSchema) return;
+  try {
+    await pool.query(`DROP SCHEMA IF EXISTS ${scratchSchema} CASCADE`);
+    emit(`dropped scratch schema ${scratchSchema}`);
+  } catch (e) {
+    // Never fail a run over cleanup — but say so, because the leftover is
+    // real and someone has to remove it.
+    emit(`WARNING: could not drop scratch schema ${scratchSchema}: ${e.message}`);
   }
 }
 
@@ -248,17 +268,34 @@ async function runInitPipeline(datasetId, moduleId, runId, { updatedBy, onEvent 
       });
       emit(`round ${round}: binding proposed`);
 
-      // ── render + build in a scratch schema ──
+      // ── render + build in a scratch schema, then verify AGAINST it ──
+      //
+      // The scratch schema must outlive the build call and be dropped only
+      // after the probes have queried it. It is dropped in this round's
+      // `finally` so a failed or throwing round cannot leave one behind.
       await setStage(runId, round, 'render_build');
-      const statements = descriptor.hooks.renderInfra(binding) || [];
-      const build = await buildInScratch(
-        ctxBase.pool, scratchSchemaName(ctxBase.schemaName, moduleId), statements, emit);
+      const scratch = scratchSchemaName(ctxBase.schemaName, moduleId);
+      // Target and source are DIFFERENT here: the views are created in the
+      // empty scratch schema but read the live data. On the nightly path they
+      // are the same schema, because the shadow holds a full fresh copy.
+      // Passing them separately is what lets one stored binding serve both.
+      const statements = descriptor.hooks.renderInfra(
+        binding, { target: scratch, source: ctxBase.schemaName }) || [];
+      let build;
+      let verification;
+      try {
+        build = await buildInScratch(ctxBase.pool, scratch, statements, emit);
 
-      // ── verify ──
-      await setStage(runId, round, 'verify');
-      const verification = await descriptor.hooks.verify({
-        ...ctxBase, audit, binding, round, build,
-      });
+        await setStage(runId, round, 'verify');
+        verification = await descriptor.hooks.verify({
+          ...ctxBase, audit, binding, round, build,
+          // Probes must query the schema the views were actually built into,
+          // not the live one.
+          verifySchema: build.scratchSchema || ctxBase.schemaName,
+        });
+      } finally {
+        await dropScratch(ctxBase.pool, build?.scratchSchema, emit);
+      }
       const probes = verification?.probes || [];
       const failed = probes.filter(p => !p.passed);
       const passed = Boolean(verification?.passed) && failed.length === 0;

@@ -659,3 +659,104 @@ Also removed "schema" from the client-facing header — our word, not theirs.
 | "Read-only run against live zolstock completes" | PASS — full run, no writes |
 | "JSON + README land in verification/modules-replenishment/" | PASS |
 | "Hebrew summary renders" | PASS — 10 gaps, all Hebrew, all with measured numbers |
+
+---
+
+## B4 — proposeBinding + verification probes (2026-08-27)
+
+The LLM mapping call and the probe set that judges what it produced. Probes
+run against views BUILT from the binding on the live dataset, in a scratch
+schema.
+
+### Reproduce
+
+```bash
+node scripts/test-replenishment-probes.js zolstock   # builds real views; ~20 min
+```
+
+### Result
+
+| Battery | Result |
+|---|---|
+| `test-replenishment-probes.js` | **15/15 PASS** |
+| Regression: insights-unit · schema-contract · stage2 · stage3 · modules-unit · replenishment-render · replenishment-unit | 53/53 · 19/19 · 30/30 · 35/35 · 29/29 · 47/47 · 63/63 |
+| Leftover scratch schemas in the data DB | **none** |
+
+### Probes on the correct ZolStock binding — measured on live data
+
+| Probe | Measured |
+|---|---|
+| `views_exist` | 2/2 present and populated |
+| `base_row_count` | **14,762 rows** |
+| `grain_is_unique` | 14,762 rows, one per sku, 0 duplicates |
+| `reconciles_with_audit` | 14,762 vs 14,762 distinct keys — 0.0% apart |
+| `velocity_coverage` | **11,057 of 14,762 (74.9%)** have sales history |
+| `demand_join_rate` | 6,142,352 of 27,464,734 demand rows resolve (22.4%) |
+| `warehouse_reconciles` | view 4,827,900 of source 4,853,542 units (**99.5%**) |
+| `on_order_reconciles` | view 818,382 of source 818,532 (**100.0%**) |
+| `committed_reconciles` | view 222,803 of source 223,300 (**99.8%**) |
+| `dedup_applied` | 15,180 catalogue rows → 14,762 distinct keys |
+| `anchored_to_data_date` | 2026-08-26, one value for every row |
+| `supplier_view_covers_base` | 13 suppliers covering all 14,762 rows |
+
+### The verify clause — probes PROVEN able to fail
+
+Five deliberately mis-mapped bindings, each a mistake a model could
+plausibly make, each caught by the right probe:
+
+| Mis-mapping | Caught by |
+|---|---|
+| demand keyed on the replenishment key | `demand_join_rate` — "NO demand row resolves to a keyed item — the demand item key (sku) does not match the catalogue key (item_number)" |
+| warehouse stock keyed on the sales key | `warehouse_reconciles` — names the collapse |
+| on-order keyed on the sales key | `on_order_reconciles` |
+| demand filter pointing at inventory rows | caught |
+| catalogue key and replenishment key swapped | caught |
+
+### Four defects this step found in code that already passed every other test
+
+The battery earned its keep; none were visible without building for real.
+
+1. **The orchestrator dropped the scratch schema before verify ran.** A3's
+   `buildInScratch` dropped it in its own `finally`, so probes for any real
+   module would have queried a schema that no longer existed. Invisible on
+   the `_stub`, which renders no DDL at all — exactly the gap a test double
+   leaves behind. The schema now lives until after verify and is dropped in
+   the round's `finally`.
+2. **The renderer used one schema as both build target and data source.**
+   Correct on the nightly path (the shadow schema holds a full fresh copy of
+   the data) but fatal at init, where the scratch schema is empty: every init
+   would have failed with `relation "..._scratch.facts" does not exist`.
+   `renderInfra` now takes `{target, source}`; they are the same schema only
+   at night, and one stored binding serves both paths.
+3. **`reconciles_with_audit` compared rows-carrying-a-key against the view's
+   distinct-key grain.** It failed the CORRECT binding at 14,762 vs 15,180
+   (2.8%) — it would have blocked every dataset that repeats catalogue keys,
+   which is precisely the `catalog_not_unique` quirk the dedup exists for,
+   and so would have blocked C1. Now reconciles against distinct keys: 0.0%.
+4. **A mis-mapped stock key was not caught at all — the most dangerous.**
+   Point warehouse stock at the sales key and its rows all fail the
+   `IS NOT NULL` filter, so `warehouse_qty` becomes `COALESCE(NULL,0)` = 0 on
+   every row. The view builds, the grain is right, nothing errors, and the
+   whole suite went green. In production that reads as *every product has no
+   stock*, and the engine confidently recommends reordering the entire
+   catalogue. The old probe only checked `view <= source`, and 0 <= 4,853,542
+   passes. The check is now **two-directional — inflation AND collapse** —
+   and applies to every declared section, since `on_order` and `committed`
+   had the identical hole.
+
+### Design notes
+
+- **`proposeBinding` is the only LLM call in the module.** Temperature 0, via
+  `services/llm.js` with context key `replenishment_propose_binding`, model
+  from settings. Temperature matters most here: the same schema must map the
+  same way every run, or a re-init would silently change a customer's numbers.
+- **The model is given measurements, not schema text**, plus an explicit
+  whitelist of columns that exist. Rule 1 of the prompt is "you do not write
+  SQL, you choose column names"; rule 2 is "prefer measured evidence over
+  column names" — the audit hands it the join rates, which is the whole basis
+  for choosing a key.
+- **The binding is structurally validated before any DDL is rendered**, so a
+  malformed proposal costs one round with an actionable message rather than a
+  database error.
+- **On a failed round the model is shown the exact probe failures with their
+  numbers**, which is what makes the next attempt a revision, not a re-roll.
