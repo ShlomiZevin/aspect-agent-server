@@ -558,3 +558,104 @@ illustrative mockup value, not an engine defect.
 | insights-unit · schema-contract · stage2 · stage3 · force-propagation | 53/53 · 19/19 · 30/30 · 35/35 · 3/3 |
 | modules-unit | 29/29 |
 | replenishment-render · replenishment-unit | 47/47 · 63/63 |
+
+---
+
+## B3 — Audit hook + Hebrew gap report (2026-08-27)
+
+Read-only scan of the LIVE zolstock schema — no LLM, no writes, no DDL. It
+runs before any binding exists, so it introspects rather than being driven by
+one.
+
+### Reproduce
+
+```bash
+node scripts/run-replenishment-audit.js zolstock            # readable report
+node scripts/run-replenishment-audit.js zolstock --save     # + raw JSON
+node scripts/run-replenishment-audit.js zolstock --format=hebrew
+```
+
+Raw output: `audit-zolstock-2026-08-27.json` (gitignored per repo convention;
+regenerate with `--save`).
+
+### Result — REAL numbers from the live database
+
+| Measurement | Value |
+|---|---|
+| Fact table | `facts`, ~27.5M rows |
+| Catalogue | `items`, 306,617 rows |
+| Row kinds | sales 27,464,734 · store_inventory 3,090,504 · customer_order 11,488 · warehouse_inventory 8,924 · purchase_order 677 · **unknown 87** |
+| Sales range | 2025-01-01 → 2026-08-26 |
+| `positive_supplier` | **100% populated**, 446 distinct |
+| `sku` (replenishment key) | **5.0%** — 15,180 of 306,617 |
+| `safety_stock` | 5.0% — 15,180 |
+| `units_per_carton` | 4.8% — 14,757 |
+| Goods-receipt evidence | **NONE FOUND** |
+| Data through | 2026-08-26, **last day partial** |
+
+**How the chosen key behaves per row kind** (has a code / resolves to an item):
+
+| kind | rows | has code | resolves |
+|---|---|---|---|
+| sales | 27,464,734 | 22.4% | 100.0% |
+| store_inventory | 3,090,504 | 14.6% | 100.0% |
+| customer_order | 11,488 | 100.0% | 99.7% |
+| warehouse_inventory | 8,924 | 100.0% | 99.3% |
+| purchase_order | 677 | 100.0% | 99.9% |
+
+These independently reproduce the documented facts — "85% of store-inventory
+rows carry no item key" (measured 85.4%) and "99 of 5,015 warehouse SKUs have
+no matching item" (measured 99.3% resolving).
+
+### THE GATE NUMBER
+
+**Only 2 of 446 suppliers have catalogue coverage you could actually order
+against** — `ב.א. זול סטוק והפצה בע"מ` (12,500 of 14,974 keyed, 83.5%) and
+`ארכיון ב.א` (2,642 of 4,534, 58.3%). Thirteen more have a token handful
+(often literally 1 item of 16,648). This is exactly the C1 re-scope question
+arriving early, and it independently confirms the feasibility brief's
+conclusion that the pilot is one supplier.
+
+### Two real defects this step caught in its own first run
+
+Both would have produced confident, wrong numbers:
+
+1. **The replenishment key was being chosen by column name and population,
+   so it picked `barcode_key`** — 100% populated and matching `/barcode/` —
+   over the real key `sku` at 5%. Every per-supplier coverage figure then read
+   **100%**, i.e. the single number the gate exists to judge was silently
+   wrong in the reassuring direction. Fixed: the key is now chosen by
+   **measured join rate against the stock rows**. `sku` scores 99.3%, the
+   barcode columns score 0.0%. A key that does not join is not a key, however
+   full the column is.
+2. **The stock grain being measured against was `store_inventory`** (3M rows,
+   85% unattributable by design) rather than `warehouse_inventory`, which
+   understated a key that is actually fine. Fixed: the warehouse grain is
+   preferred, and the join rate is now reported for **every** row kind, since
+   "works for the warehouse, not for branches" is two different conversations
+   with the client.
+
+### The Hebrew report was rewritten after its first run was unusable
+
+It is meant to be **forwarded to the client's BI developer**, and the first
+version went out **half in English with two explanations attached to the
+wrong findings**. Cause: translations were keyed by English title and by
+A-code, but several distinct gaps legitimately share a code (three different
+situations are all "A10") and titles interpolate a row-kind name so they never
+match a fixed string.
+
+Fixed: every gap now carries a **stable translation key** plus its measured
+params, so the Hebrew renders the real numbers (`רק ל-15,180 פריטים מתוך
+306,617`) and row kinds read as a person would say them (`מלאי הסניפים`, not
+`store_inventory`). An unknown key renders a truthful generic line rather than
+English text. A check asserts **all 15 emitted gap keys have a Hebrew entry**.
+
+Also removed "schema" from the client-facing header — our word, not theirs.
+
+### Verify clause
+
+| Plan clause | Evidence |
+|---|---|
+| "Read-only run against live zolstock completes" | PASS — full run, no writes |
+| "JSON + README land in verification/modules-replenishment/" | PASS |
+| "Hebrew summary renders" | PASS — 10 gaps, all Hebrew, all with measured numbers |
