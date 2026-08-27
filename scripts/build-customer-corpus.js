@@ -90,8 +90,12 @@ async function main() {
   conversations.sort((a, b) => String(a.turns[0].t).localeCompare(String(b.turns[0].t)));
 
   const totalTurns = conversations.reduce((n, c) => n + c.turns.length, 0);
-  if (totalTurns !== 74) {
-    throw new Error(`Expected 74 turns (72 logged + 2 ghost), got ${totalTurns} — investigate before freezing.`);
+  // The corpus GROWS as real customers ask new things (that is the point —
+  // replaying transcripts catches what invented cases cannot). The floor
+  // assert guards against a broken extraction silently shrinking it: 74 was
+  // the frozen Stage-2/3 corpus (72 logged + 2 ghost, 2026-08-21).
+  if (totalTurns < 74) {
+    throw new Error(`Corpus shrank: expected >= 74 turns, got ${totalTurns} — extraction is broken, do not freeze.`);
   }
 
   const meta = {

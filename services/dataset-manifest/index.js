@@ -96,6 +96,7 @@ function renderForCrew(manifest) {
   const L = [];
   L.push('Answer discipline for this dataset:');
   L.push('- Start every reply with ONE direct sentence answering the question (the key figure or fact) BEFORE any table or breakdown. If the data cannot answer, that sentence states it plainly.');
+  L.push('- When refusing because a dimension is absent: add ONE short sentence explaining that the client\'s source system holds this data but the export we receive does not include it — so the user understands it is a data-delivery gap, not a system fault — then offer the available alternatives. Keep the whole refusal under 4 sentences.');
   L.push('- NEVER arithmetically combine a number the user quoted with a number from the data (no adding, subtracting or averaging them). Either verify the user\'s number from the data, or state it cannot be verified from this dataset.');
   if (manifest.vatRate) {
     const pct = Math.round((manifest.vatRate - 1) * 100);

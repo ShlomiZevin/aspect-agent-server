@@ -33,6 +33,14 @@ function check(question, manifest) {
   const result = { action: 'proceed', unresolvedTerms: [] };
   if (!question || !manifest) return result;
 
+  // A long input is a PASTE (a report, a table, a data dump the user is
+  // handing us for reconciliation), not a question — its text incidentally
+  // contains dimension words ("מכירות סוכן" as a column header) that must
+  // not trigger a refusal. Real questions in the 90-turn customer corpus max
+  // out around 110 chars; the threshold has 3x headroom. Caught 27-08: the
+  // widened agent-sales trigger gate-refused the client's 10KB pasted Excel.
+  if (question.length > 300) return result;
+
   try {
     // 1. Absent-dimension refusals — first unambiguous trigger wins.
     for (const [dimension, refusal] of Object.entries(manifest.refusals || {})) {

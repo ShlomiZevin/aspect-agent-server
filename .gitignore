@@ -22,3 +22,6 @@ app.flexible.yaml
 scripts/cloud-sql/cloud-sql-config.env
 scripts/cloud-sql/*.env
 !scripts/cloud-sql/*.env.template
+
+# Local scratch workspace — never commit
+.tmpwork/

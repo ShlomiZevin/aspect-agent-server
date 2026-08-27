@@ -181,9 +181,11 @@ number from \`store_label\` with \`SPLIT_PART\` is obsolete. 139 stores exist;
 96 of them have sales.
 
 ### Dates
-The date column is \`row_date\` (there is no \`transaction_date\`). Sales run
-**2025-01-01 to 2026-08-17**. Purchase-order rows carry dates AHEAD of the last
-sale, so anchor "now" to sales only:
+The date column is \`row_date\` (there is no \`transaction_date\`). The data is a
+periodic export that LAGS the calendar — the exact current end date is given in
+the DATA RECENCY section of this prompt; never state a data end date from
+memory. Purchase-order rows carry dates AHEAD of the last sale, so anchor
+"now" to sales only:
 
 \`\`\`sql
 (SELECT MAX(row_date) FROM ${schemaName}.facts WHERE record_type = 'sales')

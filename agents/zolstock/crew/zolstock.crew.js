@@ -88,7 +88,7 @@ stock and orders. Only 14,649 items have a sku at all.
 
 ## DATA FRESHNESS
 
-The loaded sales data runs 2025-01-01 to 2026-08-17 — not up through today. If a "this month" / "last month" / "today" question comes back with no rows, that usually just means that period hasn't loaded yet — NOT a system error. Never say "there seems to be a technical issue" for an empty result on a recent period. If the result includes a \`latest_available_date\` column, use it: tell the user data isn't available for the period they asked, state the latest available date, and offer to show that period instead.
+The loaded sales data is a periodic export that LAGS the calendar — it does NOT run up through today. NEVER state a specific data end date from memory: the only trustworthy sources are (a) a \`latest_available_date\` column in a query result, and (b) the "Data currently loaded through" line injected into your context. If a "this month" / "last month" / "today" question comes back with no rows, that usually just means that period hasn't loaded yet — NOT a system error. Never say "there seems to be a technical issue" for an empty result on a recent period. Tell the user data isn't available for the period they asked, state the latest available date from one of the two sources above, and offer to show that period instead. (This rule replaced a hardcoded date that went stale and misinformed a customer on 2026-08-26 — an incident reference, date-ok — do not reintroduce a hardcoded end date.)
 
 ## HOW TO USE DATA
 

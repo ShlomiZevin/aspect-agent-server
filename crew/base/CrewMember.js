@@ -355,7 +355,25 @@ class CrewMember {
       try {
         const manifestSvc = require('../../services/dataset-manifest');
         const m = manifestSvc.get(this.datasetSchema);
-        if (m) context.dataDiscipline = manifestSvc.renderForCrew(m);
+        if (m) {
+          context.dataDiscipline = manifestSvc.renderForCrew(m);
+          // Live data-through, injected EVERY turn — so even a turn that runs
+          // no query (a refusal, a clarification) states the current end date
+          // rather than a remembered one. Root cause it closes: a hardcoded
+          // "data runs to 2026-08-17" in crew guidance went 8 days stale and
+          // was quoted to a customer on refusal turns (2026-08-26 incident) —
+          // fetch-carrying turns were immune because query results carry
+          // latest_available_date. data-through.service caches 30 min, so
+          // this adds no measurable per-turn cost.
+          try {
+            const { getPool } = require(`../../services/db.${this.datasetSchema}`);
+            const dataThrough = require('../../services/data-through.service');
+            const through = await dataThrough.resolveDataThrough(getPool(), this.datasetSchema);
+            if (through) {
+              context.dataDiscipline += `\n- Data currently loaded through: ${through} (sales). When stating how fresh the data is, use THIS date or a fetched latest_available_date — never any other date.`;
+            }
+          } catch { /* pool module missing or DB briefly away — the block above still stands */ }
+        }
       } catch (err) {
         console.warn(`   ⚠️ [${this.name}] dataDiscipline injection failed: ${err.message}`);
       }
