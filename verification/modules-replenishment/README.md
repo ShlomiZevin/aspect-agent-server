@@ -1309,3 +1309,74 @@ The moved ZS plan keeps a superseded-header pointing at the live plan and the
 feature docs, and is kept rather than deleted because its Step 4 engine spec
 and eight named edge cases are the literal source the shipped engine was
 written from.
+
+---
+
+## E3 (in progress) — and the defect the replay found before it finished
+
+The customer replay (90 real ZolStock questions through the real chat path,
+module OFF) surfaced a defect at turn ~28, before the run completed. Worth
+recording separately because it is the most instructive one in this build.
+
+### What the replay showed
+
+With the module **off**, questions like `המלצות לרכש` ("purchasing
+recommendations") and `אילו פריטים זקוקים להשלמת מלאי` ("which items need
+restocking") were still answered with generated SQL, confidently:
+
+> **נמצאו 214 פריטים לרכש מומלץ** … with a `recommended purchase כמות`
+> column
+
+Those quantities are `safety_stock + open customer orders − warehouse qty −
+open POs`. They contain **no delivery time, no sales velocity and no carton
+rounding** — exactly the "wrong in a way that looks right" answer the D3
+rules change existed to prevent.
+
+### Why the rules change had not prevented it
+
+The rewritten block said, unconditionally, *"these are answered by the
+`fetch_replenishment` tool, NOT by a query you write."* With the module
+switched off **there is no such tool**. The model was left with a user's
+question, no alternative, and an instruction it could not follow — so it did
+the best it could and produced a recommendation anyway.
+
+The rule referenced a *capability that may not exist* instead of stating a
+*fact about the data*. That is the mistake.
+
+### The fix
+
+The block now asserts the data truth, which is true in both states, and
+branches on what is actually available:
+
+- The delivery time **exists nowhere in this database** — it is configured
+  per supplier by the client. So a complete reorder recommendation cannot
+  come from this data alone.
+- **If** a replenishment tool is available in the conversation, use it.
+- **If not**, answer the parts that genuinely are data questions (stock, open
+  orders, safety stock, recent pace) and say in one sentence that a real
+  "order this much by this date" additionally needs the delivery time, which
+  is missing.
+- A quantity presented as "recommended order" computed without a delivery
+  time is worse than an honest partial answer: it will be confidently
+  displayed, and it will be too small or too late.
+
+`scripts/test-replenishment-chat.js` now asserts all four branches — **44/44**
+— and specifically that the rule is **coherent whether or not the module is
+live**, which is the property the first version lacked.
+
+### Note on E3's scope
+
+A true before/after diff is **not available** here and it is worth being
+explicit about why:
+
+1. `compare-replays.js` requires a prior run artifact, and raw run JSONs are
+   gitignored by repo convention — there is no baseline file on this machine.
+2. Even with one, it enforces a **frozen-data rule** and would refuse: the
+   data has moved since any earlier baseline (a reload landed, sales now run
+   through 2026-08-26, and the module's views were added).
+
+So the replay gives a **current level**, not a delta. What it does prove is
+worth having: 90 real customer questions through the real chat path with the
+module OFF exercise the byte-identical guarantee under live traffic rather
+than in a unit test — and it is what caught the defect above, which no
+offline battery would have.

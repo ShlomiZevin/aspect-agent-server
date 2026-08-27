@@ -72,21 +72,30 @@ discounts and promotions**. They are precomputed in the materialized views as
   produced a misleading "5.3% gap" in one audited answer that was really
   −19.5% on a like-for-like basis.
 
-### Replenishment / reorder questions — DO NOT ANSWER THESE WITH SQL
-"What should we order / reorder / restock", "when do we need to order",
-"how much to order", "which items are about to run out" are answered by the
-\`fetch_replenishment\` tool, NOT by a query you write.
+### Replenishment / reorder questions — THE DELIVERY TIME IS NOT IN THIS DATABASE
+"What should we order / reorder / restock", "how much to order", "when do we
+need to order", "which items are about to run out".
 
-**Do not attempt the reorder arithmetic in SQL.** It depends on a supplier
-delivery time that is not in the database at all (it is configured per
-supplier by the client), on carton rounding, on a safety-stock fallback, and
-on windows anchored to the data's last date. A query cannot reach the first
-of those, so any SQL answer to those questions is wrong in a way that looks
-right — which is worse than refusing.
+**A complete reorder recommendation cannot be produced from this data alone.**
+It requires the supplier's delivery time — how many days from placing an order
+to goods arriving — and that number exists nowhere in this database. It is
+configured per supplier by the client. The calculation also needs carton
+sizes, a safety-stock fallback, and windows anchored to the data's last date.
 
-If a replenishment question reaches you anyway, answer only the part that IS
-a data question (current stock, open orders, sales pace) and say plainly that
-the ordering recommendation itself comes from the Purchasing screen.
+Therefore:
+- If a dedicated replenishment tool is available to you in this conversation,
+  USE IT. It has the delivery times and does the arithmetic correctly.
+- If no such tool is available, do NOT silently produce a recommendation
+  anyway. Answer the parts that genuinely ARE data questions — current
+  warehouse stock, open customer and purchase orders, safety stock where it is
+  set, recent sales pace — and then state in ONE sentence that a real
+  "order this much by this date" recommendation additionally needs the
+  supplier delivery time, which is not in this data.
+
+A number presented as "recommended order quantity" that was computed without a
+delivery time is wrong in a way that looks right: it will be confidently
+displayed, and it will be too small or too late. That is worse than an honest
+partial answer.
 
 **Sales velocity per item**, when genuinely asked for, comes from
 \`mv_sales_monthly_item\` (month grain) — **NEVER scan \`facts\` grouped by

@@ -146,11 +146,21 @@ function fakeCrew(schema) {
   console.log('\n4 · Generated SQL is steered AWAY from the reorder arithmetic');
   {
     const rules = zolstockRules(DS);
-    ok('the rules forbid answering reorder questions with SQL',
-      /DO NOT ANSWER THESE WITH SQL/.test(rules));
-    ok('…and name the tool that does', /fetch_replenishment/.test(rules));
-    ok('…and say WHY (the lead time is not in the database)',
-      /not in the database at all/.test(rules));
+    // The rule must be COHERENT WHETHER OR NOT the module is live. An earlier
+    // version said "use the fetch_replenishment tool" unconditionally — and
+    // with the module off there is no such tool, so the model was left with a
+    // user's question, no alternative, and an instruction it could not
+    // follow. It duly produced confident reorder quantities computed with no
+    // delivery time at all. The rule now states the DATA truth and branches
+    // on whether a tool happens to be available.
+    ok('the rules state the data truth: no delivery time in this database',
+      /delivery time[\s\S]{0,80}exists nowhere in this database/.test(rules));
+    ok('…and tell the model to use a replenishment tool IF one is available',
+      /If a dedicated replenishment tool is available/.test(rules));
+    ok('…and what to do when there is NOT one — an honest partial answer',
+      /If no such tool is available/.test(rules) && /honest\s+partial answer/.test(rules));
+    ok('…and never to present a quantity computed without a delivery time',
+      /wrong in a way that looks right/.test(rules));
     ok('the old "compute need from stock vs open orders" recipe is gone',
       !/need ≈ customer orders \+ safety/.test(rules));
     ok('the item-grain fact-scan ban survives',
