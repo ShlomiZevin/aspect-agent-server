@@ -800,7 +800,7 @@ actually passed and been recorded.
 - [x] C1 — Run init on ZolStock; review the audit **(GATE — human review required)**
 - [x] C2 — Sales-view supplier fix
 - [x] C3 — supplier_settings + service
-- [ ] D1 — Recommendations API
+- [x] D1 — Recommendations API
 - [ ] D2 — Client situation page + nav links
 - [ ] D3 — Chat tool + schema rules + manifest fragment
 - [ ] D4 — Intelligence report category

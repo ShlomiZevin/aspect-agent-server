@@ -987,3 +987,71 @@ A real end-to-end reload (Phase 1/2) is run by hand by whoever owns the infra
 and remains the final confirmation for **E1** (views arrive through a genuine
 swap), **C2** (the supplier-column fix only takes effect when the views are
 rebuilt) and **C3** (a lead time survives a reload).
+
+---
+
+## D1 — Recommendations API (2026-08-27)
+
+The read path: prepared view + settings chain + engine, behind module-scoped
+routes.
+
+### Reproduce
+
+```bash
+node scripts/test-replenishment-api.js
+```
+
+| Battery | Result |
+|---|---|
+| `test-replenishment-api.js` | **34/34 PASS** |
+
+### The verify clause
+
+| Plan clause | Evidence |
+|---|---|
+| "a supplier with no settings answers with `leadTimeSource: 'dataset_default'`" | §2 — and it inherits the 90-day value |
+| "module disabled ⇒ 404 on recommendation routes" | §0 — and enabled-but-not-ready 404s **separately**, with a different message, because "never initialized" and "switched off" are different problems for whoever has to fix them |
+
+### First real recommendations, on live zolstock data
+
+| | |
+|---|---|
+| Rows | **9,275** |
+| Order now (overdue) | **4,568** |
+| Due within 14 days | 131 |
+| Stocked OK | 4,039 |
+| No recent sales | 537 |
+| Estimated total ex-VAT | **₪4,601,165** |
+| Suppliers | 13 (top: ב.א. זול סטוק והפצה בע"מ — 12,101 skus, 8.4M units/yr) |
+
+### WORTH A DECISION: 49% of the catalogue reads as overdue
+
+That is not an engine fault — it follows directly from the **90-day default
+lead time**. At 90 days you must order three months before running out, so
+almost anything not sitting on a large buffer is already late. It is the
+feasibility brief's **R2 (alert fatigue)** risk with a number attached: a
+list of 4,568 items is one a buyer opens once.
+
+Two things follow, and both were already in the brief:
+1. Real per-supplier lead times are not a nicety — they are the condition
+   under which the list means anything.
+2. The eventual push phase must cap the digest and apply a confidence
+   threshold. "Nothing needs ordering today" is a valid and trust-building
+   output; 4,568 rows is not.
+
+### Design notes
+
+- **Aggregate nightly, compute on read.** The 27M-row scan happens once a
+  night inside the reload; request time reads ~15k prepared rows and does
+  simple arithmetic. Freezing the *result* into a daily snapshot instead
+  would mean a buyer editing a supplier's lead time sees no change until
+  tomorrow — and the lead time is the one input they own. §3 asserts an
+  override changes the answer immediately.
+- **Summaries describe the whole set, never the filtered page.** A tile that
+  counted only visible rows would be a different, wrong number — asserted in
+  §6 for both `onlyDue` and `limit`.
+- **Every row carries its working**: inputs, the source of each parameter,
+  and `notes[]` in words (§5).
+- **Writing a lead time is gated by the module's own `clientCanEditLeadTimes`
+  setting**, defaulting to editable — the buyer owns lead times and is the
+  person who knows them. Dataset-level defaults stay super-admin only.

@@ -153,6 +153,12 @@ admin.get('/:datasetId/:moduleId/runs/:runId', async (req, res) => {
 
 router.use('/admin', admin);
 
+// ── per-module client APIs ───────────────────────────────────────────────
+// Mounted before the public `/:datasetId` route below, or "replenishment"
+// would be captured as a dataset id. A module owns its own routes; the
+// framework only decides where they hang.
+router.use('/replenishment', require('../replenishment/routes/replenishment.routes'));
+
 // ── public ───────────────────────────────────────────────────────────────
 
 /**
