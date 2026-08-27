@@ -335,6 +335,9 @@ class FeedbackService {
         contextUrl: messageFeedback.contextUrl,
         // Join assistant message content
         messageContent: messages.content,
+        // Carries sqlQueries (see server.js /api/finance-assistant/stream) so
+        // a reviewer can see exactly what ran, not just re-derive it by eye.
+        messageMetadata: messages.metadata,
         // Join conversation external ID for linking
         conversationExternalId: conversations.externalId,
       })
@@ -379,6 +382,7 @@ class FeedbackService {
         tags: fb.tags || [],
         crewMember: fb.crewMember,
         messageContent: fb.messageContent,
+        sqlQueries: fb.messageMetadata?.sqlQueries || [],
         userMessage,
         conversationId: fb.conversationExternalId,
         agentUrlSlug: agent.urlSlug,

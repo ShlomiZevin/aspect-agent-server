@@ -1979,6 +1979,14 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     let fullReply = '';
     let modelUsedData = null; // Tracks which model actually responded (primary or fallback)
     let streamUsageData = null; // Tracks token usage from streaming response
+    // Every SQL query actually run this turn (data-query tool calls), so it
+    // can be persisted on the assistant message and shown to an admin
+    // reviewing a "Reject answer" report. Previously this only survived in
+    // the live SSE stream to whichever browser was open, and — for a
+    // data_table step — only when the result was big enough to need the
+    // row-viewer popup; a normal-sized answer's SQL was unrecoverable the
+    // moment the response finished (2026-08-27).
+    const capturedSqlQueries = [];
 
     if (hasCrew) {
       // ========== CREW-BASED ROUTING ==========
@@ -2043,6 +2051,13 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
           // Handle function result with description - add as thinking step
           if (chunk.type === 'function_result' && chunk.result?.description) {
             thinkingService.addProcessingStep(conversationId, chunk.result.description);
+          }
+
+          // Capture the SQL regardless of result size (see capturedSqlQueries
+          // declaration above) — independent of the data_table step below,
+          // which only fires for big, viewer-worthy results.
+          if (chunk.type === 'function_result' && chunk.result?.sql) {
+            capturedSqlQueries.push(chunk.result.sql);
           }
 
           // Surface the COMPLETE structured query result as a 'data_table' step
@@ -2289,7 +2304,10 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             model: modelUsedData.model,
             modelUsed: modelUsedData.modelUsed,
             fallbackUsed: modelUsedData.fallbackUsed
-          })
+          }),
+          // Every SQL query run this turn — visible to an admin reviewing a
+          // "Reject answer" report (see capturedSqlQueries declaration above).
+          ...(capturedSqlQueries.length > 0 && { sqlQueries: capturedSqlQueries })
         };
 
         const assistantMessage = await conversationService.saveAssistantMessage(
