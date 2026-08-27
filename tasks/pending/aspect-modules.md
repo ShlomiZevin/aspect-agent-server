@@ -791,7 +791,7 @@ actually passed and been recorded.
 - [x] A0 — Fresh baseline
 - [x] A1 — Migrations: client_modules + module_runs + module_outbox
 - [x] A2 — Registry + module.service + router
-- [ ] A3 — Init-run orchestrator with a stub module
+- [x] A3 — Init-run orchestrator with a stub module
 - [ ] A4 — Admin Modules tab
 - [ ] B1 — Binding contract + templates + deterministic renderer
 - [ ] B2 — The engine + unit battery

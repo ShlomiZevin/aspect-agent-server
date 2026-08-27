@@ -34,8 +34,11 @@ fix.
 
 ### Client lint baseline detail
 
-Raw machine-readable output: `a0-client-eslint-baseline.json`
-(`npx eslint . -f json`). Breakdown by rule:
+Raw machine-readable output is written to `a0-client-eslint-baseline.json`
+by `npx eslint . -f json` — **gitignored** (`verification/.gitignore` excludes
+`*.json`, the repo-wide convention: raw run output is local, the README is the
+durable record). Regenerate it any time with that command. The breakdown it
+contained, which is the part that matters:
 
 | Errors | Warnings | Rule |
 |---|---|---|
@@ -214,3 +217,91 @@ a module off and back on does not discard a converged binding.
 - **Both batteries are self-cleaning.** The live one works under the `_stub`
   module on a real dataset and deletes its row at the end (asserted `0
   remaining`), so a run never leaves test state in the shared platform DB.
+
+---
+
+## A3 — Init-run orchestrator with a stub module (2026-08-27)
+
+The pipeline that turns a configured module into a `ready` one:
+audit → (propose binding → render + build in a scratch schema → verify) × ≤5
+rounds, with each round's failures fed into the next proposal.
+
+### Reproduce
+
+```bash
+node scripts/test-modules-init.js    # needs the platform DB; no LLM, no data-DB, no server
+```
+
+### Result
+
+| Battery | Result |
+|---|---|
+| `test-modules-init.js` | **41/41 PASS** |
+| `test-modules-unit.js` (re-run after route additions) | **29/29 PASS** |
+| `test-modules-api.js` (re-run) | **23/23 PASS** |
+
+### What each verify clause of A3 maps to
+
+| Plan clause | Evidence |
+|---|---|
+| "Stub run reaches ready" | §1 — `status='ready'`, binding persisted, run `succeeded`, converged in 1 round |
+| "forced-failure run exhausts 5 rounds, sets failed" | §2 — `roundsUsed=5`, `client_modules.status='failed'`, run row `failed` |
+| "the report names the failing probe per round" | §2 — `report.failedProbesByRound` has 5 entries, each naming `join_rate`; each round also stores the probe's **detail with its numbers** (`61.9% < 95% threshold`), not just a boolean |
+| "Progress stages are monotonic" | §0 (arithmetic: the full 16-step sequence strictly increases) **and** §5 (a real run polled live: observed percentages never decrease and end at 100%) |
+
+Monotonicity is asserted twice on purpose. The arithmetic check proves it
+*by construction*; the live poll proves the running pipeline actually walks
+that sequence. Either could pass while the other fails.
+
+### Beyond the required clauses
+
+- §3 — a run that fails twice then converges uses exactly 3 rounds, and
+  `status` recovers to `ready` after the earlier failures.
+- §4 — a second `startInit` while one is running is refused with **409**.
+  Two concurrent inits would race on the same binding and the same scratch
+  schema.
+- §5 — progress labels read `Round N · <stage>` while running.
+- §6 — `init_completed` / `init_failed` events fire at the seam E2 will use,
+  and the failure event carries the per-round probe detail.
+- §7 — unknown dataset and unknown module both refuse with 404.
+- Routes added and manually exercised against a running server:
+  `POST …/init` → `{runId, status:'running'}`, `GET …/runs/latest` →
+  `{run, progress}`; 404 on unknown dataset/module, 403 without the
+  super-admin key.
+
+### Decisions taken here
+
+- **The orchestrator never builds into the live schema.** Rendered DDL goes
+  into a scratch schema which is dropped in a `finally` regardless of
+  outcome. The real build happens inside the nightly reload (E1), into the
+  shadow schema, before the atomic swap — the same place every other MV is
+  built. Leaving a scratch schema behind would also double storage on a
+  shared data DB for no benefit.
+- **Empty DDL means no schema is created at all.** That is what lets the
+  whole lifecycle run offline: the stub renders `[]`, so the build step
+  touches no database and needs no pool.
+- **The scratch build sets `lock_timeout = '2min'` alongside
+  `statement_timeout = 0`.** Long MV builds are legitimate; waiting forever
+  on someone else's lock is not — that was the exact shape of the zer4u
+  crash loop fixed earlier this session.
+- **Progress is stored as `"<round>:<stage>"` in the existing
+  `progress_stage` column** and the percentage is *computed*, not stored. It
+  is monotonic by construction because `round` only increases and the stage
+  offset only increases within a round — no extra column, no counter that
+  could drift. `describeProgress()` is the single place that turns it into
+  `{round, stage, label, percent}`.
+- **Notifications are an injected `onEvent` callback (default no-op), not a
+  direct call.** E2 wires the outbox provider into that seam without
+  touching this file's control flow, and §6 already asserts both events fire
+  with the right payload.
+- **Every round stores the binding it tried, not just the final one.** When a
+  run fails, "what did it attempt each time" is the entire diagnostic value;
+  storing only the last attempt would throw that away.
+- **A thrown hook still leaves a readable run.** The catch marks the module
+  `failed` and finishes the run row — a run stuck at `running` forever is
+  worse than a failed one, because the 409 concurrency guard would then
+  block every retry.
+- **Fire-and-forget is deliberate here** (the admin tab polls rather than
+  holding a multi-minute request open), and unlike the reload-scheduler race
+  fixed earlier this session there is no cross-entity serialization to
+  defeat — the guard is a per-(dataset, module) running-row check.
