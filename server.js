@@ -147,6 +147,13 @@ app.use('/api/insights', require('./insights/routes/insights.routes'));
 // insights/routes/insights-admin.routes.js.
 app.use('/api/admin/intelligence', require('./insights/routes/insights-admin.routes'));
 
+// ─── Aspect Modules ────────────────────────────────────────────────
+// Generic per-dataset module framework (Smart Replenishment is module #1).
+// Public status + super-admin configuration in one router; a dataset with no
+// module enabled is unaffected by any of it. See modules/routes/
+// modules.routes.js and tasks/pending/aspect-modules.md.
+app.use('/api/modules', require('./modules/routes/modules.routes'));
+
 // ─── Lybi HQ ───────────────────────────────────────────────────────
 // Our own internal company brain — meetings, docs, decisions. NOT a product
 // and never customer-facing; nothing in the product may import from hq/.
@@ -4257,10 +4264,9 @@ app.put('/api/admin/data-loader/:schema/schedule', async (req, res) => {
 // Super-admin override: when this header is present and matches, the request
 // can see across all tenants (including null-tenant/anonymous users).
 // This is intentionally lightweight — the key is shared with internal users only.
-const SUPER_ADMIN_KEY = '6724';
-function isSuperAdminRequest(req) {
-  return req.headers['x-super-admin-key'] === SUPER_ADMIN_KEY;
-}
+// Definition moved to services/super-admin.js so the Aspect Modules router can
+// share it rather than duplicating the key (see that file).
+const { isSuperAdminRequest } = require('./services/super-admin');
 
 // Get all users with filters
 app.get('/api/admin/users', async (req, res) => {

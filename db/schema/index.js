@@ -1,4 +1,4 @@
-const { pgTable, serial, text, timestamp, varchar, jsonb, boolean, integer, date, real } = require('drizzle-orm/pg-core');
+const { pgTable, serial, text, timestamp, varchar, jsonb, boolean, integer, date, real, bigserial, bigint } = require('drizzle-orm/pg-core');
 
 /**
  * Multi-Agent Platform Database Schema
@@ -442,6 +442,69 @@ const libraryFiles = pgTable('library_files', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// =============================================================================
+// ASPECT MODULES (generic per-dataset module framework)
+// =============================================================================
+// See db/migrations/040_add_client_modules.sql and
+// tasks/pending/aspect-modules.md section 02.
+//
+// All three tables live HERE, in the platform DB, and never in a dataset
+// schema — dataset schemas are dropped and rebuilt behind an atomic swap on
+// every import, so anything a user typed there would vanish on the next
+// reload. The views a module generates DO live in the dataset schema; they
+// are disposable and re-rendered from `binding` every reload.
+
+// One row per (dataset, module). TWO independent switches, and the
+// distinction is load-bearing: `status` is owned by the init pipeline,
+// `enabled` is the human on/off button. A module's surfaces (client screen,
+// chat tool, manifest fragment) activate ONLY when enabled AND status='ready'.
+const clientModules = pgTable('client_modules', {
+  id:         bigserial('id', { mode: 'number' }).primaryKey(),
+  datasetId:  text('dataset_id').notNull(),
+  moduleId:   text('module_id').notNull(),
+  enabled:    boolean('enabled').default(false).notNull(),
+  // not_initialized | initializing | ready | failed | degraded (CHECKed in SQL)
+  status:     text('status').default('not_initialized').notNull(),
+  settings:   jsonb('settings').default({}).notNull(),
+  binding:    jsonb('binding'),          // the LLM-mapped, verified binding
+  initModel:  text('init_model'),        // model id from services/models.service.js
+  updatedBy:  text('updated_by'),
+  updatedAt:  timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// One row per init / nightly / verify run. `progressStage` is what the admin
+// tab's progress bar reads — polled, never animated against a guessed
+// duration (the insights-jobs lesson). `rounds` holds per-round verification
+// results so a failed run names which probe failed, with which numbers.
+const moduleRuns = pgTable('module_runs', {
+  id:            bigserial('id', { mode: 'number' }).primaryKey(),
+  datasetId:     text('dataset_id').notNull(),
+  moduleId:      text('module_id').notNull(),
+  kind:          text('kind').notNull(),    // init | nightly | verify (CHECKed in SQL)
+  status:        text('status').notNull(),  // running | succeeded | failed (CHECKed in SQL)
+  progressStage: text('progress_stage'),
+  rounds:        jsonb('rounds'),
+  report:        jsonb('report'),
+  startedAt:     timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  finishedAt:    timestamp('finished_at', { withTimezone: true }),
+});
+
+// Mocked notification delivery (decision D5): the interface is real, the
+// default 'outbox' provider writes here instead of sending, and the admin
+// tab renders these in the run report. `runId` is deliberately NOT a foreign
+// key — outbox history should outlive run pruning, not cascade away with it.
+const moduleOutbox = pgTable('module_outbox', {
+  id:         bigserial('id', { mode: 'number' }).primaryKey(),
+  datasetId:  text('dataset_id').notNull(),
+  moduleId:   text('module_id').notNull(),
+  runId:      bigint('run_id', { mode: 'number' }),
+  event:      text('event').notNull(),
+  recipients: jsonb('recipients').default([]).notNull(),
+  payload:    jsonb('payload').default({}).notNull(),
+  provider:   text('provider').default('outbox').notNull(),
+  createdAt:  timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 // V2 builder tables (the JSON-based plugin builder; coexists with
 // the legacy `agents` / `crewMembers` above which power v1 chats).
 const builderSchema = require('./builder');
@@ -496,6 +559,10 @@ module.exports = {
   testRuns,
   llmUsage,
   libraryFiles,
+  // Aspect Modules framework
+  clientModules,
+  moduleRuns,
+  moduleOutbox,
   // V2 builder
   builderProjects:        builderSchema.builderProjects,
   builderWorkspaces:      builderSchema.builderWorkspaces,
