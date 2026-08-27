@@ -920,3 +920,70 @@ What is proven instead is the structural fact that check exists to confirm:
 the row lives in `agents_platform_db`, which a dataset reload never touches,
 and **nowhere inside a dataset schema** — both asserted directly (§3). The
 live reload remains an outstanding confirmation for whoever runs Phase 1/2.
+
+---
+
+## E1 + E2 — Nightly build hook and the outbox provider (2026-08-27)
+
+The reload's phase 2 gains one call: each live module re-renders its
+infrastructure from its stored binding into the SHADOW schema, after the
+dataset's own indexes and MVs and **before the atomic swap**, so a module's
+views arrive with the swap as one unit.
+
+### Reproduce
+
+```bash
+node scripts/test-modules-nightly.js
+```
+
+| Battery | Result |
+|---|---|
+| `test-modules-nightly.js` | **29/29 PASS** |
+| Client typecheck / lint delta | PASS / **0 new errors, 0 new warnings** |
+| Regression (8 batteries) | 29/29 · 41/41 · 47/47 · 63/63 · 19/19 · 53/53 · 30/30 · 35/35 |
+
+### The three states the plan names, all asserted
+
+| Plan clause | Evidence |
+|---|---|
+| "with the module disabled, the reload path is asserted byte-identical to today" | §1 — nothing built, **no log line emitted into the reload output**, and no schema created or touched |
+| "builds module views in shadow and swaps clean" | §2 — `mv_replenishment_base` (14,762 rows) and `mv_suppliers` both land populated in the shadow schema, built in 29s |
+| "a forced module-build failure degrades the module, notifies, and the reload still completes" | §3 — the hook does not throw, the module is marked `degraded` and stops being live, and a `nightly_build_failed` row lands in the outbox addressed to the configured emails |
+
+Beyond those: §4 asserts a degraded module **recovers to ready** on the next
+clean build — stale-but-correct beats gone, and the state has to clear itself
+or a single bad night would need manual intervention forever.
+
+### Why a module can never fail a reload
+
+The reload is the platform's most important scheduled job and every dataset
+depends on it. An optional module breaking it would be a catastrophic trade,
+so a failed module build degrades the module and lets the swap proceed; the
+module keeps serving its last good build. Even the *lookup* of module state is
+wrapped — if the platform DB is unreachable mid-reload, the dataset's own
+build is unaffected and must continue. Same log-and-surface philosophy as
+`reload-freshness`.
+
+### The defect this step found: a settings field that could not be set
+
+`test-modules-nightly` §5 caught `notificationEvents` — the per-event on/off
+map — being dropped on save with
+`ignoring unknown settings keys: notificationEvents`. The descriptor declared
+`notificationEvents` at the **module** level (the events it can emit) but
+never as a **settings field**, so `saveSettings` correctly refused the unknown
+key and the toggles in the admin mockup could never switch anything off. The
+guard was doing its job; the feature simply did not exist. A guard working is
+not the same as a feature working.
+
+Fixed on both sides: the field is declared with a new `event_toggles` type,
+and the admin tab renders a checkbox per event **the module itself declares**,
+so the list cannot drift from what is actually sent. Absent means ON, matching
+the server, because a UI that disagreed with the server about the default
+would be worse than no UI.
+
+### OUTSTANDING
+
+A real end-to-end reload (Phase 1/2) is run by hand by whoever owns the infra
+and remains the final confirmation for **E1** (views arrive through a genuine
+swap), **C2** (the supplier-column fix only takes effect when the views are
+rebuilt) and **C3** (a lead time survives a reload).

@@ -595,6 +595,24 @@ class DataReloadService {
           await reloader.indexFn(shadowSchema, emitLog, schemaName, options);
         }
 
+        // ── Aspect Modules: build any live module's views into the shadow ──
+        //
+        // Placed here on purpose: after the dataset's own indexes and MVs,
+        // before the swap, so a module's views arrive WITH the swap as one
+        // unit rather than being built against a live schema afterwards.
+        //
+        // This call cannot fail the reload. A module that throws is marked
+        // degraded and notified, and the swap proceeds — an optional module
+        // breaking the platform's most important scheduled job would be a
+        // catastrophic trade. A dataset with no live module returns
+        // immediately having touched nothing.
+        const moduleBuild = await require('../modules/services/module-build.service')
+          .buildModulesInShadow(schemaName, shadowSchema, reloader.pool || this.db, emitLog);
+        if (moduleBuild.failed?.length) {
+          emitLog('creating_views',
+            `[modules] ${moduleBuild.failed.length} module build(s) failed — reload continues, module(s) degraded`);
+        }
+
         // ── Atomic schema swap (hardened; shared with self-heal) ──
         const swapPool = reloader.pool || this.db;
         await this._swapSchemas(schemaName, shadowSchema, swapPool, emitLog);

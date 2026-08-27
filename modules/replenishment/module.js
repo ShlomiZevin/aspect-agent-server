@@ -69,6 +69,23 @@ module.exports = {
       },
     },
     {
+      // NOTE THE NAME COLLISION, which the plan's settings table specifies:
+      // the descriptor's own `notificationEvents` (below) is the list of
+      // events this module CAN emit; this SETTING is the per-event on/off
+      // map an admin edits. They are different things with the same name.
+      //
+      // It was missing at first, and saveSettings correctly dropped it as an
+      // unknown key — so the toggles in the admin mockup could never actually
+      // switch anything off. A guard doing its job is not the same as the
+      // feature working.
+      key: 'notificationEvents', type: 'event_toggles', required: false,
+      label: { en: 'Notify on', he: 'שלח התראה על' },
+      hint: {
+        en: 'Which events send a notification. All on unless switched off.',
+        he: 'על אילו אירועים תישלח התראה. הכול דלוק אלא אם כובה.',
+      },
+    },
+    {
       key: 'horizonDays', type: 'number', required: false, default: 14,
       label: { en: '"Due soon" window (days)', he: 'חלון "בקרוב" (ימים)' },
       hint: {

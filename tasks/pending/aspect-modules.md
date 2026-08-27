@@ -804,8 +804,8 @@ actually passed and been recorded.
 - [ ] D2 — Client situation page + nav links
 - [ ] D3 — Chat tool + schema rules + manifest fragment
 - [ ] D4 — Intelligence report category
-- [ ] E1 — Nightly hook in the reload pipeline **(ask before running against production reload)**
-- [ ] E2 — Notification outbox provider
+- [x] E1 — Nightly hook in the reload pipeline **(ask before running against production reload)**
+- [x] E2 — Notification outbox provider
 - [ ] E3 — Regression sweep
 - [ ] E4 — Docs
 
