@@ -68,6 +68,9 @@ const CATEGORY_COLOR = {
   inventory: '#7C3AED',
   trend: '#7C3AED',
   risk: '#C2410C',
+  // Only offered to PLAN when the Smart Replenishment module is live for the
+  // dataset — see the prompt assembly below.
+  replenishment: '#0E7490',
 };
 const VALID_CATEGORIES = Object.keys(CATEGORY_COLOR);
 
@@ -329,24 +332,111 @@ async function getDataFromDate(datasetId) {
   }
 }
 
+/**
+ * Is the Smart Replenishment module live for this dataset?
+ *
+ * Wrapped so an unreachable module registry can never break an
+ * investigation: a false answer simply means the category is not offered,
+ * which is the behaviour every dataset had before the module existed.
+ */
+/**
+ * Replenishment rows, shaped exactly like a query result so everything
+ * downstream is unchanged — same keys, so the digest, the impact reconciler,
+ * the independent verifier and the downgrade guard all work on it without
+ * knowing it did not come from SQL.
+ *
+ * `sql` is deliberately a human-readable description rather than a query: the
+ * detail page shows this field as "the SQL that produced this", and putting a
+ * fabricated query there would be a lie in the one place the product exists
+ * to be checkable.
+ *
+ * @returns {object|null} null when the module is not live
+ */
+async function getReplenishmentRows(datasetId) {
+  try {
+    const svc = require('../../modules/replenishment/services/recommendations.service');
+    const res = await svc.getRecommendations(datasetId, { onlyDue: true, limit: 200 });
+    if (res.error) return null;
+
+    const data = res.recommendations.map(r => ({
+      item: r.itemName || r.sku,
+      sku: r.sku,
+      supplier: r.supplier,
+      status: r.status,
+      order_qty: r.orderQty,
+      estimated_cost_ex_vat: r.estimatedCostExVat,
+      order_by_date: r.orderByDate,
+      days_late: r.daysLate,
+      days_of_cover: r.daysOfCover === null ? null : Math.round(r.daysOfCover),
+      sales_per_day: Number(r.velocityDaily.toFixed(3)),
+      in_stock: r.warehouseQty,
+      on_order: r.onOrderQty,
+      lead_time_days: r.leadTimeDays,
+      lead_time_source: r.leadTimeSource,
+    }));
+
+    const assumed = res.recommendations.filter(r => r.leadTimeSource !== 'supplier').length;
+    return {
+      sql: `-- Not a SQL query. These rows come from the Smart Replenishment calculation,\n`
+         + `-- which combines sales pace, stock, open orders and a per-supplier delivery\n`
+         + `-- time that is configured by hand and is not present in the database.\n`
+         + `-- Data through ${res.dataThrough}; computed for ${res.today}.`,
+      explanation:
+        `Reorder recommendations for ${res.total} item(s): ${res.summary.orderNow} overdue, `
+        + `${res.summary.dueSoon} due soon. ${assumed} of the rows shown use an ASSUMED supplier `
+        + `delivery time rather than one the client set — every date here depends on it. Order `
+        + `values are list-price estimates excluding VAT and before discounts.`,
+      confidence: assumed > 0 ? 60 : 85,
+      data,
+      rowCount: data.length,
+      columns: data.length ? Object.keys(data[0]) : [],
+    };
+  } catch (err) {
+    console.warn(`[insights] replenishment rows unavailable for ${datasetId}: ${err.message}`);
+    return null;
+  }
+}
+
+async function isReplenishmentLive(datasetId) {
+  try {
+    return await require('../../modules/services/module.service').isLive(datasetId, 'replenishment');
+  } catch {
+    return false;
+  }
+}
+
 async function planQuestion(datasetId, config, prompt) {
   const [dataThrough, dataFrom] = await Promise.all([
     getDataThroughDate(datasetId),
     getDataFromDate(datasetId),
   ]);
+
+  // "replenishment" is offered to PLAN only when the module is live for this
+  // dataset. Offering it otherwise would let PLAN commit to a question
+  // nothing can answer — the rows for that category come from the module's
+  // engine, not from NL->SQL, so without the module there is no source.
+  const replenishmentLive = await isReplenishmentLive(datasetId);
+  const categories = ['cross-sell', 'margin', 'inventory', 'trend', 'risk']
+    .concat(replenishmentLive ? ['replenishment'] : []);
+  const categoryList = categories.map(c => `"${c}"`).join(' | ');
+  const replenishmentNote = replenishmentLive
+    ? '\n\nUse "replenishment" ONLY for questions about what to REORDER — what is about to run out, what should be ordered and when. Those are answered by a dedicated calculation, not by SQL, so do not write a dataQuestion that tries to compute reorder quantities yourself; state the business question plainly and leave measures/dimensions empty.'
+    : '';
   const systemPrompt = `You are planning a proactive business-intelligence investigation for ${config.brandLabel}. You will be given an open-ended investigation prompt (like "Main risks for the next 6 months" or "Bundle opportunities hiding in baskets"). Your job is NOT to answer it yet — it is to turn it into exactly ONE concrete, specific, SQL-answerable data question that a text-to-SQL engine could run against a single database table to gather the evidence needed.
 
 ${dataThrough ? `The data runs through ${dataThrough} — treat that as "now" for anything relative ("recent," "this quarter," "next 6 months"). Do not assume any other year.\n` : ''}${dataFrom ? `The data STARTS on ${dataFrom} — there is nothing before that date. Every window you choose must fall inside ${dataFrom} to ${dataThrough}. If that span is shorter than a year then a year-on-year comparison is IMPOSSIBLE: it returns zero rows, which reaches the user as "your data is not available" when the real fault is the question. Compare against an earlier period that actually exists instead, and name the period you used.\n\n` : '\n'}The data available: ${config.dataModelDescription}
 
 Respond with ONLY a JSON object:
 {
-  "category": one of "cross-sell" | "margin" | "inventory" | "trend" | "risk",
+  "category": one of ${categoryList},
   "dataQuestion": "a single, specific, concrete question in English that can be answered with one SQL aggregate query — mention the measure(s), a breakdown dimension if useful (e.g. by store, by product family, by week), and a time window",
   "measures": ["the 1-3 business quantities being measured, each 1-2 plain words, e.g. \\"revenue\\", \\"units sold\\", \\"inventory value\\""],
   "dimensions": ["the 1-2 entities the result is broken down BY, each 1-2 plain words SINGULAR, e.g. \\"store\\", \\"product family\\", \\"month\\", \\"campaign\\". Use [] if the answer is a single overall figure with no breakdown."],
   "substitution": null OR { "asked": "the entity the prompt asked about", "used": "the entity you are actually reporting on", "reason": "one short clause saying why" },
   "scopeAdded": null OR { "scope": "the restriction you added, e.g. \\"the most recent complete month\\"", "reason": "one short clause saying why" }
 }
+
+${replenishmentNote}
 
 "measures" and "dimensions" are a machine-readable restatement of the SAME question — they are used to re-aggregate the result in code, so they must match "dataQuestion" exactly. List ONLY the entity the question is really about: if the question asks for revenue per campaign, dimensions is ["campaign"] — not ["campaign","discount level"] — even if the underlying table happens to store a finer breakdown.
 
@@ -985,7 +1075,28 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   const { category, dataQuestion, spec, substitution, scopeAdded } = await planQuestion(datasetId, config, actualPrompt);
 
   progress.set(jobId, 'query', dataQuestion);
-  const queryResult = await getDataQueryService(datasetId).queryByQuestion(dataQuestion, entry.schemaName, {
+
+  // ── Smart Replenishment: rows come from the ENGINE, not from NL->SQL ──
+  //
+  // Everything downstream is untouched. The digest, the impact reconciler,
+  // the independent verifier and the downgrade guard all operate on rows and
+  // a write-up; they do not care where the rows came from. That is why this
+  // is a substitution at one point rather than a second pipeline.
+  //
+  // It has to be a substitution: the reorder arithmetic depends on a supplier
+  // delivery time that is not in the database at all, so no generated query
+  // could produce these numbers — and a query that looked like it had would
+  // be wrong in a way every downstream check would pass.
+  const engineResult = category === 'replenishment'
+    ? await getReplenishmentRows(datasetId)
+    : null;
+  if (category === 'replenishment' && !engineResult) {
+    // Module went away between PLAN and QUERY (disabled mid-investigation).
+    // Fall through to the normal path rather than failing the run.
+    console.warn(`[insights] ${datasetId}: replenishment planned but the module is not live — falling back to SQL`);
+  }
+
+  const queryResult = engineResult || await getDataQueryService(datasetId).queryByQuestion(dataQuestion, entry.schemaName, {
     llmAgentName: 'Aspect Intelligence',
     // Anchor relative windows ("last 4 weeks", "this quarter") to the date the
     // data really ends. Without it, any dataset whose export lags — thestock
@@ -1462,6 +1573,10 @@ async function reorderTracked(datasetId, userId, insightIds) {
 }
 
 module.exports = {
+  // Exported ONLY for scripts/test-replenishment-insights.js, the same way
+  // detectSuspiciousResult / reconcileImpactValue are exported for the unit
+  // battery. No route calls this.
+  __getReplenishmentRowsForTest: getReplenishmentRows,
   investigate, listGenerated, listGeneratedAll, getGeneratedById, deleteGenerated, deleteGeneratedAny,
   setTrackedAny, markViewed, bootstrap, listTracked, setTracked, reorderTracked, generateActionPlan,
   classifyPrompt, setDataReloadService,

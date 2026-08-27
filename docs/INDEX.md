@@ -41,6 +41,9 @@ How-to guides for building and understanding the platform. Covers agent building
 ### `docs/features/`
 Documentation of existing features in the system. Each file describes what a feature does, how it works, and how to use it.
 
+- **modules.md** — **Aspect Modules**: the generic per-client module framework. Two switches (`enabled` + `status`), the init pipeline (audit → LLM binding → build → verify, ≤5 rounds), the nightly build hook, notifications, and the guarantee that a dataset with no module is byte-identical to before. Read this before adding a module or touching `modules/`.
+- **replenishment.md** — **Smart Replenishment**, module #1: what to order, how much, when. The engine and its eight named edge cases, the three surfaces (client page, chat tool, Intelligence report), the settings resolution chain, and the data limitations every surface must carry.
+
 ### `docs/product/`
 Business-facing overview docs — not how-to guides. What Aspect is, its architecture at a glance, and per-client data reference.
 

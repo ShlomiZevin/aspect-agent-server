@@ -1,3 +1,14 @@
+> **SUPERSEDED — 2026-08-27.** This work shipped as the first Aspect Module.
+> Live plan and per-step verification:
+> `tasks/pending/aspect-modules.md` and
+> `verification/modules-replenishment/README.md`.
+> Feature docs: `docs/features/modules.md`, `docs/features/replenishment.md`.
+>
+> Kept because its Step 4 engine spec and its eight named edge cases are the
+> literal source the shipped engine was written from, and section 3's
+> limitations are quoted verbatim on every surface. Where this file and the
+> module docs disagree, the module docs are current.
+
 # ZolStock — Smart Replenishment (what to order · how much · when)
 
 > **Narrative version of this spec** (product framing, diagrams, rationale):
@@ -390,4 +401,37 @@ discovered in step 1, add it to all three.
 
 ## 5 · Results
 
-_(fill in as steps complete — this section is the durable record)_
+Shipped 2026-08-27 as **Smart Replenishment**, module #1 of the Aspect
+Modules framework. Every step below transferred; file locations changed and
+hardcoded zolstock references became the LLM-produced binding.
+
+| ZS step | Where it lives now | Verified |
+|---|---|---|
+| 1 · audit + Hebrew gap report | `modules/replenishment/audit.js`, `scripts/run-replenishment-audit.js` | live run, 10 gaps, Hebrew renders |
+| 2 · materialized views | `modules/replenishment/templates.js` (rendered from the binding) | 47/47 render battery, built on live data |
+| 3 · supplier settings | migration 041 + `services/supplier-settings.service.js` | 20/20 |
+| 4 · the engine | `modules/replenishment/engine.js` | **67/67**, all eight edge cases |
+| 5 · router | `modules/replenishment/routes/replenishment.routes.js` | 34/34 |
+| 6 · the screen | `src/components/intelligence/Purchasing/` | headless, both locales, RTL |
+| 7 · chat tool | `modules/replenishment/chat-tool.js` | 43/43, five-ways invariance |
+| 8 · honesty layer + report | manifest + rules + Insights category | 43/43, 21/21 |
+| 9 · regression sweep | customer replay | see the verification README |
+| 10 · docs | `docs/features/{modules,replenishment}.md` | — |
+
+**The gate answer (step 1's stop-and-review):** only **2 of 446 suppliers**
+have catalogue coverage you could order against. The re-scope this step
+existed to force is a one- or two-supplier pilot, which independently
+matches the feasibility brief's conclusion.
+
+**Two things the plan did not anticipate**, both found by running against
+real data rather than by testing:
+
+1. A negative stock position divided by a slow item's velocity produced
+   *"stock covers −5,400 days, order should have gone out on 2011-08-15"*.
+   Quantity stays un-clamped (step 4's rule is unchanged); **time** is now
+   clamped, so the same row reads "already out, 91 days late".
+2. With the 90-day default lead time, **about half the catalogue reads as
+   overdue**. Not a fault — it follows from the default — but it is the
+   alert-fatigue risk with a number attached, and it makes real per-supplier
+   lead times a precondition rather than a nicety.
+

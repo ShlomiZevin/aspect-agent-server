@@ -49,6 +49,7 @@ Env: `.env` locally, `.env.production` in the container; `deploy.sh` picks `.env
 | `insights/` | Aspect Intelligence. See `docs/features/insights.md` — full pipeline, current measured state, and a "Known limitations & leftovers" section listing what is still broken and how to approach it. |
 | `verification/` | Verification runs, one subfolder per thing checked. See the rule below. |
 | `hq/` | Lybi HQ — internal company brain. See `hq/README.md`. |
+| `modules/` | **Aspect Modules** — optional per-client capabilities, one folder + one descriptor each. Smart Replenishment is module #1. A dataset with no module row is byte-identical to before, and that is unit-asserted. See `docs/features/modules.md`. |
 | `db/schema/*.js` | Drizzle table definitions (`index.js`, `builder.js`). |
 | `db/migrations/` | ~46 `.sql` + ~43 `run-*.js` runners. |
 | `docs/` | See `docs/INDEX.md`. `docs/features/` documents shipped features; `docs/guides/` is how-to. |
@@ -117,6 +118,8 @@ The rule must say only "mirror the prompt", and must state that Hebrew **in the 
 **Suggested reports are shared, not per-user.** `bootstrap()` writes under the fixed `system` user; `listGenerated` merges those into every session's own list as read-only suggestions. Saving one **clones it to the user** (`seededFrom` links the copy, so the original stops showing) — ownership starts at Save, which is also why a saved report is a frozen snapshot while suggestions keep refreshing. Deleting a suggestion is not offered: it belongs to everyone. Copying per-user on first visit was tried and rejected — each copy freezes at that user's first visit, so two people would see different "current" numbers for the same dataset.
 
 **Scheduled work that depends on a data load is self-checking, not clock-scheduled.** `scheduler-tick.service.js` runs every minute from one Cloud Scheduler job. Jobs with a fixed hour (`import`, `drive_sync`) read their window from `schedule-config.service`; jobs that must follow the load — `ensureIndexed`, and `insights-refresh.service.js` — instead run every tick and no-op unless their precondition holds ("loaded today, not yet done today"). A nightly report built before the load lands describes yesterday's data.
+
+**A module never fails the thing it plugs into.** `modules/` hooks sit inside the reload (phase 2, before the swap), the dispatcher (tool attach) and the Insights PLAN step. Every one of them is wrapped: a module that throws is marked `degraded` and the host path continues. The reload is the platform's most important scheduled job and every dataset depends on it — an optional module breaking it would be a catastrophic trade. Two switches gate everything (`enabled` AND `status='ready'`); `moduleService.getLiveModules()` is the single definition of "live", and no caller reads the two columns itself.
 
 **New features get their own folder with a router**, mounted with one line in `server.js` — the pattern `bi/`, `insights/`, `hq/`, `builder/` all follow. Do not add to the inline-route pile.
 

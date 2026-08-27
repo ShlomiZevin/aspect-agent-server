@@ -1241,3 +1241,71 @@ on windows anchored to the data's last date. A query cannot reach the first
 of those, so any SQL answer to a reorder question is wrong in a way that
 looks right — worse than refusing. The rules now name the tool and say why.
 The item-grain fact-scan ban survives unchanged.
+
+---
+
+## D4 — Intelligence report category (2026-08-27)
+
+### Reproduce
+
+```bash
+node scripts/test-replenishment-insights.js
+```
+
+| Battery | Result |
+|---|---|
+| `test-replenishment-insights.js` | **21/21 PASS** |
+| Regression (7 batteries) | 53/53 · 19/19 · 30/30 · 35/35 · 29/29 · 67/67 · 43/43 |
+
+### One substitution, not a second pipeline
+
+PLAN gains a `replenishment` category; when it picks one, the QUERY step
+takes rows from the module's engine instead of NL→SQL. **Everything
+downstream is untouched** — the digest, the impact reconciler, the
+independent verifier and the downgrade guard all operate on rows and a
+write-up and do not care where the rows came from. That is why this is a
+substitution at one point rather than a parallel pipeline.
+
+It *has* to be a substitution: the reorder arithmetic depends on a supplier
+delivery time that is not in the database at all, so no generated query could
+produce these numbers — and one that looked like it had would be wrong in a
+way every downstream check would pass.
+
+| Property | Result |
+|---|---|
+| The category is offered to PLAN **only when the module is live** | OK — a dataset without the module never sees it |
+| Engine rows carry the exact keys a query result has | OK — `sql`, `explanation`, `confidence`, `data`, `rowCount`, `columns` |
+| Columns derived from the data, not invented | OK |
+| Module disabled ⇒ no engine rows, pipeline unchanged | OK |
+| Module disabled mid-run ⇒ falls back to SQL rather than failing | OK |
+| Confidence capped while lead times are assumed | OK (60) |
+
+### The `sql` field does not lie
+
+The detail page renders that field as *"the SQL that produced this"*. A
+fabricated query there would be a lie in the single place the product exists
+to be checkable, so it instead reads:
+
+```
+-- Not a SQL query. These rows come from the Smart Replenishment calculation,
+-- which combines sales pace, stock, open orders and a per-supplier delivery
+-- time that is configured by hand and is not present in the database.
+-- Data through 2026-08-26; computed for 2026-08-27.
+```
+
+---
+
+## E4 — Docs (2026-08-27)
+
+| Written | Updated |
+|---|---|
+| `docs/features/modules.md` — the framework | `docs/INDEX.md` |
+| `docs/features/replenishment.md` — the module | `agents/zolstock/AGENT.md` |
+| | server `CLAUDE.md` (layout + a convention entry) |
+| | client `CLAUDE.md` (the two client surfaces and why one may not call `useLanguage()`) |
+| | `tasks/pending/zolstock-smart-replenishment.md` → `tasks/done/`, Results filled in |
+
+The moved ZS plan keeps a superseded-header pointing at the live plan and the
+feature docs, and is kept rather than deleted because its Step 4 engine spec
+and eight named edge cases are the literal source the shipped engine was
+written from.

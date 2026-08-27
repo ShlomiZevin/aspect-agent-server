@@ -114,6 +114,28 @@ instead of taking ACCESS EXCLUSIVE.
 
 ---
 
+## Modules
+
+**Smart Replenishment** is available for this dataset (`status=ready`,
+binding stored). It answers "what to order, how much, when" from a nightly-
+built `mv_replenishment_base` plus a per-supplier delivery time the client
+configures. When it is enabled it adds a `fetch_replenishment` crew tool, a
+client page at `/intelligence/zolstock/purchasing`, and a `replenishment`
+category in the Intelligence report. When it is not, none of those exist.
+
+The gate number: **only 2 of 446 suppliers** have catalogue coverage you can
+order against. See `docs/features/replenishment.md`.
+
+## Two supplier columns — and the views changed meaning
+
+`items.positive_supplier` is the supplying COMPANY (what a buyer means by
+"ספק"); `items.supplier` is the manufacturer, whose Latin values are stored
+character-reversed. Until 2026-08-27 the sales MVs carried the manufacturer
+under the name `supplier`, so every "sales by supplier" answer grouped by the
+wrong dimension. On the views `supplier` now means the supplying company and
+the old value is available as `manufacturer`. Takes effect on the next
+reload.
+
 ## Tool: `fetch_zolstock_data`
 
 The single tool that powers all data queries.
