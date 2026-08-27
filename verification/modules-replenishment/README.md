@@ -1055,3 +1055,101 @@ Two things follow, and both were already in the brief:
 - **Writing a lead time is gated by the module's own `clientCanEditLeadTimes`
   setting**, defaulting to editable — the buyer owns lead times and is the
   person who knows them. Dataset-level defaults stay super-admin only.
+
+---
+
+## D2 — Client situation page + nav links (2026-08-27)
+
+`/intelligence/:datasetId/purchasing` — three tabs sharing one anatomy:
+summary tiles → a master table whose parent rows (suppliers) expand into
+child rows (items) → a "How we calculated this" trust panel on every leaf.
+
+### Reproduce
+
+```bash
+# server + client dev servers, then:
+#   http://localhost:5173/intelligence/zolstock/purchasing
+npx tsc -b && npx eslint .    # in the client repo
+```
+
+| Check | Result |
+|---|---|
+| Client typecheck | **PASS** |
+| Lint delta vs the A0 baseline | **0 new errors, 0 new warnings** |
+| i18n coverage | **54 keys, every one present in BOTH locales** (asserted) |
+| English render | verified headless against live data |
+| Hebrew + RTL render | verified headless — full mirrored layout, `direction: rtl` |
+| Trust panel | verified — inputs with sources, derivation, 4 caveats in words |
+
+### Verified against live data in a real browser
+
+Screenshots taken headless through CDP against the running dev servers, with
+the module's views built into the live schema (what the E1 hook does on every
+reload). Real numbers: 13 suppliers, 5,142 order-now, 104 due soon, 3,492 ok,
+537 no demand.
+
+- **Purchasing tab** — banner naming how many suppliers have a real delivery
+  time, four tiles, supplier rows with the `default — set it` badge and Edit,
+  expanding into urgency-sorted item rows each carrying one plain-language
+  sentence and a `Why?`.
+- **Trust panel** — sales pace / in stock / on the way (flagged *may already
+  have been delivered*) / reserved / delivery time (*assumed default*) /
+  safety buffer (*computed from sales pace*), the derivation sentence, and
+  every caveat quoted from the server's `notes[]` rather than re-worded here.
+- **Hebrew** — whole layout mirrors, all 54 strings translated, `dir=rtl`
+  confirmed on the document.
+
+### Two defects the real screen exposed that no test had
+
+Both are the reason the plan says to look at it rather than trust a green
+suite.
+
+1. **"stock covers −5,400 days, this order should have gone out on
+   2011-08-15."** A negative availability divided by a slow-moving item's
+   velocity produces a hugely negative cover and an order-by date a decade
+   in the past. Arithmetically implied by the formula; useless as a
+   statement — nobody can act on "you should have ordered in 2011", and it
+   made the whole screen look broken.
+   **Fixed in the engine:** *quantity* may still be negative and is reported
+   as such (edge case 3 is unchanged), but *time* is clamped — cover is 0,
+   the order-by date is one lead time ago, lateness reads **91 days** instead
+   of 5,491, and a new note says "Nothing is available to sell right now —
+   this order is already overdue by the full delivery time." Asserted by four
+   new checks in the engine battery (now 67/67).
+2. **"SALES PACE 0 / day"** next to "Order 10 units." Most of this catalogue
+   moves slowly — 4 units in 90 days is 0.044/day, which one decimal renders
+   as zero. "It sells zero per day, order ten" is not a sentence a buyer can
+   trust. Small rates now keep enough digits: the same row reads **0.022 /
+   day**.
+
+### Design notes
+
+- The nav item renders **only when the module is enabled AND ready**, resolved
+  from the public module-status endpoint. Switching the module off removes the
+  page from the navigation with no separate config to keep in step. The route
+  always resolves, so a stale bookmark lands on the shell rather than a broken
+  page.
+- Caveats are **quoted from the server**, never re-worded on the client — the
+  screen, the chat tool and the report must not phrase the same caveat three
+  slightly different ways.
+- Editing a lead time is a **modal**, and an empty value CLEARS the override
+  rather than storing 0 — that is how a buyer un-sets it. On save the page
+  re-fetches rather than patching locally, because changing a lead time moves
+  every date and status for that supplier and recomputing here would be a
+  second implementation of the engine.
+- **Warehouse and Branches ship visible but phase-gated**, each explaining in
+  plain words what it will show and what is missing — the Branches copy names
+  the real blocker (branch stock arrives without item codes) rather than
+  showing invented numbers.
+- CSV export carries the sources and caveats, not just the numbers: a buyer
+  takes it into a purchase order, and a figure without its basis is not usable
+  there. A BOM is prepended so Excel opens the Hebrew item names correctly.
+
+### State left behind
+
+`mv_replenishment_base` and `mv_suppliers` now exist in the **live** zolstock
+schema — built by hand here because triggering the loader is not this
+session's to do; the E1 hook rebuilds them on every reload from the same
+stored binding. The module is left `status=ready, enabled=false`: init is
+done, and enabling a client-facing surface is a decision, not a side effect
+of testing. No supplier_settings rows remain.

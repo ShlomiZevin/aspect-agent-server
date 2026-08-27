@@ -801,7 +801,7 @@ actually passed and been recorded.
 - [x] C2 — Sales-view supplier fix
 - [x] C3 — supplier_settings + service
 - [x] D1 — Recommendations API
-- [ ] D2 — Client situation page + nav links
+- [x] D2 — Client situation page + nav links
 - [ ] D3 — Chat tool + schema rules + manifest fragment
 - [ ] D4 — Intelligence report category
 - [x] E1 — Nightly hook in the reload pipeline **(ask before running against production reload)**

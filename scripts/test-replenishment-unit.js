@@ -144,6 +144,17 @@ console.log('\n3 · The eight named edge cases (ZS-4)');
   ok('[3] …and it is explained rather than hidden',
     r.notes.some(n => /negative/i.test(n)), JSON.stringify(r.notes));
   ok('[3] …the item is still ordered for', r.orderQty > 0, r.orderQty);
+  // TIME, unlike quantity, is clamped. Dividing a negative position by a
+  // slow item produced "stock covers -5,400 days, order should have gone out
+  // on 2011-08-15" on the real screen — implied by the formula, useless as a
+  // statement, and impossible to act on.
+  ok('[3] …but days of cover is 0, never negative', r.daysOfCover === 0, r.daysOfCover);
+  ok('[3] …the order-by date is one lead time ago, not a decade',
+    r.orderByDate === '2026-05-27', r.orderByDate);
+  ok('[3] …lateness is on the order of the lead time', r.daysLate === 91, r.daysLate);
+  ok('[3] …and the row says it is already out, in words',
+    r.alreadyOut === true && r.notes.some(n => /Nothing is available to sell/i.test(n)),
+    JSON.stringify(r.notes));
 }
 {
   // 4 — no carton size ⇒ no rounding, and say so

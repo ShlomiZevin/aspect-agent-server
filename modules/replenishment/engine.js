@@ -190,7 +190,24 @@ function computeRecommendation(row, settings, context = {}) {
   const reorderPoint = velocityDaily * leadTimeDays + safetyStock;
 
   // ── timing ──
-  const daysOfCover = velocityDaily > 0 ? netAvailable / velocityDaily : null;
+  //
+  // Cover is clamped at zero. The QUANTITY may legitimately be negative and
+  // is reported as such (edge case 3) — but time cannot be: dividing a
+  // negative position by a slow-moving item produced "stock covers -5,400
+  // days, this order should have gone out on 2011-08-15", which is
+  // arithmetically implied by the formula and useless as a statement. Nobody
+  // can act on "you should have ordered in 2011".
+  //
+  // Clamped, the same item says: cover 0, and the order is late by the
+  // delivery time — "you are out of stock and this should have gone out
+  // three months ago", which is both true and actionable. The negative
+  // position stays visible in netAvailable and in its own note.
+  const rawCover = velocityDaily > 0 ? netAvailable / velocityDaily : null;
+  const daysOfCover = rawCover === null ? null : Math.max(0, rawCover);
+  const alreadyOut = rawCover !== null && rawCover <= 0;
+  if (alreadyOut) {
+    notes.push('Nothing is available to sell right now — this order is already overdue by the full delivery time.');
+  }
   const orderByDate = daysOfCover === null ? null : addDays(dataThrough, daysOfCover - leadTimeDays);
   const daysLate = orderByDate ? daysBetween(today, orderByDate) : null;
 
@@ -278,6 +295,8 @@ function computeRecommendation(row, settings, context = {}) {
     velocityBasis,
     thinHistory,
     staleDemand,
+    /** Availability is at or below zero — cover is 0, not a negative number. */
+    alreadyOut,
     qtyInWindow,
     warehouseQty,
     storeQty,
