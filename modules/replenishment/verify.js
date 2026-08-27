@@ -198,12 +198,19 @@ async function verify(ctx) {
       { rawTotal: rawN, viewTotal: viewN, nonzeroRows: nonzero, share }));
   }
 
-  // ── 8. per-quirk assertions ──
-  const quirks = binding.quirks || [];
-  if (quirks.includes('catalog_not_unique')) {
-    // The binding CLAIMS the catalogue repeats its key. Verify the rendered
-    // SQL actually collapsed it, by comparing raw catalogue rows against the
-    // view's grain.
+  // ── 8. invariants the template ALWAYS enforces ──
+  //
+  // These are deliberately NOT gated on the binding's declared quirks. They
+  // were, and the first real init exposed why that is wrong: the model did
+  // not declare `catalog_not_unique`, so the dedup probe silently did not
+  // run — the model had shrunk its own verification by omission. The
+  // template dedupes and anchors unconditionally, so the checks that they
+  // took must be unconditional too. A quirk is a description of the data,
+  // never a switch for how hard we look.
+  {
+    // The rendered SQL always collapses the catalogue to one row per
+    // replenishment key. Verify it actually did, by comparing raw catalogue
+    // rows against the view's grain.
     const rawCat = await one(pool, `
       SELECT COUNT(*)::bigint AS rows,
              COUNT(DISTINCT ${binding.catalog.replenishmentKey})::bigint AS distinct_keys
@@ -215,7 +222,9 @@ async function verify(ctx) {
       { catalogueRows: num(rawCat.rows), distinctKeys: num(rawCat.distinct_keys) }));
   }
 
-  if (quirks.includes('anchor_to_demand_max_date')) {
+  {
+    // Same reasoning: the template always anchors windows to the demand max
+    // date, so the check that it did is unconditional.
     const anchored = await one(pool, `
       SELECT COUNT(DISTINCT data_through)::bigint AS n, MAX(data_through) AS d
         FROM ${vs}.mv_replenishment_base`);

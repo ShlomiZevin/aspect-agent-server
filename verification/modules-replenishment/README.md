@@ -760,3 +760,163 @@ The battery earned its keep; none were visible without building for real.
   database error.
 - **On a failed round the model is shown the exact probe failures with their
   numbers**, which is what makes the next attempt a revision, not a re-roll.
+
+---
+
+## C1 — Run init on ZolStock; review the audit ⚠ GATE (2026-08-27)
+
+The first real init: audit → LLM binding proposal → build → verify, against
+live zolstock. Converged on **round 1 in 4–5 minutes**, all 12 probes green.
+
+### Reproduce
+
+```bash
+node scripts/run-module-init.js zolstock replenishment
+```
+
+### Result
+
+| | |
+|---|---|
+| Run outcome | **succeeded**, round 1 of 5 |
+| `client_modules` | `status=ready`, `enabled=false`, binding stored, `init_model=claude-sonnet-4-6` |
+| Probes | **12/12** |
+
+Left deliberately at `enabled=false`: init is complete, and switching it on
+is the gate decision, not something this step takes.
+
+### The converged binding vs the hand-authored B4 reference
+
+| Field | Reference | Converged | Verdict |
+|---|---|---|---|
+| `demand` | facts / qty_sold / row_date / item_number_sales / `record_type='sales'` | identical | ✅ |
+| `stock.warehouse` | warehouse_qty / sku | identical | ✅ |
+| `catalog` | items / item_number / sku / **positive_supplier** | identical | ✅ |
+| `onOrder`, `committed` | purchase_order_qty / customer_order_qty on sku | identical | ✅ |
+| `stock.store` | omitted in the reference | **included** | Better than the reference — the data exists, and it changes nothing today because `includeStoreStock` defaults false |
+| `quirks` | 6 declared | **3 declared** | Missing `catalog_not_unique`, `vat_1_18`, `supplier_col_reversed_latin` — see below |
+
+**The model chose `positive_supplier` over `supplier` on its own** — i.e. it
+avoided the exact trap the existing sales MVs had been sitting in for months
+(fixed separately in C2). It could do that because the audit hands it
+*measured* facts rather than column names.
+
+### The defect this step found: quirk-gated probes let the model shrink its own scrutiny
+
+The model did not declare `catalog_not_unique`, and `dedup_applied` was gated
+on that quirk — **so the probe silently did not run**. The dedup itself still
+happened (the template applies it unconditionally) and `grain_is_unique`
+covered the outcome, so nothing was wrong with the data. The problem is
+structural: a binding could reduce the amount of verification applied to it,
+by omission, with no signal.
+
+Fixed: probes that check an invariant the template **always** enforces
+(`dedup_applied`, `anchored_to_data_date`) now run unconditionally. A quirk is
+a description of the data, never a switch for how hard we look. Re-run
+confirms 12/12 with `dedup_applied` back:
+`catalogue has 15,180 keyed rows over 14,762 distinct keys; view has 14,762 rows`.
+
+### Two more defects found on the first real init
+
+1. **The binding prompt's column whitelist was narrower than the roles it had
+   to fill.** It was assembled from pattern-matched columns only, so the
+   quantity columns (`qty_sold`, `warehouse_qty`, `purchase_order_qty`, …)
+   were never in it — and the model duly returned a binding with no `qtyCol`
+   anywhere, having been told to name no others. The audit now reports every
+   column of the fact and catalogue tables with its type, and the whitelist
+   uses that. A whitelist narrower than the roles it must fill is a trap, not
+   a guard.
+2. **A rejected proposal aborted the entire run instead of costing one
+   round.** Structural validation catches a malformed binding in ~1s with
+   errors naming exactly which fields are wrong — the most actionable
+   feedback the loop can carry — and the first real init died on round 1 with
+   a perfectly recoverable `demand.qtyCol is required`. A rejected proposal is
+   now a round failure that feeds its errors forward.
+
+### FOR THE GATE — what needs a human decision
+
+1. **Scope.** Only **2 of 446 suppliers** have catalogue coverage you could
+   order against (`ב.א. זול סטוק והפצה בע"מ` 83.5%, `ארכיון ב.א` 58.3%);
+   13 more have a token handful, often 1 item of 16,648. The plan's own
+   instruction is to re-scope rather than ship a screen that recommends
+   nothing. This independently confirms the feasibility brief's
+   one-supplier pilot.
+2. **The missing quirks.** `vat_1_18` and `supplier_col_reversed_latin` only
+   affect the wording of caveats, but their absence means some honest
+   warnings would not appear. They are properties of the dataset rather than
+   judgement calls, so the open question is whether the model should be
+   declaring them at all, or whether they belong in the manifest.
+3. **No goods-receipt data** (audit A6) remains the largest correctness
+   threat: lead time can never be measured, and an order placed long ago
+   still looks open, so supply is over-counted and the system under-orders.
+
+---
+
+## C2 — Sales-view supplier fix (2026-08-27)
+
+### The bug
+
+`ITEM_DIM` in `scripts/create-zolstock-mvs.js` selected `items.supplier` —
+the **manufacturer/importer**, whose Latin values are stored
+character-reversed in the export (`'GNIDART SBD'` is "DBS TRADING") — under
+the name `supplier`. Every "sales by supplier" answer therefore grouped by
+the wrong dimension **and** displayed reversed text.
+
+### The fix
+
+On the views, `supplier` is now `items.positive_supplier` (the supplying
+company a buyer orders from); the old value remains available as
+`manufacturer`. `sku` is propagated too, so a sku-based question can be
+answered from the sales views without bridging through `items`.
+`services/schema-rules/zolstock.rules.js` documents the changed semantics —
+without it the SQL generator would keep treating `supplier` as the
+manufacturer.
+
+| Check | Result |
+|---|---|
+| `test-schema-contract.js` | **19/19** |
+
+The date-literal scanner caught a hardcoded date in the new rules text and
+was right to — a data-end claim rots on every reload — so the sentence states
+the policy without one.
+
+**OUTSTANDING:** the MV change only takes effect when the views are rebuilt,
+i.e. on the next full reload. Not run here (Phase 1/2 are run by hand by
+whoever owns the infra).
+
+---
+
+## C3 — supplier_settings + service (2026-08-27)
+
+Migration 041 (platform DB), the Drizzle definition, and the resolution
+service: **supplier override → dataset default → code constant**, every value
+tagged with the level it came from.
+
+### Reproduce
+
+```bash
+node db/migrations/run-041-add-supplier-settings.js
+node scripts/test-supplier-settings.js
+```
+
+| Battery | Result |
+|---|---|
+| `test-supplier-settings.js` | **20/20 PASS** |
+
+### Why the source tags exist
+
+The client screen says "90 days — you set this" versus "90 days — default,
+set it", and a buyer who cannot tell those apart cannot judge the
+recommendation built on top of them. Every override column is nullable on
+purpose: NULL means "not set" and falls back, which is how a buyer *un-sets*
+a lead time — a copied-down default would be indistinguishable from a real
+choice. A deliberate `0` is still a real value, and that is asserted.
+
+### OUTSTANDING — the reload-survival confirmation
+
+The plan's C3 clause is "upsert a lead time, run a full zolstock reload,
+confirm it survived". Triggering the data loader is not this session's to do.
+What is proven instead is the structural fact that check exists to confirm:
+the row lives in `agents_platform_db`, which a dataset reload never touches,
+and **nowhere inside a dataset schema** — both asserted directly (§3). The
+live reload remains an outstanding confirmation for whoever runs Phase 1/2.

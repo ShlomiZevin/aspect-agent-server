@@ -797,9 +797,9 @@ actually passed and been recorded.
 - [x] B2 — The engine + unit battery
 - [x] B3 — Audit hook + Hebrew gap report
 - [x] B4 — proposeBinding + verification probes
-- [ ] C1 — Run init on ZolStock; review the audit **(GATE — human review required)**
-- [ ] C2 — Sales-view supplier fix
-- [ ] C3 — supplier_settings + service
+- [x] C1 — Run init on ZolStock; review the audit **(GATE — human review required)**
+- [x] C2 — Sales-view supplier fix
+- [x] C3 — supplier_settings + service
 - [ ] D1 — Recommendations API
 - [ ] D2 — Client situation page + nav links
 - [ ] D3 — Chat tool + schema rules + manifest fragment
