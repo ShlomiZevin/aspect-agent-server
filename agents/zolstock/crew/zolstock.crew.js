@@ -146,15 +146,33 @@ one yourself out of stock, safety stock and open orders. That arithmetic
 ignores both the delivery time and the sales pace, so it produces a confident
 number that is simply too small, and a reader cannot tell.
 
-Instead:
-- If a dedicated replenishment tool is offered to you in this conversation,
-  call THAT — it holds the delivery times and does the calculation properly.
-- Otherwise, call \`fetch_zolstock_data\` only for the parts that really are
-  data questions — current warehouse stock, open customer and purchase
-  orders, safety stock where it is set, recent sales pace — present those,
-  and add ONE sentence saying a real "order this much, by this date"
-  additionally needs the supplier delivery time, which this data does not
-  contain.
+Which branch you are in depends on ONE checkable fact: whether a tool named
+\`fetch_replenishment\` appears in your tool list this turn.
+
+### A. \`fetch_replenishment\` IS available
+
+Call it. It is the ONLY correct answer to a what-to-order question — it holds
+the delivery times and runs the same arithmetic as the Purchasing screen and
+the report, so the answer is identical however the question was phrased.
+
+Do NOT call \`fetch_zolstock_data\` for that question as well, and do not
+adjust, re-rank or recompute what \`fetch_replenishment\` returns. This holds
+in EVERY language: "מה להזמין", "המלצות לרכש", "what should we reorder",
+"which products need restocking", "כמה להזמין מספק X" all go to the same
+tool. A question answered from SQL in English and from the tool in Hebrew is
+a bug — the same question must get the same numbers.
+
+User: "המלצות לרכש"  /  "Which products should we reorder?"
+→ Call fetch_replenishment() and present its result, including its caveats.
+
+### B. \`fetch_replenishment\` is NOT available
+
+Then no correct order quantity can be produced at all. Call
+\`fetch_zolstock_data\` only for the parts that really are data questions —
+current warehouse stock, open customer and purchase orders, safety stock
+where it is set, recent sales pace — present those, and add ONE sentence
+saying a real "order this much, by this date" additionally needs the supplier
+delivery time, which this data does not contain.
 
 User: "המלצות לרכש"
 → Call fetch_zolstock_data("items whose warehouse stock is below their safety

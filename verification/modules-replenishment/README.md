@@ -1583,3 +1583,69 @@ and all six reloaders register.
 
 The general lesson, again: a green battery says the code it imports works. It
 says nothing about the code it does not import.
+
+---
+
+## Closing pass (2026-08-28)
+
+### Tool routing was language-dependent — fixed
+
+E3's replay showed the same reorder question going to `fetch_replenishment` in
+Hebrew and to generated SQL in English, seven minutes apart, module live
+throughout. Cause was in the crew guidance, not the tool: the section was
+written module-OFF-first, with the module-ON case as a conditional aside, and
+the ONLY worked example called `fetch_zolstock_data`. The model followed the
+example.
+
+Rewritten as an explicit two-branch rule keyed on one checkable fact — whether
+a tool named `fetch_replenishment` is in the tool list this turn — with a
+worked example under EACH branch, and a stated invariant that the same
+question must not be answered from SQL in one language and from the tool in
+another. Naming the tool is safe: with the module off, no such tool exists and
+the model falls to branch B, which is the pre-module behaviour verbatim.
+
+Verified live, 4 phrasings, both languages:
+
+| Question | Tool called |
+|---|---|
+| "Which products should we reorder based on recent sales…" | `fetch_replenishment` |
+| "What should we order this week?" | `fetch_replenishment` |
+| "המלצות לרכש" | `fetch_replenishment` |
+| "אילו מוצרים מומלץ לרכוש מחדש…" | `fetch_replenishment` |
+
+The 90-day-assumption disclosure is present in both languages. An earlier
+check of mine reported it missing in Hebrew — that was the check, not the
+answer: it searched for `זמן אספקה` while the reply says `זמני האספקה`. The
+Hebrew-morphology trap in CLAUDE.md, hit again, this time in a test.
+
+### "Rebuild now" wired into the admin UI
+
+The endpoint existed; the button did not. Added to the module modal, shown
+only when the module is live (there is nothing to rebuild from without a
+stored binding), blocking with a `Rebuilding…` state because it is the same
+tens-of-seconds scan the nightly does and an operator needs the outcome.
+
+Also corrected the modal's own notice, which still claimed initialization
+"builds into a scratch schema only. The live schema is rebuilt by the nightly
+data reload" — false since init started building into live on success.
+
+### Replay cruft removed from the shared platform DB
+
+`scripts/cleanup-replay-modules-e3.js --apply`: 13 conversations, 46 messages,
+33 thinking steps, 2 users. Verified 0 remaining.
+
+The first attempt failed on an FK — a one-off probe had been run with a
+conversation id lacking the `replay-` prefix, so a prefix-only sweep missed it
+and it blocked the user delete. The script now matches on **ownership** (any
+conversation belonging to a replay user) rather than on the conversation's
+name, which is the property that actually defines replay traffic.
+
+Untouched, and NOT this branch's: 13 other `replay-*` users with 251
+conversations from the Stage 2/3 verification work. Left alone deliberately —
+they may be someone's comparison baselines.
+
+### Final state
+
+Batteries 29/29 · 41/41 · 47/47 · 67/67 · 20/20 · 30/30 · 35/35 · 53/53.
+Client `tsc -b && vite build` clean. Server starts with 0 failures and all 6
+reloaders registered.

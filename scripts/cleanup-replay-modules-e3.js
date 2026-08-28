@@ -25,10 +25,17 @@ const apply = process.argv.includes('--apply');
 async function main() {
   await db.initialize();
 
-  const convs = await db.query(
-    `SELECT id, external_id FROM conversations WHERE external_id LIKE $1`, [`${PREFIX}%`]);
   const users = await db.query(
     `SELECT id, external_id FROM users WHERE external_id LIKE $1`, [`${PREFIX}%`]);
+
+  // Match on OWNERSHIP, not only on the conversation's external id. A one-off
+  // probe run by hand can easily be given a conversation id without the
+  // `replay-` prefix (one was), and then it survives a prefix-only sweep and
+  // blocks the user delete on the FK. Anything owned by a replay user IS
+  // replay traffic, whatever it happens to be called.
+  const convs = await db.query(
+    `SELECT id, external_id FROM conversations WHERE external_id LIKE $1 OR user_id = ANY($2)`,
+    [`${PREFIX}%`, users.rows.map(u => u.id)]);
   const ids = convs.rows.map(r => r.id);
 
   const count = async (sql, params) => (await db.query(sql, params)).rows[0].c;
