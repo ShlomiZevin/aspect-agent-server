@@ -1649,3 +1649,67 @@ they may be someone's comparison baselines.
 Batteries 29/29 · 41/41 · 47/47 · 67/67 · 20/20 · 30/30 · 35/35 · 53/53.
 Client `tsc -b && vite build` clean. Server starts with 0 failures and all 6
 reloaders registered.
+
+---
+
+## E1 / C2 / C3 CLOSED by a real reload (2026-08-28)
+
+The zolstock reload Kosta ran closed all three items that could not be
+verified locally. Import 13:08-13:12 (4 files, 30.5M rows), index phase
+13:12 -> ~16:2x, atomic swap, `zolstock_old` dropped.
+
+### C2 — CONFIRMED FIXED IN LIVE
+
+| | before | after |
+|---|---|---|
+| reversed values in `mv_sales_item_total.supplier` | `ACRIF ZAMLY`, `BULCNUS`, `GNIDART SBD`, … | **0** |
+| top supplier by item count | reversed manufacturer strings | `שופרסל סטוק בע"מ (דן אס)` 11,321 |
+| `manufacturer` column | did not exist | present, holds the old reversed values |
+
+Verified in the SHADOW schema before the swap as well as after — the fix was
+known good before it reached a single client.
+
+### E1 — CONFIRMED, and stronger than expected
+
+`mv_replenishment_base` and `mv_suppliers` were built by
+`buildModulesInShadow()` inside the reload, after the dataset's own 8 views
+and before the swap, and arrived in the live schema with the rename: 10/10
+views live, module views 2/2, 14,649 and 12 rows.
+
+The decisive evidence is that the API returns **numbers identical to before
+the swap**, to the cent:
+
+```
+before: orderNow 5309, dueSoon 84, ok 3299, noDemand 498, total 9190, ₪11,442,686.55
+after : orderNow 5309, dueSoon 84, ok 3299, noDemand 498, total 9190, ₪11,442,686.55
+```
+
+The hand-built views were replaced by reload-built ones and nothing moved.
+That is what the hook was for.
+
+### C3 — the check was mis-framed
+
+Lead times live in `agents_platform_db.supplier_settings` — a DIFFERENT
+DATABASE from the one being swapped — and are joined at query time, never
+baked into a materialized view (confirmed in `templates.js`). A schema swap
+cannot destroy them. C3 is structural, not empirical; there was never a
+failure mode to test.
+
+What the check DID surface is more useful: **zero supplier settings rows are
+configured**, for any dataset. That is why every recommendation discloses an
+assumed 90-day lead time and why ~5,309 items read as overdue. It is missing
+client data, not a defect — and it only needs filling for the two suppliers
+with usable coverage.
+
+### The reload survived a deploy mid-run
+
+The Cloud Run deploy of rev 00511-zj7 landed at ~13:4x and killed the index
+worker mid-phase; the admin UI's log froze at 13:40 and looked hung. The
+self-heal restarted it at 15:09 and it ran to completion. Two consequences
+worth keeping:
+
+- the log freezing is NOT evidence the run died — check `pg_stat_activity`
+  and the shadow schema's index/MV counts, not the UI;
+- the restart landed on the NEW revision, so the MVs were built by the fixed
+  code. Had the original worker survived, it would have rebuilt the views
+  with the OLD supplier mapping and C2 would still be live.
