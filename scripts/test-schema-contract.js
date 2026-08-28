@@ -265,6 +265,25 @@ async function main() {
   report(offenders.length === 0, `crew files: ${crewFiles.length} scanned, no hardcoded freshness dates in prompt text`, offenders);
   console.log('');
 
+  // ── every registered reloader must actually LOAD ────────────────────────
+  // startServer() requires each dataset's reload module to register it. A
+  // syntax error anywhere in that require chain does not crash the server —
+  // it is caught, logged once, and the server keeps listening WITHOUT the
+  // database, which reads as "up" to every health check. That is how a stray
+  // backtick inside a template literal in create-zolstock-mvs.js silently
+  // un-registered the whole zolstock reloader (2026-08-28). Requiring them
+  // here turns that into a failed build instead of a missed nightly reload.
+  const reloadModules = fs.readdirSync(path.join(__dirname))
+    .filter(f => /^reload-[a-z0-9]+\.js$/.test(f));
+  const brokenLoads = [];
+  for (const f of reloadModules) {
+    try { require(path.join(__dirname, f)); }
+    catch (err) { brokenLoads.push(`${f} — ${err.message}`); }
+  }
+  report(brokenLoads.length === 0,
+    `reload modules: ${reloadModules.length} load cleanly (require chain intact)`, brokenLoads);
+  console.log('');
+
   console.log('─────────────────────────────────────────────────────────');
   console.log(`${checks - failures}/${checks} checks passed`);
   if (failures > 0) {

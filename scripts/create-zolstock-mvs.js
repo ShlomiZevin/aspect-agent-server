@@ -73,10 +73,10 @@ const ITEM_DIM = schema => `
          -- are stored CHARACTER-REVERSED in the export ('GNIDART SBD' is
          -- "DBS TRADING"), so it is unusable as a name.
          -- Until now the sales views carried the manufacturer under the name
-         -- `supplier`, so every "sales by supplier" answer grouped by the
-         -- wrong dimension and displayed reversed text. `supplier` now means
+         -- 'supplier', so every "sales by supplier" answer grouped by the
+         -- wrong dimension and displayed reversed text. 'supplier' now means
          -- what everyone reading it assumed it meant; the old value is still
-         -- available as `manufacturer` for anyone who genuinely wants it.
+         -- available as 'manufacturer' for anyone who genuinely wants it.
          positive_supplier AS supplier,
          supplier          AS manufacturer,
          sku, consumer_price, cost_ex_vat, safety_stock

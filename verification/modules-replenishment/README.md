@@ -1513,3 +1513,73 @@ the binding is stored.
 
 Regression after all of this: 29/29 · 41/41 · 47/47 · 67/67 · 19/19 · 30/30 ·
 35/35 · 53/53.
+
+---
+
+## E3 full replay — completed 90/90 (2026-08-28)
+
+The run stopped at 66/90 on 27-08 (zer4u's import had started and the shared
+data DB should not carry replay load on top of it). It resumed and finished:
+
+| | |
+|---|---|
+| turns | **90/90 replied**, 0 empty, 0 errors |
+| window | 2026-08-27 20:53 → 2026-08-28 10:02 |
+| `dataDriftDuringRun` | **false** — the frozen-data rule held across the pause |
+| invented lead times | **0** |
+| invented arrival/receipt dates | **0** |
+| turns that name a data limit out loud | **52 / 90** |
+
+The two things E3 exists to catch — a confident reorder quantity with no lead
+time, and a goods-arrival date the database does not contain — did not occur
+in any of the 90 turns.
+
+### One inconsistency worth recording
+
+Three reorder-class questions ran within seven minutes of each other with the
+module live. Two Hebrew ones routed to `fetch_replenishment`; the English
+"Which products should we reorder…" went to generated SQL instead. Model
+non-determinism in tool selection, not a state difference.
+
+It is not a correctness failure — the SQL answer was honest, led with the 12
+negative-stock SKUs, and explicitly warned that negative balances may be
+posting artefacts and that SKU-less products cannot be judged. But it is a
+different answer to the same question depending on language.
+
+Re-run just now with the module live, the English phrasing DOES route to the
+tool (`Executing crew tool handler: call_fetch_replenishment`, 21.2s) and the
+reply ends with exactly the disclosure the module is for:
+
+> supplier delivery times are not configured for these 25 recommendations, so
+> the calculation uses an assumed **90-day lead time**. Set actual lead times
+> in the **Purchasing** screen before finalizing orders
+
+That same answer restates the scope problem in the client's own numbers:
+**5,309 products flagged for immediate reorder, ≈₪11.44M** — which is the
+90-day-default alert fatigue, disclosed rather than hidden.
+
+## A real defect the batteries could not see (2026-08-28)
+
+`scripts/create-zolstock-mvs.js` carried a stray pair of **backticks inside a
+template literal** — decoration in a SQL comment added by the C2 supplier fix.
+It made the file a syntax error.
+
+`scripts/reload-zolstock.js` requires that file at module load, so
+`startServer()` threw while registering reloaders. The server does not crash on
+that: it logs one line and keeps listening **without the database**, which
+answers 200 to every health check. So:
+
+- `GET /api/models` → 200. "Server up."
+- the **entire zolstock reloader was silently un-registered** — the nightly
+  reload for that dataset would simply not have existed.
+
+Eight green batteries (29/29 · 41/41 · 47/47 · 67/67 · 19/19 · 30/30 · 35/35 ·
+53/53) saw none of it, because not one of them requires that file.
+
+Fixed, and `test-schema-contract.js` now **requires every `reload-*.js`
+module** and fails when the require chain is broken. Verified non-vacuous: with
+the backticks put back the battery reports 19/20 FAIL; with them removed, 20/20
+and all six reloaders register.
+
+The general lesson, again: a green battery says the code it imports works. It
+says nothing about the code it does not import.
