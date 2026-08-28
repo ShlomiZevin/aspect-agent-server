@@ -1380,3 +1380,74 @@ worth having: 90 real customer questions through the real chat path with the
 module OFF exercise the byte-identical guarantee under live traffic rather
 than in a unit test — and it is what caught the defect above, which no
 offline battery would have.
+
+---
+
+## E3 — Regression sweep on the real customer corpus (2026-08-28)
+
+```bash
+node scripts/run-customer-replay.js modules-e3 verification/modules-replenishment/replay-modules-e3.json
+```
+
+| | |
+|---|---|
+| Turns | **90/90 replied**, 0 errors, 0 crashes |
+| Latency | median 23s, p90 76s, max 192s |
+| Turns that ran SQL | 59 of 90 |
+| Module state during the run | **OFF** — so this exercises the no-module path under real traffic |
+
+### What it caught — the rules fix was in the wrong layer
+
+Four of the five replenishment-flavoured questions still produced a
+fabricated recommendation, byte-identical to the pre-fix run:
+
+> **נמצאו 214 פריטים לרכש מומלץ** … with a `recommended purchase כמות` column
+
+The D3 rules change had not stopped it, and the reason is architectural:
+**`services/schema-rules/` is read by the SQL GENERATOR, which only decides
+HOW a query is written. The decision to ask the data for a "recommended
+purchase quantity" is made a step earlier, by the CREW.** By the time the
+rule was read, the question had already been framed as a reorder task and the
+generator complied with it faithfully.
+
+Put another way: schema rules constrain the SQL, not the question.
+
+### The fix
+
+The same constraint now also lives in the crew guidance
+(`agents/zolstock/crew/zolstock.crew.js`), where the tool call is chosen:
+this database has no supplier delivery time, so do not ask the tool for a
+recommended quantity and do not assemble one from stock + safety stock +
+open orders — that arithmetic ignores both the delivery time and the sales
+pace, producing a confident number that is simply too small and that a reader
+cannot tell is wrong.
+
+### Verified in BOTH module states
+
+Re-ran the exact questions that failed:
+
+| Module | Result |
+|---|---|
+| **ON** | 3/3 — the crew calls `fetch_replenishment` and answers from the engine |
+| **OFF** | 3/3 — no fabricated recommendation |
+
+With the module off the answer changed from *"214 items recommended for
+purchase"* to *"20 items below safety stock, 490 units short in total"* —
+the **current situation** (shortage, open orders, 90-day sales pace) instead
+of an invented order quantity.
+
+Honest caveat on the fix: the explicit "a real recommendation also needs the
+supplier delivery time" sentence appeared in 1 of the 3 answers. The harmful
+half — claiming a recommendation it cannot justify — is gone in all three,
+which is the part that mattered.
+
+### Note on scope
+
+A full re-replay after the fix was not run (30 min of LLM traffic against a
+DB shared with the nightly reload); the fix was verified by re-running the
+exact failing questions in both module states. A belt-and-braces re-replay in
+a quiet window would be the stricter confirmation.
+
+The frozen-data diff (`compare-replays.js`) remains unavailable: raw run JSONs
+are gitignored so no baseline exists on this machine, and the data has moved
+since any earlier one, which that tool refuses on by design.

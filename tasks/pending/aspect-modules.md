@@ -806,7 +806,7 @@ actually passed and been recorded.
 - [x] D4 — Intelligence report category
 - [x] E1 — Nightly hook in the reload pipeline **(ask before running against production reload)**
 - [x] E2 — Notification outbox provider
-- [ ] E3 — Regression sweep
+- [x] E3 — Regression sweep
 - [x] E4 — Docs
 
 ### Results
