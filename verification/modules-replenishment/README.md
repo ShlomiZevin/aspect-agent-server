@@ -1769,3 +1769,44 @@ character**, not a word boundary. Replaced with normalise-then-substring, no
 escaped backslashes involved. Third time this class of error has appeared in
 this work — build patterns from literals or normalise the input, never
 assemble regex syntax through a heredoc.
+
+---
+
+## Build-order step 4, also run properly for the first time (2026-08-28)
+
+> hand-check ten real items with a calculator — invented test cases only test
+> what we already understand.
+
+This had never been done. `scripts/test-replenishment-handcheck.js` pulls ten
+real rows from the live prepared view and recomputes cover, order-by date and
+order quantity from the raw inputs, using the formula as the brief states it,
+with **no reference to engine.js**. Calling the engine twice proves
+determinism; a unit test over invented rows proves the code matches our own
+model of the data. Only this can catch the formula being wrong on data as it
+really is.
+
+**10/10 reconcile**, across all five branches that behave differently:
+
+| SKU | branch | v | avail | cover | qty | order by |
+|---|---|---|---|---|---|---|
+| `0027` | out of stock, carton known | 0.011 | 0 | 0 | 48 | 2026-05-29 |
+| `17044` | negative stock | 2.244 | −6 | 0 | 312 | 2026-05-29 |
+| `AD055` | no carton size | 1.867 | 0 | 0 | 251 | 2026-05-29 |
+| `29P389` | **has stock** | 8.489 | 12 | **1.41** | 1128 | **2026-05-30** |
+| `15Z70/532/899L` | **dormant** | 0.000 | 30 | n/a | **0** | n/a |
+
+### The sampling was wrong twice before it was right
+
+Worth recording, because a passing test that samples one branch is worse than
+no test — it reads as coverage.
+
+1. The bucket guard called `.get()` on a `Set`, so it never fired and the
+   "spread" was just the first ten rows.
+2. Fixed that, and the sample was still all overdue rows with `avail<=0` and
+   `cover=0` — because recommendations come back **sorted by urgency** and the
+   4,000-row cap never reached the calm 3,797. The order-by date was identical
+   on every row, so the date formula was not being exercised at all.
+
+Only after lifting the cap to the whole set did `has-stock` and `dormant`
+appear — and those are precisely the rows where a date or a zero-quantity
+error would hide.
