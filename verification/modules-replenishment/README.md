@@ -1713,3 +1713,59 @@ worth keeping:
 - the restart landed on the NEW revision, so the MVs were built by the fixed
   code. Had the original worker survived, it would have rebuilt the views
   with the OLD supplier mapping and C2 would still be live.
+
+---
+
+## Build-order step 5, run properly for the first time (2026-08-28)
+
+Re-reading the authoritative scope brief surfaced that step 5 had been
+verified at the WRONG LEVEL. It says:
+
+> Ask the same question five different ways in each language and confirm the
+> numbers are identical every time.
+
+What existed was `test-replenishment-chat.js`: five ARGUMENT SHAPES landing on
+the same computation. That is an engine-level invariant, checked offline, and
+it cannot see a ROUTING failure — the model deciding a question is a data
+question and writing SQL for it.
+
+Run through the real chat path in both languages, it failed immediately:
+
+| Phrasing | Routed to |
+|---|---|
+| "Which items are below their reorder point?" | **generated SQL** |
+| "אילו פריטים מתחת לנקודת ההזמנה?" | **generated SQL** |
+
+Both languages, same phrasing family — a question posed as a **state or a
+threshold** rather than as an action. It reads like a data question and is
+not: a reorder point is velocity x lead time + safety stock, so SQL cannot
+compute it at all. What came back was a threshold built from stock and safety
+stock alone, silently too low, in exactly the direction that makes the system
+under-order.
+
+Fixed in the crew guidance — branch A now names the threshold/state family
+explicitly ("below their reorder point", "מה מתחת לנקודת ההזמנה", "what is
+running out", "מה עומד להיגמר") and says why SQL cannot answer them.
+
+`scripts/test-replenishment-fiveways.js` keeps it honest: **3/3**, ten real
+turns, all routing to `fetch_replenishment`, all carrying the engine's own
+count (read from the engine at run time, never hardcoded — a literal would go
+green on stale data after the next reload).
+
+### What "identical" is asserted to mean
+
+Agreement, not repetition. A reply that omits the grand total is not a
+contradiction — the talker legitimately chooses how much to restate, and 4 of
+10 omitted it. A reply carrying a DIFFERENT total is the bug. The battery
+asserts the same headline count in every reply and no contradicting total;
+the first version of this check demanded every reply repeat the total and
+called a correct run a failure.
+
+### And the check itself had the session's own bug
+
+The first battery reported 0/10 on replies that all carried the number: a
+`\b` written into a template literal through a shell heredoc is a **backspace
+character**, not a word boundary. Replaced with normalise-then-substring, no
+escaped backslashes involved. Third time this class of error has appeared in
+this work — build patterns from literals or normalise the input, never
+assemble regex syntax through a heredoc.

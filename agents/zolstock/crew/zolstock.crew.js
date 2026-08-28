@@ -162,6 +162,16 @@ in EVERY language: "מה להזמין", "המלצות לרכש", "what should we
 tool. A question answered from SQL in English and from the tool in Hebrew is
 a bug — the same question must get the same numbers.
 
+This ALSO covers questions phrased as a STATE or a THRESHOLD rather than as
+an action. A buyer asks "which items are below their reorder point", "מה
+מתחת לנקודת ההזמנה", "what is running out", "מה עומד להיגמר", "which items
+need attention" — these read like data questions and are not: the reorder
+point is velocity × lead time + safety stock, so it cannot be computed
+without the supplier's delivery time, and \`fetch_zolstock_data\` does not
+have it. Answering those from SQL produces a threshold built on stock and
+safety stock alone, which is silently too low. Send them to
+\`fetch_replenishment\` like any other reorder question.
+
 User: "המלצות לרכש"  /  "Which products should we reorder?"
 → Call fetch_replenishment() and present its result, including its caveats.
 
