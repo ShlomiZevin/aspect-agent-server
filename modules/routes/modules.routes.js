@@ -12,6 +12,7 @@
  *     PUT  /api/modules/admin/:datasetId/:moduleId/enabled   — { enabled }
  *     PUT  /api/modules/admin/:datasetId/:moduleId/settings  — { settings }
  *     POST /api/modules/admin/:datasetId/:moduleId/init      — start an init run
+ *     POST /api/modules/admin/:datasetId/:moduleId/build     — rebuild into the live schema now
  *     GET  /api/modules/admin/:datasetId/:moduleId/runs/latest — poll progress
  *     GET  /api/modules/admin/:datasetId/:moduleId/runs/:runId
  *
@@ -147,6 +148,34 @@ admin.get('/:datasetId/:moduleId/runs/:runId', async (req, res) => {
     res.json({ run, progress: moduleInitService.describeProgress(run) });
   } catch (err) {
     console.error('[modules] get run error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Build a module's infrastructure into the LIVE schema, now.
+ *
+ * The nightly reload rebuilds it anyway (it must — a materialized view over
+ * the dataset's tables cannot survive the atomic swap), but waiting until
+ * tomorrow to see anything is not a product. Init already does this on
+ * success; this is the manual retry for when it failed, or after a reload
+ * that ran without the module enabled.
+ *
+ * Synchronous on purpose: it is a deliberate operator action on a known-heavy
+ * operation, and the caller should see whether it worked.
+ */
+admin.post('/:datasetId/:moduleId/build', async (req, res) => {
+  try {
+    const { datasetId, moduleId } = req.params;
+    if (!await moduleService.isLive(datasetId, moduleId)) {
+      return res.status(404).json({ error: `${moduleId} is not live for ${datasetId} — enable and initialize it first` });
+    }
+    const logs = [];
+    const result = await require('../services/module-build.service')
+      .buildModulesInLive(datasetId, moduleId, null, (_, m) => logs.push(m));
+    res.json({ ...result, log: logs });
+  } catch (err) {
+    console.error('[modules] live build error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

@@ -20,10 +20,14 @@
  *
  * ── Two things this deliberately does NOT do ──
  *
- * 1. It never builds into the live schema. DDL is rendered into a scratch
- *    schema, which is dropped afterwards regardless of outcome. The real
- *    build happens inside the nightly reload (E1), into the shadow schema,
- *    before the atomic swap — the same place every other MV is built.
+ * 1. It never builds into the live schema WHILE VERIFYING. DDL is rendered
+ *    into a scratch schema, which is dropped afterwards regardless of
+ *    outcome, so a half-verified binding can never touch what clients read.
+ *    Only AFTER a round passes and the binding is stored does it build into
+ *    the live schema, so the module is usable immediately instead of waiting
+ *    for the next night. The nightly hook (E1) still rebuilds into the shadow
+ *    — it has to, because a materialized view over the dataset's tables binds
+ *    by OID and is cascade-dropped with the old schema at the swap.
  *
  * 2. It does not send notifications itself. It calls an injected `onEvent`
  *    callback (default: no-op) at the two points that matter. E2 wires the
@@ -54,13 +58,18 @@ const MAX_ROUNDS = 5;
  */
 const STAGES = ['audit', 'propose_binding', 'render_build', 'verify'];
 const ROUND_STAGES = ['propose_binding', 'render_build', 'verify'];
-const TOTAL_STEPS = 1 + ROUND_STAGES.length * MAX_ROUNDS;   // audit + 3 per round
+// Runs once, after a round passes — not part of the per-round cycle.
+// audit + 3 per round + the one-off live build that follows a passing round.
+// Give build_live its own slot: without one, stepIndex() fell through to 0
+// and the progress bar dropped 38% -> 0% -> 100%. The battery caught it.
+const TOTAL_STEPS = 1 + ROUND_STAGES.length * MAX_ROUNDS + 1;
 
 const STAGE_LABELS = {
   audit: 'Audit',
   propose_binding: 'Propose binding',
   render_build: 'Render + build',
   verify: 'Verify',
+  build_live: 'Building into the live schema',
   completed: 'Completed',
   failed: 'Failed',
 };
@@ -75,6 +84,9 @@ const STAGE_LABELS = {
 function stepIndex(round, stage) {
   if (stage === 'audit') return 0;
   if (stage === 'completed' || stage === 'failed') return TOTAL_STEPS;
+  // Runs once, after a round has passed — so it sits above every round stage
+  // and below completion.
+  if (stage === 'build_live') return TOTAL_STEPS - 1;
   const offset = ROUND_STAGES.indexOf(stage);
   if (offset < 0) return 0;
   return 1 + (Math.max(1, round) - 1) * ROUND_STAGES.length + offset;
@@ -336,6 +348,25 @@ async function runInitPipeline(datasetId, moduleId, runId, { updatedBy, onEvent 
       if (passed) {
         await moduleService.setBinding(datasetId, moduleId, binding, settings.initModel || null, updatedBy);
         await moduleService.setStatus(datasetId, moduleId, 'ready', updatedBy);
+
+        // Build the real thing NOW, into the live schema.
+        //
+        // Without this a module set up at 10am produces nothing until the
+        // next night's reload, because init only ever built into a scratch
+        // schema that is dropped. The nightly hook still exists and is not
+        // optional — a materialized view over the dataset's tables cannot
+        // survive the atomic swap (it binds by OID and is cascade-dropped
+        // with the old schema, measured) — but waiting for it is not a
+        // product.
+        await setStage(runId, round, 'build_live');
+        const liveBuild = await require('./module-build.service')
+          .buildModulesInLive(datasetId, moduleId, ctxBase.pool, (_, m) => emit(m));
+        if (liveBuild.failed?.length) {
+          // The binding is verified and stored, so the module IS ready; only
+          // the immediate build failed. Say so rather than failing the run —
+          // the nightly will build it, and "Build now" can retry.
+          emit(`live build failed (${liveBuild.failed[0].error}) — binding is stored; the nightly reload will build it`);
+        }
         const report = {
           outcome: 'ready',
           roundsUsed: round,

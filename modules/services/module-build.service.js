@@ -28,6 +28,7 @@
  */
 
 const moduleService = require('./module.service');
+const datasetRegistry = require('../../insights/datasets/registry');
 const notificationService = require('../notification.service');
 
 /**
@@ -129,4 +130,70 @@ async function expectedViews(datasetId) {
   return out;
 }
 
-module.exports = { buildModulesInShadow, expectedViews };
+
+/**
+ * Build a module's infrastructure DIRECTLY INTO THE LIVE SCHEMA, now.
+ *
+ * WHY THIS EXISTS ALONGSIDE THE NIGHTLY HOOK — the two are not alternatives:
+ *
+ * A module cannot own its tables independently of the reload. Measured, not
+ * assumed: a materialized view placed in its OWN schema and reading the
+ * dataset's tables binds to those tables by OID, not by name. After the
+ * atomic swap it silently keeps serving the OLD data, and then
+ * `DROP SCHEMA <ds>_old CASCADE` deletes the module's view outright. So the
+ * views MUST be rebuilt inside the reload, into the shadow, to survive the
+ * swap — that is buildModulesInShadow() above.
+ *
+ * But that alone would mean a module enabled at 10am produces nothing until
+ * the next night's reload, which is not a product. This builds it now, into
+ * the live schema, so the module is usable within minutes of being set up.
+ * The nightly hook then re-creates the same views from the same binding when
+ * the schema is replaced.
+ *
+ * Not cheap — it is the same scan the nightly does — so it is called at the
+ * points where a human is deliberately setting the module up (end of a
+ * successful init, or the admin's explicit "Build now"), never implicitly.
+ */
+async function buildModulesInLive(datasetId, moduleId, pool, emitLog = () => {}) {
+  const log = (msg) => emitLog('creating_views', `[modules] ${msg}`);
+  const entry = datasetRegistry.get(datasetId);
+  if (!entry) return { built: [], failed: [], skipped: true, error: `unknown dataset ${datasetId}` };
+
+  const live = await moduleService.getLiveModules(datasetId).catch(() => []);
+  const targets = moduleId ? live.filter(x => x.descriptor.id === moduleId) : live;
+  if (!targets.length) return { built: [], failed: [], skipped: true };
+
+  const usePool = pool || entry.getPool();
+  const built = [], failed = [];
+
+  for (const { descriptor, row } of targets) {
+    const started = Date.now();
+    try {
+      if (!row.binding) throw new Error('module is ready but has no stored binding');
+      // Target and source are the SAME schema here: the live one already holds
+      // the data. (During a reload they are both the shadow, for the same
+      // reason. They differ only during init, where the scratch target is
+      // empty.)
+      const statements = descriptor.hooks.renderInfra(
+        row.binding, { target: entry.schemaName, source: entry.schemaName }) || [];
+
+      const client = await usePool.connect();
+      try {
+        await client.query('SET statement_timeout = 0');
+        await client.query("SET lock_timeout = '2min'");
+        for (const stmt of statements) await client.query(stmt);
+      } finally {
+        client.release();
+      }
+      const secs = ((Date.now() - started) / 1000).toFixed(1);
+      log(`${descriptor.id}: built into live schema ${entry.schemaName} in ${secs}s`);
+      built.push({ moduleId: descriptor.id, seconds: Number(secs) });
+    } catch (err) {
+      log(`${descriptor.id}: live build FAILED — ${err.message}`);
+      failed.push({ moduleId: descriptor.id, error: err.message });
+    }
+  }
+  return { built, failed, skipped: false };
+}
+
+module.exports = { buildModulesInShadow, buildModulesInLive, expectedViews };

@@ -1451,3 +1451,65 @@ a quiet window would be the stricter confirmation.
 The frozen-data diff (`compare-replays.js`) remains unavailable: raw run JSONs
 are gitignored so no baseline exists on this machine, and the data has moved
 since any earlier one, which that tool refuses on by design.
+
+---
+
+## Post-E3 — "a module should own its own tables" (2026-08-28)
+
+Kosta pushed back on the design: this is a module system, so why is it
+dependent on the import/indexing cycle? A module should generate the tables
+it needs.
+
+The challenge was half right, and the half that was wrong is worth recording
+because it is a **measured** Postgres constraint, not a design preference.
+
+### Measured: a module cannot own its tables independently
+
+A materialized view placed in its OWN schema, reading the dataset's tables,
+put through the real swap:
+
+| Step | Observed |
+|---|---|
+| MV in a separate schema reads the live schema | works — value 30 |
+| swap: `live → _old`, `shadow → live` | MV **still returns 30**, not the new 297 |
+| why | an MV binds to its source table by **OID, not by name** — it silently keeps reading the old schema |
+| `DROP SCHEMA _old CASCADE` | the module's MV is **deleted with it** |
+
+So a separate schema does not help: first the view serves stale data
+silently, then it is cascade-dropped. Any materialized view over the
+dataset's tables **must** be rebuilt inside the reload to survive the swap.
+That is why the nightly hook exists and is not optional.
+
+### The half that was right — and the gap it exposed
+
+A module set up at 10am produced nothing until the next night's reload. That
+is not a product, and it is exactly why the views had to be rebuilt by hand
+this morning after the nightly dropped them.
+
+Fixed — **both paths now exist, and they are not alternatives**:
+
+| Path | When | Into |
+|---|---|---|
+| `buildModulesInLive()` | at the end of a successful init, and on demand | the **live** schema — usable within minutes |
+| `buildModulesInShadow()` | reload phase 2, before the swap | the **shadow** schema — survives the swap |
+
+Plus `POST /api/modules/admin/:datasetId/:moduleId/build` as the manual
+retry, for when the init-time build failed or a reload ran with the module
+disabled. Verified live: **32.2s** for zolstock; refuses with a clear message
+for a dataset where the module is not live.
+
+### A defect the batteries caught immediately
+
+Adding the `build_live` stage broke progress monotonicity — the bar went
+**38% → 0% → 100%**, because `stepIndex()` did not know the new stage and
+fell through to 0. The init battery failed on exactly the assertion written
+for this property. Given its own slot: 41/41.
+
+Also corrected a now-false comment in the orchestrator header, which still
+claimed init "never builds into the live schema". It never does so **while
+verifying** — the scratch schema is still dropped regardless of outcome, so a
+half-verified binding cannot touch what clients read — but it does build once
+the binding is stored.
+
+Regression after all of this: 29/29 · 41/41 · 47/47 · 67/67 · 19/19 · 30/30 ·
+35/35 · 53/53.
