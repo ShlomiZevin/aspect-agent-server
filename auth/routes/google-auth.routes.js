@@ -49,9 +49,6 @@ router.get('/config', handle(async (req, res) => {
     // work.
     enabled: live && googleAuth.isConfigured(),
     clientId: live ? googleAuth.CLIENT_ID : '',
-    // When the module is off, the old login is the only one — so it is offered
-    // regardless of what the setting says.
-    allowPasswordLogin: live ? state.settings.allowPasswordlessFallback !== false : true,
   });
 }));
 
@@ -61,8 +58,9 @@ router.post('/', handle(async (req, res) => {
 
   const { user, via } = await googleAuth.signIn(idToken, tenant);
 
-  // The same shape the name+phone login returns, so everything downstream —
-  // which stores a userId and sends it back — is untouched by this existing.
+  // `userId` is the external id, which is what every other surface stores and
+  // sends back. Returning the same shape means nothing downstream has to learn
+  // that a session can now come from Google.
   res.json({
     userId: user.externalId,
     name: user.name,
