@@ -154,6 +154,14 @@ app.use('/api/admin/intelligence', require('./insights/routes/insights-admin.rou
 // modules.routes.js and tasks/pending/aspect-modules.md.
 app.use('/api/modules', require('./modules/routes/modules.routes'));
 
+// ─── Aspect Task Board ─────────────────────────────────────────────
+// Our own task board, in its OWN database (`aspect_tasks_db`), not the platform
+// DB. The separation is physical on purpose: the existing board in
+// agents_platform_db belongs to LYBI, and Shlomi asked for two tools rather
+// than one filtered table, so there is no query here that can reach the other.
+// See taskboard/README.md.
+app.use('/api/taskboard', require('./taskboard/routes/taskboard.routes'));
+
 // ─── Lybi HQ ───────────────────────────────────────────────────────
 // Our own internal company brain — meetings, docs, decisions. NOT a product
 // and never customer-facing; nothing in the product may import from hq/.
