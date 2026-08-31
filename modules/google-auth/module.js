@@ -1,9 +1,9 @@
 /**
- * Google Sign-In — Aspect Module, kind 'app'.
+ * Sign-In — Aspect Module, kind 'app'.
  *
- * Who may use this client's surfaces, and how they prove it. Switched on per
- * client: the server accepts a verified Google identity for a client that has
- * it, and for no other.
+ * Who may use this client's surfaces, and how they prove it. Two ways in:
+ * Google, or an email and a password. Which of them this client accepts is the
+ * module's only setting.
  *
  * A module rather than a platform-wide setting because Shlomi flagged that the
  * customer may want a different mechanism, so "everyone signs in with Google"
@@ -20,22 +20,26 @@ module.exports = {
   id: 'google-auth',
   kind: 'app',
   scope: 'client',
-  name: { en: 'Google Sign-In', he: 'התחברות עם Google' },
+  name: { en: 'Sign-In', he: 'התחברות' },
   version: 1,
 
   settingsSchema: [
     {
-      key: 'allowedDomain',
-      type: 'text',
+      key: 'methods',
+      type: 'select',
       required: false,
-      default: '',
-      label: { en: 'Auto-approve this email domain', he: 'אישור אוטומטי לדומיין' },
+      default: 'both',
+      options: [
+        { value: 'both', label: { en: 'Google or password', he: 'Google או סיסמה' } },
+        { value: 'google', label: { en: 'Google only', he: 'Google בלבד' } },
+        { value: 'password', label: { en: 'Password only', he: 'סיסמה בלבד' } },
+      ],
+      label: { en: 'How people sign in', he: 'איך מתחברים' },
       hint: {
-        en: 'Anyone signing in with an address at this domain is let in without '
-          + 'being invited first — e.g. "acme.co.il". Leave empty to require an '
-          + 'invitation for every person.',
-        he: 'כל מי שמתחבר עם כתובת בדומיין הזה ייכנס בלי הזמנה מראש — למשל '
-          + '"acme.co.il". השאירו ריק כדי לדרוש הזמנה לכל אדם.',
+        en: 'Google only is the strongest: there is no password to leak or reuse. '
+          + 'Password only is for people whose organisation has no Google account.',
+        he: 'Google בלבד היא האפשרות החזקה ביותר: אין סיסמה שתדלוף. סיסמה בלבד '
+          + 'מיועדת למי שאין לו חשבון Google בארגון.',
       },
     },
   ],
