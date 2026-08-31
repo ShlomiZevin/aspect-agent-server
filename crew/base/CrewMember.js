@@ -354,7 +354,11 @@ class CrewMember {
     if (this.datasetSchema) {
       try {
         const manifestSvc = require('../../services/dataset-manifest');
-        const m = manifestSvc.get(this.datasetSchema);
+        // getWithModules, not get: a live module's manifestFragment belongs in
+        // what the crew is told, and only while that module is live. With no
+        // module enabled this returns exactly what get() returns, which is the
+        // byte-identical guarantee the framework rests on.
+        const m = await manifestSvc.getWithModules(this.datasetSchema);
         if (m) {
           context.dataDiscipline = manifestSvc.renderForCrew(m);
           // Live data-through, injected EVERY turn — so even a turn that runs

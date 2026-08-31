@@ -99,14 +99,18 @@ function normaliseRecipients(value) {
 /** What the admin tab's run report renders. */
 async function listOutbox(datasetId, moduleId, limit = 50) {
   const drizzle = db.getDrizzle();
-  const res = await drizzle.execute(`
-    SELECT id, run_id, event, recipients, payload, provider, created_at
-      FROM module_outbox
-     WHERE dataset_id = '${String(datasetId).replace(/'/g, "''")}'
-       AND module_id  = '${String(moduleId).replace(/'/g, "''")}'
-     ORDER BY created_at DESC
-     LIMIT ${Number(limit) || 50}`);
-  return res.rows || res;
+  // Parameters, not interpolation. The hand-escaping this replaces was correct,
+  // but it was the one query in the module that had to be read to know that —
+  // and the next person to copy it will not escape.
+  const { rows } = await db.query(
+    `SELECT id, run_id, event, recipients, payload, provider, created_at
+       FROM module_outbox
+      WHERE dataset_id = $1 AND module_id = $2
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [String(datasetId), String(moduleId), Number(limit) || 50],
+  );
+  return rows;
 }
 
 module.exports = { emit, listOutbox, setProvider, getProviderName, outboxProvider, normaliseRecipients };
