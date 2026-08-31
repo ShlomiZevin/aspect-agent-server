@@ -152,21 +152,46 @@ async function getRecommendations(datasetId, opts = {}) {
   // applies is reused instead.
   const ordered = sortByUrgency(all);
 
-  const filtered = opts.onlyDue
+  const due = opts.onlyDue
     ? ordered.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
     : ordered;
 
-  const limited = opts.limit ? filtered.slice(0, Number(opts.limit)) : filtered;
+  // Free-text over the three things a buyer knows an item by.
+  //
+  // Applied HERE, after the engine, and never in the query: the summary below
+  // is computed from `ordered`, so filtering in SQL made the tiles describe the
+  // search results instead of the whole set — the exact thing the house rule
+  // forbids, and it is invisible until someone types in the box. The engine
+  // already runs over every row to build that summary, so this costs nothing
+  // extra.
+  const term = String(opts.search ?? '').trim().toLowerCase();
+  const filtered = term
+    ? due.filter(r =>
+      String(r.itemName ?? '').toLowerCase().includes(term)
+      || String(r.sku ?? '').toLowerCase().includes(term)
+      || String(r.itemNumber ?? '').toLowerCase().includes(term))
+    : due;
+
+  // A page out of the filtered set. `offset` beyond the end yields an empty
+  // page rather than an error: it is what a stale pager sends after someone
+  // else's reload shortened the list, and an error there would be a dead screen.
+  const offset = Math.max(0, Number(opts.offset) || 0);
+  const limit = opts.limit ? Math.max(0, Number(opts.limit)) : null;
+  const page = limit === null ? filtered.slice(offset) : filtered.slice(offset, offset + limit);
 
   return {
     datasetId,
     today,
-    // Summaries are over EVERYTHING, not the limited page — a tile that
-    // counted only the visible rows would be a different, wrong number.
+    // Summaries are over EVERYTHING, not the page and not the search — a tile
+    // that counted only the visible rows would be a different, wrong number.
     summary: engine.summarize(ordered),
     dataThrough: rows[0]?.data_through || null,
+    // How many the filters matched, so the screen can say "showing X of Y" and
+    // never truncate silently.
     total: filtered.length,
-    recommendations: limited,
+    offset,
+    limit,
+    recommendations: page,
   };
 }
 
