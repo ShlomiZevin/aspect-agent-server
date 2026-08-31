@@ -21,6 +21,7 @@
 const stub = require('./_stub/module');
 const replenishment = require('./replenishment/module');
 const taskboard = require('./taskboard/module');
+const googleAuth = require('./google-auth/module');
 
 // The stub exists to test the framework, not to serve anyone. Keeping it out
 // of production means the client-facing admin panel never shows a module
@@ -31,6 +32,7 @@ const DESCRIPTORS = [
   ...(IS_PRODUCTION ? [] : [stub]),
   replenishment,
   taskboard,
+  googleAuth,
 ];
 
 /**

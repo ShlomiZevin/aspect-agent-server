@@ -162,6 +162,12 @@ app.use('/api/modules', require('./modules/routes/modules.routes'));
 // See taskboard/README.md.
 app.use('/api/taskboard', require('./taskboard/routes/taskboard.routes'));
 
+// ─── Google Sign-In ────────────────────────────────────────────────
+// Switchable per client through the google-auth module. Where it is off, the
+// login page is what it has always been: a name and a phone number. Mounted
+// under /api/auth/google, beside the existing /api/auth/login below.
+app.use('/api/auth/google', require('./auth/routes/google-auth.routes'));
+
 // ─── Lybi HQ ───────────────────────────────────────────────────────
 // Our own internal company brain — meetings, docs, decisions. NOT a product
 // and never customer-facing; nothing in the product may import from hq/.

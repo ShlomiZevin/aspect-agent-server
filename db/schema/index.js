@@ -46,6 +46,23 @@ const users = pgTable('users', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Who may sign in with Google, and to which agent. A row here is an invitation:
+// the person does not exist as a user until they actually sign in, and signing
+// in without a row (or a matching auto-approved domain) is refused.
+// See db/migrations/043_add_allowed_emails.sql.
+const allowedEmails = pgTable('allowed_emails', {
+  id:        serial('id').primaryKey(),
+  email:     varchar('email', { length: 255 }).notNull(),
+  // The agent slug. NULL grants access across every agent - that is us.
+  tenant:    varchar('tenant', { length: 100 }),
+  role:      varchar('role', { length: 20 }).default('user').notNull(),
+  invitedBy: varchar('invited_by', { length: 255 }),
+  note:      text('note'),
+  // Set rather than deleted, so a revoked invitation stays on the record.
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 // Conversations table - tracks conversations across agents
 const conversations = pgTable('conversations', {
   id: serial('id').primaryKey(),
@@ -551,6 +568,7 @@ const agentLog = pgTable('agent_log', {
 
 // Export all tables
 module.exports = {
+  allowedEmails,
   connectionTest,
   agents,
   users,
