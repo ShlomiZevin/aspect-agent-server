@@ -39,6 +39,7 @@ const {
   builderCrewVersions,
 } = require('../../db/schema');
 const alfredChats = require('../services/alfredChats');
+const stopRegistry = require('../../builder/runtime/stopRegistry');
 const alfredRunner = require('../services/alfredRunner');
 const applyConsolidator = require('../services/applyConsolidator');
 const patchGenerator   = require('../services/patchGenerator');
@@ -236,22 +237,37 @@ router.post('/chats/:chatId/messages', async (req, res) => {
     // Run the brainstorm turn. The runner reads history from the DB —
     // the last row is the user message we just inserted, exactly what
     // it wants.
-    const { assistantText } = await alfredRunner.runBrainstormTurn({
-      chatId:         Number(chatId),
-      agentSlug,
-      ownerUserId,
-      // The preview conversation the user currently has open in the
-      // builder — lets `read_conversation` target "this chat" directly.
-      activeConversationId: activeConversationId != null ? Number(activeConversationId) : null,
-      // Unsaved working copies — Alfred talks about the DRAFT on screen.
-      workingBodies,
-      emit,
-    });
+    // Task #816: register this turn so POST /chats/:chatId/stop can flag it.
+    const stopKey = stopRegistry.alfredKey(chatId);
+    const stopHandle = stopRegistry.start(stopKey);
+    let turn;
+    try {
+      turn = await alfredRunner.runBrainstormTurn({
+        chatId:         Number(chatId),
+        agentSlug,
+        ownerUserId,
+        // The preview conversation the user currently has open in the
+        // builder — lets `read_conversation` target "this chat" directly.
+        activeConversationId: activeConversationId != null ? Number(activeConversationId) : null,
+        // Unsaved working copies — Alfred talks about the DRAFT on screen.
+        workingBodies,
+        emit,
+        stopKey,
+      });
+    } finally {
+      stopRegistry.end(stopKey, stopHandle);
+    }
+    const { assistantText, stopped } = turn;
+
+    // Stopped by the user: the partial answer is NOT persisted (only
+    // the user's message stays in history). Confirm so the client can
+    // release the composer.
+    if (stopped) emit('alfred.stopped', {});
 
     // Persist the assistant message only when there's content. Empty
     // replies (network drop, refusal, etc.) leave nothing behind — no
     // ghost rows to clean up.
-    if (assistantText && assistantText.trim().length > 0) {
+    if (!stopped && assistantText && assistantText.trim().length > 0) {
       const asstMsg = await alfredChats.appendMessage({
         chatId,
         role:    'assistant',
@@ -267,6 +283,17 @@ router.post('/chats/:chatId/messages', async (req, res) => {
     emit('alfred.error', { error: { code: 'runtime_failed', message: err.message } });
     res.end();
   }
+});
+
+/**
+ * POST /chats/:chatId/stop  (task #816)
+ *   Flags the in-flight brainstorm turn for this chat. The running
+ *   stream notices at its next event, stops, and emits `alfred.stopped`
+ *   on its OWN SSE stream — this endpoint only flips the flag.
+ */
+router.post('/chats/:chatId/stop', (req, res) => {
+  const running = stopRegistry.stop(stopRegistry.alfredKey(req.params.chatId));
+  res.json({ ok: true, running });
 });
 
 // ─── Apply flow ────────────────────────────────────────────────────

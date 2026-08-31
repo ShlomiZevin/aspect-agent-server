@@ -149,4 +149,68 @@ async function dropText(text, { title = null, kind = 'note', sourceUrl = null } 
   return { atom };
 }
 
-module.exports = { classifyInput, dropNotion, dropText };
+/**
+ * A file becomes an atom (task #815). Same pipeline the workers use for their
+ * briefcase — typeOf / extractText / media.store — but the destination is the
+ * searchable library, not one worker's context.
+ *
+ *   documents → text extracted (PDF, Word, Excel, CSV, text) and indexed;
+ *   images    → no text to read, so the FILENAME + CAPTION + folder are the
+ *               searchable body and the atom links to our stored copy. A
+ *               caption is what makes "find me the banking mockups" work.
+ *
+ * Bytes always go to the HQ media bucket, and the atom's external link is
+ * the stable /media/:id/file address — never an expiring signed URL.
+ */
+async function dropFile(buffer, { filename, mimeType = null, kind = 'auto', caption = null } = {}) {
+  const workerFiles = require('./worker-files.service');
+  const media = require('./media.service');
+  const chunker = require('../../services/kb.chunker.service');
+
+  if (!buffer || !buffer.length) throw new Error('That file is empty');
+  if (buffer.length > workerFiles.MAX_BYTES) {
+    throw new Error(`That file is ${(buffer.length / 1048576).toFixed(1)}MB; the limit is 25MB`);
+  }
+  const type = workerFiles.typeOf(filename, mimeType);   // throws a friendly message
+  const isImage = type.as === 'image';
+  const cleanCaption = (caption || '').trim() || null;
+
+  const stored = await media.store(buffer, {
+    title: filename, kind: isImage ? 'image' : 'file',
+    mimeType: type.mime, extension: type.ext, source: 'drop',
+    metadata: { filename, caption: cleanCaption, via: 'hq-drop' },
+  });
+  const url = media.fileUrl(stored.id);
+
+  let text = '';
+  if (!isImage) {
+    try {
+      const out = await chunker.extractText(buffer, filename, type.mime);
+      text = ((out && out.text) || (typeof out === 'string' ? out : '') || '').trim();
+    } catch (err) {
+      console.error('[hq/drop] extraction failed', filename, err.message);
+    }
+  }
+
+  const head = [
+    `${isImage ? 'Image file' : 'File'}: ${filename}`,
+    cleanCaption ? `About: ${cleanCaption}` : null,
+    `Link: ${url}`,
+  ].filter(Boolean).join('\n');
+  const body = text ? `${head}\n\n${text}` : head;
+  const title = cleanCaption || filename;
+
+  const source = await atomsService.createSource({
+    kind: 'file', label: title, config: { mediaId: stored.id, filename, mime: type.mime },
+  });
+  const resolvedKind = kind === 'auto' ? 'doc' : kind;
+  const { atom } = await ingest.ingestDocument({
+    kind: resolvedKind, title, body, externalUrl: url, occurredAt: new Date(),
+  }, { sourceId: source.id, runScribe: resolvedKind === 'meeting' });
+  await atomsService.updateSource(source.id, { lastStatus: 'ok', atomCount: 1, lastSyncAt: new Date() });
+
+  return { atom, media: stored, extracted: text.length, isImage };
+}
+
+module.exports = { classifyInput, dropNotion, dropText, dropFile };
+

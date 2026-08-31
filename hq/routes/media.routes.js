@@ -29,6 +29,18 @@ router.get('/', async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+/**
+ * Stable file link — the address atoms and citations carry. Redirects to a
+ * fresh signed GCS URL on every hit, so a link saved months ago still opens.
+ */
+router.get('/:id/file', async (req, res) => {
+  try {
+    const row = await media.byId(parseInt(req.params.id, 10));
+    if (!row || !row.gcs_path) return res.status(404).json({ error: 'No such file' });
+    res.redirect(302, await media.signedUrl(row.gcs_path, 60));
+  } catch (err) { fail(res, err); }
+});
+
 /** The default browse: conversations that produced something, newest first. */
 router.get('/by-conversation', async (_req, res) => {
   try {

@@ -163,6 +163,31 @@ async function removeByPath(gcsPath) {
 }
 
 /** Raw bytes, for compositing — a signed URL cannot be inlined into a page. */
+/** One media row by id (no signed url — callers decide). */
+async function byId(id) {
+  const { rows } = await db.query('SELECT * FROM hq_media WHERE id = $1', [id]);
+  return rows[0] || null;
+}
+
+/** First media row whose metadata carries `key = value` (dedupe on re-sync). */
+async function findByMeta(key, value) {
+  const { rows } = await db.query(
+    'SELECT * FROM hq_media WHERE metadata->>$1 = $2 ORDER BY id LIMIT 1', [key, String(value)]);
+  return rows[0] || null;
+}
+
+/**
+ * A STABLE link to a stored file. Signed URLs expire, so anything that gets
+ * written into an atom (and therefore into an answer's citation) points at
+ * this redirect route instead, which mints a fresh signed URL on every hit.
+ * Absolute on purpose: citations render on the client's origin, not ours.
+ */
+const PUBLIC_API_BASE = (process.env.HQ_PUBLIC_API_URL
+  || 'https://aspect-agent-server-1018338671074.europe-west1.run.app').replace(/\/+$/, '');
+function fileUrl(id) {
+  return `${PUBLIC_API_BASE}/api/hq/media/${id}/file`;
+}
+
 async function download(gcsPath) {
   const [buffer] = await client().bucket(BUCKET).file(gcsPath).download();
   return buffer;
@@ -171,4 +196,5 @@ async function download(gcsPath) {
 module.exports = {
   BUCKET, store, list, byConversation, listFolders, createFolder, moveToFolder,
   remove, removeByPath, signedUrl, download,
+  byId, findByMeta, fileUrl,
 };

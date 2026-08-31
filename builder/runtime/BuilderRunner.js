@@ -32,6 +32,7 @@
 const llmService = require('../../services/llm');
 const { eq } = require('drizzle-orm');
 const db = require('../../services/db.pg');
+const stopRegistry = require('./stopRegistry');
 const { conversations, messages } = require('../../db/schema');
 const { resolveRunnable } = require('../services/builderProjects');
 const { logUsage } = require('../../services/usageLogger');
@@ -148,6 +149,9 @@ async function runOnce({
   ownerUserId,
   userId,
   conversationId,
+  // Task #816: registry key of this turn's stop flag (null = not
+  // stoppable, e.g. non-builder callers). Read via ctx.isStopped().
+  stopKey = null,
   userMessageId,
   assistantMessageId,
   userMessage,
@@ -305,6 +309,7 @@ async function runOnce({
     ownerUserId,
     userId,
     conversationId,
+    isStopped: () => !!stopKey && stopRegistry.isStopped(stopKey),
     assistantMessageId,
     userMessage,
     crewLabel,
@@ -362,6 +367,8 @@ async function runOnce({
     // a strict superset: no flags → identical to before.
     const steps = deriveSteps(blockingForChain);
     for (const step of steps) {
+      // Task #816: Stop pressed — don't start another step.
+      if (ctx.isStopped()) break;
       // addonRunner stays the single source of truth for how ONE
       // addon executes. Same-step addons all close over the same
       // `ctx`/`memory`: they read the same pre-step snapshot and merge
@@ -415,7 +422,7 @@ async function runOnce({
 
     let cascadeTo = first.cascadeTo;
     let hops = 0;
-    while (cascadeTo && hops < MAX_TRANSITION_HOPS) {
+    while (cascadeTo && hops < MAX_TRANSITION_HOPS && !ctx.isStopped()) {
       hops += 1;
       // Reset crew-transition-scoped system fields (e.g. `moveOn`)
       // BEFORE the next crew's chain runs. Otherwise the new crew's
@@ -475,6 +482,17 @@ async function runOnce({
         });
       } catch { /* emit is best-effort */ }
     }
+  }
+
+  // Task #816: the user pressed Stop while the chain was running.
+  // Whatever the chain produced so far is dropped — no reply persisted
+  // (the route deletes the empty placeholder), no `assistant.message`,
+  // no offline lane, no panels. Memory writes from steps that already
+  // completed stay. `turn.stopped` is the client's cue to release the
+  // composer.
+  if (ctx.isStopped()) {
+    emit('turn.stopped', {});
+    return { assistantText: '', stopped: true, totalMs: Date.now() - totalStart };
   }
 
   // ── 5. Persist the assistant text and announce the turn's reply. ──

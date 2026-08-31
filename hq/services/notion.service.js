@@ -283,6 +283,90 @@ async function fetchChildren(blockId) {
 }
 
 /**
+ * Copy a Notion-hosted image into the HQ media bucket and return a stable
+ * link (task #815). Deduped on the Notion block id so a page re-sync reuses
+ * the existing copy instead of storing it again. Returns the original URL on
+ * any failure — an image link that may expire beats a page with no image.
+ */
+const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+async function persistNotionImage(signedUrl, blockId, caption) {
+  try {
+    const media = require('./media.service');
+    const existing = await media.findByMeta('notionBlockId', blockId);
+    if (existing) return media.fileUrl(existing.id);
+
+    const res = await fetch(signedUrl, { signal: AbortSignal.timeout(20000) });
+    if (!res.ok) return signedUrl;
+    const mime = (res.headers.get('content-type') || 'image/png').split(';')[0].trim();
+    if (!mime.startsWith('image/')) return signedUrl;
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (!buffer.length || buffer.length > MAX_IMAGE_BYTES) return signedUrl;
+
+    const extension = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp',
+                         'image/gif': 'gif', 'image/svg+xml': 'svg' })[mime] || 'png';
+    const stored = await media.store(buffer, {
+      title: caption && caption !== 'image' ? caption : 'notion-image',
+      kind: 'image', mimeType: mime, extension, source: 'notion',
+      metadata: { notionBlockId: blockId, caption, via: 'notion-sync' },
+    });
+    return media.fileUrl(stored.id);
+  } catch (err) {
+    console.error('[hq/notion] image copy failed, keeping Notion URL:', err.message);
+    return signedUrl;
+  }
+}
+
+/**
+ * Copy a file attached to a Notion page into the HQ media bucket and read
+ * its text (task #818). Same shape as persistNotionImage: deduped on the
+ * block id, falls back to the Notion URL on failure. Text extraction
+ * covers what the chunker reads (PDF, Word, Excel, CSV, text); anything
+ * else is stored + linked without a body.
+ */
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const FILE_EXT_MIME = {
+  pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown', csv: 'text/csv',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+async function persistNotionFile(signedUrl, blockId, name, caption) {
+  try {
+    const media = require('./media.service');
+    const chunker = require('../../services/kb.chunker.service');
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    const mime = FILE_EXT_MIME[ext] || 'application/octet-stream';
+
+    let stored = await media.findByMeta('notionBlockId', blockId);
+    let buffer = null;
+    if (!stored) {
+      const res = await fetch(signedUrl, { signal: AbortSignal.timeout(30000) });
+      if (!res.ok) return { url: signedUrl, text: '' };
+      buffer = Buffer.from(await res.arrayBuffer());
+      if (!buffer.length || buffer.length > MAX_FILE_BYTES) return { url: signedUrl, text: '' };
+      stored = await media.store(buffer, {
+        title: name, kind: 'file', mimeType: mime, extension: ext || 'bin', source: 'notion',
+        metadata: { notionBlockId: blockId, filename: name, caption: caption || null, via: 'notion-sync' },
+      });
+    }
+
+    let text = '';
+    if (FILE_EXT_MIME[ext]) {
+      try {
+        if (!buffer) buffer = await media.download(stored.gcs_path || stored.gcsPath);
+        const out = buffer ? await chunker.extractText(buffer, name, mime) : null;
+        text = ((out && out.text) || '').trim();
+      } catch (err) {
+        console.error('[hq/notion] attachment text extraction failed', name, err.message);
+      }
+    }
+    return { url: media.fileUrl(stored.id), text };
+  } catch (err) {
+    console.error('[hq/notion] attachment copy failed, keeping Notion URL:', err.message);
+    return { url: signedUrl, text: '' };
+  }
+}
+
+/**
  * Recursively render a block tree as markdown.
  * Unknown block types degrade to their plain text rather than vanishing —
  * losing content silently is much worse than losing formatting.
@@ -323,9 +407,31 @@ async function blocksToMarkdown(blockId, depth = 0) {
       case 'embed':
       case 'link_preview':      if (data.url) lines.push(`${indent}[${data.url}](${data.url})`); break;
       case 'image': {
-        const url = data.file?.url || data.external?.url;
         const caption = richToMarkdown(data.caption || []) || 'image';
+        // Notion-hosted images come with a signed URL that dies within an
+        // hour — a stored link would be dead by the time anyone asked. Copy
+        // the bytes into our own bucket once (deduped by block id across
+        // re-syncs) and link the stable /media/:id/file address instead.
+        // External embeds keep their URL; any failure falls back to it.
+        let url = data.external?.url || null;
+        if (data.file?.url) url = await persistNotionImage(data.file.url, block.id, caption);
         if (url) lines.push(`${indent}![${caption}](${url})`);
+        break;
+      }
+      case 'file':
+      case 'pdf': {
+        // A document attached to the page (task #818): copy it into our
+        // bucket for a stable link and read its text into the page body,
+        // so the page is searchable by what the attachment SAYS.
+        const caption = richToMarkdown(data.caption || []) || '';
+        const name = data.name || caption || 'attachment';
+        const url = data.file?.url || data.external?.url || null;
+        if (!url) break;
+        const persisted = data.file?.url
+          ? await persistNotionFile(data.file.url, block.id, name, caption)
+          : { url, text: '' };
+        lines.push(`${indent}📎 [${name}](${persisted.url})${caption && caption !== name ? ` — ${caption}` : ''}`);
+        if (persisted.text) lines.push(`${indent}${persisted.text}`);
         break;
       }
       case 'table':
@@ -471,4 +577,5 @@ module.exports = {
   titleOf,
   readProperties,
   blocksToMarkdown,
+  persistNotionFile,
 };

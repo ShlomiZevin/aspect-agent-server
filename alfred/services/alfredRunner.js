@@ -17,6 +17,7 @@ const claudeService = require('../../services/llm.claude');
 const { logUsage } = require('../../services/usageLogger');
 const { SYSTEM_PROMPT, buildProjectSummary } = require('./alfredContext');
 const alfredChats = require('./alfredChats');
+const stopRegistry = require('../../builder/runtime/stopRegistry');
 const alfredTools = require('./alfredTools');
 const { hydrateProject } = require('../../builder/services/builderProjects');
 
@@ -239,8 +240,11 @@ async function runTool(name, input, ctx) {
  * @param {(type: string, payload: object) => void} args.emit
  * @returns {Promise<{ assistantText: string }>}
  */
-async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConversationId, workingBodies, emit }) {
+async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConversationId, workingBodies, emit, stopKey = null }) {
   const start = Date.now();
+  // Task #816: flips when the builder presses Stop — checked per stream
+  // event; on stop we leave the loop, run no tools, persist nothing.
+  let stopped = false;
 
   // 1. Recent history (last N), already in chronological order.
   const all = await alfredChats.listMessages(chatId);
@@ -302,6 +306,7 @@ async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConvers
 
     try {
       for await (const event of stream) {
+        if (stopKey && stopRegistry.isStopped(stopKey)) { stopped = true; break; }
         if (event.type === 'message_start' && event.message?.usage) {
           inputTokens  += event.message.usage.input_tokens  || 0;
           outputTokens += event.message.usage.output_tokens || 0;
@@ -354,6 +359,8 @@ async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConvers
       emit('alfred.error', { error: { code: 'stream_aborted', message: err.message } });
       throw err;
     }
+
+    if (stopped) break;
 
     const toolUses = assistantBlocks.filter(b => b.type === 'tool_use');
     if (toolUses.length === 0) {
@@ -425,6 +432,7 @@ async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConvers
 
   return {
     assistantText: collected,
+    stopped,
     firstTokenMs,
     durationMs,
     tokens: { input: inputTokens, output: outputTokens, total: inputTokens + outputTokens },

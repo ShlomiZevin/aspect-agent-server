@@ -19,6 +19,7 @@ const { eq, and, desc, inArray, sql } = require('drizzle-orm');
 const db = require('../../services/db.pg');
 const { agents, conversations, messages, users } = require('../../db/schema');
 const { runOnce } = require('../runtime/BuilderRunner');
+const stopRegistry = require('../runtime/stopRegistry');
 
 const router = express.Router({ mergeParams: true });
 
@@ -747,6 +748,17 @@ router.delete('/:slug/conversations/:convId/messages/:messageId', async (req, re
  *   The runtime call. Streams SSE.
  *   Body: { ownerUserId, userMessage, version: 'viewing'|'active' }
  */
+/**
+ * POST /:slug/conversations/:convId/stop  (task #816)
+ *   Flags the in-flight turn of this conversation. The running turn
+ *   notices at its next checkpoint, drops its reply and emits
+ *   `turn.stopped` on its OWN SSE stream — this only flips the flag.
+ */
+router.post('/:slug/conversations/:convId/stop', (req, res) => {
+  const running = stopRegistry.stop(stopRegistry.convKey(req.params.convId));
+  res.json({ ok: true, running });
+});
+
 router.post('/:slug/conversations/:convId/messages', async (req, res) => {
   const { slug, convId } = req.params;
   const {
@@ -861,21 +873,34 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
     // update + `assistant.message` emit (between the blocking and
     // offline phases) — the route handler only needs to clean up the
     // placeholder when the turn produced no assistant text at all.
-    const { assistantText } = await runOnce({
-      agentSlug: slug,
-      ownerUserId,
-      userId,
-      conversationId:     Number(convId),
-      userMessageId:      userMsg.id,
-      assistantMessageId: asstMsgPlaceholder.id,
-      userMessage,
-      version,
-      overrideCrewId,
-      overrideAgentBody,
-      overrideCrewBody,
-      overrideCrewBodies,
-      emit,
-    });
+    // Task #816: register this turn so POST .../stop can flag it. The
+    // runner reads the flag between steps / per Talker chunk and bails
+    // with an empty assistantText — the placeholder cleanup below then
+    // applies unchanged.
+    const stopKey = stopRegistry.convKey(convId);
+    const stopHandle = stopRegistry.start(stopKey);
+    let turn;
+    try {
+      turn = await runOnce({
+        agentSlug: slug,
+        ownerUserId,
+        userId,
+        conversationId:     Number(convId),
+        userMessageId:      userMsg.id,
+        assistantMessageId: asstMsgPlaceholder.id,
+        userMessage,
+        version,
+        overrideCrewId,
+        overrideAgentBody,
+        overrideCrewBody,
+        overrideCrewBodies,
+        emit,
+        stopKey,
+      });
+    } finally {
+      stopRegistry.end(stopKey, stopHandle);
+    }
+    const { assistantText } = turn;
 
     // Extractor-only crew, error before talker, etc. — drop the
     // empty placeholder so the conversation history doesn't carry a

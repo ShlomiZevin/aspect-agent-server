@@ -43,6 +43,14 @@ const TYPES = {
   'application/rtf':                          { kind: 'text',         via: 'download' },
   'application/xml':                          { kind: 'text',         via: 'download' },
   'text/xml':                                 { kind: 'text',         via: 'download' },
+  // Images have no text to read, but people DO look for them ("the banking
+  // mockups", "the logo"). Index the metadata — filename, folder, link — so a
+  // search can find and open them, without downloading a byte (task #815).
+  'image/png':                                { kind: 'image',        via: 'meta' },
+  'image/jpeg':                               { kind: 'image',        via: 'meta' },
+  'image/webp':                               { kind: 'image',        via: 'meta' },
+  'image/gif':                                { kind: 'image',        via: 'meta' },
+  'image/svg+xml':                            { kind: 'image',        via: 'meta' },
 };
 
 /**
@@ -174,7 +182,14 @@ module.exports = {
     }
 
     let text;
-    if (how.via === 'export') {
+    if (how.via === 'meta') {
+      // Nothing to extract — the name, the folder and the link ARE the content.
+      text = [
+        `Image file: ${item.title}`,
+        `Folder: ${item.parent_title || 'Drive root'}`,
+        `Link: ${item.url}`,
+      ].join('\n');
+    } else if (how.via === 'export') {
       const res = await drive.files.export(
         { fileId: item.external_id, mimeType: how.as, supportsAllDrives: true },
         { responseType: 'text' },

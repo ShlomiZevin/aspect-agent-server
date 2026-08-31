@@ -16,6 +16,7 @@ const TALKER_PLUGIN_ID = descriptor.pluginId;
 async function run(ctx) {
   const {
     instance,
+    isStopped,
     prompt,
     modelString,
     userMessage,
@@ -51,6 +52,8 @@ async function run(ctx) {
   });
 
   for await (const chunk of stream) {
+    // Task #816: Stop pressed — leave the stream; the runner discards the turn.
+    if (isStopped && isStopped()) break;
     if (typeof chunk === 'string') {
       if (firstTokenMs === null && chunk.length > 0) firstTokenMs = Date.now() - start;
       collected += chunk;

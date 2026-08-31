@@ -260,6 +260,6 @@ async function leonardoReference(id) {
 }
 
 module.exports = {
-  SUPPORTED, KNOWN_UNSUPPORTED, MAX_BYTES,
+  SUPPORTED, KNOWN_UNSUPPORTED, MAX_BYTES, typeOf,
   add, list, forContext, remove, update, viewUrl, leonardoReference,
 };

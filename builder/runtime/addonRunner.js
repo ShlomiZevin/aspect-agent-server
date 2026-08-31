@@ -385,6 +385,9 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
       // their own message-id watermark (Summarizer) compute it
       // against the SAME slice the engine just handed them.
       historyExcludeFromMessageId: ctx.historyExcludeFromMessageId,
+      // Task #816: lets a streaming plugin (Talker) stop consuming
+      // chunks once the builder pressed Stop. Optional — most ignore it.
+      isStopped: ctx.isStopped,
     });
   } catch (err) {
     emit('addon.error', {

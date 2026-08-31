@@ -18,6 +18,13 @@ const askService = require('../services/ask.service');
 const drop = require('../services/drop.service');
 const budget = require('../services/budget.service');
 
+// File drops (task #815) — memory storage, bytes are uploaded onward to GCS.
+const multer = require('multer');
+const dropUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: require('../services/worker-files.service').MAX_BYTES },
+});
+
 function fail(res, err, status = 500) {
   console.error('[hq]', err.message);
   res.status(status).json({ error: err.message });
@@ -77,6 +84,23 @@ router.post('/drop/inspect', async (req, res) => {
       url: object.url || null,
       rowCount,
     });
+  } catch (err) { fail(res, err, 400); }
+});
+
+/**
+ * Drop a FILE. Documents are read and indexed; images are indexed by their
+ * filename + caption and linked. Fields: file (multipart), kind, caption.
+ */
+router.post('/drop/file', dropUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file was sent' });
+    const out = await drop.dropFile(req.file.buffer, {
+      filename: req.file.originalname,
+      mimeType: req.file.mimetype,
+      kind: req.body?.kind || 'auto',
+      caption: req.body?.caption || null,
+    });
+    res.json({ ok: true, type: 'file', atom: out.atom, extracted: out.extracted, isImage: out.isImage });
   } catch (err) { fail(res, err, 400); }
 });
 
