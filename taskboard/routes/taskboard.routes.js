@@ -59,9 +59,9 @@ const notFound = res => res.status(404).json({ error: 'Not found' });
 // --- tasks ------------------------------------------------------------------
 
 router.get('/tasks', handle(async (req, res) => {
-  const { status, assignee, type, priority, tag, domain, openOnly } = req.query;
+  const { status, assignee, type, priority, tag, openOnly } = req.query;
   const tasks = await tasksService.listTasks({
-    status, assignee, type, priority, tag, domain,
+    status, assignee, type, priority, tag,
     openOnly: openOnly === 'true',
   });
   res.json({ tasks });
