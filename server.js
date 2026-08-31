@@ -6479,6 +6479,16 @@ async function startServer() {
     // Seed default assignees for task board
     await taskService.seedDefaultAssignees();
 
+    // Same for the Aspect task board, in its own database. Wrapped because it
+    // is an optional module: a board nobody has switched on must not be able to
+    // stop the server booting.
+    try {
+      const seeded = await require('./taskboard/services/people.service').seed();
+      if (seeded) console.log(`✅ Seeded ${seeded} people on the Aspect task board`);
+    } catch (err) {
+      console.error('[taskboard] could not seed people (non-fatal):', err.message);
+    }
+
     // Configure GCS CORS for direct browser uploads (podcast signed URLs)
     try {
       const storageService = require('./services/storage.service');
