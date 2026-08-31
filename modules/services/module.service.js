@@ -22,7 +22,7 @@
  */
 
 const db = require('../../services/db.pg');
-const { clientModules, providerConfig } = require('../../db/schema');
+const { clientModules, providerConfig, agents } = require('../../db/schema');
 const { eq, and } = require('drizzle-orm');
 const moduleRegistry = require('../registry');
 const datasetRegistry = require('../../insights/datasets/registry');
@@ -46,6 +46,38 @@ function platformDefaultsKey(moduleId) {
 /** @returns {boolean} is this a dataset the platform actually serves? */
 function isKnownDataset(datasetId) {
   return Boolean(datasetRegistry.get(datasetId));
+}
+
+/**
+ * Is this a client the platform serves, dataset or not?
+ *
+ * A dataset-scoped module can only attach to a real dataset, which is what
+ * isKnownDataset already answers. A client-scoped module attaches to any client
+ * slug — Aspect and LYBI are clients with no customer schema, and a per-client
+ * tool has to be switchable for them too.
+ *
+ * Async because agents live in the database, which is why it is used only on the
+ * admin paths. getLiveModules() stays synchronous on the dataset fast path; see
+ * the note there.
+ */
+async function isKnownClient(clientId) {
+  if (!clientId) return false;
+  if (isKnownDataset(clientId)) return true;
+
+  const drizzle = db.getDrizzle();
+  const [row] = await drizzle
+    .select({ id: agents.id })
+    .from(agents)
+    .where(eq(agents.urlSlug, String(clientId).toLowerCase()))
+    .limit(1);
+  return Boolean(row);
+}
+
+/** Whether `descriptor` may attach to `clientId` at all. */
+async function canAttach(clientId, descriptor) {
+  return (descriptor.scope || 'dataset') === 'client'
+    ? isKnownClient(clientId)
+    : isKnownDataset(clientId);
 }
 
 // ── state ────────────────────────────────────────────────────────────────
@@ -159,6 +191,11 @@ async function describe(datasetId, descriptor, state) {
     id: descriptor.id,
     name: descriptor.name,
     version: descriptor.version,
+    // The admin UI branches on these: an app module has no init to run, no
+    // binding to store and no nightly build, so offering it those controls
+    // shows buttons that can only fail.
+    kind: descriptor.kind || 'data',
+    scope: descriptor.scope || 'dataset',
     settingsSchema: descriptor.settingsSchema,
     notificationEvents: descriptor.notificationEvents,
 
@@ -181,16 +218,23 @@ async function describe(datasetId, descriptor, state) {
 
 /** @returns {Object[]|null} every registered module for a dataset, or null if the dataset is unknown. */
 async function listForDataset(datasetId) {
-  if (!isKnownDataset(datasetId)) return null;
+  if (!await isKnownClient(datasetId)) return null;
   const states = await getStates(datasetId);
-  return Promise.all(moduleRegistry.all().map(d => describe(datasetId, d, states[d.id])));
+  // Only the modules that can actually attach here. A dataset-scoped module
+  // listed against a client with no schema would offer a switch that cannot
+  // legally be turned on.
+  const attachable = [];
+  for (const d of moduleRegistry.all()) {
+    if (await canAttach(datasetId, d)) attachable.push(d);
+  }
+  return Promise.all(attachable.map(d => describe(datasetId, d, states[d.id])));
 }
 
 /** @returns {Object|null} one module for a dataset, or null if either is unknown. */
 async function getForDataset(datasetId, moduleId) {
-  if (!isKnownDataset(datasetId)) return null;
   const descriptor = moduleRegistry.get(moduleId);
   if (!descriptor) return null;
+  if (!await canAttach(datasetId, descriptor)) return null;
   return describe(datasetId, descriptor, await getState(datasetId, moduleId));
 }
 
@@ -210,7 +254,11 @@ async function getForDataset(datasetId, moduleId) {
  * there", which is the same as never having installed it.
  */
 async function getLiveModules(datasetId) {
-  if (!isKnownDataset(datasetId)) return [];
+  // No isKnownClient() here on purpose: it costs a query, and this runs on the
+  // chat and reload hot paths. It is not needed for correctness either — a
+  // client_modules row only exists if an admin created it through a path that
+  // DID validate, so an unknown id simply matches nothing below.
+  if (!datasetId) return [];
   const drizzle = db.getDrizzle();
   const rows = await drizzle
     .select().from(clientModules)
@@ -237,17 +285,36 @@ async function isLive(datasetId, moduleId) {
  * customer-facing route and must leak no settings, binding, or model id.
  */
 async function getPublicStatus(datasetId) {
-  if (!isKnownDataset(datasetId)) return null;
+  if (!await isKnownClient(datasetId)) return null;
   const live = await getLiveModules(datasetId);
-  return { datasetId, modules: live.map(x => ({ id: x.descriptor.id, name: x.descriptor.name })) };
+  return {
+    datasetId,
+    modules: live.map(x => ({
+      id: x.descriptor.id,
+      name: x.descriptor.name,
+      kind: x.descriptor.kind || 'data',
+    })),
+  };
 }
 
 // ── mutations ────────────────────────────────────────────────────────────
 
 async function setEnabled(datasetId, moduleId, enabled, updatedBy) {
-  if (!isKnownDataset(datasetId)) return null;
-  if (!moduleRegistry.get(moduleId)) return null;
-  await upsert(datasetId, moduleId, { enabled: Boolean(enabled) }, updatedBy);
+  const descriptor = moduleRegistry.get(moduleId);
+  if (!descriptor) return null;
+  if (!await canAttach(datasetId, descriptor)) return null;
+
+  const patch = { enabled: Boolean(enabled) };
+
+  // An app module has nothing to introspect, render or verify, so there is no
+  // init run that could ever move it to 'ready'. Enabling IS the installation.
+  // Without this it would sit enabled-but-not-ready forever and getLiveModules()
+  // — which requires both — would never return it.
+  if ((descriptor.kind || 'data') === 'app') {
+    patch.status = patch.enabled ? 'ready' : 'not_initialized';
+  }
+
+  await upsert(datasetId, moduleId, patch, updatedBy);
   return getForDataset(datasetId, moduleId);
 }
 
@@ -260,9 +327,9 @@ async function setEnabled(datasetId, moduleId, enabled, updatedBy) {
  * nothing at all.
  */
 async function saveSettings(datasetId, moduleId, incoming, updatedBy) {
-  if (!isKnownDataset(datasetId)) return null;
   const descriptor = moduleRegistry.get(moduleId);
   if (!descriptor) return null;
+  if (!await canAttach(datasetId, descriptor)) return null;
 
   const allowed = new Set(descriptor.settingsSchema.map(f => f.key));
   const cleaned = {};

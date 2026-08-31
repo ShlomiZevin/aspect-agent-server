@@ -154,6 +154,20 @@ app.use('/api/admin/intelligence', require('./insights/routes/insights-admin.rou
 // modules.routes.js and tasks/pending/aspect-modules.md.
 app.use('/api/modules', require('./modules/routes/modules.routes'));
 
+// ─── Aspect Task Board ─────────────────────────────────────────────
+// Our own task board, in its OWN database (`aspect_tasks_db`), not the platform
+// DB. The separation is physical on purpose: the existing board in
+// agents_platform_db belongs to LYBI, and Shlomi asked for two tools rather
+// than one filtered table, so there is no query here that can reach the other.
+// See taskboard/README.md.
+app.use('/api/taskboard', require('./taskboard/routes/taskboard.routes'));
+
+// ─── Google Sign-In ────────────────────────────────────────────────
+// Switchable per client through the google-auth module. Where it is off, the
+// login page is what it has always been: a name and a phone number. Mounted
+// under /api/auth/google, beside the existing /api/auth/login below.
+app.use('/api/auth/google', require('./auth/routes/google-auth.routes'));
+
 // ─── Lybi HQ ───────────────────────────────────────────────────────
 // Our own internal company brain — meetings, docs, decisions. NOT a product
 // and never customer-facing; nothing in the product may import from hq/.
@@ -6470,6 +6484,16 @@ async function startServer() {
 
     // Seed default assignees for task board
     await taskService.seedDefaultAssignees();
+
+    // Same for the Aspect task board, in its own database. Wrapped because it
+    // is an optional module: a board nobody has switched on must not be able to
+    // stop the server booting.
+    try {
+      const seeded = await require('./taskboard/services/people.service').seed();
+      if (seeded) console.log(`✅ Seeded ${seeded} people on the Aspect task board`);
+    } catch (err) {
+      console.error('[taskboard] could not seed people (non-fatal):', err.message);
+    }
 
     // Configure GCS CORS for direct browser uploads (podcast signed URLs)
     try {

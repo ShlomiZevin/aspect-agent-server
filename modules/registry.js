@@ -20,6 +20,8 @@
 
 const stub = require('./_stub/module');
 const replenishment = require('./replenishment/module');
+const taskboard = require('./taskboard/module');
+const googleAuth = require('./google-auth/module');
 
 // The stub exists to test the framework, not to serve anyone. Keeping it out
 // of production means the client-facing admin panel never shows a module
@@ -29,6 +31,8 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const DESCRIPTORS = [
   ...(IS_PRODUCTION ? [] : [stub]),
   replenishment,
+  taskboard,
+  googleAuth,
 ];
 
 /**
@@ -44,6 +48,33 @@ const REQUIRED_HOOKS = [
   'audit', 'proposeBinding', 'renderInfra', 'verify',
   'nightlyBuild', 'chatTools', 'manifestFragment',
 ];
+
+/**
+ * Two kinds of module, and only one of them binds to customer data.
+ *
+ *   'data' — the original kind. Audits the client's schema, has an LLM propose
+ *            a binding, renders DDL, verifies it. Smart Replenishment.
+ *   'app'  — a self-contained tool that happens to be switchable per client. It
+ *            owns its own storage and has nothing to introspect, so the whole
+ *            audit -> binding -> DDL -> verify pipeline is meaningless for it.
+ *
+ * An app module therefore declares no hooks and never runs an init: enabling it
+ * IS the whole installation. Requiring seven empty functions of it would be
+ * ceremony that teaches the next reader the wrong thing about what a module is.
+ */
+const KINDS = ['data', 'app'];
+
+/**
+ * What a module attaches to.
+ *
+ *   'dataset' — one of the schemas in insights/datasets/registry.js. The
+ *               original and still the default, so every existing descriptor
+ *               keeps its exact meaning.
+ *   'client'  — any client slug, whether or not it has a dataset. Needed
+ *               because Aspect and LYBI are clients with no customer schema,
+ *               and a per-client tool must still be switchable for them.
+ */
+const SCOPES = ['dataset', 'client'];
 
 function validate(descriptor) {
   const where = `module descriptor '${descriptor?.id || '(no id)'}'`;
@@ -65,11 +96,28 @@ function validate(descriptor) {
   if (!Array.isArray(descriptor.notificationEvents)) {
     throw new Error(`${where}: notificationEvents must be an array`);
   }
-  for (const hook of REQUIRED_HOOKS) {
-    if (typeof descriptor.hooks?.[hook] !== 'function') {
-      throw new Error(`${where}: missing hook '${hook}'`);
-    }
+
+  const kind = descriptor.kind || 'data';
+  if (!KINDS.includes(kind)) {
+    throw new Error(`${where}: kind must be one of: ${KINDS.join(', ')}`);
   }
+  const scope = descriptor.scope || 'dataset';
+  if (!SCOPES.includes(scope)) {
+    throw new Error(`${where}: scope must be one of: ${SCOPES.join(', ')}`);
+  }
+
+  // Only a data module has data to bind. An app module declaring these would be
+  // declaring something it cannot honour.
+  if (kind === 'data') {
+    for (const hook of REQUIRED_HOOKS) {
+      if (typeof descriptor.hooks?.[hook] !== 'function') {
+        throw new Error(`${where}: missing hook '${hook}'`);
+      }
+    }
+  } else if (descriptor.hooks) {
+    throw new Error(`${where}: an app module must not declare data hooks`);
+  }
+
   return descriptor;
 }
 

@@ -427,11 +427,23 @@ async function runInitPipeline(datasetId, moduleId, runId, { updatedBy, onEvent 
  * @returns {{runId}|{error, code}}
  */
 async function startInit(datasetId, moduleId, { updatedBy, onEvent, await: awaitRun } = {}) {
+  const descriptor = moduleRegistry.get(moduleId);
+  if (!descriptor) {
+    return { error: `Unknown module: ${moduleId}`, code: 404 };
+  }
+  // Checked BEFORE the dataset, because a client-scoped module is legitimately
+  // attached to a client that is not a dataset — testing the dataset first would
+  // answer "unknown dataset" for a module that simply has nothing to initialize.
+  //
+  // An app module owns its own storage and declares no hooks, so there is no
+  // pipeline to run. Refused here rather than crashing four stages in on a
+  // missing `audit`: a run that has already written its audit row and set
+  // status='initializing' leaves the module stuck there.
+  if ((descriptor.kind || 'data') === 'app') {
+    return { error: `${moduleId} is an app module and has nothing to initialize`, code: 400 };
+  }
   if (!moduleService.isKnownDataset(datasetId)) {
     return { error: `Unknown dataset: ${datasetId}`, code: 404 };
-  }
-  if (!moduleRegistry.get(moduleId)) {
-    return { error: `Unknown module: ${moduleId}`, code: 404 };
   }
   if (await hasRunningRun(datasetId, moduleId)) {
     return { error: 'An init run is already in progress for this module', code: 409 };
