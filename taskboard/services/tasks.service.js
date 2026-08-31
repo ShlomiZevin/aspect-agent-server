@@ -18,6 +18,7 @@ const TYPES      = ['task', 'bug', 'feature', 'idea', 'goal', 'agenda', 'read', 
 const WRITABLE = [
   'title', 'description', 'status', 'priority', 'type', 'assignee', 'opener',
   'dueDate', 'tags', 'atRisk', 'acknowledged', 'isDraft', 'dependsOn',
+  'domain', 'crewMember',
 ];
 
 class ValidationError extends Error {
@@ -55,6 +56,8 @@ function clean(input, { partial = false } = {}) {
   if (has('opener'))      out.opener      = out.opener?.trim() || null;
   if (has('dueDate'))     out.dueDate     = out.dueDate || null;
   if (has('dependsOn'))   out.dependsOn   = out.dependsOn ?? null;
+  if (has('crewMember'))  out.crewMember  = out.crewMember?.trim() || null;
+  if (has('domain'))      out.domain      = out.domain?.trim() || 'general';
 
   if (has('tags')) {
     const tags = Array.isArray(out.tags) ? out.tags : [];
@@ -98,6 +101,7 @@ async function listTasks(filters = {}) {
   if (filters.type)     add('t.type = ?', filters.type);
   if (filters.priority) add('t.priority = ?', filters.priority);
   if (filters.tag)      add('t.tags @> ARRAY[?]::text[]', filters.tag);
+  if (filters.domain)   add('t.domain = ?', filters.domain);
   if (filters.openOnly) where.push("t.status <> 'done'");
 
   const { rows } = await connection.query(`
@@ -276,6 +280,8 @@ function toApi(row) {
     atRisk: row.at_risk,
     acknowledged: row.acknowledged,
     isDraft: row.is_draft,
+    domain: row.domain,
+    crewMember: row.crew_member ?? undefined,
     dependsOn: row.depends_on == null ? undefined : Number(row.depends_on),
     linkedTaskIds: (row.linked_task_ids ?? []).map(Number),
     deployedAt: row.deployed_at ?? undefined,

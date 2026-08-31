@@ -25,6 +25,12 @@ const tasks = pgTable('tasks', {
   atRisk:       boolean('at_risk').default(false).notNull(),
   acknowledged: boolean('acknowledged').default(false).notNull(),
   isDraft:      boolean('is_draft').default(false).notNull(),
+  // Which part of the product this belongs to. A label, not a boundary — the
+  // boundary is the database this table lives in.
+  domain:       varchar('domain', { length: 50 }).default('general').notNull(),
+  // The crew member a task is about. Free text: the list comes from whichever
+  // agent is being worked on and is not a fixed set here.
+  crewMember:   varchar('crew_member', { length: 100 }),
   dependsOn:    bigint('depends_on', { mode: 'number' }),
   deployedAt:   timestamp('deployed_at', { withTimezone: true }),
   createdAt:    timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
