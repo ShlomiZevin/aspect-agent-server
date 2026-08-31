@@ -18,6 +18,7 @@
  *   POST   /api/taskboard/people                 add
  *   GET    /api/taskboard/notifications          unread, for ?person=
  *   POST   /api/taskboard/notifications/read     mark read
+ *   POST   /api/taskboard/translate              Hebrew <-> English
  *   GET    /api/taskboard/stream                 SSE
  *
  * The literal routes come BEFORE `/tasks/:id`. Express matches in order, so
@@ -30,6 +31,7 @@ const express = require('express');
 const tasksService = require('../services/tasks.service');
 const commentsService = require('../services/comments.service');
 const peopleService = require('../services/people.service');
+const translateService = require('../services/translate.service');
 const events = require('../services/events.service');
 
 const router = express.Router();
@@ -159,6 +161,20 @@ router.post('/notifications/read', handle(async (req, res) => {
     ? await peopleService.markAllRead(person)
     : await peopleService.markRead(ids, person);
   res.json({ marked: count });
+}));
+
+// --- translation --------------------------------------------------------------
+
+/**
+ * Translates a piece of task text and returns it; stores nothing.
+ *
+ * Deliberately not a field on the task: a translation is a reading aid, and
+ * writing one back would mean the board holds two versions of a title that then
+ * drift apart every time someone edits one of them.
+ */
+router.post('/translate', handle(async (req, res) => {
+  const { text } = req.body;
+  res.json(await translateService.translate(text));
 }));
 
 // --- live updates -------------------------------------------------------------
