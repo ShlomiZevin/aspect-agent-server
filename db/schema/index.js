@@ -541,6 +541,10 @@ const supplierSettings = pgTable('supplier_settings', {
   safetyDays:    integer('safety_days'),
   minOrderUnits: integer('min_order_units'),
   notes:         text('notes'),
+  // Keep this supplier out of the recommendations entirely. For archive-type
+  // suppliers that sell but hold no warehouse stock by design, so every item
+  // reads as permanently overdue. See db/migrations/046.
+  excluded:      boolean('excluded').default(false).notNull(),
   updatedBy:     text('updated_by'),
   updatedAt:     timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

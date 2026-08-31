@@ -138,13 +138,36 @@ async function getRecommendations(datasetId, opts = {}) {
   const today = opts.today || new Date().toISOString().slice(0, 10);
 
   const all = [];
+  // Counted rather than silently dropped: a supplier excluded on purpose still
+  // owes the buyer an explanation of where its rows went, and the screen says
+  // so under the tiles.
+  let excludedItems = 0;
+  const excludedSuppliers = new Set();
+
   for (const row of rows) {
     const settings = chain.forSupplier(row.supplier);
+
     const rec = engine.computeRecommendation(row, {
       ...settings,
       horizonDays: opts.horizonDays ?? settings.horizonDays,
     }, { today, stockSource: opts.stockSource || 'warehouse' });
-    if (rec) all.push(rec);
+    if (!rec) continue;
+
+    // An archive supplier sells but holds no warehouse stock by design, so every
+    // one of its items reads as permanently overdue. Those are not orders anyone
+    // will place; excluding them is the buyer's call, per supplier.
+    //
+    // Computed first and dropped after, so the count reports what the buyer
+    // WOULD have seen. Counting the raw rows instead said "2,624 excluded" for a
+    // supplier whose list only ever held 289 — a number that is true of the data
+    // and false of the screen.
+    if (settings.excluded) {
+      excludedItems += 1;
+      excludedSuppliers.add(row.supplier);
+      continue;
+    }
+
+    all.push(rec);
   }
 
   // Rows are computed per supplier (each with its own lead time), so the
@@ -191,6 +214,12 @@ async function getRecommendations(datasetId, opts = {}) {
     total: filtered.length,
     offset,
     limit,
+    // So the page can account for the difference rather than leaving the buyer
+    // to wonder why a supplier they know is missing.
+    excluded: {
+      items: excludedItems,
+      suppliers: [...excludedSuppliers],
+    },
     recommendations: page,
   };
 }
