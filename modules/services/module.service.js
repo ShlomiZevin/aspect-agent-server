@@ -191,6 +191,11 @@ async function describe(datasetId, descriptor, state) {
     id: descriptor.id,
     name: descriptor.name,
     version: descriptor.version,
+    // The admin UI branches on these: an app module has no init to run, no
+    // binding to store and no nightly build, so offering it those controls
+    // shows buttons that can only fail.
+    kind: descriptor.kind || 'data',
+    scope: descriptor.scope || 'dataset',
     settingsSchema: descriptor.settingsSchema,
     notificationEvents: descriptor.notificationEvents,
 
@@ -282,7 +287,14 @@ async function isLive(datasetId, moduleId) {
 async function getPublicStatus(datasetId) {
   if (!await isKnownClient(datasetId)) return null;
   const live = await getLiveModules(datasetId);
-  return { datasetId, modules: live.map(x => ({ id: x.descriptor.id, name: x.descriptor.name })) };
+  return {
+    datasetId,
+    modules: live.map(x => ({
+      id: x.descriptor.id,
+      name: x.descriptor.name,
+      kind: x.descriptor.kind || 'data',
+    })),
+  };
 }
 
 // ── mutations ────────────────────────────────────────────────────────────
