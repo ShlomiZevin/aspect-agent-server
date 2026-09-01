@@ -152,11 +152,17 @@ async function getWithModules(schemaName) {
   // copy up front added empty `facts` and `vocabulary` keys that the dataset
   // never declared, which is a change to the manifest made by a module that
   // contributes nothing to it.
+  // Required here rather than at the top: this file is loaded by the crew
+  // runtime and the modules package requires back into services/.
+  const moduleRegistry = require('../../modules/registry');
+
   const fragments = [];
   for (const { descriptor } of live) {
+    if (!moduleRegistry.runsHooks(descriptor)) continue;
+
     let fragment = null;
     try {
-      fragment = descriptor.hooks?.manifestFragment?.();
+      fragment = descriptor.hooks.manifestFragment?.();
     } catch (err) {
       console.error(`[dataset-manifest] ${descriptor.id} manifestFragment threw:`, err.message);
       continue;

@@ -28,6 +28,7 @@
  */
 
 const moduleService = require('./module.service');
+const registry = require('../registry');
 const datasetRegistry = require('../../insights/datasets/registry');
 const notificationService = require('../notification.service');
 
@@ -41,19 +42,20 @@ const notificationService = require('../notification.service');
  * @returns {{built: object[], failed: object[], skipped: boolean}}
  */
 /**
- * Modules that have infrastructure to build at all.
+ * Modules this loop has anything to build.
  *
- * An APP module owns its own storage — its own database, in the task board's
- * case — so it has no binding, no renderInfra and nothing for a reload to
- * rebuild. Running it through the build loop threw "module is ready but has no
- * stored binding" on the first line and marked it `degraded` on every single
- * reload: a module that was working perfectly, reported as broken, nightly.
+ * An APP module owns its own storage — its own database, for the task board —
+ * so it has no binding, no renderInfra and nothing for a reload to rebuild.
+ * Running it through here threw "module is ready but has no stored binding" on
+ * the first line and marked a module that was working perfectly `degraded`, on
+ * every single reload.
  *
- * Filtered here rather than guarded at each of the three call sites, so a fourth
- * one cannot reintroduce it.
+ * Filtered once rather than guarded at each of the three call sites below, so a
+ * fourth cannot reintroduce it, and by the registry's predicate rather than a
+ * local kind test, so it cannot drift from what the other host paths believe.
  */
 function withInfrastructure(live) {
-  return live.filter(({ descriptor }) => (descriptor.kind || 'data') === 'data');
+  return live.filter(({ descriptor }) => registry.runsHooks(descriptor));
 }
 
 async function buildModulesInShadow(datasetId, shadowSchema, pool, emitLog = () => {}) {
