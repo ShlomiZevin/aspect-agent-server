@@ -182,7 +182,7 @@ module.exports = {
       // for want of a receipt record. "When WILL it arrive" fails for want of
       // an expected-date field: nothing in the feed carries a promised or
       // forecast delivery date, and the only thing resembling one is the
-      // delivery time a person typed into the Purchasing screen.
+      // delivery time a person typed into the Procurement screen.
       //
       // The past-tense gate above targets "מתי הגיע"; the future forms sailed
       // straight past it into SQL generation, which then answered from the

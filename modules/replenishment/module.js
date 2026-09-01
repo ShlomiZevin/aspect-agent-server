@@ -225,7 +225,7 @@ module.exports = {
         },
         vocabulary: [
           { terms: ['זמן אספקה', 'לי טיים', 'lead time', 'delivery time'], resolution: 'field',
-            detail: 'configured per supplier on the Purchasing screen; not derivable from the data' },
+            detail: 'configured per supplier on the Procurement screen; not derivable from the data' },
           { terms: ['נקודת הזמנה', 'reorder point'], resolution: 'field',
             detail: 'computed: sales pace x delivery time + safety stock' },
           { terms: ['מלאי ביטחון', 'safety stock'], resolution: 'field',

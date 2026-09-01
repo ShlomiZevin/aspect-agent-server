@@ -46,7 +46,7 @@ function buildTool(datasetId) {
           description:
             'Optional. How many days ahead still counts as "due soon". LEAVE IT UNSET '
             + 'unless the user names a window ("in the next two weeks", "לחודש הקרוב"). '
-            + 'Unset uses the horizon the client configured, which is what the Purchasing '
+            + 'Unset uses the horizon the client configured, which is what the Procurement '
             + 'screen shows. Choosing one changes the answer: the same supplier question '
             + 'returns 5,249 items at 30 days and 5,145 at 14, and a buyer comparing the '
             + 'chat with the screen has no way to see why they disagree.',
@@ -115,8 +115,8 @@ async function handle(datasetId, params = {}) {
   // the screen or against the same question asked yesterday.
   contract.push(params.horizonDays
     ? `"Due soon" here means within ${params.horizonDays} days, because that is the window asked for. `
-      + 'Say so — the window configured for this client is different, and the Purchasing screen uses that one.'
-    : '"Due soon" uses the window configured for this client, the same one the Purchasing screen uses.');
+      + 'Say so — the window configured for this client is different, and the Procurement screen uses that one.'
+    : '"Due soon" uses the window configured for this client, the same one the Procurement screen uses.');
   contract.push(
     `${res.summary.orderNow} items are overdue, ${res.summary.dueSoon} due within the horizon, ` +
     `${res.summary.ok} adequately stocked, ${res.summary.noDemand} with no recent sales.`);
@@ -125,7 +125,7 @@ async function handle(datasetId, params = {}) {
   if (assumed.length) {
     contract.push(
       `${assumed.length} of the ${res.recommendations.length} rows shown use an ASSUMED delivery time, ` +
-      `not one the client set. Say so, and point at the Purchasing screen where it can be set — ` +
+      `not one the client set. Say so, and point at the Procurement screen where it can be set — ` +
       `the delivery time decides every order date here.`);
   }
   if (res.recommendations.some(r => r.onOrderIsUnverified && r.onOrderQty > 0)) {
