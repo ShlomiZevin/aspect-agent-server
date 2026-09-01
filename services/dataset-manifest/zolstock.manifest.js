@@ -164,12 +164,45 @@ module.exports = {
         // sailed through to SQL generation. Sized for a phrase, not a word.
         /when\s+(did|was)\b.{0,40}?(arrive|arrived|received|delivered)/i,
         /goods\s+receipt|grn\b|receiving\s+date|arrival\s+date|date\s+of\s+arrival/i,
-        /מתי\s+הגיע|מתי\s+התקבל|תאריך\s+קליטה|תאריך\s+הגעה/,
+        // "תאריך הגעה" alone is a past arrival. Qualified as estimated or
+        // expected it is a FUTURE one, which the ETA entry below answers with
+        // the right reason -- no forecast date exists, as opposed to no
+        // receipt record existing. This entry is checked first, so it has to
+        // decline the future forms rather than swallow them.
+        /מתי\s+הגיע|מתי\s+התקבל|תאריך\s+קליטה|תאריך\s+הגעה(?!\s*(משוער|צפוי|מוערך))/,
         /האם\s+.{0,15}(הגיע|התקבל)/,
       ],
       reason: 'This data records orders being placed, but nothing records goods arriving — there is no receipt or arrival date in the feed.',
       roadmap: 'Arrival tracking needs a goods-receipt date on the order rows, or a rule agreed with you for when an old order should be treated as received.',
       alternatives: 'when an order was placed, its quantity, and current stock on hand',
+    },
+    'expected arrival date / ETA': {
+      // A SEPARATE entry from the goods-receipt one above, not more triggers on
+      // it, because the honest answer is different. "When did it arrive" fails
+      // for want of a receipt record. "When WILL it arrive" fails for want of
+      // an expected-date field: nothing in the feed carries a promised or
+      // forecast delivery date, and the only thing resembling one is the
+      // delivery time a person typed into the Purchasing screen.
+      //
+      // The past-tense gate above targets "מתי הגיע"; the future forms sailed
+      // straight past it into SQL generation, which then answered from the
+      // order date -- the one number that looks like an answer and is not.
+      triggers: [
+        // "should" is deliberately absent: "when should I order so it arrives
+        // before the holiday" is the module's own question, and the order-by
+        // date is exactly the answer to it.
+        /when\s+(will|would)\b.{0,40}?(arrive|arriving|get\s+here|be\s+(here|delivered|received))/i,
+        /when\s+(is|are)\b.{0,40}?(arriving|coming\s+in|due\s+to\s+arrive|expected)/i,
+        /expected\s+(arrival|delivery)\b|estimated\s+(arrival|delivery)\b|\beta\b(?!\s*version)/i,
+        // Hebrew future and modal forms. No final-form trap in these stems --
+        // יגיע/תגיע/יגיעו all end in ע -- but אמור/צפוי inflect, so the
+        // alternatives are spelled out rather than stemmed.
+        /מתי\s+(יגיע|תגיע|יגיעו|תגיענה|אמור|אמורה|אמורים|צפוי|צפויה|צפויים)/,
+        /(צפוי|אמור|אמורה|צפויה)\s+להגיע|מועד\s+הגעה\s+צפוי|תאריך\s+הגעה\s+משוער|תאריך\s+אספקה\s+צפוי/,
+      ],
+      reason: 'Nothing in this data promises or forecasts a delivery date. Orders carry the date they were placed and nothing else, so any arrival date would be a guess dressed as a figure.',
+      roadmap: 'An expected-date column on the order rows from the supplier, or a receipt date that would let a real delivery time be measured instead of entered.',
+      alternatives: 'when the order was placed and for how much, current stock, and the delivery time configured for that supplier -- which together give an estimate you can make deliberately rather than one stated as fact',
     },
     'customer city / demographics / age': {
       triggers: [/age\s+distribution|customer\s+age|demographic/i, /התפלגות\s+גיל|גיל\s+הלקוחות|דמוגרפ/, /cities\s+.{0,25}customers|customers\s+.{0,25}cities/i, /ערים\s+.{0,20}לקוחות|לקוחות\s+.{0,20}ערים/],

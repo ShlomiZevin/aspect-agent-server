@@ -106,6 +106,10 @@ async function listSuppliers(datasetId, opts = {}) {
         reviewDays: resolved.reviewDays,
         safetyDays: resolved.safetyDays,
         minOrderUnits: resolved.minOrderUnits,
+        // So the settings dialog can show the switch in the position it is
+        // actually in. Without it the page could report that a supplier was
+        // excluded while the only control for it opened unchecked.
+        excluded: resolved.excluded,
       };
     }),
   };
