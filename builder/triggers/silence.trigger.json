@@ -5,16 +5,49 @@
   "purpose": "Reach out when a customer stops replying. Reach for this when the value is in re-engagement — an abandoned onboarding, an unanswered question, a form half-filled — and the right moment is defined by absence rather than by an event. Two numbers author it: how long of quiet before the first nudge, and how many attempts before giving up until they reply. Do NOT reach for this to run something on a schedule (that is a time-of-day trigger, not silence) or to react to something that happened in a turn — anything that should run because a message arrived belongs on the crew's chain as an addon, not here. The commonest mistake is pointing it at a crew whose talker always speaks: the crew you name should be free to decide the moment is wrong and stay silent, and a proactive turn that says nothing is a success, not a failure.",
   "icon": "🌙",
   "color": "#8b5cf6",
-
   "defaultConfig": {
-    "after": { "value": 30, "unit": "minutes" },
+    "after": {
+      "value": 30,
+      "unit": "minutes"
+    },
     "maxAttempts": 3
   },
-
-  "units": ["minutes", "hours", "days"],
-
+  "units": [
+    "minutes",
+    "hours",
+    "days"
+  ],
   "limits": {
     "minAfterMinutes": 1,
     "maxAttempts": 20
+  },
+  "guide": {
+    "inOneLine": "The customer stopped replying, and you want the agent to follow up.",
+    "goodFor": [
+      "An onboarding someone abandoned halfway through.",
+      "A question the agent asked that never got an answer.",
+      "Any moment worth reviving that is defined by nothing happening."
+    ],
+    "notFor": [
+      "Doing something at a set time of day. Silence is about how long it has been quiet, not what time it is.",
+      "Reacting to something the customer just said. That belongs on the crew’s chain as an addon, where it can see the message."
+    ],
+    "settings": [
+      {
+        "label": "Wait for",
+        "what": "How long the customer has to be quiet before the agent says anything.",
+        "tip": "Quiet is counted from the CUSTOMER’s last message, not the agent’s. So the clock does not restart when the agent nudges — which is what makes \"wait 2 days, up to 3 times\" mean three nudges roughly two days apart."
+      },
+      {
+        "label": "Up to",
+        "what": "How many times the agent may try before it gives up on this conversation.",
+        "tip": "It counts ATTEMPTS, not messages — so a try where the agent decided to stay quiet still uses one up. The counter goes back to zero the moment the customer replies, so someone who answers can be nudged again later."
+      }
+    ],
+    "alsoDoes": [
+      "It leaves a gap between attempts equal to your \"wait for\" time, so two nudges can never land back to back.",
+      "It only ever reaches conversations where the customer has spoken since you switched the trigger on. Turning it on does not blast your entire history."
+    ],
+    "example": "Wait for 2 days, up to 3 times: someone goes quiet on Monday, gets a nudge Wednesday, another Friday, another Sunday, and then nothing more unless they reply. If they answer on Wednesday, the count resets and the whole thing can start over from their new message."
   }
 }

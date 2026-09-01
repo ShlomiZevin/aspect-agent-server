@@ -208,6 +208,42 @@ no drift possible.
 Cost: the contract is a short structured list instead of raw SQL. For
 Silence that's four clauses.
 
+### The `guide` block — a type explains itself
+
+The descriptor JSON carries an optional `guide` block: plain-language
+prose for the in-builder Triggers guide (the 📖 button on the Triggers
+screen and on Admin → Triggers).
+
+```json
+"guide": {
+  "inOneLine": "The situation this type is for.",
+  "goodFor":   ["...", "..."],
+  "notFor":    ["...", "..."],
+  "settings":  [{ "label": "Wait for", "what": "...", "tip": "..." }],
+  "alsoDoes":  ["behaviour the author never configures but should know"],
+  "example":   "a walkthrough with real numbers"
+}
+```
+
+It lives beside the defaults rather than in the guide's own content file
+for the same reason `candidateSql` and `evaluate` live together: the
+guide is then structurally incapable of missing a type, or of still
+describing one that was removed. `TriggersGuideModal` loops over the
+registry and never names a type.
+
+Two things to keep straight, because both are prose on the same object:
+
+| Field | Read by | Register |
+|---|---|---|
+| `purpose` | **Alfred** — when to reach for this type, what not to use it for | Precise, imperative, written at the model |
+| `guide` | **A human author** who does not write code | No "clause", no "sweep", no "event row" |
+
+`settings[].label` must match what the setup form actually says. A guide
+naming a field the author cannot find on screen is worse than no guide.
+
+Alfred's prompt picks named fields (`displayName`, `description`,
+`purpose`, `defaultConfig`), so adding `guide` does not enlarge it.
+
 ---
 
 ## Trigger type #1 — Silence

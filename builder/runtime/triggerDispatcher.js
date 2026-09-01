@@ -86,6 +86,27 @@ async function resolveLegacyAgentId(agentSlug) {
   return rows.length ? rows[0].id : null;
 }
 
+/**
+ * One conversation, but ONLY if it belongs to this agent.
+ *
+ * Returns null otherwise, so "is this mine?" and "what kind is it?" are
+ * one question with one answer. A manual per-conversation fire is only
+ * as safe as this check: without it the endpoint would act on any
+ * integer it was handed.
+ */
+async function describeConversation(agentSlug, conversationId) {
+  const { rows } = await db.query(
+    `SELECT c.id, c.metadata
+       FROM conversations c
+       JOIN agents a ON a.id = c.agent_id
+      WHERE c.id = $1 AND a.url_slug = $2
+      LIMIT 1`,
+    [conversationId, agentSlug]);
+  if (rows.length === 0) return null;
+  const meta = rows[0].metadata || {};
+  return { id: rows[0].id, kind: meta.kind || 'live', metadata: meta };
+}
+
 /** The conversation's owning user — needed to load its memory blob. */
 async function resolveConversationUser(conversationId) {
   const { rows } = await db.query(
@@ -124,7 +145,15 @@ function versionForConversation(convMeta) {
  * Never throws: one bad conversation must not abort a sweep for the
  * others. Failures are recorded as `error` events.
  */
-async function fireOne({ agentSlug, agentId, trigger, conversationId, matchReason, now = new Date() }) {
+async function fireOne({
+  agentSlug, agentId, trigger, conversationId, matchReason, now = new Date(),
+  // Working copies, for a run started by a person with the builder open.
+  // The clock never passes these — it has no browser to read them from,
+  // and running a body that exists nowhere would make its event rows
+  // describe something nobody can reproduce. A human pressing a button
+  // is the opposite case: what they are looking at IS the question.
+  overrideAgentBody = null, overrideCrewBody = null,
+}) {
   const startedAt = new Date();
   let eventId = null;
   try {
@@ -179,6 +208,8 @@ async function fireOne({ agentSlug, agentId, trigger, conversationId, matchReaso
       crewId:      trigger.run?.crewId,
       brief:       trigger.run?.brief || '',
       version:     versionForConversation(conv.metadata),
+      overrideAgentBody,
+      overrideCrewBody,
       reason:      matchReason,
     });
 
@@ -331,6 +362,7 @@ async function sweepAgent({ agentSlug, mode = 'published', now = new Date(), dry
 }
 
 module.exports = {
+  describeConversation,
   sweepAgent,
   sweepTrigger,
   fireOne,

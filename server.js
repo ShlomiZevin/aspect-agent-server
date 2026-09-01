@@ -6586,14 +6586,11 @@ async function startServer() {
       async function runLocalTick() {
         let nextMs = (pinnedSec || 60) * 1000;
         try {
-          const r = await triggerClock.runTick({
-            holder: 'local-dev',
-            // A local server points at the SAME database as production.
-            // Without this, switching the clock on to watch a trigger
-            // fire would nudge real customers from a laptop. Builder-
-            // preview conversations only; production passes nothing.
-            conversationKinds: ['builder-preview'],
-          });
+          // The builder-preview restriction is NOT passed from here any
+          // more: it lives inside runTick, keyed off the environment, so
+          // that every other way of starting a tick (notably the admin
+          // "Step once" button) is walled off too.
+          const r = await triggerClock.runTick({ holder: 'local-dev' });
           if (!r.skipped) {
             // Closes the tick opened by the clock's own header line, and
             // counts TRIGGERS — the thing that actually did work — not

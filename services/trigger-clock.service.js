@@ -76,6 +76,24 @@ const triggerDispatcher = require('../builder/runtime/triggerDispatcher');
 const IS_CLOUD = !!process.env.K_SERVICE;
 const ENV_SUFFIX = IS_CLOUD ? '' : ':local';
 
+/**
+ * What a tick is ALLOWED to touch, decided by where it is running.
+ *
+ * A laptop points at the same database as production, so anything that
+ * fires locally can reach real customer conversations. This returns the
+ * restriction rather than leaving it to each caller to remember: an
+ * earlier version passed `conversationKinds: ['builder-preview']` from
+ * the scheduled runner in server.js only, which left the "Step once"
+ * button — the same tick, one HTTP call away — completely unwalled.
+ * Guarding the door beats guarding each person who walks through it.
+ *
+ * Cloud is unrestricted: production SHOULD reach customers, that being
+ * the entire point of the feature.
+ */
+function environmentKinds() {
+  return IS_CLOUD ? null : ['builder-preview'];
+}
+
 const SETTINGS_KEY = `triggers_clock_settings${ENV_SUFFIX}`;
 const LEASE_KEY    = `triggers_clock_lease${ENV_SUFFIX}`;
 
@@ -270,6 +288,9 @@ async function runTick({ force = false, dryRun = false, mode, holder = 'tick', c
   // The setting is the default; an explicit argument still wins so a
   // caller can force one sweep against the other version.
   const useMode = mode || settings.mode || 'published';
+  // Not `conversationKinds || environmentKinds()` — a caller must not be
+  // able to widen the wall by passing null. Off-cloud it is forced.
+  const kinds = IS_CLOUD ? conversationKinds : environmentKinds();
 
   if (!settings.enabled && !force) {
     return { skipped: 'clock is off', enabled: false, agents: 0, fired: 0, durationMs: Date.now() - started };
@@ -306,7 +327,7 @@ async function runTick({ force = false, dryRun = false, mode, holder = 'tick', c
     }
     for (const slug of slugs) {
       try {
-        const r = await triggerDispatcher.sweepAgent({ agentSlug: slug, mode: useMode, dryRun, conversationKinds });
+        const r = await triggerDispatcher.sweepAgent({ agentSlug: slug, mode: useMode, dryRun, conversationKinds: kinds });
         for (const t of r.results || []) {
           fired += (t.fired || []).filter(f => f.outcome === 'spoke').length;
           triggers += 1;
@@ -379,6 +400,7 @@ async function health() {
 }
 
 module.exports = {
+  environmentKinds,
   runTick,
   // Exported for the battery: the atomicity of a claim is the whole
   // point of the lease, and it can only be tested by racing it
