@@ -42,6 +42,9 @@ const AGENT_SECTION_KEYS = [
   'name', 'slug', 'spec', 'persona', 'defaultCrewId',
   'fields', 'domains', 'tags', 'parameters', 'enums',
   'cortex', 'snippets', 'personas', 'liveBrain', 'profiler',
+  // Proactive. Missing here = Alfred literally cannot change triggers:
+  // the merge silently ignores the key and the edit vanishes.
+  'triggers',
 ];
 const CREW_SECTION_KEYS = [
   'name', 'description', 'spec', 'persona', 'addons', 'fields',
@@ -208,6 +211,82 @@ function renderAddonTemplatesSection() {
   return blocks.join('\n\n');
 }
 const ADDON_TEMPLATES = renderAddonTemplatesSection();
+
+/**
+ * Load every TRIGGER-type descriptor at module init — the same trick as
+ * the addon descriptors above, and for the same reason: dropping a new
+ * `builder/triggers/<id>.trigger.json` on disk is what makes that type
+ * Alfred-compatible, with no prompt edits anywhere. Restart picks it up.
+ *
+ * Triggers are NOT addons (see BUILDER_V2_TRIGGERS.md) so they get their
+ * own catalogue rather than being mixed into the addon templates, where
+ * the model would be tempted to emit one as an AddonInstance.
+ */
+function loadTriggerDescriptors() {
+  const dir = path.join(__dirname, '..', '..', 'builder', 'triggers');
+  try {
+    return fs.readdirSync(dir)
+      .filter(f => f.endsWith('.trigger.json'))
+      .map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+  } catch (err) {
+    console.warn('[alfred] failed to load trigger descriptors:', err.message);
+    return [];
+  }
+}
+const TRIGGER_DESCRIPTORS = loadTriggerDescriptors();
+
+/** Render the trigger types as fresh-instance templates. */
+function renderTriggerTemplatesSection() {
+  if (TRIGGER_DESCRIPTORS.length === 0) return '';
+  const blocks = TRIGGER_DESCRIPTORS.map(d => {
+    const fresh = {
+      id:          '<generate: trg_xxxxxxxx>',
+      name:        d.displayName,
+      typeId:      d.typeId,
+      enabled:     false,
+      activeSince: '<generate: current ISO timestamp>',
+      config:      d.defaultConfig,
+      run:         { crewId: '<an existing crew id on this agent>', brief: '' },
+    };
+    return [
+      `### ${d.typeId}  (${d.displayName})`,
+      d.description,
+      '',
+      d.purpose ? `**Purpose.** ${d.purpose}` : '',
+      '',
+      'Fresh AgentTrigger template — copy and change ONLY what the user asked',
+      'for. `enabled: false` is deliberate: a trigger messages real customers,',
+      'so the human switches it on, never you.',
+      '',
+      '```json',
+      JSON.stringify(fresh, null, 2),
+      '```',
+    ].filter(Boolean).join('\n');
+  });
+  return [
+    '# Trigger types (proactive)',
+    '',
+    'Triggers live at `agent.triggers.triggers[]` on the AGENT body. They are',
+    'NOT addons: never emit one inside `crew.addons[]` or `agent.cortex`, and',
+    'never give one an `instanceId`, `lane`, `outputType` or `promptTemplate`.',
+    '',
+    'Hard rules when creating or editing one:',
+    '- `activeSince` is REQUIRED and must be the current ISO timestamp. It is',
+    '  what stops a new trigger reaching back into every conversation that has',
+    '  ever gone quiet. Omitting it is a validation error.',
+    '- `run.crewId` must be an EXISTING crew on this agent. A trigger with no',
+    '  crew can never do anything.',
+    '- `enabled: false` on anything you create. Arming it is the human\'s call.',
+    '- The `brief` is never shown to the customer and is never added to the',
+    '  conversation. Leave it empty unless the user gave you words for it.',
+    '- Do not invent config keys. A type\'s config is exactly what its template',
+    '  below shows — there are no spacing, cooldown or backfill settings.',
+    '',
+    blocks.join('\n\n'),
+  ].join('\n');
+}
+const TRIGGER_TEMPLATES = renderTriggerTemplatesSection();
+
 
 const SYSTEM_PROMPT = [
   'You are the patch-generator for the Aspect agent builder.',
@@ -478,6 +557,11 @@ const SYSTEM_PROMPT = [
   'config) stays exactly as shown.',
   '',
   ADDON_TEMPLATES,
+  '',
+  // Triggers are a separate catalogue on purpose — mixing them into the
+  // addon templates is exactly how the model would end up emitting one
+  // as an AddonInstance, which is the single wrong thing it could do here.
+  TRIGGER_TEMPLATES,
 ].join('\n');
 
 /**
@@ -662,3 +746,8 @@ async function generatePatch({
 }
 
 module.exports = { generatePatch, mergeChanges };
+
+// Exported for the Alfred wiring check in scripts/test-alfred-triggers.js —
+// the protocol's failure mode is a section that silently never reaches the
+// prompt, so the battery asserts on the real rendered string.
+module.exports.__promptSections = { SYSTEM_PROMPT, TRIGGER_TEMPLATES, AGENT_SECTION_KEYS };

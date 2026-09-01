@@ -1,7 +1,18 @@
 # Builder V2 — Triggers (Proactive)
 
-> **Status:** planning doc. Nothing built. Design settled in a
-> brainstorm session (2026-08-30/31); this is the spec to build from.
+> **Status:** BUILT and verified (2026-08-31) — T1 to T5. The proactive
+> turn, the trigger primitive with the Silence type, the clock, the
+> Triggers screen, live push, and the Alfred registrations.
+>
+> **Not yet done:** create the Cloud Scheduler job (one per minute →
+> `POST /api/admin/triggers/tick`) and switch the clock on. Until then
+> nothing fires by itself — which is the correct default for a feature
+> that messages real customers. Locally, set `TRIGGERS_CLOCK_LOCAL_SEC`
+> in `.env` instead of deploying anything.
+>
+> Real behaviour is verified through the builder UI. The only scripts
+> left are offline checks that touch nothing: the Silence rule arithmetic,
+> the clock, the cross-instance push, and the Alfred wiring.
 >
 > **Read first:** [BUILDER_V2.md](./BUILDER_V2.md) for the data model,
 > [BUILDER_V2_RUNTIME_PLAN.md](./BUILDER_V2_RUNTIME_PLAN.md) for the
@@ -91,8 +102,21 @@ each agent's enabled triggers "who's due?", and fires what comes back.
 - **Cloud Run runs 1–3 copies** of the server (`deploy.sh`:
   `--min-instances 1 --max-instances 3`). A `setInterval` inside the
   process would fire on every copy. One scheduler job means one call;
-  each due conversation is additionally claimed atomically
-  (`FOR UPDATE SKIP LOCKED`) so even a double-call can't double-fire.
+  the tick additionally claims a short **DB lease** (one atomic
+  conditional upsert) so two copies can't sweep at once.
+
+  *(The plan said `FOR UPDATE SKIP LOCKED` per conversation. Building it
+  showed a lease is the right tool: a row lock is session-scoped and
+  would have to hold a pooled connection open for a sweep that makes LLM
+  calls and can run minutes. A lease needs no held connection and
+  expires on its own if a copy dies mid-tick.)*
+
+- **Two guards, and only one is authoritative.** The lease stops
+  overlapping *work*. What stops a customer being nudged **twice** is the
+  event log: the first fire writes a `trigger_events` row and the
+  spacing clause refuses another attempt inside the window — whether the
+  second sweep came from the clock, Step once, or Run now. The lease is
+  a cost guard; the event log is the correctness guard.
 - **Why not per-agent cadence:** the interval doesn't decide when
   anything fires — each trigger does. It only decides how *late* a
   fire can be. A per-agent knob would only configure sloppiness.
@@ -102,17 +126,35 @@ each agent's enabled triggers "who's due?", and fires what comes back.
   this in the admin UI. A 5-minute clock cannot honour "after 1 minute
   of silence."
 
-### Admin surface
+### Admin surface — built
 
-The V2 admin is **per-agent** at `/:agent/builder/admin` with tabs
-(Feedback · Users · Conversations · KB · LLM Usage · Billing · Test
-Runner · Settings). **There is no cross-agent admin.** A new
-**Triggers** tab holds:
+The V2 admin is **per-agent** at `/:agent/builder/admin`. **There is no
+cross-agent admin.** A **Triggers** tab sits next to Conversations:
 
-- clock health — one read-only line, the same global fact on every
-  agent: *running · last tick 12s ago*
-- **Pause** / **Step once** — a bad prompt at 2am needs one click
-- this agent's trigger event feed (see below)
+- the clock control — the same component the Triggers screen uses, so
+  the two can never disagree about what the switch says
+- a per-rule heartbeat: on/off, when it last looked, whether anyone
+  qualified. This exists because *"working, nobody is quiet"* and
+  *"broken"* look identical from the outside
+- an **agent-wide** activity feed, newest first, filterable by outcome
+
+Agent-wide rather than per-trigger on purpose: one rule firing far more
+than expected only stands out when they sit side by side. The
+per-trigger history stays on the authoring screen, where you are
+thinking about one rule at a time.
+
+Non-sending outcomes are in the list, not hidden — *"it fired 40 times
+last night and said nothing every time"* is a bug you can only see if
+the quiet outcomes are shown.
+
+The clock control is repeated here rather than linked to. The moment you
+notice something wrong is the moment you need to stop it, and making
+someone navigate first is a design that only fails when it matters.
+
+**Where the clock is configured:** here, and on the Triggers screen.
+It is system-wide, so it is the same switch on every agent — there is no
+separate settings page, and a per-agent interval would only let each
+agent configure how *late* its own fires may be.
 
 ---
 
@@ -339,18 +381,42 @@ fetched per message id. **No client change needed.**
 
 ## Data model
 
-### One new column — the whole schema cost of the feature
+### Two new columns — the whole schema cost of the feature
+
+**Built — migration 044.** (The plan said one column; building it showed
+it has to be two. The Silence clause measures *"the customer went
+quiet"*, which is not the same question as *"nothing has happened
+here"*, and a single column can only answer one of them.)
 
 ```
-conversations.last_message_at   timestamptz
+conversations.last_user_message_at   timestamp    ← what "quiet for X" means
+conversations.last_message_at        timestamp    ← any activity, ours included
+  index (agent_id, last_user_message_at)
   index (agent_id, last_message_at)
 ```
 
-Bumped on every message insert. This is what turns *"who's been quiet
-for 30 minutes"* into an index scan instead of a `MAX(messages.created_at)`
-per conversation. The V2 runtime path does not currently bump
-`conversations.updated_at` on message insert, so this can't be derived
-from what exists.
+`last_user_message_at` is the one the Silence trigger rides. **A
+proactive nudge must not move it** — otherwise a customer silent for
+three days reads as silent for thirty minutes the moment we nudge them,
+the trigger re-arms on its own output and nudges forever, and every
+downstream number (the explainer, `{{tokens}}` in a brief) inherits the
+lie. `last_message_at` answers the other question and is there for
+conversation ordering and for future trigger types that care about any
+activity at all.
+
+Together they turn *"who's been quiet for 30 minutes"* into an index
+scan instead of a `MAX(messages.created_at)` per conversation, once a
+minute, forever.
+
+**Maintained by a DB trigger, not application code.**
+`messages_touch_conversation_activity` fires `AFTER INSERT ON messages`.
+Messages are inserted from the V2 runtime, the V1 conversation service
+and the WhatsApp bridge, and more writers will appear — a derived column
+that one of them forgets to stamp is worse than no column, because the
+trigger then silently never fires for that channel and nothing errors. A
+row-level trigger cannot be forgotten by a future caller, which is
+exactly the property these columns need. It uses `GREATEST()` so it is
+idempotent and safe against backdated or out-of-order inserts.
 
 ### `trigger_events` — one row per (trigger × conversation × attempt)
 
@@ -601,35 +667,100 @@ full checklist. This is the same bill `liveBrain` and `profiler` paid.
 
 Each ends with something testable.
 
-**T1 — the turn (no clock yet).**
-`conversations.last_message_at` + index. A proactive entry point in the
-runner: run one crew's chain on a conversation with no user message,
-brief handling, silence as a valid outcome, persist a standalone
-assistant message with `metadata.proactive`.
-*Done when:* **Test fire** on a conversation produces a bubble in the
-builder chat with a full run timeline, and a crew whose talker is
-filtered out produces nothing at all — visibly.
+**T1 — the turn (no clock yet). ✅ BUILT — 2026-08-31.**
+Migration 044 (both activity stamps + the DB trigger + indexes).
+`BuilderRunner.runProactive` — runs one crew's chain on a conversation
+with no user message; `runChain` lifted to module level as
+`runChainSteps` so the user turn and the proactive turn can never drift
+apart. Silence is a real outcome (no message row, stamps untouched, runs
+still logged). The brief fills the LLM's message slot and is never
+persisted. `POST /api/agents/:slug/conversations/:convId/proactive` —
+the Test fire endpoint, accepting working-copy overrides so it runs
+unsaved edits.
 
-**T2 — the trigger primitive.**
-`agent.triggers[]` + the Triggers screen + the trigger-type registry +
-the clause contract + Silence. `trigger_events` + `trigger_status`.
-**Check** and **Explain**. Still no clock — everything driven by hand.
-*Done when:* Check on a quiet conversation prints the four clauses with
-real numbers, and Explain answers for an arbitrary past moment.
+*Verified:* `node scripts/test-proactive-turn.js` — 20/20, including a
+regression check that the ordinary user turn still replies after the
+extraction. See `verification/proactive-turn/`.
 
-**T3 — the clock.**
-Tick endpoint + Cloud Scheduler job + atomic claim + the admin Triggers
-tab (health, pause, step, event feed).
-*Done when:* a conversation left quiet for X gets nudged on its own, up
-to N times, and stops.
+*Remaining for T1:* the client-side Test fire button (lands with the
+Triggers screen in T2, which is where it belongs).
 
-**T4 — live push.**
-`LISTEN/NOTIFY` + a subscription endpoint; both chats subscribe.
-*Done when:* a proactive message appears in an open chat with no
-refresh, with the server scaled to more than one instance.
+**T2 — the trigger primitive. ✅ BUILT — 2026-08-31.**
+`agent.triggers[]` in the agent body (+ `AgentTrigger` /
+`SilenceTriggerConfig` / `QuietHours` / `TriggersDef` types) · the
+trigger-type registry (`builder/triggers/`) with the two-method contract
+· the Silence type and its four clauses · migration 045
+(`trigger_events` with five outcomes, `trigger_status`) · the evaluator
+(findDue / checkOne / explainAt / quiet hours) · the dispatcher (three
+gates, event lifecycle) · `builder/routes/triggersRoute.js` (types,
+status, events, check, explain, sweep, candidates, conversation feed).
 
-**T5 — Alfred.**
-The registrations above.
+*Verified:* `node scripts/test-triggers.js` — 46/46 (26 offline clause
+arithmetic + 20 end-to-end). See `verification/triggers/`.
+
+Client: the **Triggers screen** at `/:agent/builder/triggers` — cards,
+not a chain, because triggers are independent of each other. Plus the
+client trigger-type registry (a `@triggers` alias onto the SAME
+descriptor JSON the server reads, so the two halves can't drift on
+names, icons or defaults), the Silence two-number form, the clock bar,
+and an editor carrying **Who's due right now**, **Dry run**, and the
+event history — including the outcomes that sent nothing, which are the
+ones worth reading.
+
+**T3 — the clock. ✅ BUILT — 2026-08-31.**
+`services/trigger-clock.service.js` — master switch (off by default),
+DB-lease claim so 1–3 Cloud Run copies can't overlap, jsonb scoping so
+only agents with enabled triggers are swept, health payload carrying the
+precision caveat. `POST /api/admin/triggers/tick` for Cloud Scheduler,
+`GET /api/admin/triggers/clock` for ops, plus clock health / pause /
+Step-once under the agent's Triggers routes.
+
+*Verified:* `node scripts/test-trigger-clock.js` — 17/17. See
+`verification/trigger-clock/`.
+
+**Running it locally.** There is no Cloud Scheduler on a laptop, so set
+`TRIGGERS_CLOCK_LOCAL_SEC=30` in `.env` and the server runs the same
+tick on an interval. Opt-in, dev-only (an in-process interval would run
+on every Cloud Run copy at once), and still gated by the clock's own
+on/off switch — so setting it alone does not start nudging anybody.
+
+*Remaining for T3:* **create the Cloud Scheduler job** (every minute →
+`POST /api/admin/triggers/tick`) and switch the clock on. Until then the
+clock only runs on Step once, which is the right default for something
+that has never been armed.
+
+**T4 — live push. ✅ BUILT — 2026-08-31.**
+`services/conversation-push.service.js` — Postgres LISTEN/NOTIFY, one
+held connection per server copy, opened lazily. A proactive message
+notifies; whichever copy holds that chat forwards it. New endpoint
+`GET /api/agents/:slug/conversations/:convId/live` (SSE, heartbeat,
+clean unsubscribe). Client: `live-chat/useProactivePush.ts`, wired into
+`useLiveChat` and paused while the user's own turn streams.
+
+The stream carries ids only, never message text — the client reloads
+through the same path history uses, so a pushed message and a loaded one
+can never look different, and a long reply can never exceed the 8KB
+NOTIFY limit.
+
+*Verified:* `node scripts/test-conversation-push.js` — 8/8, including a
+NOTIFY issued from a genuinely separate node process reaching a
+subscriber here. That is the assertion an in-memory channel fails, and
+it is the whole reason this is not a Set of response objects.
+
+**T5 — Alfred. ✅ BUILT — 2026-08-31.**
+All of §3.1: `triggers` in `AGENT_SECTION_KEYS`, the client merge
+whitelist and `bodyOfAgent` snapshot (empty==absent, so agents that
+predate the feature never read dirty), `checkTriggers` in the validator,
+a `# Triggers` section in brainstorm Alfred, and a trigger-type
+catalogue in the patch generator rendered from
+`builder/triggers/*.trigger.json` — so a NEW trigger type is
+Alfred-compatible the moment its JSON lands, with no prompt edits.
+
+*Verified:* `node scripts/test-alfred-triggers.js` — 19/19, asserting the
+wiring rather than the behaviour, because the protocol's failure mode is
+silent: a section that never reaches the prompt, or a key the merge drops.
+
+**Remaining:** the Cloud Scheduler job, and turning the clock on.
 
 **Later, not scheduled:** more trigger types (Schedule, Delay,
 Field-watch) · the WhatsApp sink · historical-config resolution in the
@@ -710,6 +841,30 @@ two attempts and stay two of everything. Already the client's behaviour.
 **14. Live push via `LISTEN/NOTIFY`, not in-memory.** With 1–3 Cloud Run
 copies, an in-memory channel works perfectly in dev and drops most
 pushes in production.
+
+---
+
+
+**15. Test harnesses must name the conversations they mean.** A sweep is
+agent-wide by design — that is what a trigger IS. During development a
+battery called `sweepTrigger` to check that ITS conversation was picked
+up, and the sweep dutifully nudged three real customer conversations
+belonging to the same agent. The messages were removed and the stamps
+repaired. Two changes came out of it: `sweepTrigger` takes
+`onlyConversationIds`, and the two batteries that write to the database
+or call real models now do nothing without an explicit `--live`. A test
+that can write to production should never be what happens when you type
+the obvious command.
+
+**16. Naive `timestamp` columns cannot be compared against JS Dates.**
+Migrations 044/045 followed the older tables and used `timestamp` (no
+time zone). The database runs UTC, Node runs Israel time, and
+node-postgres compares a Date against a naive column as LOCAL wall-clock
+— so `now()::timestamp > $1` with $1 an hour ago returned FALSE. Every
+trigger clause is that comparison, so the symptom was a trigger that
+matched nobody, silently. Migration 046 converts the columns the engine
+reads to `timestamptz`; the two remaining reads of the still-naive
+`messages.created_at` say `AT TIME ZONE 'UTC'` out loud.
 
 ---
 

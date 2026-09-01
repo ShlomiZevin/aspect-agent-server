@@ -1055,7 +1055,156 @@ export type AgentBody = Pick<
   'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
   | 'fields' | 'domains' | 'tags' | 'parameters' | 'enums'
   | 'cortex' | 'snippets' | 'personas' | 'liveBrain' | 'profiler'
+  | 'triggers'
 >;
+
+// ─── Triggers (proactive) ──────────────────────────────────────────
+// Rules that make the agent act with NO user message. Authored on the
+// `/:agent/builder/triggers` screen; agent-level and part of the
+// versioned agent body. See docs/guides/BUILDER_V2_TRIGGERS.md.
+//
+// A TRIGGER IS NOT AN ADDON, and the difference is load-bearing:
+//   - an addon is conversation-scoped. It is HANDED a conversation and
+//     works inside it, once per turn.
+//   - a trigger is agent-scoped. It has to FIND conversations, once per
+//     clock tick, and its output is a SELECTION — a set of
+//     conversations — not content.
+// What a trigger LAUNCHES is ordinary: a normal crew chain on a normal
+// conversation (`BuilderRunner.runProactive`), with the same addon runs
+// and memory writes as any turn.
+//
+// Alfred: never model a trigger as an addon instance, never put one on
+// a crew or on `agent.cortex`. `agent.triggers.triggers[]` is the only
+// place a trigger lives.
+
+/**
+ * When a trigger is allowed to act. Wall-clock window in `timezone`;
+ * a window that wraps midnight (22:00→08:00) is normal and supported.
+ *
+ * Evaluated AFTER a conversation has already matched the trigger's
+ * clauses, deliberately — so a suppressed nudge still records a
+ * `quiet_hours` event and the author can see the trigger WANTED to fire
+ * all night. Folding it into the matching query would make those hours
+ * invisible.
+ *
+ * There is no "hold until the window opens" mode and none is needed:
+ * skipping IS holding. The conversation is still quiet in the morning,
+ * so it matches again and fires then.
+ */
+export interface QuietHours {
+  /** "HH:MM", 24h. */
+  from: string;
+  /** "HH:MM", 24h. Earlier than `from` means the window wraps midnight. */
+  to: string;
+  /** IANA zone, e.g. "Asia/Jerusalem". */
+  timezone: string;
+}
+
+/**
+ * Config for the `silence` trigger type — "the customer went quiet".
+ *
+ * TWO numbers on the card, and that is the whole authored surface:
+ *
+ *   Nudge after  [30] [minutes]  of quiet
+ *   Up to        [3]  times, until they reply
+ *
+ * `maxAttempts` counts ATTEMPTS, not messages sent. A crew can
+ * deliberately stay silent, and a silent attempt sends no message — so
+ * counting messages would let the counter never advance while the chain
+ * relaunched every tick forever, burning tokens invisibly. Counting
+ * attempts bounds the worst case on a dead conversation at exactly
+ * `maxAttempts` chain runs, ever, and surfaces a silent-every-time crew
+ * as the bug it is.
+ *
+ * There is deliberately NO "unlimited" option and no separate
+ * minimum-gap knob: attempts are spaced by `after` (an attempt inside
+ * the last `after` window blocks the next one), so one number does both
+ * jobs.
+ */
+export interface SilenceTriggerConfig {
+  after: { value: number; unit: 'minutes' | 'hours' | 'days' };
+  /** Attempts per silence, reset when the customer speaks. Min 1. */
+  maxAttempts: number;
+}
+
+/**
+ * One authored trigger. Structurally close to an {@link AddonInstance}
+ * — a registered type id plus a type-defined config blob — so a new
+ * trigger type never needs an edit to this union.
+ *
+ * @typeParam TConfig the trigger type's own config (e.g.
+ *   {@link SilenceTriggerConfig} for `typeId: 'silence'`).
+ */
+export interface AgentTrigger<TConfig = unknown> {
+  id: ID;
+  /** Author-facing name, e.g. "Re-engage quiet customers". */
+  name: string;
+  enabled: boolean;
+  /**
+   * Registered trigger type id (`'silence'` today). Decides which
+   * clauses run and which config UI the card shows.
+   */
+  typeId: string;
+  /** Type-defined blob. See {@link SilenceTriggerConfig}. */
+  config: TConfig;
+  /**
+   * ISO timestamp, stamped when the trigger is first switched on.
+   *
+   * This is what makes backfill impossible: a trigger only ever applies
+   * to conversations whose customer has spoken SINCE it was switched
+   * on. Without it, enabling a trigger would match every long-dead
+   * conversation in the agent's history on the very first tick and nudge
+   * all of them at once. Displayed on the card, never hand-edited.
+   */
+  activeSince: string;
+  /** Optional wall-clock suppression window. */
+  quietHours?: QuietHours;
+  /**
+   * Optional state gate, evaluated per matched conversation — the FIRST
+   * moment the conversation's memory is read. Same shape and same UI as
+   * an addon's filter, and the same `conditionMatcher` implementation.
+   *
+   * Only the `conditions` + `mode` half applies here. `AddonFilter.cap`
+   * is IGNORED: the nudge limit is the trigger type's own concept
+   * (`maxAttempts`) with its own meaning, and two competing caps on one
+   * card would be a trap.
+   *
+   * Absent / empty conditions → no gate, no memory load, zero cost.
+   */
+  filter?: AddonFilter;
+  /** What to do with a conversation that matched. */
+  run: {
+    /** The crew whose main-lane chain runs. Required — proactive never
+     *  guesses at a crew. */
+    crewId: ID;
+    /**
+     * Optional author text that fills the LLM's user-message slot for
+     * the proactive turn (supports the same `{{tokens}}` as any prompt).
+     * Blank → the crew runs on conversation history alone.
+     *
+     * NEVER persisted as a message. Writing it to the transcript would
+     * put words in the customer's mouth — they would appear to have
+     * typed an instruction they never sent. It is recorded on the
+     * trigger event row instead, where the author can read it back.
+     */
+    brief?: string;
+  };
+  /** Internal author note. Never shown to a customer. */
+  description?: string;
+}
+
+/**
+ * Agent-level Triggers configuration. Optional for back-compat;
+ * readers treat absence as `{ triggers: [] }`.
+ */
+export interface TriggersDef {
+  triggers: AgentTrigger[];
+  /**
+   * Master on/off for ALL of this agent's triggers at once. Optional +
+   * absent-means-enabled, so pre-flag agents are unaffected.
+   */
+  enabled?: boolean;
+}
 
 // ─── Live Brain ────────────────────────────────────────────────────
 // The customer-facing "brain" panel shown beside the chat at
@@ -1365,6 +1514,16 @@ export interface AgentDoc {
    * absence as `{ panels: [] }`.
    */
   profiler?: ProfilerDef;
+  /**
+   * Agent-level Triggers — the PROACTIVE surface. Rules that watch this
+   * agent's conversations and launch a crew on the ones that match, with
+   * no user message involved. Authored on the `/:agent/builder/triggers`
+   * screen. Part of the versioned agent body.
+   *
+   * Optional for back-compat; readers treat absence as
+   * `{ triggers: [] }`.
+   */
+  triggers?: TriggersDef;
   /**
    * The crews that belong to this agent. NOT part of the agent
    * version body — crews are their own versioned entities and live

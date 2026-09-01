@@ -39,6 +39,8 @@ const { logUsage } = require('../../services/usageLogger');
 const builderMemory = require('./builderMemory');
 const { seedPinnedFields } = require('./pinnedFields');
 const { runAddon } = require('./addonRunner');
+const addonRunsStore = require('./addonRunsStore');
+const conversationPush = require('../../services/conversation-push.service');
 const { dispatchOfflineAddons } = require('./offlineDispatcher');
 const { dispatchLiveBrainPanels } = require('./liveBrainDispatcher');
 const { dispatchProfilerPanels } = require('./profilerDispatcher');
@@ -116,6 +118,75 @@ function deriveSteps(addons) {
     }
   }
   return steps;
+}
+
+/**
+ * Run ONE crew's main-lane chain, step by step.
+ *
+ * Extracted to module level (it used to be a closure inside `runOnce`)
+ * because the proactive path needs the identical semantics: same step
+ * partitioning, same barriers, same break handling, same last-writer-wins
+ * aggregation. Two copies of this loop would drift, and the drift would
+ * show up as "the chain behaves differently when nobody typed", which is
+ * the worst possible bug to debug.
+ *
+ * Returns:
+ *   - `chainText`       the last talker's reply, or ''
+ *   - `chainTransition` true if any Transition Router fired
+ *   - `cascadeTo`       next crew id when a fireImmediately transition
+ *                       matched; else null. Callers decide whether to
+ *                       honour it (`runOnce` does, `runProactive` doesn't).
+ *
+ * @param {object} ctx   the shared per-turn execution context
+ * @param {Array}  blockingForChain  main-lane instances in authored order
+ */
+async function runChainSteps(ctx, blockingForChain) {
+  let chainText = '';
+  let chainTransition = false;
+  let cascadeTo = null;
+
+  // Partition into steps, then run each step's addons concurrently.
+  // A step of one addon (the default for an un-grouped chain) is
+  // exactly the old sequential behavior — Promise.all over a
+  // single-element array awaits that one addon.
+  const steps = deriveSteps(blockingForChain);
+  for (const step of steps) {
+    // Task #816: Stop pressed — don't start another step.
+    if (ctx.isStopped()) break;
+    // addonRunner stays the single source of truth for how ONE
+    // addon executes. Same-step addons all close over the same
+    // `ctx`/`memory`: they read the same pre-step snapshot and merge
+    // their writes in-place (distinct fields don't collide; a shared
+    // field is last-writer-wins, which the author is responsible for
+    // not wiring). The barrier lives BETWEEN steps — the next step
+    // starts only after every addon in this one has resolved.
+    const results = await Promise.all(
+      step.map(instance => runAddon({ ctx, instance })),
+    );
+
+    // Aggregate in authored (array) order so cascade-target and
+    // reply-text resolution stay deterministic ("last writer wins"
+    // by the order the author laid the cards out). A break from any
+    // member stops the chain AFTER this step completes — every
+    // member of a parallel step has already run by the time we see
+    // the break, which is the correct barrier semantics.
+    let stepBroke = false;
+    for (const { result, didTransition, broke } of results) {
+      if (didTransition) {
+        chainTransition = true;
+        const fireImmediately = result?.transition?.fireImmediately !== false;
+        if (fireImmediately && result?.transition?.to) {
+          cascadeTo = result.transition.to;
+        }
+      }
+      if (result && typeof result.assistantText === 'string' && result.assistantText) {
+        chainText = result.assistantText;
+      }
+      if (broke) stepBroke = true;
+    }
+    if (stepBroke) break;
+  }
+  return { chainText, chainTransition, cascadeTo };
 }
 
 /**
@@ -345,65 +416,8 @@ async function runOnce({
    *  transitions to do anything more sophisticated than "A → B → C". */
   const MAX_TRANSITION_HOPS = 4;
 
-  /**
-   * Run one crew's main-lane chain. Returns:
-   *   - assistantText (last talker's reply, or '')
-   *   - anyTransition (true if any Transition Router fired)
-   *   - cascadeTo (next crew id when fireImmediately + matched; else null)
-   *
-   * The cascade target is the LAST transition that fired with
-   * fireImmediately set during this chain — same convention the
-   * conversation metadata uses (last writer wins).
-   */
-  async function runChain(blockingForChain) {
-    let chainText = '';
-    let chainTransition = false;
-    let cascadeTo = null;
-
-    // Partition into steps, then run each step's addons concurrently.
-    // A step of one addon (the default for an un-grouped chain) is
-    // exactly the old sequential behavior — Promise.all over a
-    // single-element array awaits that one addon. So this refactor is
-    // a strict superset: no flags → identical to before.
-    const steps = deriveSteps(blockingForChain);
-    for (const step of steps) {
-      // Task #816: Stop pressed — don't start another step.
-      if (ctx.isStopped()) break;
-      // addonRunner stays the single source of truth for how ONE
-      // addon executes. Same-step addons all close over the same
-      // `ctx`/`memory`: they read the same pre-step snapshot and merge
-      // their writes in-place (distinct fields don't collide; a shared
-      // field is last-writer-wins, which the author is responsible for
-      // not wiring). The barrier lives BETWEEN steps — the next step
-      // starts only after every addon in this one has resolved.
-      const results = await Promise.all(
-        step.map(instance => runAddon({ ctx, instance })),
-      );
-
-      // Aggregate in authored (array) order so cascade-target and
-      // reply-text resolution stay deterministic ("last writer wins"
-      // by the order the author laid the cards out). A break from any
-      // member stops the chain AFTER this step completes — every
-      // member of a parallel step has already run by the time we see
-      // the break, which is the correct barrier semantics.
-      let stepBroke = false;
-      for (const { result, didTransition, broke } of results) {
-        if (didTransition) {
-          chainTransition = true;
-          const fireImmediately = result?.transition?.fireImmediately !== false;
-          if (fireImmediately && result?.transition?.to) {
-            cascadeTo = result.transition.to;
-          }
-        }
-        if (result && typeof result.assistantText === 'string' && result.assistantText) {
-          chainText = result.assistantText;
-        }
-        if (broke) stepBroke = true;
-      }
-      if (stepBroke) break;
-    }
-    return { chainText, chainTransition, cascadeTo };
-  }
+  /** Bound to this turn's ctx — see `runChainSteps` at module level. */
+  const runChain = (blockingForChain) => runChainSteps(ctx, blockingForChain);
 
   // ── 4. Run the blocking chain. addonRunner is the SINGLE source of ──
   // truth for "how one addon executes" — same code path the offline
@@ -549,4 +563,281 @@ async function runOnce({
   return { assistantText, totalMs: Date.now() - totalStart };
 }
 
-module.exports = { runOnce, deriveSteps };
+/**
+ * Run a PROACTIVE turn — the agent speaks (or decides not to) without
+ * anybody having typed.
+ *
+ * This is the second half of the Triggers feature: a trigger decides
+ * WHICH conversation deserves attention (agent-scoped, see
+ * docs/guides/BUILDER_V2_TRIGGERS.md), and this runs the crew chain on
+ * it. Deliberately NOT a mode flag on `runOnce` — the user-turn path is
+ * production-critical and branching it for a case with different rules
+ * at half a dozen points is how both paths end up subtly wrong. The
+ * genuinely shared part (how a chain of steps executes) is
+ * `runChainSteps`, which both call.
+ *
+ * How a proactive turn differs from a user turn, and why:
+ *
+ *   - **Only the named crew's main lane runs.** The agent cortex does
+ *     NOT. It exists to do pre-crew work on a user's message, and there
+ *     is no user message; running its extractors against nothing would
+ *     burn calls to re-derive what it already derived. The author picks
+ *     one crew and that is exactly what executes.
+ *
+ *   - **No transition cascade.** A Transition Router inside the chain
+ *     still does its own job (it moves `currentCrewId` for the next
+ *     turn — that is `addonRunner`'s side effect, and it is the author's
+ *     deliberate choice). But we do not chase `fireImmediately` into a
+ *     second crew's chain here. A proactive turn is a one-off visit;
+ *     chaining crews with nobody watching multiplies both the cost and
+ *     the ways it can surprise you.
+ *
+ *   - **No offline lane, no Live Brain, no Profiler.** All three are
+ *     per-user-turn surfaces. Recomputing them on a turn nobody is
+ *     watching spends LLM calls to refresh panels no one is looking at.
+ *
+ *   - **The assistant message is created LAST, and only if there is
+ *     text.** A user turn reserves an empty placeholder up front so
+ *     `addon_runs` has a message id to point at, then deletes it if the
+ *     chain produced nothing. We can't do that here: staying silent is a
+ *     DESIGNED outcome for a proactive turn, and an insert-then-delete
+ *     would move `conversations.last_message_at` on every silent
+ *     attempt — a permanent lie about when the conversation was last
+ *     active, told once per nudge. So the chain runs with
+ *     `assistantMessageId: null` and the rows are claimed afterwards via
+ *     `addonRunsStore.attachRunsToMessage`.
+ *
+ *   - **The brief is never persisted.** It fills the LLM's message slot
+ *     for this turn and nothing else. Writing it to `messages` would put
+ *     words in the customer's mouth — their transcript would contain an
+ *     instruction they never typed. It is returned here so the caller
+ *     can store it on the trigger event row, where it belongs.
+ *
+ * @param {object}  args
+ * @param {string}  args.agentSlug
+ * @param {string}  args.ownerUserId
+ * @param {number}  args.userId              internal DB user id
+ * @param {number}  args.conversationId
+ * @param {string}  args.crewId              the crew whose chain to run. Required —
+ *                                           proactive never guesses at a crew.
+ * @param {string}  [args.brief]             author text that fills the user-message
+ *                                           slot. Blank/absent → the crew runs on
+ *                                           history alone (the provider layer already
+ *                                           handles a missing current message).
+ * @param {'viewing'|'active'|'published'} [args.version]
+ * @param {object|null} [args.overrideAgentBody] working-copy bodies, so a Test fire
+ * @param {object|null} [args.overrideCrewBody]  from the builder runs unsaved edits.
+ * @param {string|null} [args.reason]        why the trigger fired, for the SSE header
+ *                                           event (e.g. "quiet for 34 minutes").
+ * @param {function} [args.emit]             (eventType, payload) → void. Optional:
+ *                                           the clock has no client attached, so it
+ *                                           passes nothing and events go nowhere.
+ * @returns {Promise<{
+ *   outcome: 'spoke'|'silent',
+ *   assistantText: string,
+ *   assistantMessageId: number|null,
+ *   crewId: string,
+ *   crewName: string,
+ *   briefUsed: string|null,
+ *   didTransition: boolean,
+ *   totalMs: number,
+ * }>}
+ */
+async function runProactive({
+  agentSlug,
+  ownerUserId,
+  userId,
+  conversationId,
+  crewId,
+  brief = '',
+  version = 'published',
+  overrideAgentBody = null,
+  overrideCrewBody  = null,
+  reason = null,
+  emit,
+}) {
+  const totalStart = Date.now();
+  const startedAt  = new Date();
+  // No client attached (the clock) → events go nowhere. Callers that
+  // have a stream (Test fire) pass a real emitter.
+  const emitEvent = typeof emit === 'function' ? emit : () => {};
+
+  if (!crewId) throw new Error('runProactive requires a crewId — proactive never guesses at a crew');
+
+  const drizzle = db.getDrizzle();
+  const [convRow] = await drizzle.select().from(conversations)
+    .where(eq(conversations.id, Number(conversationId))).limit(1);
+  if (!convRow) throw new Error(`Conversation ${conversationId} not found`);
+
+  // ── Resolve the runnable, pinned to the trigger's chosen crew. ──
+  // `overrideCrewId` here is NOT persisted to conversation metadata (as
+  // it is on a user turn): a proactive turn is a visit, not a move.
+  const runnable = await resolveRunnable({
+    agentSlug,
+    ownerUserId,
+    mode: versionToMode(version),
+    overrideCrewId: crewId,
+    overrideAgentBody,
+    overrideCrewBody,
+  });
+
+  const agentPersonas = Array.isArray(runnable.agent.body?.personas)
+    ? runnable.agent.body.personas
+    : (runnable.agent.body?.persona
+        ? [{ id: 'persona_main', name: 'main', content: runnable.agent.body.persona, appliesTo: ['*'] }]
+        : []);
+  const agentParameters  = Array.isArray(runnable.agent.body?.parameters) ? runnable.agent.body.parameters : [];
+  const agentEnums       = Array.isArray(runnable.agent.body?.enums)      ? runnable.agent.body.enums      : [];
+  const agentNameForLogs = runnable.agent.body?.name || agentSlug;
+  const crewName         = runnable.crew.body?.name || 'crew';
+
+  // Crew main lane only — see the header note on why the agent cortex
+  // sits this one out. First-addon normalisation mirrors `runOnce`: a
+  // stale `joinsPreviousStep` on the head of the chain would otherwise
+  // try to join a step that doesn't exist here.
+  const blockingAddons = (Array.isArray(runnable.crew.body?.addons) ? runnable.crew.body.addons : [])
+    .filter(a => a.lane === 'main' && a.enabled !== false)
+    .map((a, i) => (i === 0 && a.joinsPreviousStep ? { ...a, joinsPreviousStep: false } : a));
+
+  emitEvent('proactive.start', {
+    conversationId: Number(conversationId),
+    crewId,
+    crewName,
+    reason,
+    brief: brief || null,
+    addonCount: blockingAddons.length,
+  });
+
+  // ── Brain state + accessors, identical to a user turn. ──
+  const memory = await builderMemory.loadMemory(userId, conversationId);
+  try {
+    const seeded = seedPinnedFields(memory, runnable);
+    if (seeded > 0) await builderMemory.saveMemory(userId, conversationId, memory);
+  } catch (err) {
+    console.error('[runProactive] pinned-field seed failed:', err.message);
+  }
+
+  const ctx = {
+    runnable,
+    agentSlug,
+    ownerUserId,
+    userId,
+    conversationId,
+    // Not stoppable: there is no user sitting in front of a Stop button.
+    // A Test fire is short enough that the request finishing is the stop.
+    isStopped: () => false,
+    // No message reserved up front — see the header note.
+    assistantMessageId: null,
+    userMessage: brief || '',
+    crewLabel: crewName,
+    agentNameForLogs,
+    agentPersonas,
+    agentParameters,
+    agentEnums,
+    memory,
+    memoryValuesByDomain:   (domain) => builderMemory.valuesForDomain(memory, domain, 'memory'),
+    memoryDomainList:       ()       => builderMemory.listDomainsWithValues(memory, 'memory'),
+    thinkingValuesByDomain: (domain) => builderMemory.valuesForDomain(memory, domain, 'thinking'),
+    thinkingDomainList:     ()       => builderMemory.listDomainsWithValues(memory, 'thinking'),
+    retrievalValueOf:       (name)   => builderMemory.getRetrieval(memory, name),
+    fieldValueOf:           (name)   => builderMemory.findFieldValue(memory, name, 'memory'),
+    drizzle,
+    convRow,
+    emit: emitEvent,
+    llm: llmService,
+    logUsage,
+    resolveModelLabel,
+    // No cutoff: there is no current-turn row to hide, and the chain
+    // SHOULD see the whole conversation up to now — that history is the
+    // entire basis on which it decides what (or whether) to say.
+    historyExcludeFromMessageId: undefined,
+  };
+
+  const { chainText, chainTransition } = await runChainSteps(ctx, blockingAddons);
+  const assistantText = chainText || '';
+
+  // ── Silence is a first-class outcome. No text → no message row, and
+  // the conversation looks untouched to the customer. The addon_runs
+  // rows still exist (unattached), so the run inspector can show WHY it
+  // stayed quiet — which is the whole point of logging a silent turn.
+  if (!assistantText) {
+    emitEvent('proactive.done', {
+      conversationId: Number(conversationId),
+      outcome: 'silent',
+      totalMs: Date.now() - totalStart,
+    });
+    return {
+      outcome: 'silent',
+      assistantText: '',
+      assistantMessageId: null,
+      crewId,
+      crewName,
+      briefUsed: brief || null,
+      didTransition: chainTransition,
+      totalMs: Date.now() - totalStart,
+    };
+  }
+
+  // ── It spoke. Create the message now, then claim this run's rows. ──
+  // `metadata.proactive` is what lets the chat badge the bubble
+  // ("⚡ Silence · quiet for 34 min") without joining anything.
+  const [asstMsg] = await drizzle.insert(messages).values({
+    conversationId: Number(conversationId),
+    role: 'assistant',
+    content: assistantText,
+    metadata: {
+      proactive: true,
+      crewId,
+      ...(reason ? { reason } : {}),
+    },
+  }).returning();
+
+  try {
+    await addonRunsStore.attachRunsToMessage({
+      conversationId,
+      messageId: asstMsg.id,
+      since: startedAt,
+    });
+  } catch (err) {
+    // The customer already has their message; an unattached run row
+    // only costs us the historical timeline for this one turn.
+    console.error('[runProactive] attaching addon runs failed:', err.message);
+  }
+
+  // Tell any open chat, wherever it is connected. Best-effort and
+  // deliberately after the row exists: the message is already delivered
+  // by being saved, so a failed push costs the customer a refresh and
+  // nothing more. Payload stays tiny (ids only) — the client fetches the
+  // message, so a long reply can never exceed Postgres' NOTIFY limit.
+  try {
+    await conversationPush.push(conversationId, {
+      type: 'proactive.message',
+      messageId: asstMsg.id,
+      crewId,
+      reason: reason || null,
+    });
+  } catch (err) {
+    console.error('[runProactive] push failed (message is saved):', err.message);
+  }
+
+  emitEvent('assistant.message', { messageId: asstMsg.id, text: assistantText });
+  emitEvent('proactive.done', {
+    conversationId: Number(conversationId),
+    outcome: 'spoke',
+    messageId: asstMsg.id,
+    totalMs: Date.now() - totalStart,
+  });
+
+  return {
+    outcome: 'spoke',
+    assistantText,
+    assistantMessageId: asstMsg.id,
+    crewId,
+    crewName,
+    briefUsed: brief || null,
+    didTransition: chainTransition,
+    totalMs: Date.now() - totalStart,
+  };
+}
+
+module.exports = { runOnce, runProactive, deriveSteps };

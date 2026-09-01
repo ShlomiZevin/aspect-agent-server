@@ -103,9 +103,41 @@ async function ingestDocument(doc, { sourceId = null, runScribe = 'auto' } = {})
 }
 
 /** Remove an atom's vectors as well as its row. */
+/**
+ * Forget an atom — including the file it owns, if it owns one.
+ *
+ * Dropping the vectors and the row makes it unfindable, which is most of what
+ * "delete" means. But a dropped FILE also has bytes in GCS and a stable
+ * /media/:id/file link, and those outlived the delete: the thing stayed
+ * downloadable by anyone holding the URL, and the bucket grew forever. A delete
+ * that leaves the file behind is not a delete.
+ *
+ * The media id is on the source row the drop created, which is also removed —
+ * a source describing one deleted file has nothing left to describe.
+ */
 async function removeAtom(atomId) {
+  const db = require('../../services/db.pg');
+
+  const { rows } = await db.query(
+    `SELECT s.id AS source_id, s.config
+       FROM hq_atoms a
+       LEFT JOIN hq_sources s ON s.id = a.source_id
+      WHERE a.id = $1`,
+    [atomId]
+  ).catch(() => ({ rows: [] }));
+
+  const source = rows[0];
+  const mediaId = source && source.config && source.config.mediaId;
+
   await pinecone.deleteFile(HQ_NAMESPACE, `atom-${atomId}`).catch(() => {});
   await atomsService.deleteAtom(atomId);
+
+  if (mediaId) {
+    const media = require('./media.service');
+    await media.remove(mediaId).catch(err =>
+      console.error('[hq/ingest] could not remove the stored file', mediaId, err.message));
+    await db.query(`DELETE FROM hq_sources WHERE id = $1`, [source.source_id]).catch(() => {});
+  }
 }
 
 module.exports = { HQ_NAMESPACE, indexAtom, ingestDocument, removeAtom };

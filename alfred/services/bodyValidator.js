@@ -265,6 +265,72 @@ function checkLiveBrain(liveBrain, errors) {
 
 /** Light checks for agent.profiler (ProfilerDef): panels (with
  *  placement) + the ask block + frame. */
+
+/**
+ * Triggers (proactive) — see docs/guides/BUILDER_V2_TRIGGERS.md.
+ *
+ * Light shape checks only, matching the house style: the server does
+ * not police the semantics of a trigger type's own config (that lives
+ * in the type). What it DOES police is the handful of fields whose
+ * absence would make a trigger silently do nothing or, worse, do
+ * something unbounded.
+ */
+function checkTriggers(triggers, errors) {
+  if (!isObject(triggers)) {
+    pushErr(errors, 'triggers', 'when present must be an object');
+    return;
+  }
+  if ('enabled' in triggers && triggers.enabled !== undefined && typeof triggers.enabled !== 'boolean') {
+    pushErr(errors, 'triggers.enabled', 'when present must be a boolean');
+  }
+  if (!Array.isArray(triggers.triggers)) {
+    pushErr(errors, 'triggers.triggers', 'required array (may be empty)');
+    return;
+  }
+  const seen = new Set();
+  triggers.triggers.forEach((t, i) => {
+    const at = `triggers.triggers[${i}]`;
+    if (!isObject(t)) { pushErr(errors, at, 'must be an object'); return; }
+    if (typeof t.id !== 'string' || !t.id) pushErr(errors, `${at}.id`, 'required string');
+    else if (seen.has(t.id)) pushErr(errors, `${at}.id`, `duplicate trigger id "${t.id}"`);
+    else seen.add(t.id);
+    if (typeof t.name !== 'string') pushErr(errors, `${at}.name`, 'required string');
+    if (typeof t.typeId !== 'string' || !t.typeId) pushErr(errors, `${at}.typeId`, 'required string (a registered trigger type, e.g. "silence")');
+    if (typeof t.enabled !== 'boolean') pushErr(errors, `${at}.enabled`, 'required boolean');
+    if (!isObject(t.config)) pushErr(errors, `${at}.config`, 'required object (shape defined by the trigger type)');
+    // activeSince is what makes backfill impossible: without it a
+    // trigger would treat every long-dead conversation as fair game
+    // and nudge all of them on its first tick.
+    if (typeof t.activeSince !== 'string' || Number.isNaN(Date.parse(t.activeSince))) {
+      pushErr(errors, `${at}.activeSince`, 'required ISO timestamp — stamped when the trigger is switched on; without it the trigger would reach back into old conversations');
+    }
+    if (!isObject(t.run)) {
+      pushErr(errors, `${at}.run`, 'required object { crewId, brief? }');
+    } else {
+      if (typeof t.run.crewId !== 'string' || !t.run.crewId) {
+        pushErr(errors, `${at}.run.crewId`, 'required crew id — a trigger with no crew can never do anything');
+      }
+      if ('brief' in t.run && t.run.brief !== undefined && typeof t.run.brief !== 'string') {
+        pushErr(errors, `${at}.run.brief`, 'when present must be a string');
+      }
+    }
+    if ('quietHours' in t && t.quietHours !== undefined) {
+      const q = t.quietHours;
+      if (!isObject(q)) pushErr(errors, `${at}.quietHours`, 'when present must be an object');
+      else {
+        for (const k of ['from', 'to']) {
+          if (!/^d{2}:d{2}$/.test(String(q[k] || ''))) {
+            pushErr(errors, `${at}.quietHours.${k}`, 'required "HH:MM" (24h)');
+          }
+        }
+        if (typeof q.timezone !== 'string' || !q.timezone) {
+          pushErr(errors, `${at}.quietHours.timezone`, 'required IANA zone, e.g. "Asia/Jerusalem"');
+        }
+      }
+    }
+  });
+}
+
 function checkProfiler(profiler, errors) {
   if (!isObject(profiler)) {
     pushErr(errors, 'profiler', 'when present must be an object');
@@ -350,6 +416,9 @@ function validateAgentBody(body) {
 
   if ('profiler' in body && body.profiler !== undefined)
     checkProfiler(body.profiler, errors);
+
+  if ('triggers' in body && body.triggers !== undefined)
+    checkTriggers(body.triggers, errors);
 
   return errors.length === 0 ? { ok: true } : { ok: false, errors };
 }

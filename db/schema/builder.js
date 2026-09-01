@@ -205,6 +205,67 @@ const kbLinks = pgTable('kb_links', {
   nsIdx:     index('kb_links_ns_idx').on(t.indexName, t.namespace),
 }));
 
+// ─────────────────────────────────────────────────────────────────
+// Triggers (proactive) — migration 045.
+// See docs/guides/BUILDER_V2_TRIGGERS.md.
+//
+// `trigger_events` is BOTH the log and the state. "How many times have
+// we nudged this customer since they last spoke" is history, not derived
+// config, so it is counted from these rows rather than stored somewhere
+// that could disagree with them. That is why this feature has no
+// per-conversation schedule table: a stored `next_due_at` would go
+// silently wrong the moment an author changed "30 minutes" to "2 hours".
+//
+// Most rows here did NOT fire — hence `events`, not `fires`. Filtered,
+// quiet-hours and silent attempts all land here, and those are the rows
+// an author actually goes looking for.
+// ─────────────────────────────────────────────────────────────────
+const triggerEvents = pgTable('trigger_events', {
+  id:              varchar('id', { length: 64 }).primaryKey(),
+  agentId:         varchar('agent_id', { length: 64 }).notNull(),
+  triggerId:       varchar('trigger_id', { length: 64 }).notNull(),
+  triggerType:     varchar('trigger_type', { length: 50 }).notNull(),
+  conversationId:  integer('conversation_id').notNull(),
+  matchedAt:       timestamp('matched_at', { withTimezone: true }).defaultNow().notNull(),
+  status:          varchar('status', { length: 20 }).default('running').notNull(), // running | done
+  outcome:         varchar('outcome', { length: 20 }),  // filtered | quiet_hours | spoke | silent | error
+  matchReason:     text('match_reason'),
+  filterResult:    jsonb('filter_result'),
+  briefUsed:       text('brief_used'),
+  launchedCrewId:  varchar('launched_crew_id', { length: 64 }),
+  messageId:       integer('message_id'),               // null unless outcome = 'spoke'
+  error:           text('error'),
+  startedAt:       timestamp('started_at', { withTimezone: true }),
+  endedAt:         timestamp('ended_at', { withTimezone: true }),
+  durationMs:      integer('duration_ms'),
+  createdAt:       timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, t => ({
+  conversationIdx: index('trigger_events_conversation_idx').on(t.conversationId, t.triggerId, t.matchedAt),
+  triggerIdx:      index('trigger_events_trigger_idx').on(t.triggerId, t.matchedAt),
+  agentIdx:        index('trigger_events_agent_idx').on(t.agentId, t.matchedAt),
+}));
+
+// One row per trigger, updated in place, never grows. What the trigger
+// card renders so an author can tell "working, nobody is quiet" apart
+// from "broken" — which look identical from the outside.
+const triggerStatus = pgTable('trigger_status', {
+  triggerId:       varchar('trigger_id', { length: 64 }).primaryKey(),
+  agentId:         varchar('agent_id', { length: 64 }).notNull(),
+  lastEvaluatedAt: timestamp('last_evaluated_at', { withTimezone: true }),
+  lastResult:      varchar('last_result', { length: 20 }),  // matched | nothing | error
+  lastMatched:     integer('last_matched').default(0).notNull(),
+  consecutiveEmpty: integer('consecutive_empty').default(0).notNull(),
+  lastFiredAt:     timestamp('last_fired_at', { withTimezone: true }),
+  lastError:       text('last_error'),
+  // Why the last sweep matched nobody, in the author's language. A bare
+  // count said 'nobody was quiet enough' even when conversations were
+  // quiet and simply at their nudge limit.
+  lastReason:      text('last_reason'),
+  updatedAt:       timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, t => ({
+  agentIdx: index('trigger_status_agent_idx').on(t.agentId),
+}));
+
 module.exports = {
   builderProjects,
   builderWorkspaces,
@@ -215,4 +276,6 @@ module.exports = {
   addonRuns,
   repoEntries,
   kbLinks,
+  triggerEvents,
+  triggerStatus,
 };

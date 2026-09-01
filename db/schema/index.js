@@ -75,6 +75,17 @@ const conversations = pgTable('conversations', {
   status: varchar('status', { length: 50 }).default('active').notNull(), // active, archived, deleted
   kind: varchar('kind', { length: 20 }).default('user').notNull(), // 'user' | 'alfred' — Alfred chats live in same table, filtered by this
   metadata: jsonb('metadata'), // Additional conversation data (includes crew transition history)
+  // Activity stamps, maintained by the `messages_touch_conversation_activity`
+  // DB trigger (migration 044) — NOT by application code, so no writer can
+  // forget them. `lastUserMessageAt` is what "the customer went quiet for X"
+  // measures against; a proactive message deliberately does NOT move it.
+  // See docs/guides/BUILDER_V2_TRIGGERS.md.
+  // timestamptz (migration 046), NOT naive like the columns around them:
+  // these are compared against JavaScript Dates on every trigger sweep,
+  // and a naive column silently answers "one hour ago is not in the
+  // past" when the DB runs UTC and Node does not.
+  lastMessageAt: timestamp('last_message_at', { withTimezone: true }),
+  lastUserMessageAt: timestamp('last_user_message_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -611,5 +622,8 @@ module.exports = {
   addonRuns:              builderSchema.addonRuns,
   repoEntries:            builderSchema.repoEntries,
   kbLinks:                builderSchema.kbLinks,
+  // Triggers (proactive) — see docs/guides/BUILDER_V2_TRIGGERS.md
+  triggerEvents:          builderSchema.triggerEvents,
+  triggerStatus:          builderSchema.triggerStatus,
   agentLog,
 };

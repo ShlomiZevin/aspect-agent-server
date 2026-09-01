@@ -132,6 +132,11 @@ app.use('/api/builder', require('./builder/routes/projectsRoute'));
 // future customer-facing v2 chat can call the same endpoints with
 // version: 'active'. Today only the builder UI calls these (with
 // version: 'viewing'). See docs/guides/BUILDER_V2_RUNTIME_PLAN.md.
+// Triggers (proactive) — mounted BEFORE runtimeRoute on the same
+// prefix. Its paths (/:slug/triggers/*) don't collide with any runtime
+// path today, but ordering it first keeps it that way if runtimeRoute
+// ever grows a wildcard. See docs/guides/BUILDER_V2_TRIGGERS.md.
+app.use('/api/agents', require('./builder/routes/triggersRoute'));
 app.use('/api/agents', require('./builder/routes/runtimeRoute'));
 
 // ─── Aspect BI ─────────────────────────────────────────────────────
@@ -4209,6 +4214,40 @@ app.get('/api/admin/data-loader/:schema/runs/:id/log', async (req, res) => {
   }
 });
 
+// ========== TRIGGERS CLOCK (Builder V2 proactive) ==========
+
+// POST /api/admin/triggers/tick — its own Cloud Scheduler job, every
+// minute. Deliberately NOT folded into the data-loader tick above: that
+// one is about loading customer data, this one messages real customers,
+// and the two must be pausable independently. Nudging people at 2am
+// should never require stopping the nightly import to make it stop.
+//
+// The tick is a no-op unless the clock's master switch is on, and it
+// claims a short DB lease first so the 1–3 Cloud Run copies can't
+// double-fire. See services/trigger-clock.service.js and
+// docs/guides/BUILDER_V2_TRIGGERS.md.
+app.post('/api/admin/triggers/tick', async (req, res) => {
+  try {
+    const triggerClock = require('./services/trigger-clock.service');
+    const result = await triggerClock.runTick({ holder: 'cloud-scheduler' });
+    if (result.fired) console.log(`[triggers] tick done — ${result.fired} nudge(s) from ${result.triggers} trigger(s) across ${result.agents} agent(s)`);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ triggers tick error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/triggers/clock — clock health, for ops.
+app.get('/api/admin/triggers/clock', async (req, res) => {
+  try {
+    const triggerClock = require('./services/trigger-clock.service');
+    res.json(await triggerClock.health());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== DATA-LOADER SCHEDULER (Cloud Scheduler admin) ==========
 
 // POST /api/admin/scheduler/tick — the ONE Cloud Scheduler job (every minute)
@@ -6513,6 +6552,71 @@ async function startServer() {
       console.log('✅ GCS CORS configured for direct browser uploads');
     } catch (corsErr) {
       console.warn('⚠️ Could not set GCS CORS (non-critical):', corsErr.message);
+    }
+
+    // ── Local trigger clock ────────────────────────────────────────
+    // In production the clock is driven by a Cloud Scheduler job hitting
+    // POST /api/admin/triggers/tick. Locally there is no Cloud
+    // Scheduler, so this runs the same tick on an interval — opt-in via
+    // TRIGGERS_CLOCK_LOCAL_SEC in .env (e.g. 30).
+    //
+    // Deliberately NOT enabled by default and NOT on in production: an
+    // in-process interval would run on every one of the 1–3 Cloud Run
+    // copies at once. The DB lease would stop them overlapping, but
+    // three servers all waking up to do the same job is not a design,
+    // it's a coincidence that happens to be survivable.
+    //
+    // It also still respects the clock's own master switch, so setting
+    // this alone does not start nudging anybody — you turn the clock on
+    // from the Triggers screen when you actually want it running.
+    // `TRIGGERS_CLOCK_LOCAL_SEC=<n>` pins the cadence; `TRIGGERS_CLOCK_LOCAL=true`
+    // follows whatever interval is set in the Triggers UI.
+    const pinnedSec  = parseInt(process.env.TRIGGERS_CLOCK_LOCAL_SEC || '0', 10);
+    const localClock = pinnedSec > 0 || /^(1|true|yes)$/i.test(process.env.TRIGGERS_CLOCK_LOCAL || '');
+    if (localClock) {
+      const triggerClock = require('./services/trigger-clock.service');
+
+      // Self-rescheduling rather than setInterval: the delay is re-read
+      // from the clock's settings after every tick, so changing the
+      // cadence in the UI takes effect within one cycle without a
+      // restart. It also means a slow tick can never overlap itself —
+      // the next one is only scheduled once this one has finished.
+      const scheduleNext = (ms) => setTimeout(runLocalTick, ms).unref();
+
+      async function runLocalTick() {
+        let nextMs = (pinnedSec || 60) * 1000;
+        try {
+          const r = await triggerClock.runTick({
+            holder: 'local-dev',
+            // A local server points at the SAME database as production.
+            // Without this, switching the clock on to watch a trigger
+            // fire would nudge real customers from a laptop. Builder-
+            // preview conversations only; production passes nothing.
+            conversationKinds: ['builder-preview'],
+          });
+          if (!r.skipped) {
+            // Closes the tick opened by the clock's own header line, and
+            // counts TRIGGERS — the thing that actually did work — not
+            // just the agents they were found on.
+            const checked = `${r.triggers} trigger${r.triggers === 1 ? '' : 's'} checked`;
+            const sent = r.fired === 0 ? 'nothing sent' : `${r.fired} nudge${r.fired === 1 ? '' : 's'} sent`;
+            console.log(`⏰ [triggers] tick done — ${checked}, ${sent}, ${r.durationMs}ms`);
+          }
+          if (!pinnedSec) {
+            const s = await triggerClock.getSettings();
+            nextMs = s.intervalSeconds * 1000;
+          }
+        } catch (err) {
+          console.error('⏰ [triggers] local tick failed:', err.message);
+        }
+        scheduleNext(nextMs);
+      }
+
+      scheduleNext(2000);   // let the DB settle before the first one
+      console.log(pinnedSec
+        ? `⏰ Local trigger clock: every ${pinnedSec}s (pinned by TRIGGERS_CLOCK_LOCAL_SEC)`
+        : '⏰ Local trigger clock: following the interval set in the Triggers screen');
+      console.log('   Still gated by the clock\'s own on/off switch — this only permits it to run.');
     }
 
     // Start Express server

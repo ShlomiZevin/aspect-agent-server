@@ -1,0 +1,20 @@
+{
+  "typeId": "silence",
+  "displayName": "Silence",
+  "description": "The customer has gone quiet.",
+  "purpose": "Reach out when a customer stops replying. Reach for this when the value is in re-engagement — an abandoned onboarding, an unanswered question, a form half-filled — and the right moment is defined by absence rather than by an event. Two numbers author it: how long of quiet before the first nudge, and how many attempts before giving up until they reply. Do NOT reach for this to run something on a schedule (that is a time-of-day trigger, not silence) or to react to something that happened in a turn — anything that should run because a message arrived belongs on the crew's chain as an addon, not here. The commonest mistake is pointing it at a crew whose talker always speaks: the crew you name should be free to decide the moment is wrong and stay silent, and a proactive turn that says nothing is a success, not a failure.",
+  "icon": "🌙",
+  "color": "#8b5cf6",
+
+  "defaultConfig": {
+    "after": { "value": 30, "unit": "minutes" },
+    "maxAttempts": 3
+  },
+
+  "units": ["minutes", "hours", "days"],
+
+  "limits": {
+    "minAfterMinutes": 1,
+    "maxAttempts": 20
+  }
+}

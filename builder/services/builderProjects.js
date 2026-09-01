@@ -201,6 +201,12 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       // as no panels).
       liveBrain:       agentBody.liveBrain,
       profiler:        agentBody.profiler,
+      // Triggers (proactive) — same reason as liveBrain above. This
+      // hydration maps body keys onto the client doc ONE BY ONE, so a
+      // section that isn't listed here saves correctly and then silently
+      // vanishes on the next load. Any new AgentBody section needs a
+      // line here as well as in the client's `bodyOfAgent`.
+      triggers:        agentBody.triggers,
       crews,
       versions: agentVersions.map(v => ({
         id:           v.id,
@@ -759,6 +765,58 @@ function pickVersionId(mode, row) {
  * 'active', or 'published'), return the addons to execute and metadata
  * needed for logging. Used by BuilderRunner.
  */
+/**
+ * Resolve just the AGENT body for a slug — no crew, no defaultCrewId
+ * requirement.
+ *
+ * `resolveRunnable` can't serve this: it insists on resolving a crew,
+ * because a chat turn always has one. A trigger sweep has no crew yet —
+ * it is reading `agent.triggers` to find out which conversations to act
+ * on, and each trigger names its own crew afterwards. An agent with no
+ * `defaultCrewId` can still have perfectly valid triggers, and
+ * `resolveRunnable` would throw on it.
+ *
+ * @param {object} args
+ * @param {string} args.agentSlug
+ * @param {'viewing'|'active'|'published'} [args.mode]
+ * @returns {Promise<{ agentId, slug, versionId, body, archived }>}
+ */
+async function resolveAgentBody({ agentSlug, mode = 'published' }) {
+  const d = drizzle();
+  const rows = await d.select()
+    .from(builderAgents)
+    .where(eq(builderAgents.slug, agentSlug))
+    .limit(1);
+  if (rows.length === 0) throw new Error(`No builder agent for slug "${agentSlug}"`);
+  const agent = rows[0];
+
+  // `active` here means "active, or published if this agent was only
+  // ever published" — a wider fallback than `pickVersionId('active')`,
+  // which returns the active pointer alone. That is deliberate and
+  // scoped to this function: it is only used by the trigger path, where
+  // the question is "what has a human deliberately promoted?" and both
+  // pointers answer it. A chat turn asking for `active` still means
+  // strictly active, and is untouched.
+  const versionId = mode === 'active'
+    ? (agent.activeVersionId || agent.publishedVersionId)
+    : pickVersionId(mode, agent);
+  if (!versionId) throw new Error('Agent has no version pointer');
+
+  const [version] = await d.select()
+    .from(builderAgentVersions)
+    .where(eq(builderAgentVersions.id, versionId))
+    .limit(1);
+  if (!version) throw new Error('Agent version row missing');
+
+  return {
+    agentId:   agent.id,
+    slug:      agent.slug,
+    versionId,
+    body:      version.body || {},
+    archived:  !!agent.archivedAt,
+  };
+}
+
 async function resolveRunnable({
   agentSlug,
   ownerUserId: _ownerUserId,
@@ -1050,4 +1108,5 @@ module.exports = {
   deleteCrew,
   deleteProject,
   resolveRunnable,
+  resolveAgentBody,
 };

@@ -18,8 +18,9 @@ const express = require('express');
 const { eq, and, desc, inArray, sql } = require('drizzle-orm');
 const db = require('../../services/db.pg');
 const { agents, conversations, messages, users } = require('../../db/schema');
-const { runOnce } = require('../runtime/BuilderRunner');
+const { runOnce, runProactive } = require('../runtime/BuilderRunner');
 const stopRegistry = require('../runtime/stopRegistry');
+const conversationPush = require('../../services/conversation-push.service');
 
 const router = express.Router({ mergeParams: true });
 
@@ -757,6 +758,138 @@ router.delete('/:slug/conversations/:convId/messages/:messageId', async (req, re
 router.post('/:slug/conversations/:convId/stop', (req, res) => {
   const running = stopRegistry.stop(stopRegistry.convKey(req.params.convId));
   res.json({ ok: true, running });
+});
+
+/**
+ * POST /api/agents/:slug/conversations/:convId/proactive
+ *
+ * **Test fire** — run a crew's chain on this conversation right now,
+ * with no user message, ignoring any trigger schedule entirely.
+ *
+ * This is the affordance that makes proactive authorable: a rule like
+ * "nudge after 3 days of quiet" is otherwise untestable without waiting
+ * three days. It is also the ONLY path that can run a proactive turn
+ * against UNSAVED edits — it accepts `overrideAgentBody` /
+ * `overrideCrewBody` exactly like the message endpoint, because it is
+ * driven from the builder where the working copy lives in the browser.
+ * The clock (T3) has no browser and will always run saved state.
+ *
+ * Body: { ownerUserId, crewId, brief?, version?, reason?,
+ *         overrideAgentBody?, overrideCrewBody? }
+ * Response: SSE — proactive.start · addon.* · assistant.message ·
+ *           proactive.done · done
+ */
+/**
+ * GET /api/agents/:slug/conversations/:convId/live
+ *
+ * A long-lived SSE stream an open chat holds so a PROACTIVE message
+ * appears without a refresh.
+ *
+ * This carries no message text — only "something arrived, id N". The
+ * client then fetches it like any other message. Two reasons: the
+ * transport is a Postgres NOTIFY whose payload is capped at 8KB (an
+ * assistant reply can exceed that), and keeping the wire dumb means the
+ * chat renders a pushed message through exactly the same path as one it
+ * loaded from history, so the two can't drift apart visually.
+ *
+ * The message is saved BEFORE any of this happens, so a closed tab, a
+ * dropped connection or a failed push costs the customer a refresh and
+ * never the message itself.
+ */
+router.get('/:slug/conversations/:convId/live', async (req, res) => {
+  const convId = Number(req.params.convId);
+  if (!Number.isFinite(convId)) return res.status(400).json({ error: 'Bad conversation id' });
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('Content-Encoding', 'identity');
+  res.write(':ok\n\n');
+  if (res.flush) res.flush();
+
+  const send = (type, payload) => {
+    try {
+      res.write(`data: ${JSON.stringify({ type, ...payload })}\n\n`);
+      if (res.flush) res.flush();
+    } catch { /* client vanished; the close handler cleans up */ }
+  };
+
+  let unsubscribe = null;
+  try {
+    unsubscribe = await conversationPush.subscribe(convId, payload => send(payload.type || 'push', payload));
+    send('subscribed', { conversationId: convId });
+  } catch (err) {
+    // Subscribing failed (no DB, LISTEN connection down). Say so and
+    // close, so the client can fall back to polling rather than sitting
+    // on a stream that will never deliver anything.
+    send('error', { message: err.message });
+    return res.end();
+  }
+
+  // Proxies and load balancers close an idle stream; a comment line is
+  // enough to keep it open and costs nothing.
+  const heartbeat = setInterval(() => {
+    try { res.write(': keepalive\n\n'); if (res.flush) res.flush(); } catch { /* closing */ }
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    if (unsubscribe) unsubscribe();
+  });
+});
+
+router.post('/:slug/conversations/:convId/proactive', async (req, res) => {
+  const { slug, convId } = req.params;
+  const {
+    ownerUserId,
+    crewId,
+    brief = '',
+    version = 'viewing',
+    reason = 'Test fire',
+    overrideAgentBody = null,
+    overrideCrewBody  = null,
+  } = req.body || {};
+
+  if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
+  if (!crewId)      return res.status(400).json({ error: 'Missing crewId — pick the crew this trigger should run' });
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('Content-Encoding', 'identity');
+  res.setHeader('Transfer-Encoding', 'chunked');
+  res.write(':ok\n\n');
+  if (res.flush) res.flush();
+
+  const emit = (type, payload) => {
+    res.write(`data: ${JSON.stringify({ type, ...payload })}\n\n`);
+    if (res.flush) res.flush();
+  };
+
+  try {
+    const userId = await resolveUserId(ownerUserId);
+    const result = await runProactive({
+      agentSlug: slug,
+      ownerUserId,
+      userId,
+      conversationId: Number(convId),
+      crewId,
+      brief,
+      version,
+      reason,
+      overrideAgentBody,
+      overrideCrewBody,
+      emit,
+    });
+    emit('done', { totalMs: result.totalMs, outcome: result.outcome });
+    res.end();
+  } catch (err) {
+    console.error('[builder] proactive test fire failed:', err);
+    emit('addon.error', { instanceId: null, error: { code: 'proactive_failed', message: err.message } });
+    res.end();
+  }
 });
 
 router.post('/:slug/conversations/:convId/messages', async (req, res) => {

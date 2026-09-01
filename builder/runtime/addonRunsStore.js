@@ -8,7 +8,7 @@
 
 const db = require('../../services/db.pg');
 const { addonRuns } = require('../../db/schema');
-const { eq, and, asc, desc } = require('drizzle-orm');
+const { eq, and, asc, desc, isNull, gte } = require('drizzle-orm');
 
 function drizzle() {
   return db.getDrizzle();
@@ -44,6 +44,35 @@ async function insertRun({
     durationMs,
     runData,
   });
+}
+
+/**
+ * Attach this run's rows to an assistant message that didn't exist yet
+ * when they were written.
+ *
+ * A proactive turn (see BuilderRunner.runProactive) can't reserve an
+ * assistant message up front the way a user turn does: staying silent is
+ * a designed outcome there, and reserving-then-deleting a placeholder
+ * would move `conversations.last_message_at` on every silent attempt —
+ * a lie about when the conversation was last active. So the chain runs
+ * with `messageId: null` and, only if a talker actually produced text,
+ * the message is inserted and its rows are claimed here.
+ *
+ * Scoped by (conversation, still-unattached, started at or after this
+ * run began), which is exact: a proactive turn is single-threaded per
+ * conversation, so nothing else can have written an unattached row into
+ * that window.
+ *
+ * @returns {Promise<void>}
+ */
+async function attachRunsToMessage({ conversationId, messageId, since }) {
+  await drizzle().update(addonRuns)
+    .set({ messageId: Number(messageId) })
+    .where(and(
+      eq(addonRuns.conversationId, Number(conversationId)),
+      isNull(addonRuns.messageId),
+      gte(addonRuns.startedAt, since),
+    ));
 }
 
 /**
@@ -91,6 +120,7 @@ async function deleteForMessage(messageId) {
 
 module.exports = {
   insertRun,
+  attachRunsToMessage,
   runsForMessage,
   recentRunsForConversation,
   deleteForConversation,
