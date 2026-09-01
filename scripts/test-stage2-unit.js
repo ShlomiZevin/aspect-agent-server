@@ -79,6 +79,46 @@ for (const q of [
   check(r.action === 'proceed', `proceeds: "${q.slice(0, 48)}"`, r.action === 'refuse' ? `refused as "${r.refusal?.dimension}"` : '');
 }
 
+// ── 3b. Arrival questions, in both tenses ──────────────────────────────────
+// The past-tense gate ("when DID it arrive") shipped first and read as though
+// it covered arrivals. It did not: "when WILL it arrive" walked straight past
+// it into SQL generation, which answered from the order date -- the one column
+// that looks like an answer and is not. The two refuse for different reasons
+// and are separate entries, so both are checked here.
+//
+// The near-misses below matter more than the refusals. This module's entire
+// job is telling a buyer when to order, and an over-eager arrival gate would
+// refuse the questions it exists to answer.
+console.log('\n3b · Arrival questions refuse; ordering questions still work');
+for (const [q, dim] of [
+  ['When will order 4471 arrive?', 'expected arrival date / ETA'],
+  ['when is the shipment due to arrive', 'expected arrival date / ETA'],
+  ['what is the expected delivery for this supplier', 'expected arrival date / ETA'],
+  ['whats the ETA on that order', 'expected arrival date / ETA'],
+  ['מתי יגיע המשלוח מהספק הזה?', 'expected arrival date / ETA'],
+  ['מתי אמורים להגיע הפריטים שהזמנו', 'expected arrival date / ETA'],
+  ['תאריך הגעה משוער להזמנה 4471', 'expected arrival date / ETA'],
+  ['When did purchase order 4471 arrive?', 'goods receipt / arrival date'],
+  ['מתי הגיע המשלוח', 'goods receipt / arrival date'],
+]) {
+  const r = gate.check(q, manifest);
+  check(r.action === 'refuse' && r.refusal.dimension === dim,
+    `refuses "${q.slice(0, 44)}"`,
+    r.action === 'refuse' ? `refused as "${r.refusal.dimension}"` : 'proceeded');
+}
+for (const q of [
+  'What should I order today?',
+  'when should I order so it arrives before the holiday',  // the order-by date IS the answer
+  'מתי להזמין את הפריט הזה',
+  'when will we run out of this item',                     // days of cover, answerable
+  'how many units are on order',                           // the quantity is in the data
+  'מתי הזמנו את זה',                                       // when it was ORDERED, answerable
+]) {
+  const r = gate.check(q, manifest);
+  check(r.action === 'proceed', `proceeds: "${q.slice(0, 44)}"`,
+    r.action === 'refuse' ? `refused as "${r.refusal?.dimension}"` : '');
+}
+
 // ── 4. Vocabulary detection ──
 console.log('\n4 · Unresolved vocabulary');
 {

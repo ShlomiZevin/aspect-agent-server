@@ -43,7 +43,13 @@ function buildTool(datasetId) {
         },
         horizonDays: {
           type: 'number',
-          description: 'Optional. How many days ahead still counts as "due soon".',
+          description:
+            'Optional. How many days ahead still counts as "due soon". LEAVE IT UNSET '
+            + 'unless the user names a window ("in the next two weeks", "לחודש הקרוב"). '
+            + 'Unset uses the horizon the client configured, which is what the Purchasing '
+            + 'screen shows. Choosing one changes the answer: the same supplier question '
+            + 'returns 5,249 items at 30 days and 5,145 at 14, and a buyer comparing the '
+            + 'chat with the screen has no way to see why they disagree.',
         },
         limit: {
           type: 'number',
@@ -104,6 +110,13 @@ async function handle(datasetId, params = {}) {
   // it, but it cannot quietly drop it.
   const contract = [];
   contract.push(`Data through ${res.dataThrough || 'unknown'}; computed for ${res.today}.`);
+  // Which horizon produced these counts, always -- the figure moves with it, so
+  // an answer that does not say which one it used cannot be reconciled against
+  // the screen or against the same question asked yesterday.
+  contract.push(params.horizonDays
+    ? `"Due soon" here means within ${params.horizonDays} days, because that is the window asked for. `
+      + 'Say so — the window configured for this client is different, and the Purchasing screen uses that one.'
+    : '"Due soon" uses the window configured for this client, the same one the Purchasing screen uses.');
   contract.push(
     `${res.summary.orderNow} items are overdue, ${res.summary.dueSoon} due within the horizon, ` +
     `${res.summary.ok} adequately stocked, ${res.summary.noDemand} with no recent sales.`);

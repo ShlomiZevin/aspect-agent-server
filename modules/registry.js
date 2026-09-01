@@ -121,6 +121,25 @@ function validate(descriptor) {
   return descriptor;
 }
 
+/**
+ * Does the host have anything to RUN on this module?
+ *
+ * The single definition, for the same reason `getLiveModules` is the single
+ * definition of "live": every host path that reaches into `descriptor.hooks`
+ * must agree on who has them, and the answer must not be re-derived at each
+ * call site. It was re-derived at two, and both got it wrong — the nightly
+ * build threw "no stored binding" on an app module and marked a perfectly
+ * healthy Task Board `degraded` on every reload, and the tool attach warned
+ * "chatTools threw" on every chat turn for every client that had it enabled.
+ *
+ * Note this asks about HOOKS, not about kind. A caller wants to know whether
+ * there is a function to call, and reading `kind === 'data'` at the call site
+ * is how both of those bugs were written.
+ */
+function runsHooks(descriptor) {
+  return Boolean(descriptor && descriptor.hooks);
+}
+
 const REGISTRY = {};
 for (const descriptor of DESCRIPTORS) {
   validate(descriptor);
@@ -137,4 +156,4 @@ function all() {
   return Object.values(REGISTRY);
 }
 
-module.exports = { get, all, validate };
+module.exports = { get, all, validate, runsHooks };

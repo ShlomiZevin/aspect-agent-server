@@ -28,6 +28,7 @@
  */
 
 const moduleService = require('./module.service');
+const registry = require('../registry');
 const datasetRegistry = require('../../insights/datasets/registry');
 const notificationService = require('../notification.service');
 
@@ -40,6 +41,23 @@ const notificationService = require('../notification.service');
  * @param {function} emitLog   the reload's own logger (step, message)
  * @returns {{built: object[], failed: object[], skipped: boolean}}
  */
+/**
+ * Modules this loop has anything to build.
+ *
+ * An APP module owns its own storage — its own database, for the task board —
+ * so it has no binding, no renderInfra and nothing for a reload to rebuild.
+ * Running it through here threw "module is ready but has no stored binding" on
+ * the first line and marked a module that was working perfectly `degraded`, on
+ * every single reload.
+ *
+ * Filtered once rather than guarded at each of the three call sites below, so a
+ * fourth cannot reintroduce it, and by the registry's predicate rather than a
+ * local kind test, so it cannot drift from what the other host paths believe.
+ */
+function withInfrastructure(live) {
+  return live.filter(({ descriptor }) => registry.runsHooks(descriptor));
+}
+
 async function buildModulesInShadow(datasetId, shadowSchema, pool, emitLog = () => {}) {
   const log = (msg) => emitLog('creating_views', `[modules] ${msg}`);
 
@@ -54,6 +72,7 @@ async function buildModulesInShadow(datasetId, shadowSchema, pool, emitLog = () 
     return { built: [], failed: [], skipped: true, error: err.message };
   }
 
+  live = withInfrastructure(live);
   if (!live.length) return { built: [], failed: [], skipped: true };
 
   log(`${live.length} live module(s) to build into ${shadowSchema}`);
@@ -115,7 +134,7 @@ async function buildModulesInShadow(datasetId, shadowSchema, pool, emitLog = () 
  * surfaced rather than discovered by a client.
  */
 async function expectedViews(datasetId) {
-  const live = await moduleService.getLiveModules(datasetId).catch(() => []);
+  const live = withInfrastructure(await moduleService.getLiveModules(datasetId).catch(() => []));
   const out = [];
   for (const { descriptor, row } of live) {
     if (!row.binding || typeof descriptor.hooks.renderInfra !== 'function') continue;
@@ -159,7 +178,7 @@ async function buildModulesInLive(datasetId, moduleId, pool, emitLog = () => {})
   const entry = datasetRegistry.get(datasetId);
   if (!entry) return { built: [], failed: [], skipped: true, error: `unknown dataset ${datasetId}` };
 
-  const live = await moduleService.getLiveModules(datasetId).catch(() => []);
+  const live = withInfrastructure(await moduleService.getLiveModules(datasetId).catch(() => []));
   const targets = moduleId ? live.filter(x => x.descriptor.id === moduleId) : live;
   if (!targets.length) return { built: [], failed: [], skipped: true };
 

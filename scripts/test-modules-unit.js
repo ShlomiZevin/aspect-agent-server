@@ -164,5 +164,122 @@ const descriptor = {
   ok('a stored false is a real value, not "unset"', r.values.horizon === false, `got ${r.values.horizon}`);
 }
 
-console.log(`\n─────────────────────\n${pass}/${pass + fail} checks passed`);
-process.exit(fail === 0 ? 0 : 1);
+// ---------------------------------------------------------------------------
+// An APP module is invisible to every host path.
+//
+// This is the guarantee that was missing, and it cost the same bug twice. The
+// framework promises that a dataset with no module rows behaves byte for byte
+// as it did before the framework existed. Introducing app modules -- ones with
+// their own storage and no hooks -- quietly created a SECOND thing every host
+// path has to be indifferent to, and nobody went back to check the hosts.
+//
+// Both consumers that reached into `descriptor.hooks` broke on it:
+//
+//   the nightly build   threw "module is ready but has no stored binding" and
+//                       marked a healthy Task Board `degraded` on every reload
+//   the tool attach     logged "chatTools threw" once per chat turn, forever
+//
+// Neither is caught by testing the module: both modules were correct. The
+// defect is in the host, so the host is what these drive. `getLiveModules` is
+// stubbed rather than mocked at the DB -- it is the single definition of
+// "live" and every one of these paths goes through it, which is what makes one
+// stub enough to reach all of them.
+// ---------------------------------------------------------------------------
+async function appModuleIsInvisible() {
+  console.log('\n4 - An app module is invisible to every host path');
+
+  const moduleService = require('../modules/services/module.service');
+  const moduleBuild = require('../modules/services/module-build.service');
+  const moduleTools = require('../modules/services/module-tools.service');
+  const datasetManifest = require('../services/dataset-manifest');
+
+  const appModules = registry.all().filter(d => (d.kind || 'data') === 'app');
+  ok('there is at least one app module to check on', appModules.length > 0,
+    'nothing below would be asserting anything otherwise');
+
+  for (const d of appModules) {
+    ok(d.id + ': declares no hooks', !d.hooks);
+    ok(d.id + ': the registry agrees there is nothing to run', registry.runsHooks(d) === false);
+  }
+
+  // The other half of it: the guard must not have switched the real modules off
+  // as well. A filter that skips everything passes every check above.
+  const dataModules = registry.all().filter(d => (d.kind || 'data') === 'data');
+  ok('data modules still run their hooks',
+    dataModules.length > 0 && dataModules.every(d => registry.runsHooks(d) === true));
+
+  // Live, enabled, ready -- and with the empty binding that made the build throw.
+  const live = appModules.map(descriptor => ({
+    descriptor,
+    row: { module_id: descriptor.id, enabled: true, status: 'ready', binding: null, settings: {} },
+  }));
+
+  const realGetLive = moduleService.getLiveModules;
+  const realWarn = console.warn;
+  const realError = console.error;
+  const noise = [];
+  moduleService.getLiveModules = async () => live;
+  console.warn = (...a) => noise.push(a.join(' '));
+  console.error = (...a) => noise.push(a.join(' '));
+
+  try {
+    // --- the reload ---------------------------------------------------------
+    // The pool throws if it is touched at all: an app module must not cause a
+    // single query against the customer database, which is the entire point of
+    // it owning its own.
+    const hostilePool = {
+      query: () => { throw new Error('the reload queried the customer DB for an app module'); },
+    };
+
+    const shadow = await moduleBuild.buildModulesInShadow('zolstock', 'zolstock_shadow', hostilePool, () => {});
+    ok('reload: nothing is built', shadow.built.length === 0 && shadow.failed.length === 0,
+      JSON.stringify(shadow));
+    ok('reload: reported as skipped, not as a failure', shadow.skipped === true,
+      JSON.stringify(shadow));
+
+    const rebuilt = await moduleBuild.buildModulesInLive('zolstock', null, hostilePool, () => {});
+    ok('rebuild-in-place: nothing is built and nothing fails',
+      rebuilt.built.length === 0 && rebuilt.failed.length === 0, JSON.stringify(rebuilt));
+
+    const views = await moduleBuild.expectedViews('zolstock');
+    ok('reload: no views are expected of it', Array.isArray(views) && views.length === 0,
+      JSON.stringify(views));
+
+    // --- the chat turn ------------------------------------------------------
+    const crew = { datasetSchema: 'zolstock', tools: [{ name: 'fetch_zolstock_data' }] };
+    const before = JSON.stringify(crew.tools);
+    const res = await moduleTools.attachTo(crew);
+    ok('chat: no tool is attached', res.attached.length === 0, JSON.stringify(res));
+    ok('chat: the crew keeps exactly the tools it owned', JSON.stringify(crew.tools) === before);
+
+    // --- the crew prompt ----------------------------------------------------
+    // Identity, not equality: the manifest handed to the crew must be the very
+    // object the dataset declared. A merged copy that happens to look the same
+    // is still a module editing a prompt it contributes nothing to, and that is
+    // how empty `facts` and `vocabulary` keys appeared once already.
+    const base = datasetManifest.get('zolstock');
+    if (base) {
+      const merged = await datasetManifest.getWithModules('zolstock');
+      ok('prompt: the dataset manifest is handed over untouched', merged === base);
+    } else {
+      ok('prompt: skipped -- zolstock declares no manifest to compare against', true);
+    }
+
+    // --- and none of it complained ------------------------------------------
+    // The degraded status was at least visible. This half was not: a host that
+    // "handles" an app module by logging a failure every turn is still wrong,
+    // and only silence proves it is being skipped rather than caught.
+    ok('none of it logs a failure', noise.length === 0, noise.join(' | '));
+  } finally {
+    moduleService.getLiveModules = realGetLive;
+    console.warn = realWarn;
+    console.error = realError;
+  }
+}
+
+appModuleIsInvisible()
+  .catch(err => { console.log('  FAIL the app-module battery threw -- ' + err.message); fail++; })
+  .then(() => {
+    console.log('\n---------------------\n' + pass + '/' + (pass + fail) + ' checks passed');
+    process.exit(fail === 0 ? 0 : 1);
+  });

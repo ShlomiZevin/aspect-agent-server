@@ -19,6 +19,7 @@
  */
 
 const moduleService = require('./module.service');
+const registry = require('../registry');
 
 /** Marks a tool as module-contributed so it can be removed again cleanly. */
 const TAG = '__fromModule';
@@ -48,6 +49,14 @@ async function attachTo(crew) {
 
   const attached = [];
   for (const { descriptor } of live) {
+    // An app module has no hooks at all, by design — the task board must not
+    // put internal notes in front of a client's chat agent. Reaching for
+    // `descriptor.hooks.chatTools` on one threw a TypeError that the catch
+    // below swallowed into "chatTools threw", once per chat turn, for every
+    // client that had the board switched on. Nothing broke; the log just
+    // reported a healthy module as failing, forever.
+    if (!registry.runsHooks(descriptor)) continue;
+
     let tools = [];
     try {
       tools = descriptor.hooks.chatTools({ datasetId: crew.datasetSchema }) || [];
