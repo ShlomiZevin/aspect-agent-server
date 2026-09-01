@@ -23,6 +23,7 @@
 const datasetRegistry = require('../../../insights/datasets/registry');
 const moduleService = require('../../services/module.service');
 const supplierSettings = require('./supplier-settings.service');
+const { localize } = require('../notes');
 const engine = require('../engine');
 
 const MODULE_ID = 'replenishment';
@@ -122,7 +123,27 @@ async function listSuppliers(datasetId, opts = {}) {
  * order per supplier, not per item — and because the lead time that drives
  * every date is a supplier-level number.
  */
-async function getRecommendations(datasetId, opts = {}) {
+/**
+ * The pass everything else is built on: every row, computed with its own
+ * supplier's settings, sorted by urgency.
+ *
+ * Extracted because two callers need the SAME numbers from it and must not
+ * compute them differently — the plan (aggregates per supplier) and the item
+ * list (one page of rows). When those were one function the page had to fetch
+ * every row to add up a supplier's total, which on ZolStock was a 14 MB
+ * response for a screen that shows ten lines.
+ */
+async function computeAll(datasetId, opts = {}) {
+  // Progress is REPORTED, never simulated. The screen draws a four-step panel
+  // while a plan is recalculated, and the only honest way to fill it is for the
+  // work itself to say where it is. The whole computation takes well under a
+  // second on 9,000 rows, so the panel is often a flash — which is the truth,
+  // and better than a bar padded to look like effort.
+  const report = typeof opts.onProgress === 'function' ? opts.onProgress : () => {};
+  // Which language the caveats come back in. English unless asked otherwise:
+  // the CSV, the chat tool's data contract and every script default to it.
+  const lang = opts.lang === 'he' ? 'he' : 'en';
+
   const ctx = await resolveLive(datasetId, opts.schemaName);
   if (ctx.error) return ctx;
 
@@ -132,10 +153,12 @@ async function getRecommendations(datasetId, opts = {}) {
   if (opts.supplier) { params.push(opts.supplier); filters.push(`supplier = $${params.length}`); }
   if (opts.sku) { params.push(opts.sku); filters.push(`sku = $${params.length}`); }
 
+  report({ phase: 'reading', done: 0, total: 0 });
   const { rows } = await ctx.pool.query(`
     SELECT ${BASE_COLUMNS}
       FROM ${ctx.schemaName}.mv_replenishment_base
      ${filters.length ? `WHERE ${filters.join(' AND ')}` : ''}`, params);
+  report({ phase: 'read', done: 0, total: rows.length });
 
   // `today` is a parameter of the engine, never read inside it — but SOMEONE
   // has to supply it, and this is the edge where a clock is legitimate.
@@ -148,7 +171,13 @@ async function getRecommendations(datasetId, opts = {}) {
   let excludedItems = 0;
   const excludedSuppliers = new Set();
 
+  // Reported every 500 rows rather than every row: the loop is fast enough
+  // that per-row events would cost more than the work they describe.
+  const STRIDE = 500;
+  let seen = 0;
+
   for (const row of rows) {
+    if (++seen % STRIDE === 0) report({ phase: 'computing', done: seen, total: rows.length });
     const settings = chain.forSupplier(row.supplier);
 
     const rec = engine.computeRecommendation(row, {
@@ -178,6 +207,31 @@ async function getRecommendations(datasetId, opts = {}) {
   // engine's own list helper cannot be used here — the ordering rule it
   // applies is reused instead.
   const ordered = sortByUrgency(all);
+  report({ phase: 'done', done: rows.length, total: rows.length });
+
+  return {
+    ctx,
+    chain,
+    today,
+    ordered,
+    rowCount: rows.length,
+    dataThrough: rows[0]?.data_through || null,
+    excluded: { items: excludedItems, suppliers: [...excludedSuppliers] },
+  };
+}
+
+/**
+ * Recommendations, as a page of item rows.
+ *
+ * Grouped by supplier because that is the unit of action — a buyer raises one
+ * order per supplier, not per item — and because the lead time that drives
+ * every date is a supplier-level number.
+ */
+async function getRecommendations(datasetId, opts = {}) {
+  const lang = opts.lang === 'he' ? 'he' : 'en';
+  const base = await computeAll(datasetId, opts);
+  if (base.error) return base;
+  const { ordered, today, dataThrough, excluded } = base;
 
   const due = opts.onlyDue
     ? ordered.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
@@ -212,19 +266,35 @@ async function getRecommendations(datasetId, opts = {}) {
     // Summaries are over EVERYTHING, not the page and not the search — a tile
     // that counted only the visible rows would be a different, wrong number.
     summary: engine.summarize(ordered),
-    dataThrough: rows[0]?.data_through || null,
+    dataThrough,
     // How many the filters matched, so the screen can say "showing X of Y" and
     // never truncate silently.
     total: filtered.length,
+    // Suppliers the buyer will actually see a row for: those with something
+    // overdue or due soon, over the whole matched set rather than the page.
+    //
+    // Counted over the ACTIONABLE rows for the same reason the value above is:
+    // the accordion below only lists suppliers with something to order, so
+    // counting every supplier with any row at all would put a number in the
+    // header that the list underneath contradicts. They agree on ZolStock today
+    // only because every supplier here happens to have an urgent item.
+    //
+    // The view already COALESCEs a missing supplier to '(unattributed)', so
+    // this counts that bucket as the one supplier it is drawn as.
+    supplierCount: new Set(
+      filtered
+        .filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
+        .map(r => r.supplier),
+    ).size,
     offset,
     limit,
     // So the page can account for the difference rather than leaving the buyer
     // to wonder why a supplier they know is missing.
-    excluded: {
-      items: excludedItems,
-      suppliers: [...excludedSuppliers],
-    },
-    recommendations: page,
+    excluded,
+    // Turned into sentences HERE, for the page only. Everything above — the
+    // summary, the totals, the sort — is computed on structured values, so
+    // nothing that anyone reconciles depends on a language.
+    recommendations: page.map(r => localize(r, lang)),
   };
 }
 
@@ -243,6 +313,66 @@ function sortByUrgency(list) {
 }
 
 /** One item, with its full working — what the trust panel renders. */
+/**
+ * The whole screen in one small response: the tiles, and one line per supplier.
+ *
+ * This is what the Procurement page opens with. It used to open by downloading
+ * every recommendation — 14 MB on ZolStock — purely so the browser could group
+ * them and add up a total per supplier. The grouping is the server's job: it
+ * has already computed every row to build the summary, and turning that into
+ * ten lines costs nothing.
+ *
+ * The item rows arrive later, one expanded supplier at a time, through
+ * getRecommendations with a `supplier` filter and a page size.
+ */
+async function getPlan(datasetId, opts = {}) {
+  const base = await computeAll(datasetId, opts);
+  if (base.error) return base;
+  const { ordered, chain, today, dataThrough, excluded } = base;
+
+  // What the accordion lists: suppliers with something overdue or due soon.
+  // The same set the header counts and totals, so the page reconciles with
+  // itself by construction rather than by two places agreeing to be careful.
+  const actionable = ordered.filter(
+    r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON);
+
+  const bySupplier = new Map();
+  for (const r of actionable) {
+    let g = bySupplier.get(r.supplier);
+    if (!g) {
+      g = { supplier: r.supplier, items: 0, estimatedTotalExVat: 0, overdue: 0, dueSoon: 0 };
+      bySupplier.set(r.supplier, g);
+    }
+    g.items += 1;
+    g.estimatedTotalExVat += r.estimatedCostExVat || 0;
+    if (r.status === engine.STATUS.OVERDUE) g.overdue += 1; else g.dueSoon += 1;
+  }
+
+  const suppliers = [...bySupplier.values()]
+    .map(g => {
+      const settings = chain.forSupplier(g.supplier);
+      return {
+        ...g,
+        leadTimeDays: settings.leadTimeDays,
+        // The badge the row renders: "you set this" vs "default — set it".
+        leadTimeSource: settings.leadTimeSource,
+        excluded: settings.excluded,
+      };
+    })
+    // Biggest list first: that is where a buyer's money and attention are.
+    .sort((a, b) => b.items - a.items);
+
+  return {
+    datasetId,
+    today,
+    dataThrough,
+    summary: engine.summarize(ordered),
+    supplierCount: suppliers.length,
+    excluded,
+    suppliers,
+  };
+}
+
 async function getBySku(datasetId, sku, opts = {}) {
   const res = await getRecommendations(datasetId, { ...opts, sku });
   if (res.error) return res;
@@ -251,4 +381,4 @@ async function getBySku(datasetId, sku, opts = {}) {
   return { datasetId, today: res.today, recommendation: rec };
 }
 
-module.exports = { MODULE_ID, resolveLive, listSuppliers, getRecommendations, getBySku };
+module.exports = { MODULE_ID, resolveLive, listSuppliers, getPlan, getRecommendations, getBySku };

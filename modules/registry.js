@@ -22,6 +22,7 @@ const stub = require('./_stub/module');
 const replenishment = require('./replenishment/module');
 const taskboard = require('./taskboard/module');
 const googleAuth = require('./google-auth/module');
+const { PLANNED_APPS } = require('./_planned/apps');
 
 // The stub exists to test the framework, not to serve anyone. Keeping it out
 // of production means the client-facing admin panel never shows a module
@@ -76,6 +77,19 @@ const KINDS = ['data', 'app'];
  */
 const SCOPES = ['dataset', 'client'];
 
+/**
+ * Which shelf a module sits on in the client's UI.
+ *
+ * 'apps' is the Apps page — the icon grid of business apps running on the
+ * client's own data. A module with no group is platform furniture (the task
+ * board, a sign-in method): real, switchable, and not something the client
+ * browses as an app.
+ *
+ * The shell shows the Apps tab when at least one 'apps' module is live for the
+ * dataset, so the group is what makes a nav item appear, not a hardcoded route.
+ */
+const GROUPS = ['apps'];
+
 function validate(descriptor) {
   const where = `module descriptor '${descriptor?.id || '(no id)'}'`;
   if (!descriptor?.id) throw new Error(`${where}: missing id`);
@@ -104,6 +118,14 @@ function validate(descriptor) {
   const scope = descriptor.scope || 'dataset';
   if (!SCOPES.includes(scope)) {
     throw new Error(`${where}: scope must be one of: ${SCOPES.join(', ')}`);
+  }
+  if (descriptor.group !== undefined && !GROUPS.includes(descriptor.group)) {
+    throw new Error(`${where}: group must be one of: ${GROUPS.join(', ')}`);
+  }
+  // A grouped module is drawn as an icon, and an icon the client cannot draw is
+  // a blank square with a label — worse than a boot failure nobody can miss.
+  if (descriptor.group === 'apps' && !descriptor.icon) {
+    throw new Error(`${where}: a module in the 'apps' group must name an icon`);
   }
 
   // Only a data module has data to bind. An app module declaring these would be
@@ -140,6 +162,11 @@ function runsHooks(descriptor) {
   return Boolean(descriptor && descriptor.hooks);
 }
 
+/** Every registered module on one shelf, in registration order. */
+function inGroup(group) {
+  return Object.values(REGISTRY).filter(d => d.group === group);
+}
+
 const REGISTRY = {};
 for (const descriptor of DESCRIPTORS) {
   validate(descriptor);
@@ -156,4 +183,4 @@ function all() {
   return Object.values(REGISTRY);
 }
 
-module.exports = { get, all, validate, runsHooks };
+module.exports = { get, all, validate, runsHooks, inGroup, GROUPS, PLANNED_APPS };

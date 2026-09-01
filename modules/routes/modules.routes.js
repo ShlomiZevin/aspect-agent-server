@@ -5,6 +5,7 @@
  *
  *   PUBLIC (no auth, customer-facing)
  *     GET  /api/modules/:datasetId                    — which modules are LIVE here
+ *     GET  /api/modules/apps/:datasetId               — the Apps shelf (?headlines=1 for numbers)
  *
  *   ADMIN (super-admin key required, every route)
  *     GET  /api/modules/admin/:datasetId              — all registered modules + state
@@ -32,6 +33,7 @@ const router = express.Router();
 const moduleService = require('../services/module.service');
 const moduleInitService = require('../services/module-init.service');
 const { requireSuperAdmin } = require('../../services/super-admin');
+const appsService = require('../services/apps.service');
 
 // ── admin sub-router — gated as a whole ──────────────────────────────────
 // Guarding the mount rather than each handler means a route added later
@@ -187,6 +189,29 @@ router.use('/admin', admin);
 // would be captured as a dataset id. A module owns its own routes; the
 // framework only decides where they hang.
 router.use('/replenishment', require('../replenishment/routes/replenishment.routes'));
+
+// ── the Apps shelf ───────────────────────────────────────────────────────
+// Also before `/:datasetId`, for the same reason: "apps" is not a dataset.
+
+/**
+ * What the Apps page draws for this dataset.
+ *
+ * `?headlines=1` adds each app's live numbers — for Procurement that is a full
+ * pass over every tracked SKU, so the nav check, which only needs to know
+ * whether the shelf is empty, asks without them and pays nothing.
+ *
+ * Public on purpose: it is the client's own shelf, and it carries names,
+ * icons and counts — no settings, no bindings, no model ids.
+ */
+router.get('/apps/:datasetId', async (req, res) => {
+  try {
+    const withHeadlines = req.query.headlines === '1' || req.query.headlines === 'true';
+    res.json(await appsService.listApps(req.params.datasetId, { withHeadlines }));
+  } catch (err) {
+    console.error('[modules] apps error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── public ───────────────────────────────────────────────────────────────
 

@@ -6,9 +6,16 @@
  *   PUT  /:datasetId/suppliers/:key           — set/clear one supplier's overrides
  *   GET  /:datasetId/defaults                 — the dataset-level settings
  *   PUT  /:datasetId/defaults                 — update them
+ *   GET  /:datasetId/plan                     — the screen: tiles + one line per supplier
  *   GET  /:datasetId/recommendations          — ?supplier= &onlyDue= &horizonDays=
- *                                                &limit= &offset= &search=
+ *                                                &limit= &offset= &search= &lang=
+ *
+ * `lang` decides the language of the CAVEATS only (`notes[]`, the pace basis,
+ * the rounding phrase) — see modules/replenishment/notes.js. Every figure is
+ * computed on structured values and is identical either way, so two people
+ * reading in two languages reconcile to the same numbers.
  *   GET  /:datasetId/recommendations/:sku     — one item, with its full working
+ *   GET  /:datasetId/plan/stream              — the plan, as SSE, with real progress
  *
  * EVERY route 404s unless the module is enabled AND ready. That is not
  * defensive tidiness: a module that is enabled but never initialized has no
@@ -109,6 +116,87 @@ router.put('/:datasetId/defaults', async (req, res) => {
   }
 });
 
+/**
+ * The same recommendations, streamed, so the screen's four-step panel can show
+ * where the work actually is.
+ *
+ * The panel exists because saving a delivery time rebuilds the plan, and a
+ * buyer who just changed a number deserves to see it being rebuilt. What it
+ * must NOT do is invent the wait: the whole computation runs in well under a
+ * second on nine thousand items, so these events are emitted by the engine
+ * loop itself and the bar simply moves as fast as the work does. A padded
+ * progress bar would be theatre on a screen whose entire job is being
+ * checkable.
+ *
+ * Sent as SSE rather than a WebSocket because it is one short burst in one
+ * direction, and it ends by itself.
+ *
+ * Its own path rather than a flag on /plan, so the streaming and the plain
+ * forms cannot diverge in what they return.
+ */
+router.get('/:datasetId/plan/stream', async (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    // Cloud Run and any proxy in front of it will otherwise buffer the whole
+    // response and deliver the "progress" after the work has finished.
+    'X-Accel-Buffering': 'no',
+  });
+
+  const send = (event, data) => {
+    if (res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // A client that navigates away mid-stream must stop the work reporting into
+  // a dead socket; the computation itself is too short to be worth aborting.
+  let gone = false;
+  req.on('close', () => { gone = true; });
+
+  try {
+    // The PLAN, not the rows: this is what the screen redraws after a
+    // recalculation, and streaming every recommendation down it would put 14 MB
+    // through an SSE connection to repaint ten lines.
+    const out = await recommendations.getPlan(req.params.datasetId, {
+      horizonDays: req.query.horizonDays ? Number(req.query.horizonDays) : undefined,
+      today: req.query.today,
+      lang: req.query.lang,
+      onProgress: (p) => { if (!gone) send('progress', p); },
+    });
+
+    if (out?.error) send('failed', { error: out.error });
+    else send('result', out);
+  } catch (err) {
+    console.error('[replenishment] stream error:', err.message);
+    send('failed', { error: err.message });
+  } finally {
+    if (!res.writableEnded) res.end();
+  }
+});
+
+/**
+ * The whole screen in one small response: tiles, plus one line per supplier.
+ *
+ * What the page opens with. It used to open by downloading every
+ * recommendation — 14 MB on ZolStock — so the browser could group them; the
+ * grouping is the server's job and this is the same numbers, aggregated.
+ */
+router.get('/:datasetId/plan', async (req, res) => {
+  try {
+    const out = await recommendations.getPlan(req.params.datasetId, {
+      horizonDays: req.query.horizonDays ? Number(req.query.horizonDays) : undefined,
+      today: req.query.today,
+      lang: req.query.lang,
+    });
+    if (refuse(res, out)) return;
+    res.json(out);
+  } catch (err) {
+    console.error('[replenishment] plan error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // The /:sku route is registered BEFORE the list route would swallow it —
 // Express matches in order, and `recommendations/:sku` must not be read as a
 // query on `recommendations`.
@@ -116,6 +204,7 @@ router.get('/:datasetId/recommendations/:sku', async (req, res) => {
   try {
     const out = await recommendations.getBySku(req.params.datasetId, req.params.sku, {
       today: req.query.today,
+      lang: req.query.lang,
     });
     if (refuse(res, out)) return;
     res.json(out);
@@ -135,6 +224,7 @@ router.get('/:datasetId/recommendations', async (req, res) => {
       offset: req.query.offset,
       search: req.query.search,
       today: req.query.today,
+      lang: req.query.lang,
     });
     if (refuse(res, out)) return;
     res.json(out);

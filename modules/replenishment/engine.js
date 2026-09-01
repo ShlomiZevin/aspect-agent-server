@@ -84,6 +84,14 @@ function pickWindow(requestedDays) {
 /**
  * Compute one recommendation.
  *
+ * NOTES AND LABELS ARE CODES, NOT SENTENCES. `notes[]`, `velocityBasis` and
+ * `orderQtyRounding` come out of here as `{ code, params }`, and
+ * modules/replenishment/notes.js turns them into text in the reader's language
+ * at the service edge. The engine has no opinion about who is reading: the same
+ * computation feeds a Hebrew screen, an English CSV and a model prompt. Before
+ * this, a Hebrew buyer read English caveats reversed by RTL — under the one
+ * heading on the page that exists to make a number checkable.
+ *
  * @param {object} row       one row of mv_replenishment_base
  * @param {object} settings  resolved settings + per-supplier overrides:
  *   { leadTimeDays, leadTimeSource, reviewDays, safetyDays, velocityWindowDays,
@@ -103,7 +111,7 @@ function computeRecommendation(row, settings, context = {}) {
   // ── velocity ──
   const win = pickWindow(settings.velocityWindowDays);
   if (!win.exact) {
-    notes.push(`Sales pace is measured over ${win.days} days — the closest prepared window to the configured ${win.requested}.`);
+    notes.push({ code: 'window_substituted', params: { days: win.days, requested: win.requested } });
   }
   const qtyInWindow = num(row[win.column]);
   const firstSold = toDate(row.first_sold);
@@ -114,15 +122,15 @@ function computeRecommendation(row, settings, context = {}) {
   // its pace, sometimes by a lot, and would under-order a product that is
   // actually selling well.
   let effectiveDays = win.days;
-  let velocityBasis = `${win.days}-day average`;
+  let velocityBasis = { code: 'window_average', params: { days: win.days } };
   let thinHistory = false;
   if (firstSold) {
     const soldForDays = daysBetween(dataThrough, firstSold) + 1;
     if (soldForDays > 0 && soldForDays < win.days) {
       effectiveDays = soldForDays;
-      velocityBasis = `${soldForDays} days since first sale`;
+      velocityBasis = { code: 'since_first_sale', params: { days: soldForDays } };
       thinHistory = true;
-      notes.push(`This item first sold ${soldForDays} days ago, so its pace is measured over that period rather than the full ${win.days} days — a short history is a less reliable basis.`);
+      notes.push({ code: 'thin_history', params: { soldForDays, days: win.days } });
     }
   }
 
@@ -132,7 +140,7 @@ function computeRecommendation(row, settings, context = {}) {
   const staleDemand = Boolean(lastSold && daysBetween(dataThrough, lastSold) > win.days);
   const velocityDaily = staleDemand || effectiveDays <= 0 ? 0 : qtyInWindow / effectiveDays;
   if (staleDemand) {
-    notes.push(`No sales in the last ${win.days} days (last sold ${iso(lastSold)}), so no reorder is suggested even though the item sold earlier.`);
+    notes.push({ code: 'stale_demand', params: { days: win.days, lastSold: iso(lastSold) } });
   }
 
   // ── availability ──
@@ -151,7 +159,7 @@ function computeRecommendation(row, settings, context = {}) {
   // store carries −802,918 units across 8,755 items; hiding that behind a
   // max(0,…) would present broken data as a healthy zero.
   if (netAvailable < 0) {
-    notes.push(`Available stock is negative (${Math.round(netAvailable).toLocaleString('en-GB')}). That usually means adjustments are missing from the feed rather than a real shortage — treat this item's figures as suspect.`);
+    notes.push({ code: 'negative_available', params: { netAvailable } });
   }
 
   // The on-order term is the weakest input in the whole formula: with no
@@ -159,7 +167,7 @@ function computeRecommendation(row, settings, context = {}) {
   // open, so supply is over-counted and the system under-orders.
   const onOrderIsUnverified = Boolean(row.on_order_qty) && settings.onOrderUnverified !== false;
   if (onOrderQty > 0 && onOrderIsUnverified) {
-    notes.push('The data has no delivery confirmations, so quantities shown as "on the way" may include goods that already arrived.');
+    notes.push({ code: 'on_order_unverified' });
   }
 
   // ── safety stock ──
@@ -174,7 +182,7 @@ function computeRecommendation(row, settings, context = {}) {
     safetyStock = Math.ceil(velocityDaily * num(settings.safetyDays, 14));
     safetyStockSource = 'computed';
     if (velocityDaily > 0) {
-      notes.push(`No safety stock is set for this item, so ${num(settings.safetyDays, 14)} days of sales (${safetyStock.toLocaleString('en-GB')} units) is used as a buffer.`);
+      notes.push({ code: 'safety_from_pace', params: { safetyDays: num(settings.safetyDays, 14), safetyStock } });
     }
   }
 
@@ -184,7 +192,7 @@ function computeRecommendation(row, settings, context = {}) {
   // Edge case 8 — an inherited lead time is stated, every time. The buyer
   // must always be able to tell a number they gave us from one we assumed.
   if (leadTimeSource !== 'supplier') {
-    notes.push(`Delivery time for this supplier has not been set, so the ${leadTimeDays}-day default is used. Setting the real one changes when this order is due.`);
+    notes.push({ code: 'lead_time_default', params: { leadTimeDays } });
   }
 
   const reorderPoint = velocityDaily * leadTimeDays + safetyStock;
@@ -206,7 +214,7 @@ function computeRecommendation(row, settings, context = {}) {
   const daysOfCover = rawCover === null ? null : Math.max(0, rawCover);
   const alreadyOut = rawCover !== null && rawCover <= 0;
   if (alreadyOut) {
-    notes.push('Nothing is available to sell right now — this order is already overdue by the full delivery time.');
+    notes.push({ code: 'already_out' });
   }
   const orderByDate = daysOfCover === null ? null : addDays(dataThrough, daysOfCover - leadTimeDays);
   const daysLate = orderByDate ? daysBetween(today, orderByDate) : null;
@@ -221,24 +229,24 @@ function computeRecommendation(row, settings, context = {}) {
   let orderQtyRounding;
   if (rawQty <= 0) {
     orderQty = 0;
-    orderQtyRounding = 'none';
+    orderQtyRounding = { code: 'none' };
   } else if (carton > 0 && roundingEnabled) {
     orderQty = Math.ceil(rawQty / carton) * carton;
-    orderQtyRounding = `rounded up to full cartons of ${carton}`;
+    orderQtyRounding = { code: 'cartons', params: { carton } };
   } else {
     // Edge case 4 — no carton size known. Round up to a whole unit and say
     // so, rather than silently emitting a fractional order quantity.
     orderQty = Math.ceil(rawQty);
-    orderQtyRounding = carton > 0 ? 'carton rounding disabled' : 'carton size unknown';
+    orderQtyRounding = { code: carton > 0 ? 'carton_rounding_off' : 'carton_unknown' };
     if (carton <= 0) {
-      notes.push('Carton size is not in the catalogue for this item, so the quantity is not rounded to a full carton.');
+      notes.push({ code: 'carton_unknown' });
     }
   }
 
   const minOrderUnits = num(settings.minOrderUnits, 0);
   if (rawQty > 0 && minOrderUnits > 0 && orderQty < minOrderUnits) {
     orderQty = minOrderUnits;
-    orderQtyRounding = `raised to the ${minOrderUnits}-unit minimum order`;
+    orderQtyRounding = { code: 'min_order', params: { minOrderUnits } };
   }
 
   // ── status ──
@@ -260,9 +268,9 @@ function computeRecommendation(row, settings, context = {}) {
       // decision to make, so the row does not belong on a buyer's screen.
       return null;
     }
-    notes.push(`No recent sales, but ${Math.round(onHand).toLocaleString('en-GB')} units are on hand — this is idle stock rather than something to reorder.`);
+    notes.push({ code: 'idle_stock', params: { onHand } });
     orderQty = 0;
-    orderQtyRounding = 'none';
+    orderQtyRounding = { code: 'none' };
   }
 
   // Edge case 5 — a stock/order row whose key is not in the catalogue. It is
@@ -270,13 +278,13 @@ function computeRecommendation(row, settings, context = {}) {
   // supplier cannot actually be ordered until someone identifies it.
   const unmatched = !row.item_number && !row.item_name;
   if (unmatched) {
-    notes.push('This code is not in the item catalogue, so its name, supplier and price are unknown.');
+    notes.push({ code: 'unmatched_code' });
   }
 
   const unitCost = num(row.cost_ex_vat, 0);
   const estimatedCostExVat = unitCost > 0 ? orderQty * unitCost : null;
   if (orderQty > 0 && estimatedCostExVat !== null) {
-    notes.push('Cost is a list-price estimate excluding VAT and before discounts.');
+    notes.push({ code: 'cost_estimate' });
   }
 
   return {
@@ -361,13 +369,35 @@ function computeRecommendations(rows, settings, context = {}) {
 
 /** Headline counts for the summary tiles. Derived, never separately queried. */
 function summarize(recommendations) {
-  const s = { orderNow: 0, dueSoon: 0, ok: 0, noDemand: 0, estimatedTotalExVat: 0 };
+  const s = {
+    orderNow: 0, dueSoon: 0, ok: 0, noDemand: 0,
+    estimatedTotalExVat: 0,
+    estimatedTotalAllExVat: 0,
+  };
   for (const r of recommendations) {
     if (r.status === STATUS.OVERDUE) s.orderNow++;
     else if (r.status === STATUS.DUE_SOON) s.dueSoon++;
     else if (r.status === STATUS.OK) s.ok++;
     else s.noDemand++;
-    if (r.estimatedCostExVat) s.estimatedTotalExVat += r.estimatedCostExVat;
+
+    if (!r.estimatedCostExVat) continue;
+    s.estimatedTotalAllExVat += r.estimatedCostExVat;
+
+    // The headline total covers what the screen LISTS - overdue and due soon -
+    // and nothing else, so a buyer who adds up the supplier rows arrives at the
+    // number in the header.
+    //
+    // It used to sum every row with a quantity, which quietly included items
+    // that are adequately stocked but whose next order falls beyond the
+    // horizon: an item can be comfortably covered for the delivery time and
+    // still need a quantity computed for the review period after it. On
+    // ZolStock that was 182 items and 65,076 shekels of daylight between the
+    // header and the list under it - small enough to look like a rounding
+    // error, which is exactly what makes it corrosive on a page whose whole
+    // job is being reconcilable.
+    if (r.status === STATUS.OVERDUE || r.status === STATUS.DUE_SOON) {
+      s.estimatedTotalExVat += r.estimatedCostExVat;
+    }
   }
   return s;
 }
