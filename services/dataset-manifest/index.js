@@ -106,7 +106,106 @@ function renderForCrew(manifest) {
   for (const v of ambiguous) {
     L.push(`- ONLY the exact phrase${v.terms.length > 1 ? 's' : ''} "${v.terms.join('" / "')}" ${v.terms.length > 1 ? 'are' : 'is'} AMBIGUOUS: ${v.detail} For these exact words ask ONE short clarifying question before fetching data. Do NOT extend this to other wordings — a question that names salespeople unambiguously (e.g. מוכרנים, סוכנים, salespeople) is NOT ambiguous: state directly that the dimension is absent and offer the available alternatives, without asking anything.`);
   }
+  // Contributed by whichever modules are live for this dataset (plan D7).
+  // Absent when none are, so a dataset with no module renders exactly as before.
+  if (manifest.moduleNotes?.length) {
+    L.push('Figures this client has switched on, which are COMPUTED rather than read from the source system:');
+    L.push(...manifest.moduleNotes);
+    L.push('- When you use one of these, say which basis it rests on. Never present a computed figure as if the source system reported it.');
+  }
+
   return L.join('\n');
 }
 
-module.exports = { get, ids, renderForPrompt, renderForCrew };
+/**
+ * The dataset manifest with every live module's fragment folded in.
+ *
+ * This is plan decision D7: a module contributes to what the agent is told
+ * about the data, but ONLY while it is live. It was implemented on the module
+ * side and never consumed here, so the hook was tested, registered and inert.
+ *
+ * Merged rather than replaced, key by key: a module adds measures and
+ * dimensions it brought with it, and must not be able to overwrite a fact the
+ * dataset itself asserts. Two modules cannot collide on the same key either --
+ * the first one to claim it keeps it, and that is reported rather than silently
+ * resolved.
+ *
+ * Never throws. A module that cannot produce a fragment degrades to the plain
+ * dataset manifest, which is the same rule every other module hook follows: an
+ * optional module may not break the thing it plugs into.
+ */
+async function getWithModules(schemaName) {
+  const base = get(schemaName);
+  if (!base) return null;
+
+  let live = [];
+  try {
+    live = await require('../../modules/services/module.service').getLiveModules(schemaName);
+  } catch (err) {
+    console.error('[dataset-manifest] could not list live modules:', err.message);
+    return base;
+  }
+  if (live.length === 0) return base;
+
+  // Collected first, so a client with only app modules live -- which have no
+  // fragment at all -- gets the base object back untouched. Building the merged
+  // copy up front added empty `facts` and `vocabulary` keys that the dataset
+  // never declared, which is a change to the manifest made by a module that
+  // contributes nothing to it.
+  const fragments = [];
+  for (const { descriptor } of live) {
+    let fragment = null;
+    try {
+      fragment = descriptor.hooks?.manifestFragment?.();
+    } catch (err) {
+      console.error(`[dataset-manifest] ${descriptor.id} manifestFragment threw:`, err.message);
+      continue;
+    }
+    if (fragment) fragments.push([descriptor.id, fragment]);
+  }
+  if (fragments.length === 0) return base;
+
+  const merged = {
+    ...base,
+    measures: { ...(base.measures || {}) },
+    dimensions: { ...(base.dimensions || {}) },
+    // What the live modules added, already phrased for the crew prompt. Kept
+    // separate from `measures`/`dimensions` because renderForCrew must not
+    // start rendering the dataset's own ones too -- that would change the
+    // prompt for every dataset, module or not.
+    moduleNotes: [],
+  };
+  if (base.vocabulary) merged.vocabulary = [...base.vocabulary];
+  if (base.facts) merged.facts = [...base.facts];
+
+  for (const [id, fragment] of fragments) {
+    const descriptor = { id };
+
+    for (const group of ['measures', 'dimensions']) {
+      for (const [key, value] of Object.entries(fragment[group] || {})) {
+        if (key in merged[group]) {
+          console.warn(
+            `[dataset-manifest] ${descriptor.id} tried to redefine ${group}.${key} on `
+            + `${schemaName}; the dataset's own definition wins`);
+          continue;
+        }
+        merged[group][key] = value;
+
+        const detail = value.basis || value.detail || '';
+        const status = value.fidelity || value.status || '';
+        merged.moduleNotes.push(
+          `- ${key}${status ? ` (${status})` : ''}${detail ? `: ${detail}` : ''}`);
+      }
+    }
+    if (Array.isArray(fragment.vocabulary)) {
+      merged.vocabulary = [...(merged.vocabulary || []), ...fragment.vocabulary];
+    }
+    if (Array.isArray(fragment.facts)) {
+      merged.facts = [...(merged.facts || []), ...fragment.facts];
+    }
+  }
+
+  return merged;
+}
+
+module.exports = { get, getWithModules, ids, renderForPrompt, renderForCrew };

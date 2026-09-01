@@ -1,23 +1,26 @@
 /**
- * Google Sign-In, and the invitations that gate it.
+ * Signing in, and the invitations that gate it.
  *
- *   GET  /api/auth/google/config?tenant=   what the login page needs to render
- *   POST /api/auth/google                  { idToken, tenant } -> a session user
+ *   GET  /api/auth/signin/config?tenant=   what the login screen needs to render
+ *   POST /api/auth/signin/google           { idToken, tenant }
+ *   POST /api/auth/signin/password         { email, password, tenant }
  *
- *   GET    /api/auth/google/allowed?tenant=   list invitations   (super-admin)
- *   POST   /api/auth/google/allowed           invite an email    (super-admin)
- *   DELETE /api/auth/google/allowed/:id       revoke one         (super-admin)
+ *   GET    /api/auth/signin/allowed?tenant=   list invitations   (super-admin)
+ *   POST   /api/auth/signin/allowed           invite an email    (super-admin)
+ *   PUT    /api/auth/signin/allowed/:id/password  set or clear one (super-admin)
+ *   DELETE /api/auth/signin/allowed/:id       revoke one         (super-admin)
  *
- * The config route is public and deliberately thin: it says whether the button
- * should be drawn and which OAuth client to draw it for. It must not leak who
- * has been invited — that list is exactly what an attacker would want.
+ * The config route is public and deliberately thin: it says which ways in this
+ * client offers and which OAuth client to draw the button for. It must not leak
+ * who has been invited — that list is exactly what an attacker would want.
  */
 const express = require('express');
 const { and, desc, eq, isNull, or } = require('drizzle-orm');
 
 const db = require('../../services/db.pg');
 const { allowedEmails } = require('../../db/schema');
-const googleAuth = require('../../services/google-auth.service');
+const signin = require('../../services/google-auth.service');
+const passwords = require('../../services/password.service');
 const moduleService = require('../../modules/services/module.service');
 const { requireSuperAdmin } = require('../../services/super-admin');
 
@@ -42,34 +45,35 @@ router.get('/config', handle(async (req, res) => {
   const tenant = String(req.query.tenant || '');
   const state = tenant ? await moduleService.getForDataset(tenant, 'google-auth') : null;
   const live = Boolean(state?.live);
+  const methods = live ? (state.settings.methods || 'both') : null;
 
   res.json({
-    // Both must hold: the module switched on for this agent, AND a client id on
-    // the server. Reporting enabled without one would draw a button that cannot
-    // work.
-    enabled: live && googleAuth.isConfigured(),
-    clientId: live ? googleAuth.CLIENT_ID : '',
-    // When the module is off, the old login is the only one — so it is offered
-    // regardless of what the setting says.
-    allowPasswordLogin: live ? state.settings.allowPasswordlessFallback !== false : true,
+    enabled: live,
+    // Google needs a client id as well as the setting. Reporting it available
+    // without one would draw a button that cannot work.
+    google: live && methods !== 'password' && signin.isConfigured(),
+    password: live && methods !== 'google',
+    clientId: live && signin.isConfigured() ? signin.CLIENT_ID : '',
   });
 }));
 
-router.post('/', handle(async (req, res) => {
+/** `userId` is the external id, which is what every surface stores and sends back. */
+function session(res, user, via) {
+  res.json({ userId: user.externalId, name: user.name, email: user.email, role: user.role, via });
+}
+
+router.post('/google', handle(async (req, res) => {
   const { idToken, tenant } = req.body;
   if (!tenant) return res.status(400).json({ error: 'tenant is required' });
+  const { user, via } = await signin.signInWithGoogle(idToken, tenant);
+  session(res, user, via);
+}));
 
-  const { user, via } = await googleAuth.signIn(idToken, tenant);
-
-  // The same shape the name+phone login returns, so everything downstream —
-  // which stores a userId and sends it back — is untouched by this existing.
-  res.json({
-    userId: user.externalId,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    via,
-  });
+router.post('/password', handle(async (req, res) => {
+  const { email, password, tenant } = req.body;
+  if (!tenant) return res.status(400).json({ error: 'tenant is required' });
+  const { user, via } = await signin.signInWithPassword(email, password, tenant);
+  session(res, user, via);
 }));
 
 // --- invitations (super-admin) --------------------------------------------------
@@ -90,7 +94,7 @@ admin.get('/', handle(async (req, res) => {
       : undefined)
     .orderBy(desc(allowedEmails.createdAt));
 
-  res.json({ allowed: rows });
+  res.json({ allowed: rows.map(strip) });
 }));
 
 admin.post('/', handle(async (req, res) => {
@@ -124,16 +128,63 @@ admin.post('/', handle(async (req, res) => {
       .set({ revokedAt: null, role: role || existing.role, note: note ?? existing.note })
       .where(eq(allowedEmails.id, existing.id))
       .returning();
-    return res.status(200).json({ allowed: revived });
+    return res.status(200).json({ allowed: strip(revived) });
+  }
+
+  // A password may be set at invite time, or generated so it can be read out
+  // once and handed over. Either way only the hash is stored, so the plaintext
+  // below is the only time anyone will see it.
+  let passwordHash = null;
+  let plaintext = null;
+  if (req.body.password || req.body.generatePassword) {
+    plaintext = req.body.password || passwords.generate();
+    passwordHash = await passwords.hash(plaintext);
   }
 
   const [created] = await drizzle
     .insert(allowedEmails)
-    .values({ email: clean, tenant: tenant || null, role: role || 'user', note: note || null, invitedBy: invitedBy || null })
+    .values({
+      email: clean,
+      tenant: tenant || null,
+      role: role || 'user',
+      note: note || null,
+      invitedBy: invitedBy || null,
+      passwordHash,
+      passwordSetAt: passwordHash ? new Date() : null,
+    })
     .returning();
 
-  res.status(201).json({ allowed: created });
+  res.status(201).json({ allowed: strip(created), password: plaintext });
 }));
+
+/** Sets or clears one invitation's password. */
+admin.put('/:id/password', handle(async (req, res) => {
+  const drizzle = db.getDrizzle();
+  const clear = req.body.clear === true;
+
+  const plaintext = clear ? null : (req.body.password || passwords.generate());
+  const passwordHash = clear ? null : await passwords.hash(plaintext);
+
+  const [updated] = await drizzle
+    .update(allowedEmails)
+    .set({ passwordHash, passwordSetAt: passwordHash ? new Date() : null })
+    .where(eq(allowedEmails.id, Number(req.params.id)))
+    .returning();
+
+  if (!updated) return res.status(404).json({ error: 'No such invitation' });
+  res.json({ allowed: strip(updated), password: plaintext });
+}));
+
+/**
+ * Never send a hash to a browser, not even to a super-admin.
+ *
+ * It is of no use to the screen showing it and every use to anyone who obtains
+ * the response, and "the admin page had it in a network tab" is how these leak.
+ */
+function strip(row) {
+  const { passwordHash, ...rest } = row;
+  return { ...rest, hasPassword: Boolean(passwordHash) };
+}
 
 admin.delete('/:id', handle(async (req, res) => {
   const drizzle = db.getDrizzle();
@@ -145,7 +196,7 @@ admin.delete('/:id', handle(async (req, res) => {
     .returning();
 
   if (!revoked) return res.status(404).json({ error: 'No such invitation' });
-  res.json({ allowed: revoked });
+  res.json({ allowed: strip(revoked) });
 }));
 
 router.use('/allowed', admin);

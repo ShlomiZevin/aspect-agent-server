@@ -153,6 +153,14 @@ function collectIdentifiers(binding) {
   push('catalog.safetyCol', binding.catalog?.safetyCol);
   push('catalog.priceCol', binding.catalog?.priceCol);
   push('catalog.costCol', binding.catalog?.costCol);
+  // These four were omitted. The renderer's second check still refuses an
+  // unsafe value, so nothing was exploitable — but it refuses as a nameless
+  // round failure instead of naming the field, which is the whole reason this
+  // structural check exists.
+  push('catalog.nameCol', binding.catalog?.nameCol);
+  push('catalog.categoryCol', binding.catalog?.categoryCol);
+  push('catalog.subcategoryCol', binding.catalog?.subcategoryCol);
+  push('catalog.supplierCodeCol', binding.catalog?.supplierCodeCol);
 
   for (const grain of ['warehouse', 'store']) {
     push(`stock.${grain}.qtyCol`, binding.stock?.[grain]?.qtyCol);

@@ -6,7 +6,8 @@
  *   PUT  /:datasetId/suppliers/:key           — set/clear one supplier's overrides
  *   GET  /:datasetId/defaults                 — the dataset-level settings
  *   PUT  /:datasetId/defaults                 — update them
- *   GET  /:datasetId/recommendations          — ?supplier= &onlyDue= &horizonDays= &limit=
+ *   GET  /:datasetId/recommendations          — ?supplier= &onlyDue= &horizonDays=
+ *                                                &limit= &offset= &search=
  *   GET  /:datasetId/recommendations/:sku     — one item, with its full working
  *
  * EVERY route 404s unless the module is enabled AND ready. That is not
@@ -131,6 +132,8 @@ router.get('/:datasetId/recommendations', async (req, res) => {
       onlyDue: req.query.onlyDue === 'true',
       horizonDays: req.query.horizonDays ? Number(req.query.horizonDays) : undefined,
       limit: req.query.limit,
+      offset: req.query.offset,
+      search: req.query.search,
       today: req.query.today,
     });
     if (refuse(res, out)) return;

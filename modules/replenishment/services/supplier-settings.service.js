@@ -68,7 +68,7 @@ async function getOverride(datasetId, supplierKey) {
  */
 async function upsertOverride(datasetId, supplierKey, patch, updatedBy) {
   const drizzle = db.getDrizzle();
-  const allowed = ['supplierLabel', 'leadTimeDays', 'reviewDays', 'safetyDays', 'minOrderUnits', 'notes'];
+  const allowed = ['supplierLabel', 'leadTimeDays', 'reviewDays', 'safetyDays', 'minOrderUnits', 'notes', 'excluded'];
   const values = {};
   for (const k of allowed) {
     if (Object.prototype.hasOwnProperty.call(patch || {}, k)) values[k] = patch[k];
@@ -124,6 +124,10 @@ function resolveForSupplier(moduleSettings, override) {
     reviewDays: values.reviewDays,
     safetyDays: values.safetyDays,
     minOrderUnits: values.minOrderUnits,
+    // Kept out of the recommendations entirely. Not a FIELD_TO_DEFAULT entry:
+    // it has no dataset-wide default to fall back to — a supplier is either
+    // excluded or it is not, and only an override can say so.
+    excluded: Boolean(override?.excluded),
     // Not per-supplier — these are dataset-wide and pass straight through.
     velocityWindowDays: moduleSettings?.velocityWindowDays,
     includeStoreStock: moduleSettings?.includeStoreStock,

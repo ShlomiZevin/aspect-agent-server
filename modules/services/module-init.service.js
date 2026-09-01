@@ -116,6 +116,14 @@ function describeProgress(run) {
 
 // ── run records ──────────────────────────────────────────────────────────
 
+/**
+ * @throws {Error} with `code = '23505'` when another run is already running.
+ *
+ * The unique index (migration 045) is what actually enforces one run at a time.
+ * hasRunningRun() above is check-then-insert and two instances can both pass it,
+ * which is how a second pipeline used to take the same scratch-schema name and
+ * drop the first one's build mid-verify.
+ */
 async function createRun(datasetId, moduleId, kind = 'init') {
   const drizzle = db.getDrizzle();
   const [row] = await drizzle.insert(moduleRuns).values({
@@ -449,7 +457,17 @@ async function startInit(datasetId, moduleId, { updatedBy, onEvent, await: await
     return { error: 'An init run is already in progress for this module', code: 409 };
   }
 
-  const run = await createRun(datasetId, moduleId, 'init');
+  let run;
+  try {
+    run = await createRun(datasetId, moduleId, 'init');
+  } catch (err) {
+    // The index rejected it: another run started between the check above and
+    // this insert. Same answer the check gives, so the caller sees one story.
+    if (err?.cause?.code === '23505' || err?.code === '23505') {
+      return { error: 'An init run is already in progress for this module', code: 409 };
+    }
+    throw err;
+  }
   const promise = runInitPipeline(datasetId, moduleId, run.id, { updatedBy, onEvent });
 
   if (awaitRun) {

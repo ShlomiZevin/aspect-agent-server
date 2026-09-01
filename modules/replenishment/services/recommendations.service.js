@@ -138,13 +138,36 @@ async function getRecommendations(datasetId, opts = {}) {
   const today = opts.today || new Date().toISOString().slice(0, 10);
 
   const all = [];
+  // Counted rather than silently dropped: a supplier excluded on purpose still
+  // owes the buyer an explanation of where its rows went, and the screen says
+  // so under the tiles.
+  let excludedItems = 0;
+  const excludedSuppliers = new Set();
+
   for (const row of rows) {
     const settings = chain.forSupplier(row.supplier);
+
     const rec = engine.computeRecommendation(row, {
       ...settings,
       horizonDays: opts.horizonDays ?? settings.horizonDays,
     }, { today, stockSource: opts.stockSource || 'warehouse' });
-    if (rec) all.push(rec);
+    if (!rec) continue;
+
+    // An archive supplier sells but holds no warehouse stock by design, so every
+    // one of its items reads as permanently overdue. Those are not orders anyone
+    // will place; excluding them is the buyer's call, per supplier.
+    //
+    // Computed first and dropped after, so the count reports what the buyer
+    // WOULD have seen. Counting the raw rows instead said "2,624 excluded" for a
+    // supplier whose list only ever held 289 — a number that is true of the data
+    // and false of the screen.
+    if (settings.excluded) {
+      excludedItems += 1;
+      excludedSuppliers.add(row.supplier);
+      continue;
+    }
+
+    all.push(rec);
   }
 
   // Rows are computed per supplier (each with its own lead time), so the
@@ -152,21 +175,52 @@ async function getRecommendations(datasetId, opts = {}) {
   // applies is reused instead.
   const ordered = sortByUrgency(all);
 
-  const filtered = opts.onlyDue
+  const due = opts.onlyDue
     ? ordered.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
     : ordered;
 
-  const limited = opts.limit ? filtered.slice(0, Number(opts.limit)) : filtered;
+  // Free-text over the three things a buyer knows an item by.
+  //
+  // Applied HERE, after the engine, and never in the query: the summary below
+  // is computed from `ordered`, so filtering in SQL made the tiles describe the
+  // search results instead of the whole set — the exact thing the house rule
+  // forbids, and it is invisible until someone types in the box. The engine
+  // already runs over every row to build that summary, so this costs nothing
+  // extra.
+  const term = String(opts.search ?? '').trim().toLowerCase();
+  const filtered = term
+    ? due.filter(r =>
+      String(r.itemName ?? '').toLowerCase().includes(term)
+      || String(r.sku ?? '').toLowerCase().includes(term)
+      || String(r.itemNumber ?? '').toLowerCase().includes(term))
+    : due;
+
+  // A page out of the filtered set. `offset` beyond the end yields an empty
+  // page rather than an error: it is what a stale pager sends after someone
+  // else's reload shortened the list, and an error there would be a dead screen.
+  const offset = Math.max(0, Number(opts.offset) || 0);
+  const limit = opts.limit ? Math.max(0, Number(opts.limit)) : null;
+  const page = limit === null ? filtered.slice(offset) : filtered.slice(offset, offset + limit);
 
   return {
     datasetId,
     today,
-    // Summaries are over EVERYTHING, not the limited page — a tile that
-    // counted only the visible rows would be a different, wrong number.
+    // Summaries are over EVERYTHING, not the page and not the search — a tile
+    // that counted only the visible rows would be a different, wrong number.
     summary: engine.summarize(ordered),
     dataThrough: rows[0]?.data_through || null,
+    // How many the filters matched, so the screen can say "showing X of Y" and
+    // never truncate silently.
     total: filtered.length,
-    recommendations: limited,
+    offset,
+    limit,
+    // So the page can account for the difference rather than leaving the buyer
+    // to wonder why a supplier they know is missing.
+    excluded: {
+      items: excludedItems,
+      suppliers: [...excludedSuppliers],
+    },
+    recommendations: page,
   };
 }
 

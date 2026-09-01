@@ -60,6 +60,10 @@ const allowedEmails = pgTable('allowed_emails', {
   note:      text('note'),
   // Set rather than deleted, so a revoked invitation stays on the record.
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  // scrypt, salt and hash in one field. NULL = this person signs in with Google
+  // only, which is the normal case.
+  passwordHash:  text('password_hash'),
+  passwordSetAt: timestamp('password_set_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -548,6 +552,10 @@ const supplierSettings = pgTable('supplier_settings', {
   safetyDays:    integer('safety_days'),
   minOrderUnits: integer('min_order_units'),
   notes:         text('notes'),
+  // Keep this supplier out of the recommendations entirely. For archive-type
+  // suppliers that sell but hold no warehouse stock by design, so every item
+  // reads as permanently overdue. See db/migrations/046.
+  excluded:      boolean('excluded').default(false).notNull(),
   updatedBy:     text('updated_by'),
   updatedAt:     timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
