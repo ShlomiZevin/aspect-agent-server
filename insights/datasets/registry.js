@@ -19,6 +19,7 @@ const newdeli = require('../../services/db.newdeli');
 const thestock = require('../../services/db.thestock');
 const zolstock = require('../../services/db.zolstock');
 const tevanaot = require('../../services/db.tevanaot');
+const superhist = require('../../services/db.superhist');
 
 const REGISTRY = {
   hypertoy: {
@@ -119,6 +120,26 @@ const REGISTRY = {
       'Main risks for the next 6 months',
       'Which stores will miss this quarter\'s target',
       'Which products have the steepest sales decline',
+    ],
+  },
+  superhist: {
+    id: 'superhist',
+    schemaName: 'superhist',
+    getPool: superhist.getPool,
+    defaultMeta: {
+      name: 'The Social Supermarket',
+      description: "AI-powered business intelligence for הסופר החברתי, the Histadrut's members-only online grocery — orders, products, members, subsidy.",
+      logoText: 'SH',
+      gradientFrom: '#1D4ED8',
+      gradientTo: '#38BDF8',
+    },
+    defaultBrandLabel: "The Social Supermarket, the Histadrut's members-only online grocery",
+    defaultDataModelDescription: "an online grocery order model: orders joined to their order lines and a product catalogue. Common measures: order revenue (what members paid, VAT-inclusive), order count, units, basket size, subsidy funded by the union, shipping charged. Common dimensions: date (day/week/month), product, member, payment method, shipping method, order status. IMPORTANT: there is NO product category (the field is populated on 3.3% of the catalogue and all on one id, and the categories table holds marketing collections, not a taxonomy), NO cost or margin (no cost column exists anywhere in the feed), and NO store/branch/cashier — the shop is online only. Subsidy is the union's contribution recorded alongside what the member paid and must never be subtracted from revenue.",
+    defaultBootstrapPrompts: [
+      'How is order revenue trending week over week, and what is driving it',
+      'Which products sell the most units, and which are sitting in stock unsold',
+      'How many members order more than once, and how does their basket compare',
+      'How much subsidy is the union funding, and on which products',
     ],
   },
   zolstock: {

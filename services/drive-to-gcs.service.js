@@ -46,6 +46,19 @@ const CLIENTS = {
     mode: 'passthrough',
     skipStems: new Set(),
   },
+  superhist: {
+    folderId: '1CDG5hJbXDJVoa28TOYuW7lZ7EDdAOORa',
+    gcsPrefix: 'superhist/',
+    // Passthrough: reload-superhist.js keys FILE_TO_TABLE on the exact Drive
+    // names, Hebrew and all ("OrderLineהסופר החברתי_CSV.csv").
+    mode: 'passthrough',
+    // Nothing skipped on purpose. Qlik's own metadata files (Dim, Dim1,
+    // Measure, Measures) and the 7-day helper are not loaded — they are left
+    // out of FILE_TO_TABLE — but they are a kilobyte each, so mirroring them
+    // costs nothing and keeps the raw delivery intact for audit. skipStems is
+    // for bulk the transfer should not carry, like zer4u's 2.3 GB linktable.
+    skipStems: new Set(),
+  },
 };
 
 /**

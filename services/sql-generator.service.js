@@ -898,6 +898,13 @@ ORDER BY avg_order_value DESC
       return require('./schema-rules/zolstock.rules').zolstockRules(schemaName);
     }
 
+    // An online-grocery ORDER model, not a point of sale: two row kinds in the
+    // line table, the date on the order, and subsidy sitting beside revenue
+    // rather than inside it. See services/schema-rules/superhist.rules.js.
+    if (schemaName === 'superhist') {
+      return require('./schema-rules/superhist.rules').superhistRules(schemaName);
+    }
+
     if (schemaName === 'tevanaot') {
       return `
 ## tevanaot-Specific Rules (Teva Naot — footwear retail — CRITICAL, follow exactly)

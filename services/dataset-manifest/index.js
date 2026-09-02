@@ -28,6 +28,7 @@
 
 const MANIFESTS = {
   zolstock: () => require('./zolstock.manifest'),
+  superhist: () => require('./superhist.manifest'),
 };
 
 const cache = new Map();
