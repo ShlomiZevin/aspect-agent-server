@@ -16,7 +16,24 @@ const { verify } = require('./verify');
 
 module.exports = {
   id: 'replenishment',
-  name: { en: 'Smart Replenishment', he: 'חידוש מלאי חכם' },
+
+  // The ID is the durable key: it is in `client_modules` rows, in the stored
+  // binding, in the chat tool's name and in every run this module has logged.
+  // The NAME is what the client reads, and the redesign renames it Procurement
+  // — the app on the Apps page, with Purchase as the section inside it.
+  // Renaming the id to match would buy nothing and cost a migration over live
+  // rows, so the two deliberately differ.
+  name: { en: 'Procurement', he: 'רכש' },
+
+  // The Apps shelf: the icon grid of business apps running on the client's own
+  // data. This is what makes the Apps tab appear for a dataset at all.
+  group: 'apps',
+  icon: 'procurement',
+  blurb: {
+    en: 'Order recommendations per supplier — how much to order, when to send it and what it costs.',
+    he: 'המלצות הזמנה לכל ספק — כמה להזמין, מתי לשלוח וכמה זה עולה.',
+  },
+
   version: 1,
 
   settingsSchema: [
@@ -208,7 +225,7 @@ module.exports = {
         },
         vocabulary: [
           { terms: ['זמן אספקה', 'לי טיים', 'lead time', 'delivery time'], resolution: 'field',
-            detail: 'configured per supplier on the Purchasing screen; not derivable from the data' },
+            detail: 'configured per supplier on the Procurement screen; not derivable from the data' },
           { terms: ['נקודת הזמנה', 'reorder point'], resolution: 'field',
             detail: 'computed: sales pace x delivery time + safety stock' },
           { terms: ['מלאי ביטחון', 'safety stock'], resolution: 'field',
