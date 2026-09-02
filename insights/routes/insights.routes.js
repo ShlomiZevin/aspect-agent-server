@@ -109,6 +109,28 @@ router.get('/', async (_req, res) => {
   }
 });
 
+/**
+ * The example questions this dataset's hero offers.
+ *
+ * They were hardcoded in the client — the same three chips for every client —
+ * so הסופר החברתי, an online grocery with no branches and no cost data, invited
+ * its buyer to ask "which stores will miss Q3 target" and "which product family
+ * has the steepest margin decline". Both are refused by that dataset's own
+ * manifest. A suggestion the product then declines is worse than no suggestion.
+ *
+ * Registered above /:datasetId/:insightId so "prompts" is a static segment
+ * rather than an insight id.
+ */
+router.get('/:datasetId/prompts', async (req, res) => {
+  try {
+    await requireEnabled(req.params.datasetId);
+    const config = await intelligenceConfigService.getConfig(req.params.datasetId);
+    res.json({ examplePrompts: config.examplePrompts || [] });
+  } catch (err) {
+    handleError(res, err, 'prompts');
+  }
+});
+
 // Registered before the generic /:datasetId/:insightId route below so
 // "insights" and "tracked" are matched as static segments, not an insightId.
 router.get('/:datasetId/insights', async (req, res) => {
