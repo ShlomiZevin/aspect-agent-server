@@ -298,17 +298,53 @@ async function getRecommendations(datasetId, opts = {}) {
   };
 }
 
-/** Same ordering rule as engine.computeRecommendations, applied to a built list. */
+/**
+ * Same ordering rule as engine.computeRecommendations, applied to a built list.
+ *
+ * WHY THERE IS A TIE-BREAK. Sorting the overdue rows by days late is only a
+ * sort when the days differ. They mostly do not: with no supplier delivery time
+ * set, every overdue row inherits the same 90-day default and comes out at the
+ * same lateness — on zolstock's largest supplier that is 4,322 of 5,205 rows
+ * (83%) all reading "92 days late". Past that point the comparator returns 0
+ * and the order is whatever the query happened to return, so page 20 looks like
+ * page 2 and the whole list reads as arbitrary. That is exactly the complaint.
+ *
+ * So equal lateness falls through to the money at stake, then to how fast the
+ * item actually moves. A buyer working down the list now meets the biggest,
+ * fastest-moving gaps first instead of an accident of row order, and a page
+ * deep in the list is visibly different from the first one.
+ *
+ * This does not invent urgency the data cannot support — every row here is
+ * genuinely overdue on its own arithmetic. It orders rows the previous rule
+ * left unordered.
+ */
 function sortByUrgency(list) {
   const rank = {
     [engine.STATUS.OVERDUE]: 0, [engine.STATUS.DUE_SOON]: 1,
     [engine.STATUS.OK]: 2, [engine.STATUS.NO_DEMAND]: 3,
   };
+  const value = r => r.estimatedCostExVat ?? 0;
+  const pace = r => r.velocityDaily ?? 0;
+
   return list.slice().sort((a, b) => {
     if (rank[a.status] !== rank[b.status]) return rank[a.status] - rank[b.status];
-    if (a.status === engine.STATUS.OVERDUE) return (b.daysLate ?? 0) - (a.daysLate ?? 0);
-    if (a.status === engine.STATUS.DUE_SOON) return String(a.orderByDate).localeCompare(String(b.orderByDate));
-    return (b.estimatedCostExVat ?? 0) - (a.estimatedCostExVat ?? 0);
+
+    if (a.status === engine.STATUS.OVERDUE) {
+      const byLate = (b.daysLate ?? 0) - (a.daysLate ?? 0);
+      if (byLate !== 0) return byLate;
+    } else if (a.status === engine.STATUS.DUE_SOON) {
+      const byDate = String(a.orderByDate).localeCompare(String(b.orderByDate));
+      if (byDate !== 0) return byDate;
+    }
+
+    const byValue = value(b) - value(a);
+    if (byValue !== 0) return byValue;
+    const byPace = pace(b) - pace(a);
+    if (byPace !== 0) return byPace;
+    // Last resort: a stable, meaningless-but-repeatable key, so two runs over
+    // the same data produce the same page rather than shuffling under the
+    // buyer between refreshes.
+    return String(a.sku).localeCompare(String(b.sku));
   });
 }
 
