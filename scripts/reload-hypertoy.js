@@ -48,10 +48,24 @@ async function buildSchemasFromHeaders(gcsFiles, emitLog) {
       const headers = await gcsService.getCSVHeaders(file.name);
       const lookup = buildColumnLookup(tableName);
 
+      // Two CSV headers can legitimately map to one column — an alias kept for
+      // a header the client renamed, so an older delivery still loads. If both
+      // ever arrive in the same file the CREATE TABLE would name the column
+      // twice and the whole import would die on a syntax error. The first one
+      // wins and the second keeps its raw header, which is visible, harmless,
+      // and says plainly that the aliases need pruning.
+      const claimed = new Set();
       const columns = headers.map(h => {
         const csvName = h.replace(/^﻿/, '').trim();
         const def = lookup.get(csvName);
-        return { csvName, name: def ? def.dbName : csvName, type: def ? def.type : 'TEXT' };
+        if (def && !claimed.has(def.dbName)) {
+          claimed.add(def.dbName);
+          return { csvName, name: def.dbName, type: def.type };
+        }
+        if (def) {
+          emitLog('scanning', `${file.basename}: '${csvName}' also maps to ${def.dbName}, which is already taken — keeping the raw header`);
+        }
+        return { csvName, name: csvName, type: def ? def.type : 'TEXT' };
       });
 
       schemas.push({ fileName: file.basename, filePath: file.name, fileSize: file.size, tableName, columns });

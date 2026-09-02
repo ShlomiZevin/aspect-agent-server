@@ -122,7 +122,17 @@ const COLUMN_MAP = {
     { csvName: 'תכולת קרטון',                    dbName: 'carton_contents',               type: 'TEXT'    },
     { csvName: 'תכולת אינר',                     dbName: 'inner_contents',                type: 'TEXT'    },
     { csvName: 'ספק מועדף',                     dbName: 'preferred_supplier',            type: 'TEXT'    },
+    // The client renamed this header on 2026-09-01: 'קוד ספק' became
+    // 'קוד ספק מועדף'. BOTH map to supplier_code so a re-run over an older
+    // delivery still loads; only one of them is ever present in a given file.
+    //
+    // What the rename cost: with no alias for the new header the column landed
+    // under its raw Hebrew name, `idx_products_supplier_code` then failed to
+    // build on a column that no longer existed, indexing failed, and the swap
+    // never happened. The shadow schema sat fully loaded for two days while the
+    // cron retried every minute — 479 failed runs on 2026-09-02 alone.
     { csvName: 'קוד ספק',                       dbName: 'supplier_code',                 type: 'TEXT'    },
+    { csvName: 'קוד ספק מועדף',                 dbName: 'supplier_code',                 type: 'TEXT'    },
     { csvName: 'סוג פריט',                      dbName: 'item_type',                     type: 'TEXT'    },
     { csvName: 'דגם',                            dbName: 'model',                         type: 'TEXT'    },
     { csvName: 'טיפוס משפחה',                   dbName: 'family_type',                   type: 'TEXT'    },

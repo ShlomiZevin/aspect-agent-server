@@ -14,6 +14,16 @@ const providerConfigService = require('./provider-config.service');
 const { getGcsFolder } = require('./gcs-folder.service');
 const dataThroughService = require('./data-through.service');
 
+/**
+ * How many times indexing may fail for ONE import before we stop retrying.
+ *
+ * Five: enough to ride out a transient failure — a race with another schema, a
+ * dropped connection, a Cloud Run instance recycled mid-run — and few enough
+ * that a deterministic failure stops being a per-minute heartbeat within five
+ * minutes of starting.
+ */
+const MAX_INDEX_ATTEMPTS = 5;
+
 class DataReloadService {
   constructor(db) {
     this.db = db;
@@ -317,6 +327,44 @@ class DataReloadService {
       return { action: 'skipped', reason: `indexing already completed after last import (run #${completedIndexRes.rows[0].id})` };
     }
 
+    // How many times we have already tried and failed FOR THIS IMPORT.
+    //
+    // The condition above only looks for a COMPLETED run, so a failure is
+    // invisible to it and the tick tries again a minute later — forever. That
+    // is right for a transient failure (two schemas racing, a dropped
+    // connection) and useless for a deterministic one: hypertoy's index list
+    // named a column the client had renamed out of the feed, so every attempt
+    // failed identically. It failed 479 times on 2026-09-02 alone, buried two
+    // days of real history under identical rows, and nobody was told.
+    //
+    // Counted against the import rather than a clock, so the next successful
+    // import clears it with no bookkeeping: a new `lastImport.completed_at`
+    // moves the window and the count starts from zero.
+    const failedRes = await this.db.query(
+      `SELECT count(*)::int AS n, max(id) AS last_id, max(error_message) AS last_error
+         FROM public.data_reload_runs
+        WHERE schema_name = $1 AND status = 'failed'
+          AND (triggered_by LIKE '%-index' OR triggered_by LIKE '%-full-index' OR triggered_by IN ('index', 'cron'))
+          AND started_at > $2`,
+      [schemaName, lastImport.completed_at]
+    );
+    const failures = failedRes.rows[0]?.n || 0;
+    if (failures >= MAX_INDEX_ATTEMPTS) {
+      // Deliberately not an error and not a new run row: another failed row a
+      // minute is exactly what this exists to stop. It is a skip with a reason
+      // the status endpoint carries, so the admin screen can say the schema is
+      // stuck and on which import.
+      return {
+        action: 'skipped',
+        stuck: true,
+        reason: `indexing has failed ${failures} times for import #${lastImport.id} — giving up until the next import`,
+        afterImport: lastImport.id,
+        attempts: failures,
+        lastError: failedRes.rows[0]?.last_error || null,
+        lastRunId: failedRes.rows[0]?.last_id || null,
+      };
+    }
+
     const runId = await this.startIndexing(schemaName, 'cron');
     console.log(`[DataReloadService] ensure-indexed: started run #${runId} for ${schemaName} after import #${lastImport.id}`);
     return { action: 'started', runId, afterImport: lastImport.id };
@@ -384,7 +432,65 @@ class DataReloadService {
        LIMIT 1`,
       [schemaName]
     );
-    return result.rows[0] || null;
+    const last = result.rows[0] || null;
+    if (!last) return null;
+
+    // "Failed" and "we have stopped trying" are different things to know, and
+    // the last run alone cannot tell them apart: one failure looks exactly like
+    // the five hundredth. This says which import we are stuck on and how many
+    // attempts it took to give up, so the screen can say so instead of showing
+    // another red row an hour.
+    return { ...last, stuck: await this.getIndexingStuck(schemaName) };
+  }
+
+  /**
+   * Has indexing given up on the current import? Null when it has not.
+   *
+   * Read from the same rows `ensureIndexed` counts, so the screen and the
+   * scheduler cannot disagree about whether a schema is stuck.
+   */
+  async getIndexingStuck(schemaName) {
+    try {
+      const imp = await this.db.query(
+        `SELECT id, completed_at FROM public.data_reload_runs
+          WHERE schema_name = $1 AND status = 'completed' AND total_files IS NOT NULL
+          ORDER BY completed_at DESC LIMIT 1`,
+        [schemaName]
+      );
+      if (imp.rows.length === 0) return null;
+      const lastImport = imp.rows[0];
+
+      const done = await this.db.query(
+        `SELECT id FROM public.data_reload_runs
+          WHERE schema_name = $1 AND status = 'completed'
+            AND (triggered_by LIKE '%-index' OR triggered_by LIKE '%-full-index' OR triggered_by IN ('index', 'cron'))
+            AND started_at > $2 LIMIT 1`,
+        [schemaName, lastImport.completed_at]
+      );
+      if (done.rows.length > 0) return null;
+
+      const failed = await this.db.query(
+        `SELECT count(*)::int AS n, max(error_message) AS last_error
+           FROM public.data_reload_runs
+          WHERE schema_name = $1 AND status = 'failed'
+            AND (triggered_by LIKE '%-index' OR triggered_by LIKE '%-full-index' OR triggered_by IN ('index', 'cron'))
+            AND started_at > $2`,
+        [schemaName, lastImport.completed_at]
+      );
+      const n = failed.rows[0]?.n || 0;
+      if (n < MAX_INDEX_ATTEMPTS) return null;
+
+      return {
+        afterImport: lastImport.id,
+        attempts: n,
+        maxAttempts: MAX_INDEX_ATTEMPTS,
+        lastError: failed.rows[0]?.last_error || null,
+      };
+    } catch (err) {
+      // A status screen must not go down because one extra question failed.
+      console.warn(`[DataReloadService] stuck check failed for ${schemaName}: ${err.message}`);
+      return null;
+    }
   }
 
   /** Returns last N runs from DB for a schema. */
