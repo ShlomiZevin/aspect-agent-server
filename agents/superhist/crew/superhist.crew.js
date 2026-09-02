@@ -30,6 +30,16 @@ class SuperHistCrew extends CrewMember {
       // see crew/base/CrewMember.js.
       datasetSchema: 'superhist',
 
+      // Declared, not inherited. Without this the base default is 'gpt-4',
+      // which is not in services/models.service.js — so the router logs
+      // "Unknown model, defaulting to OpenAI", token usage lands under a model
+      // id nobody accounts for, and the agent quietly runs on something older
+      // than every sibling. gpt-5.6 is what zolstock and hypertoy use, chosen
+      // there because gpt-4o drifted off the "paste the formatted table
+      // verbatim" instruction on longer tables.
+      model: process.env.SUPERHIST_CREW_MODEL || 'gpt-5.6',
+      maxTokens: 8192,
+
       guidance: `You are a business intelligence advisor for הסופר החברתי (The Social Supermarket), the Histadrut's members-only online grocery in Israel (super-hist.co.il).
 
 ## THE BUSINESS

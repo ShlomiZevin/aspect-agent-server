@@ -48,7 +48,14 @@ module.exports = {
 
   dimensions: {
     'date': { status: 'available', detail: 'orders.order_date. Order lines carry NO date — every time-based measure joins the order' },
-    'product / item': { status: 'available', detail: 'products catalogue keyed on item_id; name, sku, current stock, current catalogue price. products.catalogue_price is TODAY\'s price and must never be used to value a past order' },
+    'product / item': {
+      status: 'available',
+      detail: 'products catalogue keyed on item_id; name, sku, current stock, current catalogue price. '
+        + 'catalogue_price is TODAY price and must never be used to value a past order. '
+        + 'MEASURED on the first load: 1,481 distinct items sold, of which 141 have NO row in the catalogue at all '
+        + '— those carry 8% of revenue (₪706,753 over 46,768 lines) and appear with no name. '
+        + 'mv_sales_item keeps them and flags them with in_catalogue = false',
+    },
     'member / customer': { status: 'available', detail: 'orders.customer_id — an identifier only. No name, no city, no demographics' },
     'payment method': { status: 'available', detail: 'orders.payment_method / payment_method_code' },
     'shipping method': { status: 'available', detail: 'orders.shipping_method / shipping_code' },
@@ -93,6 +100,7 @@ module.exports = {
     { fact: 'The delivered history is short — the first delivery covers 42 days — so there is no year-on-year, no seasonality and no prior-year comparison', appliesTo: 'any comparison to last year or any seasonal claim' },
     { fact: 'The final loaded month is PARTIAL. Comparing it with a full month shows a fall that is an artefact of the export, not the business', appliesTo: 'any month-over-month comparison touching the latest month' },
     { fact: 'The calendar table covers the whole year while orders cover weeks — it is a date dimension, never evidence that a date has orders', appliesTo: 'any trend or date-range claim' },
+    { fact: '141 of the 1,481 items sold are absent from the product catalogue and carry 8% of revenue. They have no name and no price on file — report them as unidentified items rather than dropping them or guessing', appliesTo: 'top-seller lists and any per-product total' },
   ],
 
   coverage: {

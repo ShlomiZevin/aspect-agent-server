@@ -141,6 +141,11 @@ const REGISTRY = {
       'How many members order more than once, and how does their basket compare',
       'How much subsidy is the union funding, and on which products',
     ],
+    defaultExamplePrompts: [
+      'Which products are quietly losing sales week over week',
+      'Where is subsidy going, and is it reaching the busiest baskets',
+      'Which members ordered once and never came back',
+    ],
   },
   zolstock: {
     id: 'zolstock',

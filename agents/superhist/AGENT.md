@@ -22,7 +22,7 @@ orders ──< order_lines >── products ── (categories)
 |---|---|---|
 | `orders` | 19,062 | one per order; carries the DATE, the total and the member |
 | `order_lines` | 654,370 | the fact table — **two row kinds**, see below |
-| `products` | 16,537 | catalogue; 3,202 of them actually sold |
+| `products` | 16,537 | catalogue; 1,340 of them sold, plus 141 sold items with NO catalogue row |
 | `categories` | 110 | marketing collections, **not** a taxonomy |
 | `calendar` | 367 | all of 2026 |
 

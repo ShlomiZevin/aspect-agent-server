@@ -16,6 +16,7 @@
  *
  * WHAT THE FIRST DELIVERY CONTAINS (profiled 2026-09-02):
  *   19,062 orders · 654,370 order lines · 16,537 products · 15,881 members
+ *   1,481 distinct items sold, 141 of them absent from the catalogue
  *   ₪8.44M of orders over 42 days, 2026-07-01 to 2026-08-11.
  *
  * Three things about it that shape everything downstream:

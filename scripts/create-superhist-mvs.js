@@ -148,25 +148,45 @@ function mvs(schema) {
     // ── mv_sales_item — lifetime per item ────────────────────────────────────
     // "Best sellers", "what did we never sell". Carries catalogue stock so the
     // stock-versus-demand question does not need a second join.
+    //
+    // FULL OUTER JOIN, not a LEFT JOIN from the catalogue. Measured on the
+    // first load: 141 of the 1,481 items that actually sold have NO row in the
+    // products file — ₪706,753 across 46,768 lines, 8% of all revenue. Starting
+    // from the catalogue dropped every one of them, so "top sellers" would have
+    // been quietly missing items with 3,207 lines against them. Both sides are
+    // kept and `in_catalogue` says which is which, because an item that sells
+    // and is not in the catalogue is a fact worth surfacing, not one to hide.
     {
       name: 'mv_sales_item',
       sql: `
-        SELECT i.item_id,
-               MAX(i.item_name)                         AS item_name,
-               MAX(i.sku)                               AS sku,
-               MAX(i.stock_qty)                         AS stock_qty,
-               MAX(i.catalogue_price)                   AS catalogue_price,
-               MAX(i.catalogue_subsidy)                 AS catalogue_subsidy,
-               MAX(i.view_count)                        AS view_count,
-               COALESCE(COUNT(DISTINCT s.order_id), 0)  AS order_count,
-               COALESCE(SUM(s.quantity), 0)             AS units,
-               COALESCE(SUM(s.revenue_inc_vat), 0)      AS revenue_inc_vat,
-               COALESCE(SUM(s.subsidy), 0)              AS subsidy,
-               MIN(s.order_date)                        AS first_sold,
-               MAX(s.order_date)                        AS last_sold
+        WITH sold AS (
+          SELECT item_id,
+                 COUNT(DISTINCT order_id)  AS order_count,
+                 SUM(quantity)             AS units,
+                 SUM(revenue_inc_vat)      AS revenue_inc_vat,
+                 SUM(subsidy)              AS subsidy,
+                 MIN(order_date)           AS first_sold,
+                 MAX(order_date)           AS last_sold
+            FROM (${SALES(schema)}) s
+           WHERE item_id IS NOT NULL
+           GROUP BY item_id
+        )
+        SELECT COALESCE(i.item_id, sold.item_id)     AS item_id,
+               i.item_name,
+               i.sku,
+               i.stock_qty,
+               i.catalogue_price,
+               i.catalogue_subsidy,
+               i.view_count,
+               (i.item_id IS NOT NULL)               AS in_catalogue,
+               COALESCE(sold.order_count, 0)         AS order_count,
+               COALESCE(sold.units, 0)               AS units,
+               COALESCE(sold.revenue_inc_vat, 0)     AS revenue_inc_vat,
+               COALESCE(sold.subsidy, 0)             AS subsidy,
+               sold.first_sold,
+               sold.last_sold
           FROM (${ITEM_DIM(schema)}) i
-          LEFT JOIN (${SALES(schema)}) s ON s.item_id = i.item_id
-         GROUP BY i.item_id`,
+          FULL OUTER JOIN sold ON sold.item_id = i.item_id`,
       indexes: [{ name: 'uq_mv_sales_item', col: 'item_id', unique: true }],
     },
 
