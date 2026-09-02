@@ -3092,6 +3092,7 @@ const RERUN_POOL_GETTERS = {
   newdeli: () => require('./services/db.newdeli').getPool(),
   zolstock: () => require('./services/db.zolstock').getPool(),
   tevanaot: () => require('./services/db.tevanaot').getPool(),
+  superhist: () => require('./services/db.superhist').getPool(),
 };
 
 async function runBiSql(schema, sql) {
@@ -6507,6 +6508,7 @@ async function startServer() {
     require('./agents/hypertoy/data-reload').register(dataReloadService);
     require('./agents/zolstock/data-reload').register(dataReloadService);
     require('./agents/tevanaot/data-reload').register(dataReloadService);
+    require('./agents/superhist/data-reload').register(dataReloadService);
     app.set('dataReloadService', dataReloadService);
     // Aspect Intelligence reuses this same service's getDataInfo() for its
     // per-dataset "data through" freshness lookup (see
