@@ -68,7 +68,8 @@ nothing despite its name.
 
 Server:
 - `agents/superhist/crew/superhist.crew.js` — the agent
-- `agents/superhist/data-reload.js` — reloader registration (`SUPERHIST_RELOAD_ENABLED`)
+- `agents/superhist/data-reload.js` — reloader registration; enabled from the
+  Configuration tab (`superhist_reload_enabled` in `provider_config`)
 - `scripts/column-aliases-superhist.js` — all 79 delivered headers, mapped
 - `scripts/reload-superhist.js` — two-phase load; `FILE_TO_TABLE` carries the
   exact Hebrew basenames Qlik exports
@@ -97,7 +98,9 @@ routes `/superhist` and `/intelligence/superhist`.
    delivered basenames — an upload whose name differs by a space is silently
    skipped.
 2. `node scripts/seed-superhist-agent.js` (needs the Cloud SQL proxy).
-3. Set `SUPERHIST_RELOAD_ENABLED=true` in `.env`.
+3. Switch the reload on in the Data Loader **Configuration tab** — it writes
+   `superhist_reload_enabled` to `provider_config` and takes effect at once.
+   (Do not edit `.env`; that pattern was retired.)
 4. Run Phase 1, then Phase 2, from the admin data-loader.
 
 `scripts/test-schema-contract.js` reports `superhist: schema has no relations`

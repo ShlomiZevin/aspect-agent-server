@@ -47,6 +47,7 @@ const ENV_FALLBACKS = {
   hypertoy_reload_enabled:           'HYPERTOY_RELOAD_ENABLED',
   zolstock_reload_enabled:           'ZOLSTOCK_RELOAD_ENABLED',
   tevanaot_reload_enabled:           'TEVANAOT_RELOAD_ENABLED',
+  superhist_reload_enabled:          'SUPERHIST_RELOAD_ENABLED',
   // GCS folder each schema's loader reads CSVs from (services/gcs-folder.service.js).
   // No real env var backs these today - the fallback names are just for
   // consistency with the rest of this map; the actual default lives in each

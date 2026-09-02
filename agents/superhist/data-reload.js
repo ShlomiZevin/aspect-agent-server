@@ -2,10 +2,15 @@
  * The Social Supermarket (הסופר החברתי) data reload registration.
  * Wires the superhist reloader into DataReloadService (admin dashboard).
  *
- * Disabled by default — set SUPERHIST_RELOAD_ENABLED=true in .env to enable,
- * the same switch every other dataset uses. The mapping, indexes and views are
- * complete and were written against the first delivery (2026-09-02); what they
- * have never seen is that delivery arriving through GCS rather than from disk.
+ * Disabled until switched on in the Data Loader CONFIGURATION TAB. That is a
+ * row in provider_config, read live on every call by guardReloadFn — flipping
+ * it takes effect immediately. The env var of the same name is only a fallback
+ * for a schema with no row yet; editing .env and redeploying is the pattern
+ * this replaced.
+ *
+ * The mapping, indexes and views are complete and were written against the
+ * first delivery (2026-09-02); what they have never seen is that delivery
+ * arriving through GCS rather than from disk.
  */
 
 const { loadSuperHist, indexSuperHist, getSuperHistDataInfo, FILE_TO_TABLE } = require('../../scripts/reload-superhist');
