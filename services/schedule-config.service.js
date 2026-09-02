@@ -13,7 +13,7 @@ const db = require('./db.pg');
 const { providerConfig } = require('../db/schema');
 const { eq } = require('drizzle-orm');
 
-const SCHEMAS = ['zer4u', 'newdeli', 'thestock', 'hypertoy', 'zolstock', 'tevanaot'];
+const SCHEMAS = ['zer4u', 'newdeli', 'thestock', 'hypertoy', 'zolstock', 'tevanaot', 'superhist'];
 const JOB_TYPES = ['import', 'drive_sync'];
 
 function keyFor(schemaName, jobType) {
