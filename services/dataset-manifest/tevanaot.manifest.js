@@ -46,16 +46,16 @@ module.exports = {
 
   dimensions: {
     'date': { status: 'available', detail: 'mv_sales.transaction_date, resolved from the Qlik Excel serial (epoch 1899-12-30, verified). History runs from ~2022-11, so year-on-year comparisons are possible. Verify the latest day is not partial before quoting a "today" figure.' },
-    'store / branch': { status: 'available', detail: 'mv_sales.warhs joined to sites (unique per warhs). warhs = 0 is a non-retail / HQ bucket with no sites row and an implausible per-unit value — exclude it from store rankings or flag it.' },
+    'store / branch': { status: 'available', detail: 'mv_sales.warhs joined to sites (unique per warhs). warhs = 0 is a non-retail / HQ bucket (no sites row, net units go NEGATIVE from return-only activity) — exclude it from store rankings. A raw "top stores" list also mixes in warehouses and the website channel; filter on the sites row when the question means retail branches.' },
     'product / model / colour': { status: 'available', detail: 'join the pre-deduplicated dimension mv_parts_dim on part (part is the model-colour grain). Model rollup groups by model_code, model_name. NEVER SUM after joining raw parts — one parts row per size fans measures out 16-50x.' },
     'model attributes': { status: 'available', detail: 'colour, gender, shoe_type, marketing_shoe_type, product_line, collection, season, family_description, budget_line, quality — all on mv_parts_dim. A blank model_name bucket (accessories, shoe-care) legitimately tops volume rankings; flag it when it appears.' },
     'size': { status: 'available', detail: 'size is a size-level attribute on raw parts, NOT on mv_parts_dim — a size breakdown must join parts and cannot reuse the deduped dimension.' },
-    'supplier': { status: 'unreliable', detail: 'the standalone suppliers table is near-empty (~178 bytes). Use parts.supplier_name / supplier_code from the product master via mv_parts_dim instead — supplier product counts and supplier-level sales work that way.' },
+    'supplier': { status: 'unreliable', detail: 'only ~4% of products carry a supplier (4,511 of 113,235 on mv_parts_dim; the standalone suppliers table has 3 rows). A supplier ranking is dominated by a 108,724-row unidentified bucket — usable only for the handful of named suppliers, and that gap must be stated.' },
     'customer': { status: 'available', detail: 'customers table joined on cust, but most retail POS lines carry no customer id — customer analysis covers only identified (largely wholesale / club) buyers.' },
   },
 
   dataFacts: [
-    { fact: 'warhs = 0 is a non-retail bucket (no store row, ~8,000 shekel per unit) — it tops an unfiltered store ranking and should be excluded or flagged', appliesTo: 'store rankings' },
+    { fact: 'warhs = 0 is a non-retail bucket (no store row, net units go negative) that carries ~6M shekel of return/adjustment activity — exclude it from any store ranking', appliesTo: 'store rankings' },
     { fact: 'A blank model_name bucket (accessories / shoe-care) legitimately leads volume rankings — flag it as a catch-all when it appears in a top-N', appliesTo: 'model / product rankings' },
     { fact: 'Eilat stores are VAT-exempt, so the blended inc-VAT to ex-VAT ratio is ~1.13, not the mainland 1.17-1.18 — read the column the user asked for, never derive one basis from the other', appliesTo: 'any revenue figure where the VAT basis matters' },
     { fact: '"Open orders" has no agreed definition in this export; the closest proxy is order_status <> cancelled, which returns ~1M rows — state which rule was used', appliesTo: 'open / outstanding order counts' },
