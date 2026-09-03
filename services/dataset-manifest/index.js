@@ -29,6 +29,7 @@
 const MANIFESTS = {
   zolstock: () => require('./zolstock.manifest'),
   superhist: () => require('./superhist.manifest'),
+  tevanaot: () => require('./tevanaot.manifest'),
 };
 
 const cache = new Map();

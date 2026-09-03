@@ -22,6 +22,12 @@ class TevaNaotCrew extends CrewMember {
       description: 'Business intelligence advisor with access to real Teva Naot sales, inventory and product data',
       isDefault: true,
 
+      // Injects the capability manifest's data-discipline block (answer-first,
+      // user-figure discipline, VAT-basis matching) + the live data-through
+      // date into every turn — see crew/base/CrewMember.js and
+      // services/dataset-manifest/tevanaot.manifest.js.
+      datasetSchema: 'tevanaot',
+
       guidance: `You are a business intelligence advisor for Teva Naot (טבע נאות), a footwear (shoes) retail company in Israel.
 
 ## YOUR ROLE

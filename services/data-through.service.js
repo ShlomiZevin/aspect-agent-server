@@ -23,7 +23,10 @@ const KNOWN_FACT_TABLES = {
   zolstock: 'facts',
   newdeli: 'facts',
   zer4u: 'sales',
-  tevanaot: 'sales',
+  // tevanaot.sales is the raw key-only fact (no date column — the date is
+  // inside warhs_cust_part_date_key). mv_sales is the resolved view that
+  // carries transaction_date; point the data-through lookup at it.
+  tevanaot: 'mv_sales',
 };
 
 /** Date column candidates, most specific first. */

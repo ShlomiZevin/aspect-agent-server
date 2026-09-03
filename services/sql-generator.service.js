@@ -916,6 +916,7 @@ been resolved into a clean materialized view — query the view, never parse the
 **Tables / views:**
 - \`mv_sales\` — RESOLVED item-level sales (~2.7M rows). Columns: \`transaction_date\` (DATE), \`warhs\`, \`part\`, \`cust\`, \`invoice_number\`, \`invoice_type\`, \`qty_sold\`, \`sales_ex_vat\`, \`sales_inc_vat\`, \`sale_price\`, \`vat_pct\`, \`doc_discount\`. **USE THIS FOR ALL SALES QUESTIONS.**
 - \`mv_sales_daily\` — daily totals: \`transaction_date\`, \`line_count\`, \`total_qty\`, \`revenue_ex_vat\`, \`revenue_inc_vat\`. Use for "total revenue this year/month", trends.
+- \`mv_parts_dim\` — de-duplicated product dimension, exactly ONE row per \`part\` (~113k rows), indexed on \`part\`. Columns: \`part\`, \`model_code\`, \`model_name\`, \`model_color_code\`, \`model_color_name\`, \`color\`, \`color_code\`, \`shoe_type\`, \`marketing_shoe_type\`, \`product_line\`, \`gender\`, \`collection\`, \`season\`, \`budget_line\`, \`family_code\`, \`family_description\`, \`family_type\`, \`family_type_description\`, \`supplier_code\`, \`supplier_name\`, \`item_status\`, \`quality\`, \`variety\`, \`consumer_price\`, \`consumer_price_inc_vat\`. **JOIN THIS for any model/colour/gender/shoe_type/season/family/supplier breakdown** — NOT raw \`parts\` (see RULE 5).
 - \`parts\` — product master (~? rows): \`part\`, \`sku\`, \`barcode\`, \`product_description\`, \`model_code\`, \`model_name\`, \`model_color_name\`, \`color\`, \`size\`, \`shoe_type\`, \`product_line\`, \`gender\`, \`collection\`, \`season\`, \`family_code\`, \`family_description\`, \`family_type\`, \`consumer_price\`, \`consumer_price_inc_vat\`, \`supplier_code\`, \`supplier_name\`, \`item_status\`, \`variety\`, \`quality\`, \`budget_line\`.
 - \`sites\` — store/warehouse master: \`warhs\`, \`warehouse_code\`, \`warehouse_name\`, \`store_code\`, \`store_name\`, \`branch\`, \`store_type\`, \`branch_cluster\`, \`store_rank\`, \`franchisee\`, \`warehouse_type\`.
 - \`inventory\` — current stock, key \`branch_part_key\` = BRANCH-PART. \`inventory_balance\`, \`inventory_value\`, \`cost_price\`, \`location\`, \`inventory_channel\`.
@@ -949,13 +950,13 @@ for plain "total revenue this year/month/week" use mv_sales_daily (smaller/faste
 - Stores: \`JOIN tevanaot.sites si ON s.warhs = si.warhs\` — store = \`si.store_name\` (fallback \`si.warehouse_name\`). sites is unique per warhs — safe to join directly.
 - Customers: \`JOIN tevanaot.customers c ON s.cust = c.cust\`.
 - Products: **\`parts\` has MANY rows per \`part\` value (one per size), so \`part\` is NOT unique.** JOINing mv_sales (or an aggregate of it) directly to \`parts\` and SUM-ing AFTER the join multiplies every measure by the size-row count — a 16–50x over-count (we have seen "billions of ₪" / millions of units vs a real total in the tens of thousands). NEVER write \`... JOIN tevanaot.parts p ON a.part = p.part ... SUM(a.qty)\`.
-  Instead aggregate mv_sales by \`part\` FIRST, then JOIN a de-duplicated parts dimension. **There is no materialized parts dimension in this schema — you MUST define it inline as a CTE in every query that needs part attributes:** \`WITH parts_dim AS (SELECT DISTINCT ON (part) * FROM ${schemaName}.parts ORDER BY part)\`, which yields exactly ONE row per \`part\`. Then \`JOIN parts_dim p ON a.part = p.part\`. It carries the part-constant attributes (model_code, model_name, model_color_name, color, gender, shoe_type, collection, season, family_description, supplier_name, consumer_price, …) — NOT size/sku/barcode (those are size-level). Use parts_dim for ALL attribute rollups; never raw \`parts\` for SUM-after-join.
+  Instead aggregate mv_sales by \`part\` FIRST, then JOIN the pre-deduplicated dimension **\`${schemaName}.mv_parts_dim\`** (already exactly ONE row per \`part\`, indexed on \`part\`): \`JOIN ${schemaName}.mv_parts_dim p ON a.part = p.part\`. It carries the part-constant attributes (model_code, model_name, model_color_name, color, gender, shoe_type, collection, season, family_description, supplier_name, consumer_price, …) — NOT size/sku/barcode (those are size-level, only on raw \`parts\`). Use \`mv_parts_dim\` for ALL attribute rollups; never raw \`parts\` for SUM-after-join.
 
 ### RULE 6 — "model" vs "item" grain
 \`part\` is the model-COLOR grain (a model has several colors → several parts; each part also has several size-rows in \`parts\`).
-- "top MODELS" → roll up to the model: aggregate mv_sales by part, join \`parts_dim\`, then \`GROUP BY model_code, model_name\` and SUM. (Listing parts directly repeats the same model once per color.)
-- "top items / SKUs" → keep part grain, show \`model_color_name\` (from parts_dim).
-- "sales by color / gender / shoe_type / season / family" → aggregate by part, join \`parts_dim\`, GROUP BY the attribute, SUM. NEVER SUM over a raw \`parts\` join (fan-out).
+- "top MODELS" → roll up to the model: aggregate mv_sales by part, join \`${schemaName}.mv_parts_dim\`, then \`GROUP BY model_code, model_name\` and SUM. (Listing parts directly repeats the same model once per color.)
+- "top items / SKUs" → keep part grain, show \`model_color_name\` (from \`mv_parts_dim\`).
+- "sales by color / gender / shoe_type / season / family" → aggregate by part, join \`${schemaName}.mv_parts_dim\`, GROUP BY the attribute, SUM. NEVER SUM over a raw \`parts\` join (fan-out).
 
 ### RULE 7 — Inventory (resolve the BRANCH-PART key with split_part)
 \`inventory.branch_part_key\` = 'BRANCH-PART' (e.g. '17-8538'). Resolve:
@@ -985,9 +986,9 @@ WITH agg AS (
 )
 SELECT d.model_name, SUM(a.qty) AS units, SUM(a.revenue) AS revenue
 FROM agg a
-JOIN parts_dim d ON a.part = d.part
+JOIN tevanaot.mv_parts_dim d ON a.part = d.part
 GROUP BY d.model_code, d.model_name
-ORDER BY units DESC
+ORDER BY units DESC NULLS LAST
 LIMIT 10
 \`\`\`
 
@@ -1002,9 +1003,9 @@ WITH agg AS (
 )
 SELECT COALESCE(d.gender, '(unknown)') AS gender, SUM(a.qty) AS units, SUM(a.revenue) AS revenue
 FROM agg a
-JOIN parts_dim d ON a.part = d.part
+JOIN tevanaot.mv_parts_dim d ON a.part = d.part
 GROUP BY d.gender
-ORDER BY units DESC
+ORDER BY units DESC NULLS LAST
 \`\`\`
 
 **Top stores by revenue this year:**
