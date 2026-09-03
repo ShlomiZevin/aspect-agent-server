@@ -59,6 +59,24 @@ const CLIENTS = {
     // for bulk the transfer should not carry, like zer4u's 2.3 GB linktable.
     skipStems: new Set(),
   },
+  tevanaot: {
+    folderId: '1AVS2i7P2DSPWEWtKRAQhA08nkDiYGJe5',
+    gcsPrefix: 'tevanaot/',
+    // Passthrough: reload-tevanaot.js keys FILE_TO_TABLE on the exact QlikSense
+    // export names ("Teva_Naot_Israel_SALES.csv", two Hebrew).
+    mode: 'passthrough',
+    // The Qlik export ships a 1.2GB LINK_TABLE bridge and ~1.8GB of Calendar
+    // files that FILE_TO_TABLE deliberately ignores (keys self-resolve via
+    // regexp — see reload-tevanaot.js). ~3GB we never want to transfer. The
+    // tiny Dynamic_Report_* metadata files are left in (a KB each, like
+    // superhist). Stems are normalizeStem()'d filenames, not table names.
+    skipStems: new Set([
+      'teva naot israel link table',
+      'teva naot israel calendar',
+      'teva naot israel calendargroupa',
+      'teva naot israel calendargroupb',
+    ]),
+  },
 };
 
 /**
