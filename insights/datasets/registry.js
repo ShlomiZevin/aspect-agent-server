@@ -188,12 +188,15 @@ const REGISTRY = {
       gradientTo: '#D97706',
     },
     defaultBrandLabel: 'Teva Naot, a footwear retail chain',
-    defaultDataModelDescription: 'resolved item-level sales (from a QlikSense export, already resolved into clean columns) joined to parts (product: model/color/size/shoe type/gender/season), sites (store/warehouse), and customers, plus inventory and purchase-order tables. Common measures: revenue, quantity sold, inventory stock/value, order quantity. Common dimensions: store/site, product (model, color, size, shoe type, gender, season), date (day/week/month/quarter), customer.',
+    // Rewritten 2026-09-03 after the reload + capability manifest. The generic
+    // text before it claimed "revenue" and "purchase orders" flatly and named
+    // raw `parts`, which fans every product measure out 16-50x.
+    defaultDataModelDescription: 'resolved item-level POS sales (a QlikSense export, composite keys already resolved) in the materialized view mv_sales, with a daily rollup mv_sales_daily and a deduplicated product dimension mv_parts_dim. ALWAYS join mv_parts_dim for product attributes, NEVER raw parts — parts carries one row per size and fans product measures out 16-50x. Joined to sites (store/warehouse) and customers; separate inventory (current snapshot, no dates, cannot be trended), inventory_in_date (month-end stock), orders and purchase_orders tables. Measures: revenue ex-VAT and inc-VAT (both recorded on each POS line — EXACT, not derived), units sold (net of returns), transaction count (distinct invoice_number), average basket, inventory units/value, order quantity. Dimensions: store/site, product (model, color, shoe_type, gender, season, family) via mv_parts_dim, date day/week/month/quarter/year with history from 2022-11. IMPORTANT: there is NO cost-of-goods on the sale line, so gross profit and margin CANNOT be computed — never ask for them. There is NO sales-target table. Supplier is populated on only ~4% of products. warhs = 0 is a non-retail bucket with net-negative units that must be excluded from store rankings, and a raw store ranking also mixes in warehouses and the website channel. A blank-model bucket (accessories / shoe-care) legitimately leads unit-volume rankings.',
     defaultBootstrapPrompts: [
-      'Which stores have the steepest sales decline recently',
-      'Which shoe models/colors are tying up the most inventory value with the slowest sell-through',
-      'What is the sales trend by shoe category over the last several months',
-      'Which suppliers have the most open purchase orders',
+      'Which stores have the steepest sales decline over the last several months',
+      'Which shoe models are tying up the most inventory value with the slowest sell-through',
+      'How is revenue trending by shoe type and season across recent months',
+      'Which shoe models and colors are growing or shrinking fastest by units sold',
     ],
     defaultExamplePrompts: [
       'Main risks for the next 6 months',
