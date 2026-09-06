@@ -1,19 +1,27 @@
 /**
  * Smart Replenishment — the crew tool.
  *
- * STRUCTURED ARGUMENTS, NEVER GENERATED SQL. That is the whole point: the
- * same question asked five different ways, in either language, must return
- * identical numbers. A model writing SQL for "what should I order" would not
- * do that — it would produce a slightly different query, and therefore
- * slightly different numbers, each time. Here the model only chooses a
- * supplier filter and a horizon; the arithmetic is the same pure function the
- * screen and the report use.
+ * STRUCTURED ARGUMENTS, NEVER GENERATED SQL — for the arithmetic. The same
+ * question asked five different ways, in either language, must return
+ * identical numbers, so quantities, dates and reorder points come from the
+ * engine exclusively.
+ *
+ * SCOPE IS THE MODEL'S JOB. Every replenishment question decomposes into
+ * scope × arithmetic (see ../scope.js). The parameters below cover the common
+ * vocabulary directly (supplier, category, free-text name search, SKU lists);
+ * anything they don't cover, the model resolves against the catalogue with an
+ * ordinary data query and hands back here as `skus`. Refusing because of
+ * vocabulary is a bug — the live incident this closes was a buyer refused
+ * twice ("purchase recommendation for the wood-products department", then
+ * "items with עץ in the name") while the data to resolve both sat one query
+ * away.
  *
  * The tool is registered ONLY when the module is enabled and ready. When it
  * is not, the crew has exactly the tools it had before this module existed.
  */
 
 const recommendationsService = require('./services/recommendations.service');
+const { MAX_SCOPE_SKUS } = require('./scope');
 
 const MAX_ROWS_IN_ANSWER = 25;
 
@@ -21,11 +29,17 @@ function buildTool(datasetId) {
   return {
     name: 'fetch_replenishment',
     description:
-      'Answer "what should we order, how much, and when" for this business. ' +
-      'Returns reorder recommendations computed from sales pace, stock on hand, ' +
-      'open orders and the supplier delivery time. Use this INSTEAD of a data ' +
-      'query for any reorder / restock / purchasing question — it is the only ' +
-      'correct source for those numbers.',
+      'Reorder recommendations — what to order, how much, and when — computed from '
+      + 'sales pace, stock, open orders and the supplier delivery time. This is the ONLY '
+      + 'correct source for order quantities, order-by dates and reorder points; never '
+      + 'compute those yourself and never take them from a data query. '
+      + 'SCOPE PROTOCOL: if the user\'s scope is a supplier, a category, a name/text '
+      + 'match, or specific item codes, pass it directly via the parameters. If the '
+      + 'scope uses vocabulary these parameters cannot express (a department, a brand, '
+      + '"things like X"), FIRST resolve it to concrete SKUs with a normal catalogue '
+      + 'data query, THEN call this tool with the resulting `skus` list. Never refuse a '
+      + 'reorder question because of its vocabulary — resolve the scope, then compute. '
+      + 'Always restate the scope the answer covers.',
     parameters: {
       type: 'object',
       properties: {
@@ -36,6 +50,31 @@ function buildTool(datasetId) {
         sku: {
           type: 'string',
           description: 'Optional. Limit to one item code.',
+        },
+        skus: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            `Optional, up to ${MAX_SCOPE_SKUS}. A list of item codes — the universal bridge: `
+            + 'resolve ANY vocabulary (a department, a brand, a pasted list) to SKUs with a '
+            + 'catalogue query, then pass them here.',
+        },
+        search: {
+          type: 'string',
+          description:
+            'Optional. Free-text match on item name or code — "items with עץ in the name" '
+            + 'is search:"עץ". Matches as the data spells it; try the user\'s language first.',
+        },
+        category: {
+          type: 'string',
+          description:
+            'Optional. Exact catalogue category label AS DELIVERED in the data (these labels '
+            + 'can differ from the client\'s own BI categories — say "labels as delivered" when '
+            + 'answering through them).',
+        },
+        subcategory: {
+          type: 'string',
+          description: 'Optional. Exact catalogue subcategory label as delivered.',
         },
         onlyDue: {
           type: 'boolean',
@@ -71,9 +110,32 @@ function buildTool(datasetId) {
  * slightly different ways.
  */
 async function handle(datasetId, params = {}) {
+  const skus = Array.isArray(params.skus)
+    ? params.skus.map(s => String(s).trim()).filter(Boolean)
+    : undefined;
+
+  // Over-cap is an honest instruction, not an error and not a truncation: a
+  // silently clipped list would answer about a different scope than the one
+  // the user resolved.
+  if (skus && skus.length > MAX_SCOPE_SKUS) {
+    return {
+      summary:
+        `The resolved scope has ${skus.length} SKUs, above the ${MAX_SCOPE_SKUS}-item limit for one answer. `
+        + 'Narrow the scope (by supplier, category or a tighter name match) or ask for the group as a whole '
+        + 'via the Procurement screen, which has no such limit.',
+      dataContract: [`Scope was NOT computed: ${skus.length} SKUs exceeds the ${MAX_SCOPE_SKUS} limit. Say so.`],
+      total: 0,
+      recommendations: [],
+    };
+  }
+
   const opts = {
     supplier: params.supplier || undefined,
     sku: params.sku || undefined,
+    skus: skus && skus.length ? skus : undefined,
+    search: params.search || undefined,
+    category: params.category || undefined,
+    subcategory: params.subcategory || undefined,
     onlyDue: params.onlyDue === undefined ? true : Boolean(params.onlyDue),
     horizonDays: params.horizonDays,
     limit: Math.min(Number(params.limit) || MAX_ROWS_IN_ANSWER, 100),
@@ -86,6 +148,11 @@ async function handle(datasetId, params = {}) {
       summary: 'Replenishment recommendations are not available for this dataset.',
     };
   }
+
+  // The counts the talker quotes are the SCOPED ones — the set the user asked
+  // about. With no scope given, scopedSummary === summary by construction, so
+  // the unscoped invariance checks (fiveways) are unchanged.
+  const counts = res.scopedSummary || res.summary;
 
   const rows = res.recommendations.map(r => ({
     item: r.itemName || r.sku,
@@ -110,6 +177,9 @@ async function handle(datasetId, params = {}) {
   // it, but it cannot quietly drop it.
   const contract = [];
   contract.push(`Data through ${res.dataThrough || 'unknown'}; computed for ${res.today}.`);
+  // The interpretation, stated — the buyer must see WHICH rows were answered
+  // about, especially when the scope came from resolving their vocabulary.
+  if (res.scope) contract.push(res.scope);
   // Which horizon produced these counts, always -- the figure moves with it, so
   // an answer that does not say which one it used cannot be reconciled against
   // the screen or against the same question asked yesterday.
@@ -118,8 +188,9 @@ async function handle(datasetId, params = {}) {
       + 'Say so — the window configured for this client is different, and the Procurement screen uses that one.'
     : '"Due soon" uses the window configured for this client, the same one the Procurement screen uses.');
   contract.push(
-    `${res.summary.orderNow} items are overdue, ${res.summary.dueSoon} due within the horizon, ` +
-    `${res.summary.ok} adequately stocked, ${res.summary.noDemand} with no recent sales.`);
+    `${counts.orderNow} items are overdue, ${counts.dueSoon} due within the horizon, ` +
+    `${counts.ok} adequately stocked, ${counts.noDemand} with no recent sales` +
+    (res.scope ? ' — within the stated scope.' : '.'));
 
   const assumed = res.recommendations.filter(r => r.leadTimeSource !== 'supplier');
   if (assumed.length) {
@@ -135,15 +206,23 @@ async function handle(datasetId, params = {}) {
   }
   contract.push('Order values are list-price estimates excluding VAT and before discounts.');
 
+  // An empty scope is an answer, not a refusal: name what was searched and
+  // offer the nearest resolvable alternative.
+  const emptyScope = res.total === 0 && res.scope;
+
   return {
     // Kept small on purpose — this is what the talker reads.
-    summary:
-      `${res.total} item(s) match. ` +
-      (rows.length < res.total ? `Showing the ${rows.length} most urgent. ` : '') +
-      (rows[0] ? `Most urgent: ${rows[0].item} — order ${rows[0].orderQty}, due ${rows[0].orderByDate}.` : ''),
+    summary: emptyScope
+      ? `No items matched. ${res.scope} The scope was searched, not refused — the term may be `
+        + 'spelled differently in the catalogue, or the items may not be due: try a broader '
+        + 'name match, or ask without onlyDue to see the whole scope.'
+      : `${res.total} item(s) match. ` +
+        (rows.length < res.total ? `Showing the ${rows.length} most urgent. ` : '') +
+        (rows[0] ? `Most urgent: ${rows[0].item} — order ${rows[0].orderQty}, due ${rows[0].orderByDate}.` : ''),
     dataContract: contract,
     total: res.total,
-    counts: res.summary,
+    counts,
+    scope: res.scope || null,
     dataThrough: res.dataThrough,
     recommendations: rows,
     // Every caveat, already worded by the engine. Quoted, never re-derived.

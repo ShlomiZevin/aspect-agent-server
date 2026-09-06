@@ -445,5 +445,59 @@ console.log('\n12 · The headline total is the value of the rows on screen');
     `${s.estimatedTotalAllExVat} vs ${s.estimatedTotalExVat}`);
 }
 
+// ── 8 · Scope resolution (modules/replenishment/scope.js) ─────────────────
+//
+// The chat-protocol fix: scope × arithmetic decomposition. These are the pure
+// filters behind the tool's skus[]/search/category parameters — the layer
+// whose ABSENCE produced the live refusals ("purchase recommendation for the
+// wood-products department" → refused; "items with עץ in the name" → refused).
+{
+  console.log('\n8 · Scope resolution — the vocabulary bridge');
+  const scope = require('../modules/replenishment/scope');
+
+  const rows = [
+    { sku: 'AD-1', itemName: 'שולחן עץ מתקפל', itemNumber: '100', category: 'ריהוט', subcategory: 'שולחנות' },
+    { sku: 'AD-2', itemName: 'כסא פלסטיק', itemNumber: '101', category: 'ריהוט', subcategory: 'כסאות' },
+    { sku: 'BH-9', itemName: 'קרש חיתוך עץ', itemNumber: '102', category: 'מטבח', subcategory: 'כלי הכנה' },
+    { sku: 'ML-3', itemName: 'צלחת נייר', itemNumber: '103', category: 'חד פעמי', subcategory: null },
+  ];
+
+  ok('no scope params → the list passes through untouched',
+    scope.applyScope(rows, {}) === rows || scope.applyScope(rows, {}).length === 4);
+  ok('hasScope is false for empty opts and blank search',
+    !scope.hasScope({}) && !scope.hasScope({ search: '  ' }) && !scope.hasScope({ skus: [] }));
+
+  const wood = scope.applyScope(rows, { search: 'עץ' });
+  ok('search matches the item NAME across categories ("עץ" → table + cutting board)',
+    wood.length === 2 && wood.every(r => ['AD-1', 'BH-9'].includes(r.sku)), JSON.stringify(wood.map(r => r.sku)));
+
+  ok('search also matches sku and item number',
+    scope.applyScope(rows, { search: 'ml-3' }).length === 1
+    && scope.applyScope(rows, { search: '101' }).length === 1);
+
+  const bySkus = scope.applyScope(rows, { skus: [' ad-1', 'BH-9 ', 'nope'] });
+  ok('skus[] is the universal bridge — trims, case-insensitive, unknowns ignored',
+    bySkus.length === 2, JSON.stringify(bySkus.map(r => r.sku)));
+
+  ok('category is an exact label match, case/space-insensitive',
+    scope.applyScope(rows, { category: ' ריהוט ' }).length === 2
+    && scope.applyScope(rows, { category: 'ריה' }).length === 0);
+
+  ok('filters compose with AND (category + search)',
+    scope.applyScope(rows, { category: 'ריהוט', search: 'עץ' }).length === 1);
+
+  ok('subcategory filters, and a null subcategory never matches a value',
+    scope.applyScope(rows, { subcategory: 'כסאות' }).length === 1
+    && scope.applyScope(rows, { subcategory: 'x' }).length === 0);
+
+  const desc = scope.describeScope({ search: 'עץ', category: 'ריהוט' }, 1, 4);
+  ok('describeScope states the interpretation AND the matched-of-total counts',
+    /עץ/.test(desc) && /ריהוט/.test(desc) && /1 of 4/.test(desc), desc);
+  ok('describeScope is null when nothing was scoped — no fake scope line on plain questions',
+    scope.describeScope({}, 4, 4) === null);
+  ok('the SKU-list ceiling is exported for the tool and the batteries to share',
+    Number.isInteger(scope.MAX_SCOPE_SKUS) && scope.MAX_SCOPE_SKUS >= 100, String(scope.MAX_SCOPE_SKUS));
+}
+
 console.log(`\n─────────────────────\n${pass}/${pass + fail} checks passed`);
 process.exit(fail === 0 ? 0 : 1);

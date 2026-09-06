@@ -21,6 +21,7 @@
  */
 
 const datasetRegistry = require('../../../insights/datasets/registry');
+const scope = require('../scope');
 const moduleService = require('../../services/module.service');
 const supplierSettings = require('./supplier-settings.service');
 const { localize } = require('../notes');
@@ -233,25 +234,23 @@ async function getRecommendations(datasetId, opts = {}) {
   if (base.error) return base;
   const { ordered, today, dataThrough, excluded } = base;
 
-  const due = opts.onlyDue
-    ? ordered.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
-    : ordered;
-
-  // Free-text over the three things a buyer knows an item by.
-  //
-  // Applied HERE, after the engine, and never in the query: the summary below
-  // is computed from `ordered`, so filtering in SQL made the tiles describe the
+  // Scope filters (skus[] / category / subcategory / free-text search) are
+  // applied HERE, after the engine, and never in the query: `summary` below is
+  // computed from `ordered`, so filtering in SQL made the tiles describe the
   // search results instead of the whole set — the exact thing the house rule
-  // forbids, and it is invisible until someone types in the box. The engine
-  // already runs over every row to build that summary, so this costs nothing
-  // extra.
-  const term = String(opts.search ?? '').trim().toLowerCase();
-  const filtered = term
-    ? due.filter(r =>
-      String(r.itemName ?? '').toLowerCase().includes(term)
-      || String(r.sku ?? '').toLowerCase().includes(term)
-      || String(r.itemNumber ?? '').toLowerCase().includes(term))
-    : due;
+  // forbids. The engine already runs over every row to build that summary, so
+  // this costs nothing extra.
+  //
+  // Scope is applied to `ordered` (all statuses) BEFORE the onlyDue cut, so
+  // `scopedSummary` carries the full status breakdown of the asked-about set —
+  // "in this scope: 291 overdue, 12 ok, 3 dormant" — and reduces exactly to
+  // `summary` when no scope is given. See modules/replenishment/scope.js for
+  // the protocol this implements (scope × arithmetic decomposition).
+  const scoped = scope.hasScope(opts) ? scope.applyScope(ordered, opts) : ordered;
+
+  const filtered = opts.onlyDue
+    ? scoped.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
+    : scoped;
 
   // A page out of the filtered set. `offset` beyond the end yields an empty
   // page rather than an error: it is what a stale pager sends after someone
@@ -266,6 +265,13 @@ async function getRecommendations(datasetId, opts = {}) {
     // Summaries are over EVERYTHING, not the page and not the search — a tile
     // that counted only the visible rows would be a different, wrong number.
     summary: engine.summarize(ordered),
+    // The same breakdown over the ASKED-ABOUT set. The chat tool answers a
+    // scoped question with this one (and states the scope in words); the
+    // screen's tiles keep `summary`. Identical to `summary` when no scope was
+    // given, so unscoped consumers cannot drift.
+    scopedSummary: engine.summarize(scoped),
+    scope: scope.describeScope(opts, scoped.length, ordered.length),
+    totalUnscoped: ordered.length,
     dataThrough,
     // How many the filters matched, so the screen can say "showing X of Y" and
     // never truncate silently.

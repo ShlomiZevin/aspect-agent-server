@@ -292,6 +292,7 @@ function computeRecommendation(row, settings, context = {}) {
     itemNumber: row.item_number ?? null,
     itemName: row.item_name ?? null,
     category: row.category ?? null,
+    subcategory: row.subcategory ?? null,
     supplier: row.supplier ?? null,
     supplierCode: row.supplier_code ?? null,
 
