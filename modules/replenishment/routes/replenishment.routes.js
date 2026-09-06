@@ -33,6 +33,8 @@ const express = require('express');
 const router = express.Router();
 const recommendations = require('../services/recommendations.service');
 const supplierSettings = require('../services/supplier-settings.service');
+const itemVerdicts = require('../services/item-verdicts.service');
+const proposals = require('../services/proposals.service');
 const moduleService = require('../../services/module.service');
 const { isSuperAdminRequest } = require('../../../services/super-admin');
 
@@ -160,6 +162,7 @@ router.get('/:datasetId/plan/stream', async (req, res) => {
     // through an SSE connection to repaint ten lines.
     const out = await recommendations.getPlan(req.params.datasetId, {
       horizonDays: req.query.horizonDays ? Number(req.query.horizonDays) : undefined,
+      group: req.query.group,
       today: req.query.today,
       lang: req.query.lang,
       onProgress: (p) => { if (!gone) send('progress', p); },
@@ -186,6 +189,7 @@ router.get('/:datasetId/plan', async (req, res) => {
   try {
     const out = await recommendations.getPlan(req.params.datasetId, {
       horizonDays: req.query.horizonDays ? Number(req.query.horizonDays) : undefined,
+      group: req.query.group,
       today: req.query.today,
       lang: req.query.lang,
     });
@@ -218,6 +222,7 @@ router.get('/:datasetId/recommendations', async (req, res) => {
   try {
     const out = await recommendations.getRecommendations(req.params.datasetId, {
       supplier: req.query.supplier,
+      group: req.query.group,
       onlyDue: req.query.onlyDue === 'true',
       horizonDays: req.query.horizonDays ? Number(req.query.horizonDays) : undefined,
       limit: req.query.limit,
@@ -230,6 +235,96 @@ router.get('/:datasetId/recommendations', async (req, res) => {
     res.json(out);
   } catch (err) {
     console.error('[replenishment] recommendations error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Procurement Groups: the buyer's verdict layer ────────────────────────
+
+/** Buyers may verdict unless the dataset says otherwise (same pattern as
+ *  clientCanEditLeadTimes). Returns the live module or responds itself. */
+async function requireVerdictRights(req, res) {
+  const mod = await moduleService.getForDataset(req.params.datasetId, MODULE_ID);
+  if (!mod?.live) {
+    res.status(404).json({ error: `Replenishment is not live for ${req.params.datasetId}` });
+    return null;
+  }
+  const clientMay = mod.settings?.clientCanAssignGroups !== false;
+  if (!clientMay && !isSuperAdminRequest(req)) {
+    res.status(403).json({ error: 'Item groups are managed by the Aspect team for this dataset' });
+    return null;
+  }
+  return mod;
+}
+
+/**
+ * Set or clear one item's group. Body: { group, suggestedGroup?, note? }.
+ * `group: null` clears the verdict — the item follows the computed suggestion
+ * again. `suggestedGroup` is what the screen showed when the buyer decided,
+ * recorded so a later recompute that disagrees flags for review.
+ */
+router.put('/:datasetId/verdicts/:sku', async (req, res) => {
+  try {
+    const mod = await requireVerdictRights(req, res);
+    if (!mod) return;
+    const { group, suggestedGroup, note, updatedBy } = req.body || {};
+    const row = await itemVerdicts.setVerdict(req.params.datasetId, req.params.sku, {
+      assignedGroup: group ?? null,
+      suggestedAtVerdict: suggestedGroup ?? null,
+      note,
+      updatedBy: updatedBy || 'client',
+    });
+    res.json({ sku: req.params.sku, verdict: row });
+  } catch (err) {
+    console.error('[replenishment] verdict error:', err.message);
+    res.status(err.message.startsWith('unknown group') ? 400 : 500).json({ error: err.message });
+  }
+});
+
+// ── Smart Tune: previewed proposals — Process and Undo ───────────────────
+//
+// Proposals are CREATED by the scoped chat's tool, never by these routes;
+// these are the two buttons: Process (execute against the snapshot) and Undo
+// (restore the recorded prior state). Cancel is the preview's dismiss.
+
+router.post('/:datasetId/proposals/:id/execute', async (req, res) => {
+  try {
+    const mod = await requireVerdictRights(req, res);
+    if (!mod) return;
+    const out = await proposals.execute(req.params.datasetId, req.params.id, {
+      executedBy: req.body?.executedBy || 'client',
+    });
+    if (refuse(res, out)) return;
+    res.json(out);
+  } catch (err) {
+    console.error('[replenishment] proposal execute error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/:datasetId/proposals/:id/cancel', async (req, res) => {
+  try {
+    const mod = await requireVerdictRights(req, res);
+    if (!mod) return;
+    const out = await proposals.cancel(req.params.datasetId, req.params.id);
+    if (refuse(res, out)) return;
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/:datasetId/operations/:id/revert', async (req, res) => {
+  try {
+    const mod = await requireVerdictRights(req, res);
+    if (!mod) return;
+    const out = await proposals.revert(req.params.datasetId, req.params.id, {
+      revertedBy: req.body?.revertedBy || 'client',
+    });
+    if (refuse(res, out)) return;
+    res.json(out);
+  } catch (err) {
+    console.error('[replenishment] revert error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

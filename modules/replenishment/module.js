@@ -150,6 +150,80 @@ module.exports = {
         he: 'נשמר עבור שלב ההתראות היזומות. כרגע לא נשלח דבר.',
       },
     },
+    // ── Procurement Groups + Smart Tune (spec sections 3.1/3.4/3.7) ──
+    {
+      key: 'paceModel', type: 'select', required: false, default: 'simple',
+      options: ['simple', 'weighted_seasonal'],
+      label: { en: 'Sales-pace model', he: 'מודל קצב המכירות' },
+      hint: {
+        en: '"weighted_seasonal" doubles the last 60 days and adjusts by each item\'s own prior-year season. Applies only once the views carry the inputs; every row states the model that actually ran.',
+        he: '"weighted_seasonal" מכפיל את משקל 60 הימים האחרונים ומתאם לעונת השנה הקודמת של הפריט. כל שורה מציינת את המודל שרץ בפועל.',
+      },
+    },
+    {
+      key: 'paceFadingRatio', type: 'number', required: false, default: 0.5,
+      label: { en: 'Fading threshold (28d vs 90d pace)', he: 'סף דעיכה (קצב 28 מול 90 יום)' },
+      hint: {
+        en: 'Below this ratio an item is grouped as Fading — its recent pace collapsed versus the 90-day average.',
+        he: 'מתחת ליחס זה פריט מסווג כדועך — הקצב האחרון קרס מול ממוצע 90 הימים.',
+      },
+    },
+    {
+      key: 'seasonalMinUnits', type: 'number', required: false, default: 200,
+      label: { en: 'Seasonality: minimum prior-year units', he: 'עונתיות: מינימום יחידות בשנה קודמת' },
+      hint: {
+        en: 'Below this, an item has too little prior-year history for the seasonal index to apply.',
+        he: 'מתחת לכך אין מספיק היסטוריה משנה קודמת להפעלת מדד עונתי.',
+      },
+    },
+    {
+      key: 'seasonalLowShare', type: 'number', required: false, default: 0.5,
+      label: { en: 'Out-of-season threshold (vs uniform)', he: 'סף מחוץ לעונה (מול אחיד)' },
+      hint: {
+        en: 'An item whose coming-90-days share last year was below this fraction of the uniform share is grouped Out of season.',
+        he: 'פריט שחלקו בשנה שעברה ב-90 הימים הקרובים היה מתחת לשיעור זה מהחלק האחיד מסווג מחוץ לעונה.',
+      },
+    },
+    {
+      key: 'staleOnOrderDays', type: 'number', required: false, default: 180,
+      label: { en: 'Open order counts as stale after (days)', he: 'הזמנה פתוחה נחשבת ישנה אחרי (ימים)' },
+      hint: {
+        en: 'An item with an open purchase order older than this is grouped as Needs checking.',
+        he: 'פריט עם הזמנת רכש פתוחה ישנה מכך מסווג כדורש בדיקה.',
+      },
+    },
+    {
+      key: 'absentStockMeansZero', type: 'boolean', required: false, default: true,
+      label: { en: 'Absent from stock file means zero', he: 'היעדר מקובץ המלאי פירושו אפס' },
+      hint: {
+        en: 'The client\'s answer switch: true = the warehouse export is complete, absence is truly zero. False routes selling items missing from the file to Needs checking.',
+        he: 'מתג התשובה של הלקוח: אמת = קובץ המחסן מלא והיעדר הוא אפס אמיתי. שקר מעביר פריטים נמכרים שחסרים בקובץ לדורש בדיקה.',
+      },
+    },
+    {
+      key: 'clientCanAssignGroups', type: 'boolean', required: false, default: true,
+      label: { en: 'Let the client move items between groups', he: 'לאפשר ללקוח להעביר פריטים בין קבוצות' },
+      hint: {
+        en: 'On by default — the buyer\'s verdicts are the correction layer for the classifier, and they run Smart Tune.',
+        he: 'דלוק כברירת מחדל — הכרעות הקניין הן שכבת התיקון של הסיווג.',
+      },
+    },
+    {
+      key: 'proposalMaxItems', type: 'number', required: false, default: 1000,
+      label: { en: 'Smart Tune: max items per change', he: 'כוונון חכם: מקסימום פריטים לשינוי' },
+      hint: {
+        en: 'The largest bulk change one previewed proposal may carry.',
+        he: 'השינוי המרבי שהצעה אחת עם תצוגה מקדימה יכולה לשאת.',
+      },
+    },
+    {
+      key: 'proposalExpiryHours', type: 'number', required: false, default: 24,
+      label: { en: 'Smart Tune: preview valid for (hours)', he: 'כוונון חכם: תוקף תצוגה מקדימה (שעות)' },
+      hint: {
+        en: 'How long a previewed change stays executable before it must be asked again.',
+        he: 'כמה זמן שינוי שהוצג נשאר ניתן לביצוע לפני שיש לבקש שוב.',
+      },
+    },
   ],
 
   notificationEvents: ['init_completed', 'init_failed', 'nightly_build_failed', 'verification_degraded'],

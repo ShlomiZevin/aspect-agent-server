@@ -262,12 +262,14 @@ console.log('\n5 · Minimum order quantity and window selection');
 }
 {
   ok('an exact window is used directly', pickWindow(90).column === 'qty_sold_90d');
-  const w = pickWindow(60);
+  // 60 became a real prepared window (it backs the weighted pace model), so
+  // the unavailable-window case now uses 45 — whose nearest neighbour is 60.
+  const w = pickWindow(45);
   ok('an unavailable window falls back to the nearest prepared one',
-    w.column === 'qty_sold_90d' && w.exact === false, JSON.stringify(w));
-  const r = computeRecommendation(baseRow(), settings({ velocityWindowDays: 60 }), ctx);
+    w.column === 'qty_sold_60d' && w.exact === false, JSON.stringify(w));
+  const r = computeRecommendation(baseRow(), settings({ velocityWindowDays: 45 }), ctx);
   ok('…and the row admits which window it really used',
-    r.velocityBasis.code === 'window_average' && r.velocityBasis.params.days === 90 &&
+    r.velocityBasis.code === 'window_average' && r.velocityBasis.params.days === 60 &&
     has(r, 'window_substituted'), JSON.stringify(r.velocityBasis));
 }
 
@@ -349,9 +351,11 @@ console.log('\n11 · Every note renders in both languages');
   // Params that satisfy every renderer. Missing keys render as "undefined",
   // which is precisely what these checks are looking for.
   const params = {
-    days: 90, requested: 60, soldForDays: 20, lastSold: '2026-02-01',
+    days: 90, requested: 45, soldForDays: 20, lastSold: '2026-02-01',
     netAvailable: -600, safetyDays: 14, safetyStock: 840, leadTimeDays: 90,
     onHand: 2300, carton: 24, minOrderUnits: 100,
+    // pace model v2 (weighted seasonal)
+    recentDays: 60, seasonal: true, seasonalIdx: 1.4, idx: 1.4,
   };
 
   let bad = [];
@@ -445,6 +449,55 @@ console.log('\n12 · The headline total is the value of the rows on screen');
     `${s.estimatedTotalAllExVat} vs ${s.estimatedTotalExVat}`);
 }
 
+// ── 7b · Pace model v2: weighted + seasonal ───────────────────────────────
+//
+// The Why? copy the design ships says "weights the last 60 days double and
+// adjusts for seasonality". The copy-consistency rule: the screen must never
+// describe arithmetic that isn't running — so the basis code states the model
+// that RAN, and these assert both the arithmetic and that statement.
+{
+  console.log('\n7b · Pace model v2 — weighted + seasonal, honestly labelled');
+  const v2row = (over = {}) => baseRow({
+    qty_sold_60d: 600, qty_sold_90d: 810, qty_sold_365d: 1825,
+    py_year_units: 1000, py_next90_units: 493, ...over,
+  });
+  const v2settings = (over = {}) => settings({ paceModel: 'weighted_seasonal', seasonalMinUnits: 200, ...over });
+
+  const r = computeRecommendation(v2row(), v2settings(), ctx);
+  // weighted base: (2*600 + (1825-600)) / 425 = 2425/425 = 5.7059
+  // seasonal idx: (493/1000) / (90/365) = 0.493/0.24657 = 1.9995... ≈ 2.0
+  ok('weighted pace doubles the last 60 days', near(r.velocityDaily / ((493 / 1000) / (90 / 365)), 2425 / 425, 0.01),
+    String(r.velocityDaily));
+  ok('…and multiplies by the item\'s own prior-year seasonal index',
+    near(r.velocityDaily, (2425 / 425) * ((493 / 1000) / (90 / 365)), 0.01), String(r.velocityDaily));
+  ok('the basis states the model that ran', r.velocityBasis.code === 'weighted_seasonal'
+    && r.velocityBasis.params.seasonalIdx !== null, JSON.stringify(r.velocityBasis));
+  ok('…and a pace-model note rides every weighted row', has(r, 'pace_model_weighted'));
+
+  const noPy = computeRecommendation(v2row({ py_year_units: 50, py_next90_units: 10 }), v2settings(), ctx);
+  ok('below seasonalMinUnits the seasonal factor is NOT applied and the label says so',
+    noPy.velocityBasis.params.seasonalIdx === null && near(noPy.velocityDaily, 2425 / 425, 0.01),
+    JSON.stringify(noPy.velocityBasis));
+
+  const clamped = computeRecommendation(v2row({ py_next90_units: 0 }), v2settings(), ctx);
+  ok('a dead prior-year season clamps at 0.25×, never zeroing a selling item',
+    near(clamped.velocityDaily, (2425 / 425) * 0.25, 0.01), String(clamped.velocityDaily));
+
+  const simple = computeRecommendation(v2row(), settings(), ctx);
+  ok('without paceModel the engine is byte-identically the simple model',
+    simple.velocityBasis.code === 'window_average' && near(simple.velocityDaily, 810 / 90, 0.001));
+
+  const thin = computeRecommendation(
+    v2row({ first_sold: '2026-08-20' }), v2settings(), ctx);
+  ok('thin-history items keep their own basis — a weighted year means nothing at ten days old',
+    thin.velocityBasis.code === 'since_first_sale', JSON.stringify(thin.velocityBasis));
+
+  const oldView = computeRecommendation(
+    baseRow({ qty_sold_60d: undefined }), v2settings(), ctx);
+  ok('a view without the 60d column falls back to simple — configured ≠ ran',
+    oldView.velocityBasis.code === 'window_average');
+}
+
 // ── 8 · Scope resolution (modules/replenishment/scope.js) ─────────────────
 //
 // The chat-protocol fix: scope × arithmetic decomposition. These are the pure
@@ -497,6 +550,44 @@ console.log('\n12 · The headline total is the value of the rows on screen');
     scope.describeScope({}, 4, 4) === null);
   ok('the SKU-list ceiling is exported for the tool and the batteries to share',
     Number.isInteger(scope.MAX_SCOPE_SKUS) && scope.MAX_SCOPE_SKUS >= 100, String(scope.MAX_SCOPE_SKUS));
+}
+
+// ── 9 · The grouping classifier (modules/replenishment/groups.js) ─────────
+{
+  console.log('\n9 · Grouping classifier — doubt → season → trend → history → confidence');
+  const { GROUPS, classify, REASON_TEXT } = require('../modules/replenishment/groups');
+  const gctx = { today: '2026-09-06' };
+  const gset = { paceFadingRatio: 0.5, seasonalMinUnits: 200, seasonalLowShare: 0.5, staleOnOrderDays: 180 };
+  const rec = (over = {}) => ({ unmatched: false, netAvailable: 100, onOrderQty: 0, thinHistory: false, ...over });
+  const grow = (over = {}) => ({
+    qty_sold_28d: 280, qty_sold_90d: 900, py_year_units: 0, py_next90_units: 0,
+    in_stock_file: true, on_order_last_date: null, ...over,
+  });
+
+  ok('clean steady demand → order_now',
+    classify(rec(), grow(), gset, gctx).group === GROUPS.ORDER_NOW);
+  ok('negative availability → suspicious, before anything else',
+    classify(rec({ netAvailable: -5 }), grow({ qty_sold_28d: 0 }), gset, gctx).group === GROUPS.SUSPICIOUS);
+  ok('catalogue-unmatched → suspicious',
+    classify(rec({ unmatched: true }), grow(), gset, gctx).group === GROUPS.SUSPICIOUS);
+  ok('an open PO older than the threshold → suspicious',
+    classify(rec({ onOrderQty: 10 }), grow({ on_order_last_date: '2026-01-01' }), gset, gctx).group === GROUPS.SUSPICIOUS
+    && classify(rec({ onOrderQty: 10 }), grow({ on_order_last_date: '2026-08-01' }), gset, gctx).group === GROUPS.ORDER_NOW);
+  ok('prior year says the coming 90 days are dead → out_of_season (the September pool)',
+    classify(rec(), grow({ py_year_units: 1000, py_next90_units: 20 }), gset, gctx).group === GROUPS.OUT_OF_SEASON);
+  ok('…but thin prior-year history never triggers it',
+    classify(rec(), grow({ py_year_units: 100, py_next90_units: 0 }), gset, gctx).group === GROUPS.ORDER_NOW);
+  ok('recent pace collapsed → fading',
+    classify(rec(), grow({ qty_sold_28d: 20, qty_sold_90d: 900 }), gset, gctx).group === GROUPS.FADING);
+  ok('thin engine history → new',
+    classify(rec({ thinHistory: true }), grow(), gset, gctx).group === GROUPS.NEW);
+  ok('absentStockMeansZero=false routes selling untracked items to suspicious',
+    classify(rec(), grow({ in_stock_file: false }), { ...gset, absentStockMeansZero: false }, gctx).group === GROUPS.SUSPICIOUS
+    && classify(rec(), grow({ in_stock_file: false }), gset, gctx).group === GROUPS.ORDER_NOW);
+  ok('every reason code has a rendering', Object.values(GROUPS).length === 5
+    && ['excluded_supplier', 'not_in_catalogue', 'negative_availability', 'stale_open_order',
+      'stock_not_tracked', 'low_prior_year_share', 'recent_pace_collapsed', 'thin_history',
+      'steady_or_rising'].every(c => typeof REASON_TEXT[c] === 'string'));
 }
 
 console.log(`\n─────────────────────\n${pass}/${pass + fail} checks passed`);

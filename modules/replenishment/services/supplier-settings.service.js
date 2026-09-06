@@ -133,6 +133,10 @@ function resolveForSupplier(moduleSettings, override) {
     includeStoreStock: moduleSettings?.includeStoreStock,
     horizonDays: moduleSettings?.horizonDays,
     cartonRounding: moduleSettings?.cartonRounding,
+    // Pace model v2 (weighted + seasonal). The engine applies these only when
+    // the prepared row actually carries the inputs.
+    paceModel: moduleSettings?.paceModel,
+    seasonalMinUnits: moduleSettings?.seasonalMinUnits,
     sources,
   };
 }

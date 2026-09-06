@@ -27,7 +27,7 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Windows the prepared view carries. Keep in step with templates.js WINDOWS. */
-const AVAILABLE_WINDOWS = [28, 90, 365];
+const AVAILABLE_WINDOWS = [28, 60, 90, 365];
 
 const STATUS = {
   OVERDUE: 'overdue',
@@ -138,9 +138,49 @@ function computeRecommendation(row, settings, context = {}) {
   // item is dormant, not slow; treating stale demand as current would keep
   // reordering something that stopped selling.
   const staleDemand = Boolean(lastSold && daysBetween(dataThrough, lastSold) > win.days);
-  const velocityDaily = staleDemand || effectiveDays <= 0 ? 0 : qtyInWindow / effectiveDays;
+  let velocityDaily = staleDemand || effectiveDays <= 0 ? 0 : qtyInWindow / effectiveDays;
   if (staleDemand) {
     notes.push({ code: 'stale_demand', params: { days: win.days, lastSold: iso(lastSold) } });
+  }
+
+  // ── pace model v2: the last 60 days count double, adjusted by the item's
+  //    own prior-year seasonality ──
+  //
+  // Opt-in via settings.paceModel = 'weighted_seasonal', and applied ONLY when
+  // the prepared row actually carries the inputs (qty_sold_60d from the base
+  // view; py_* from the signals view). The basis code always states the
+  // arithmetic that RAN, never the one configured — the Why? panel must not
+  // describe a model that didn't run. Thin-history and dormant items keep
+  // their own bases: a weighted year means nothing for an item ten days old,
+  // and a dormant item's pace stays zero.
+  if (settings.paceModel === 'weighted_seasonal' && !staleDemand && !thinHistory
+      && row.qty_sold_60d !== undefined && row.qty_sold_60d !== null) {
+    const q60 = num(row.qty_sold_60d);
+    const q365 = num(row.qty_sold_365d);
+    // 60 recent days at weight 2, the remaining 305 at weight 1.
+    let v = (2 * q60 + Math.max(0, q365 - q60)) / (2 * 60 + 305);
+    let seasonalIdx = null;
+    const pyYear = num(row.py_year_units);
+    const pyNext90 = num(row.py_next90_units);
+    if (pyYear >= num(settings.seasonalMinUnits, 200)) {
+      // How the coming 90 days compared to a uniform share, one year ago —
+      // clamped so a single odd year cannot zero an item or 10x it.
+      const raw = (pyNext90 / pyYear) / (90 / 365);
+      seasonalIdx = Math.min(4, Math.max(0.25, raw));
+      v *= seasonalIdx;
+    }
+    velocityDaily = v;
+    velocityBasis = {
+      code: 'weighted_seasonal',
+      params: {
+        recentDays: 60,
+        seasonalIdx: seasonalIdx === null ? null : Math.round(seasonalIdx * 100) / 100,
+      },
+    };
+    notes.push({ code: 'pace_model_weighted', params: { recentDays: 60, seasonal: seasonalIdx !== null } });
+    if (seasonalIdx !== null && (seasonalIdx <= 0.5 || seasonalIdx >= 2)) {
+      notes.push({ code: 'seasonal_adjustment', params: { idx: Math.round(seasonalIdx * 100) / 100 } });
+    }
   }
 
   // ── availability ──

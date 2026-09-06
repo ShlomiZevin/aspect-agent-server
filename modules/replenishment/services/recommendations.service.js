@@ -22,6 +22,36 @@
 
 const datasetRegistry = require('../../../insights/datasets/registry');
 const scope = require('../scope');
+const groupsMod = require('../groups');
+const itemVerdicts = require('./item-verdicts.service');
+
+/**
+ * Which optional columns/views the LIVE schema actually has right now.
+ *
+ * The 60-day window and the signals view arrive with the next view rebuild;
+ * until then the live schema serves the previous shape, and a query naming the
+ * new columns would error. Capability is DETECTED, not assumed — the engine
+ * and classifier already degrade honestly when the inputs are absent
+ * ("configured is not the same as ran"). Cached briefly so the check is not
+ * per-request, but short enough that a rebuild is picked up within minutes.
+ */
+const CAPS_TTL_MS = 5 * 60 * 1000;
+const capsCache = new Map();
+async function viewCapabilities(pool, schemaName) {
+  const hit = capsCache.get(schemaName);
+  if (hit && Date.now() - hit.at < CAPS_TTL_MS) return hit.caps;
+  const { rows } = await pool.query(`
+    SELECT
+      EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = $1 AND table_name = 'mv_replenishment_base'
+                 AND column_name = 'qty_sold_60d') AS has60d,
+      EXISTS (SELECT 1 FROM pg_matviews
+               WHERE schemaname = $1 AND matviewname = 'mv_replenishment_signals') AS has_signals`,
+  [schemaName]);
+  const caps = { has60d: Boolean(rows[0]?.has60d), hasSignals: Boolean(rows[0]?.has_signals) };
+  capsCache.set(schemaName, { at: Date.now(), caps });
+  return caps;
+}
 const moduleService = require('../../services/module.service');
 const supplierSettings = require('./supplier-settings.service');
 const { localize } = require('../notes');
@@ -149,15 +179,20 @@ async function computeAll(datasetId, opts = {}) {
   if (ctx.error) return ctx;
 
   const chain = await supplierSettings.resolveAll(datasetId);
+  const verdicts = await itemVerdicts.mapForDataset(datasetId);
+  const caps = await viewCapabilities(ctx.pool, ctx.schemaName);
   const params = [];
   const filters = [];
-  if (opts.supplier) { params.push(opts.supplier); filters.push(`supplier = $${params.length}`); }
-  if (opts.sku) { params.push(opts.sku); filters.push(`sku = $${params.length}`); }
+  if (opts.supplier) { params.push(opts.supplier); filters.push(`b.supplier = $${params.length}`); }
+  if (opts.sku) { params.push(opts.sku); filters.push(`b.sku = $${params.length}`); }
 
   report({ phase: 'reading', done: 0, total: 0 });
+  // b.* so the row automatically carries whatever the current view shape has
+  // (incl. qty_sold_60d once rebuilt); signals joined only when present.
   const { rows } = await ctx.pool.query(`
-    SELECT ${BASE_COLUMNS}
-      FROM ${ctx.schemaName}.mv_replenishment_base
+    SELECT b.*${caps.hasSignals ? ', s.py_year_units, s.py_next90_units, s.in_stock_file' : ''}
+      FROM ${ctx.schemaName}.mv_replenishment_base b
+      ${caps.hasSignals ? `LEFT JOIN ${ctx.schemaName}.mv_replenishment_signals s ON s.sku = b.sku` : ''}
      ${filters.length ? `WHERE ${filters.join(' AND ')}` : ''}`, params);
   report({ phase: 'read', done: 0, total: rows.length });
 
@@ -200,6 +235,25 @@ async function computeAll(datasetId, opts = {}) {
       excludedSuppliers.add(row.supplier);
       continue;
     }
+
+    // ── Procurement Groups: classify, then let the buyer's verdict win ──
+    const cls = groupsMod.classify(rec, row, chain.moduleSettings || {}, { today });
+    const verdict = verdicts.get(rec.sku);
+    rec.suggestedGroup = cls.group;
+    rec.groupReasonCode = cls.reasonCode;
+    rec.groupDetail = cls.detail;
+    rec.group = verdict ? verdict.assignedGroup : cls.group;
+    rec.groupSource = verdict ? 'buyer' : 'computed';
+    rec.groupNote = verdict?.note ?? null;
+    // The recompute moved under a standing verdict — flag for review, never
+    // silently revert (the buyer's group stays in force).
+    rec.suggestionChanged = Boolean(verdict && verdict.suggestedAtVerdict
+      && verdict.suggestedAtVerdict !== cls.group);
+    // D4: null means "the signals view is not built yet"; true/false means the
+    // warehouse file does/doesn't carry this item. The screen renders
+    // "not in stock file" instead of asserting a zero it cannot verify.
+    rec.stockTracked = row.in_stock_file === undefined || row.in_stock_file === null
+      ? null : Boolean(row.in_stock_file);
 
     all.push(rec);
   }
@@ -248,9 +302,18 @@ async function getRecommendations(datasetId, opts = {}) {
   // the protocol this implements (scope × arithmetic decomposition).
   const scoped = scope.hasScope(opts) ? scope.applyScope(ordered, opts) : ordered;
 
-  const filtered = opts.onlyDue
-    ? scoped.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
+  // The group chips: counts over the DUE set (what the bar shows), computed
+  // BEFORE the group filter so the chips never describe only themselves.
+  const dueAll = ordered.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON);
+  const groupSummary = summarizeGroups(dueAll);
+
+  const grouped = opts.group
+    ? scoped.filter(r => r.group === opts.group)
     : scoped;
+
+  const filtered = opts.onlyDue
+    ? grouped.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
+    : grouped;
 
   // A page out of the filtered set. `offset` beyond the end yields an empty
   // page rather than an error: it is what a stale pager sends after someone
@@ -272,6 +335,9 @@ async function getRecommendations(datasetId, opts = {}) {
     scopedSummary: engine.summarize(scoped),
     scope: scope.describeScope(opts, scoped.length, ordered.length),
     totalUnscoped: ordered.length,
+    // One entry per group over the whole due set: { count, estimatedCostExVat }.
+    groupSummary,
+    group: opts.group || null,
     dataThrough,
     // How many the filters matched, so the screen can say "showing X of Y" and
     // never truncate silently.
@@ -302,6 +368,20 @@ async function getRecommendations(datasetId, opts = {}) {
     // nothing that anyone reconciles depends on a language.
     recommendations: page.map(r => localize(r, lang)),
   };
+}
+
+/** Per-group counts and money over a list — what the group chips render. */
+function summarizeGroups(list) {
+  const out = {};
+  for (const g of Object.values(groupsMod.GROUPS)) {
+    out[g] = { count: 0, estimatedCostExVat: 0 };
+  }
+  for (const r of list) {
+    const g = out[r.group] || (out[r.group] = { count: 0, estimatedCostExVat: 0 });
+    g.count += 1;
+    g.estimatedCostExVat += r.estimatedCostExVat || 0;
+  }
+  return out;
 }
 
 /**
@@ -375,8 +455,14 @@ async function getPlan(datasetId, opts = {}) {
   // What the accordion lists: suppliers with something overdue or due soon.
   // The same set the header counts and totals, so the page reconciles with
   // itself by construction rather than by two places agreeing to be careful.
-  const actionable = ordered.filter(
+  const dueAll = ordered.filter(
     r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON);
+
+  // The chips count the whole due set; the accordion below reflects the
+  // ACTIVE chip — so chips and list can never disagree about what a group
+  // holds.
+  const groupSummary = summarizeGroups(dueAll);
+  const actionable = opts.group ? dueAll.filter(r => r.group === opts.group) : dueAll;
 
   const bySupplier = new Map();
   for (const r of actionable) {
@@ -409,6 +495,8 @@ async function getPlan(datasetId, opts = {}) {
     today,
     dataThrough,
     summary: engine.summarize(ordered),
+    groupSummary,
+    group: opts.group || null,
     supplierCount: suppliers.length,
     excluded,
     suppliers,
