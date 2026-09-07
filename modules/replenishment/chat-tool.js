@@ -33,13 +33,17 @@ function buildTool(datasetId) {
       + 'sales pace, stock, open orders and the supplier delivery time. This is the ONLY '
       + 'correct source for order quantities, order-by dates and reorder points; never '
       + 'compute those yourself and never take them from a data query. '
-      + 'SCOPE PROTOCOL: if the user\'s scope is a supplier, a category, a name/text '
-      + 'match, or specific item codes, pass it directly via the parameters. If the '
-      + 'scope uses vocabulary these parameters cannot express (a department, a brand, '
-      + '"things like X"), FIRST resolve it to concrete SKUs with a normal catalogue '
-      + 'data query, THEN call this tool with the resulting `skus` list. Never refuse a '
-      + 'reorder question because of its vocabulary — resolve the scope, then compute. '
-      + 'Always restate the scope the answer covers.',
+      + 'SCOPE PROTOCOL: if the user\'s scope is a supplier, a category/subcategory, a '
+      + 'name/text match, or specific item codes, pass it DIRECTLY via the parameters — '
+      + 'no catalogue query first: a side query adds nothing and its row counts describe '
+      + 'a DIFFERENT universe (the catalogue holds store-only items this module never '
+      + 'counts), which has put three competing totals in one answer. Only when the '
+      + 'vocabulary cannot be expressed by these parameters (a brand, "things like X") '
+      + 'resolve it with a catalogue query — fetching labels or codes, not a full '
+      + 'catalogue — and hand the result back here as `skus`. Never refuse a reorder '
+      + 'question because of its vocabulary — resolve the scope, then compute. Always '
+      + 'restate the scope the answer covers, using THIS tool\'s counts as the only '
+      + 'universe of the answer.',
     parameters: {
       type: 'object',
       properties: {
@@ -83,15 +87,21 @@ function buildTool(datasetId) {
         horizonDays: {
           type: 'number',
           description:
-            'Optional. How many days ahead still counts as "due soon". LEAVE IT UNSET '
-            + 'unless the user names a window ("in the next two weeks", "לחודש הקרוב"). '
-            + 'Never pass 0 for a plain "what should we order" or "below the reorder point" '
-            + 'question — unset already answers that, and 0 makes the counts disagree with '
-            + 'the Procurement screen. '
-            + 'Unset uses the horizon the client configured, which is what the Procurement '
-            + 'screen shows. Choosing one changes the answer: the same supplier question '
-            + 'returns 5,249 items at 30 days and 5,145 at 14, and a buyer comparing the '
-            + 'chat with the screen has no way to see why they disagree.',
+            'Optional. How many days ahead still counts as "due soon". ONLY takes '
+            + 'effect together with windowFromUser; alone it is IGNORED and the '
+            + 'client\'s configured window is used — the one the Procurement screen '
+            + 'shows. Never invent a window for a plain "what should we order" or '
+            + '"below the reorder point" question: choosing one changes the counts, '
+            + 'and a buyer comparing the chat with the screen has no way to see why '
+            + 'they disagree.',
+        },
+        windowFromUser: {
+          type: 'string',
+          description:
+            'The user\'s OWN words that named a time window ("in the next two '
+            + 'weeks", "לחודש הקרוב"), quoted verbatim. Required for horizonDays to '
+            + 'take effect — it exists so a window is only ever applied because the '
+            + 'user asked for one.',
         },
         limit: {
           type: 'number',
@@ -132,6 +142,14 @@ async function handle(datasetId, params = {}) {
     };
   }
 
+  // THE HORIZON IS NOT THE MODEL'S TO CHOOSE. Twice now a plain question got
+  // a window the user never named (0 days once, 25 another), and the same
+  // question answered differently across runs. A horizon only applies when
+  // the model can quote the user's words that asked for one; otherwise the
+  // client's configured window — the screen's — is used, deterministically.
+  const userNamedWindow = Boolean(String(params.windowFromUser ?? '').trim());
+  const horizonIgnored = params.horizonDays != null && !userNamedWindow;
+
   const opts = {
     supplier: params.supplier || undefined,
     sku: params.sku || undefined,
@@ -140,7 +158,7 @@ async function handle(datasetId, params = {}) {
     category: params.category || undefined,
     subcategory: params.subcategory || undefined,
     onlyDue: params.onlyDue === undefined ? true : Boolean(params.onlyDue),
-    horizonDays: params.horizonDays,
+    horizonDays: userNamedWindow ? params.horizonDays : undefined,
     limit: Math.min(Number(params.limit) || MAX_ROWS_IN_ANSWER, 100),
   };
 
@@ -189,16 +207,46 @@ async function handle(datasetId, params = {}) {
   // != null, not truthy: 0 is a real window ("due today only") and an answer
   // computed at 0 that claims the configured window cannot be reconciled
   // against the screen — the exact failure this line exists to prevent.
-  contract.push(params.horizonDays != null
+  contract.push(userNamedWindow && params.horizonDays != null
     ? `"Due soon" here means within ${params.horizonDays} days`
       + (Number(params.horizonDays) === 0 ? ' — items whose order date is already today' : '')
-      + ', because that is the window asked for. '
+      + `, because the user asked for that window ("${params.windowFromUser}"). `
       + 'Say so — the window configured for this client is different, and the Procurement screen uses that one.'
-    : '"Due soon" uses the window configured for this client, the same one the Procurement screen uses.');
+    : '"Due soon" uses the window configured for this client, the same one the Procurement screen uses.'
+      + (horizonIgnored
+        ? ' A different horizon was proposed without the user naming one — it was IGNORED so this answer matches the screen.'
+        : ''));
+
+  // ONE UNIVERSE PER ANSWER. When the scope came from catalogue labels or a
+  // name match, the figures cover items in the WAREHOUSE STOCK FILE only —
+  // the catalogue also holds store-only items this module never counts. A
+  // catalogue row count from a side query is a different universe and must
+  // never be quoted as this answer's item count.
+  if (res.scope) {
+    contract.push(
+      'These figures cover items carried in the warehouse stock file — the module\'s universe. '
+      + 'Do NOT quote a catalogue query\'s row count as the number of items assessed here; '
+      + 'if a catalogue total is worth mentioning, present it as a separate, explained contrast.');
+  }
   contract.push(
     `${counts.orderNow} items are overdue, ${counts.dueSoon} due within the horizon, ` +
     `${counts.ok} adequately stocked, ${counts.noDemand} with no recent sales` +
     (res.scope ? ' — within the stated scope.' : '.'));
+
+  // The money, LABELED — the tool returns two totals (the due set's, and the
+  // whole scope's including adequately-stocked items) and answers have quoted
+  // the wrong one as the other. Worded here so the talker copies a sentence
+  // instead of choosing between two raw numbers.
+  if (counts.estimatedTotalExVat != null) {
+    const due = Math.round(counts.estimatedTotalExVat).toLocaleString('en-GB');
+    const all = counts.estimatedTotalAllExVat != null
+      ? Math.round(counts.estimatedTotalAllExVat).toLocaleString('en-GB') : null;
+    contract.push(
+      `Estimated order cost of the ${counts.orderNow + counts.dueSoon} DUE items: ₪${due} ex-VAT`
+      + (all && all !== due
+        ? `. (₪${all} would be the whole scope including not-yet-due items — quote that ONLY if you label it as such.)`
+        : '.'));
+  }
 
   const assumed = res.recommendations.filter(r => r.leadTimeSource !== 'supplier');
   if (assumed.length) {

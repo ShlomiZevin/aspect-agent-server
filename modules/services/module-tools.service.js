@@ -135,7 +135,14 @@ async function attachTo(crew, moduleScope = null, turn = {}) {
     }
     console.log(`[modules] ${crew.datasetSchema}: SCOPED turn `
       + `${entry.descriptor.id}/${scopeDef.scopeId} — tools = [${tools.map(t => t.name).join(', ')}]`);
-    return { attached: tools.map(t => t.name), scoped: true, fragment };
+    return {
+      attached: tools.map(t => t.name),
+      scoped: true,
+      fragment,
+      // The scope may pin the turn's temperature (the dispatcher applies it
+      // unless a session override exists). Smart Tune declares 0.
+      temperature: scopeDef.temperature ?? null,
+    };
   }
 
   // ── plain turn: own tools + module contributions ──

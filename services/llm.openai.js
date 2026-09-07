@@ -531,7 +531,7 @@ class OpenAIService {
         maxIterations--;
 
         // Use Responses API with inline instructions - stateless (no conversation object)
-        const stream = await this.client.responses.create({
+        const request = {
           model: model,
           instructions: fullInstructions,
           input: currentInput,
@@ -548,7 +548,27 @@ class OpenAIService {
           store: false,
           include: ['file_search_call.results'],
           stream: true
-        });
+        };
+        let stream;
+        try {
+          stream = await this.client.responses.create(request);
+        } catch (err) {
+          // Reasoning-family models (gpt-5*, o*) reject sampling params
+          // outright with a 400. A caller pinning temperature (Smart Tune
+          // pins 0 for determinism) must not kill the turn on such a model —
+          // strip the rejected knobs and retry once. Capability by attempt,
+          // not by a model-name list that rots.
+          const msg = String(err?.message || '');
+          if (err?.status === 400 && /'(temperature|top_p)' is not supported/.test(msg)
+              && (request.temperature !== undefined || request.top_p !== undefined)) {
+            console.warn(`⚠️ ${model} rejects sampling params — retrying without them (${msg.slice(0, 90)})`);
+            delete request.temperature;
+            delete request.top_p;
+            stream = await this.client.responses.create(request);
+          } else {
+            throw err;
+          }
+        }
 
         let fullReply = '';
         const pendingFunctionCalls = [];

@@ -272,6 +272,10 @@ module.exports = {
       return [{
         scopeId: 'tune',
         title: { en: 'Smart Tune', he: 'כוונון חכם' },
+        // Determinism over flair: the same "move the umbrellas" must resolve
+        // to the same filter on every run. Tool-argument choice is where all
+        // the answer variance enters; prose barely suffers at 0.
+        temperature: 0,
         tools: (tctx) => [
           require('./chat-tool').buildTool(tctx.datasetId),
           require('./tune-tools').buildProposeTool(tctx.datasetId, {
@@ -299,13 +303,28 @@ module.exports = {
             + 'RESOLUTION for a change — match the filter to the user\'s vocabulary: '
             + 'a department/category/supplier → its exact label as delivered; a product '
             + 'kind named by words ("the umbrellas") → the name filter, which matches '
-            + 'word starts only and is safe for this; an explicit SKU list only when the '
-            + 'user pasted one or you resolved the set COMPLETELY — never hand-built '
-            + 'from a paged read result, which silently drops everything beyond the '
-            + 'page. Verify the filter with the READ tool (its scoped TOTAL is the '
-            + 'whole set, not the page), then call propose_group_change ONCE per user '
+            + 'word starts only and is safe for this — use the SHORTEST stem that still '
+            + 'means only the asked kind, so spelling variants (מטריה/מטרייה/מטריית → '
+            + 'stem מטרי) are all caught; an explicit SKU list only when the user '
+            + 'pasted one or you resolved the set COMPLETELY — never hand-built from a '
+            + 'paged read result, which silently drops everything beyond the page. '
+            + 'Verify the filter with the READ tool (its scoped TOTAL is the whole '
+            + 'set, not the page), then call propose_group_change ONCE per user '
             + 'request — proposing is the commit, not the exploration, and a new '
             + 'proposal cancels this conversation\'s previous open one.\n'
+            + 'GROUPS ARE NOT CATALOGUE CATEGORIES. The five groups are procurement '
+            + 'work-states; the catalogue\'s categories come from the client\'s source '
+            + 'system and cannot be changed here. If the user names a CATALOGUE '
+            + 'category as a move target ("move them to the Winter category"), do not '
+            + 'map it onto a group silently — ask one clarifying sentence ("groups '
+            + 'here are procurement statuses — did you mean Out of season?") and '
+            + 'propose nothing until they answer.\n'
+            + 'THIS PANEL\'S UNIVERSE is the module\'s procurement data: sales pace, '
+            + 'stock, order needs, groups. A question it cannot answer from that data '
+            + '(revenue, per-store sales detail, campaigns) gets an honest sentence '
+            + 'naming what this panel covers and pointing at Data Chat — never a '
+            + 'replenishment number bent into a sales-shaped answer, and never a '
+            + 'refusal dressed as inability to understand.\n'
             + 'Never refuse because of vocabulary — map it to the tools\' filters '
             + '(name text, category, supplier, SKU list). Mirror the user\'s language; '
             + 'Hebrew in the data says nothing about the language to answer in. '

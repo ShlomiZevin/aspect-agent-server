@@ -155,6 +155,13 @@ function validate(descriptor) {
         if (s.promptFragment === undefined) {
           throw new Error(`${where}: chat scope '${s.scopeId}' must declare a promptFragment`);
         }
+        // Optional: a scope may pin the turn's LLM temperature (Smart Tune
+        // pins 0 for deterministic tool-argument choice). Validate at boot —
+        // a bad value would otherwise fail silently per turn.
+        if (s.temperature !== undefined
+            && (typeof s.temperature !== 'number' || s.temperature < 0 || s.temperature > 2)) {
+          throw new Error(`${where}: chat scope '${s.scopeId}' temperature must be a number in [0, 2]`);
+        }
       }
     }
   } else if (descriptor.hooks) {

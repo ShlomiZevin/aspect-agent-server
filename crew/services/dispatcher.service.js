@@ -732,6 +732,16 @@ class DispatcherService {
     const moduleAttach = await require('../../modules/services/module-tools.service')
       .attachTo(crew, params.moduleScope || null, { conversationId: params.conversationId });
 
+    // A scope may pin the turn's temperature (Smart Tune runs at 0: the same
+    // "move the umbrellas" must resolve to the same filter every time). Only
+    // a validated scoped turn can set this, and an explicit session override
+    // still wins — it is the debug panel's knob.
+    if (moduleAttach.scoped && moduleAttach.temperature != null
+        && temperatureOverrides[crew.name] == null) {
+      resolvedTemperature = moduleAttach.temperature;
+      console.log(`🌡️ [modules] scoped turn pins temperature=${resolvedTemperature}`);
+    }
+
     // Build tool handler map from crew member tools
     const toolHandlers = {};
     for (const tool of crew.tools) {
