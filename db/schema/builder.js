@@ -230,6 +230,8 @@ const triggerEvents = pgTable('trigger_events', {
   status:          varchar('status', { length: 20 }).default('running').notNull(), // running | done
   outcome:         varchar('outcome', { length: 20 }),  // filtered | quiet_hours | spoke | silent | error
   matchReason:     text('match_reason'),
+  /** 'manual' when a person pressed a button; absent means the clock. */
+  source:         text('source'),
   filterResult:    jsonb('filter_result'),
   briefUsed:       text('brief_used'),
   launchedCrewId:  varchar('launched_crew_id', { length: 64 }),

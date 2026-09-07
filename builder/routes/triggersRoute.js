@@ -403,10 +403,12 @@ router.post('/:slug/triggers/:triggerId/fire', async (req, res) => {
     // Informational: would the clock have chosen this one by itself?
     let wouldFire = null;
     let clauses = [];
+    let reason = null;
     try {
       const check = await triggerEvaluator.checkOne({ trigger, conversationId: Number(conversationId) });
       wouldFire = check.evaluation.ok;
       clauses = check.evaluation.clauses;
+      reason = check.evaluation.reason;
     } catch { /* never block the run on the explainer */ }
 
     const result = await triggerDispatcher.fireOne({
@@ -414,7 +416,11 @@ router.post('/:slug/triggers/:triggerId/fire', async (req, res) => {
       agentId:        agent.agentId,
       trigger,
       conversationId: Number(conversationId),
-      matchReason:    'run by hand from the builder',
+      // The ARITHMETIC, exactly as the clock would have recorded it —
+      // this row should read the same whoever set it off. Who did is
+      // `source`, which is a fact rather than a sentence to parse.
+      matchReason:    reason,
+      source:         'manual',
       overrideAgentBody,
       overrideCrewBody,
     });
@@ -547,6 +553,7 @@ router.post('/:slug/triggers/round', async (req, res) => {
         trigger,
         conversationId: Number(conversationId),
         matchReason:    evaluation.reason,
+        source:         'manual',
         overrideAgentBody,
         overrideCrewBody: (overrideCrewBodies && overrideCrewBodies[trigger.run.crewId]) || null,
       });

@@ -45,7 +45,7 @@ function uid() {
  *
  * @returns {Promise<string>} the event id
  */
-async function open({ agentId, triggerId, triggerType, conversationId, matchReason, launchedCrewId }) {
+async function open({ agentId, triggerId, triggerType, conversationId, matchReason, launchedCrewId, source }) {
   const id = uid();
   const now = new Date();
   await drizzle().insert(triggerEvents).values({
@@ -56,6 +56,9 @@ async function open({ agentId, triggerId, triggerType, conversationId, matchReas
     conversationId: Number(conversationId),
     matchedAt:      now,
     status:         'running',
+    // Absent means the clock. Only a person pressing a button sets it,
+    // so the common case writes nothing and reads correctly.
+    source:         source === 'manual' ? 'manual' : null,
     matchReason:    matchReason || null,
     launchedCrewId: launchedCrewId || null,
     startedAt:      now,

@@ -147,6 +147,17 @@ function versionForConversation(convMeta) {
  */
 async function fireOne({
   agentSlug, agentId, trigger, conversationId, matchReason, now = new Date(),
+  /**
+   * Who started this: 'manual' when a person pressed a button, anything
+   * else (including nothing) means the clock.
+   *
+   * A field rather than a marker smuggled into `matchReason`. That
+   * string is the ARITHMETIC — "quiet for 5 minutes" — and overloading
+   * it meant the agent-wide Run could not say a human started it
+   * without throwing the real reason away, so every run it started was
+   * reported as the clock's.
+   */
+  source = 'clock',
   // Working copies, for a run started by a person with the builder open.
   // The clock never passes these — it has no browser to read them from,
   // and running a body that exists nowhere would make its event rows
@@ -163,6 +174,7 @@ async function fireOne({
       triggerType:    trigger.typeId,
       conversationId,
       matchReason,
+      source,
       launchedCrewId: trigger.run?.crewId || null,
     });
 
