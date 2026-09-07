@@ -2128,6 +2128,24 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
             }
           }
 
+          // Aspect Modules: a scoped tool's result may carry a chat-ACTION
+          // envelope (e.g. Smart Tune's previewed group move). Forwarded as a
+          // persisted step so the card renders live AND on history reload.
+          // Generic on purpose — any module, any action kind; the client keeps
+          // a kind→renderer registry and ignores kinds it does not know. The
+          // strict gate is upstream: only scope tools produce these, and scope
+          // tools only attach on a validated scoped turn (module-tools.service),
+          // so a plain conversation can never grow an action card.
+          if (chunk.type === 'function_result' && chunk.result?._chatAction
+              && typeof chunk.result._chatAction === 'object' && chunk.result._chatAction.kind) {
+            thinkingService.addStep(
+              conversationId,
+              'chat_action',
+              `Prepared action: ${chunk.result._chatAction.kind}`,
+              chunk.result._chatAction
+            );
+          }
+
           // Handle file search results - show which KB files were referenced
           if (chunk.type === 'file_search_results' && chunk.files?.length > 0) {
             const topFiles = chunk.files.slice(0, 3);

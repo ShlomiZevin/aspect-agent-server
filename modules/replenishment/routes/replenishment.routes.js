@@ -287,6 +287,22 @@ router.put('/:datasetId/verdicts/:sku', async (req, res) => {
 // these are the two buttons: Process (execute against the snapshot) and Undo
 // (restore the recorded prior state). Cancel is the preview's dismiss.
 
+// Current state of one proposal — a card re-rendered from an old conversation
+// asks this before offering Process/Undo, so a button never acts on a state
+// the buyer is no longer looking at.
+router.get('/:datasetId/proposals/:id', async (req, res) => {
+  try {
+    const mod = await requireVerdictRights(req, res);
+    if (!mod) return;
+    const out = await proposals.status(req.params.datasetId, req.params.id);
+    if (refuse(res, out)) return;
+    res.json(out);
+  } catch (err) {
+    console.error('[replenishment] proposal status error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/:datasetId/proposals/:id/execute', async (req, res) => {
   try {
     const mod = await requireVerdictRights(req, res);

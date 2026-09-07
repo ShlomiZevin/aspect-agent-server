@@ -37,6 +37,11 @@
 
 const moduleService = require('./module.service');
 const registry = require('../registry');
+const conversationService = require('../../services/conversation.service');
+
+/** Conversations already stamped this process-lifetime — one write, not one
+ *  per turn. Failure removes the entry so the next turn retries. */
+const stampedScopes = new Set();
 
 /** Marks a tool as module-contributed so it can be removed again cleanly. */
 const TAG = '__fromModule';
@@ -107,6 +112,27 @@ async function attachTo(crew, moduleScope = null, turn = {}) {
     const fragment = typeof scopeDef.promptFragment === 'function'
       ? scopeDef.promptFragment(moduleScope.context || {})
       : (scopeDef.promptFragment || '');
+
+    // Label the conversation as scoped, once. The history list renders its
+    // scope tag from this, and a reloaded client re-learns the scope from the
+    // conversation itself instead of trusting its own session state — which
+    // is also the rule that keeps scoped follow-up turns possible only on
+    // conversations a module surface actually opened. Fire-and-forget: a
+    // failed stamp never fails the turn.
+    if (turn.conversationId && !stampedScopes.has(turn.conversationId)) {
+      stampedScopes.add(turn.conversationId);
+      conversationService.updateConversationMetadata(turn.conversationId, {
+        moduleScope: {
+          moduleId: entry.descriptor.id,
+          scopeId: scopeDef.scopeId,
+          context: moduleScope.context || {},
+          title: scopeDef.title || null,
+        },
+      }).catch(err => {
+        stampedScopes.delete(turn.conversationId);
+        console.warn(`[modules] scope stamp failed for ${turn.conversationId}: ${err.message}`);
+      });
+    }
     console.log(`[modules] ${crew.datasetSchema}: SCOPED turn `
       + `${entry.descriptor.id}/${scopeDef.scopeId} — tools = [${tools.map(t => t.name).join(', ')}]`);
     return { attached: tools.map(t => t.name), scoped: true, fragment };

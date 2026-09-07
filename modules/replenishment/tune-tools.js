@@ -81,17 +81,28 @@ function buildProposeTool(datasetId, { settings = {}, conversationId, scopeConte
           proposal: null,
         };
       }
+      const proposal = {
+        proposalId: out.proposalId,
+        targetGroup: out.targetGroup,
+        count: out.count,
+        interpreted: out.interpreted,
+        expiresAt: out.expiresAt,
+        sample: out.sample,
+      };
       return {
         summary:
           `PREVIEW ONLY — nothing has moved. Found ${out.count} item(s): ${out.interpreted} `
           + `Proposed move → ${params.targetGroup}. Present this preview; the user must press Process to apply it.`,
-        proposal: {
-          proposalId: out.proposalId,
-          targetGroup: out.targetGroup,
-          count: out.count,
-          interpreted: out.interpreted,
-          expiresAt: out.expiresAt,
-          sample: out.sample,
+        proposal,
+        // The generic chat-action envelope (see module-tools.service). The
+        // underscore prefix keeps it OUT of the model's context, the same
+        // stripInternalFields trick _fullData uses — the model presents the
+        // preview from `proposal`; the CARD in the chat renders from this.
+        _chatAction: {
+          kind: 'replenishment.group_move_proposal',
+          module: 'replenishment',
+          datasetId,
+          payload: proposal,
         },
       };
     },

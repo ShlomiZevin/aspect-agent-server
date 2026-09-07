@@ -11,8 +11,15 @@ const providerConfigService = require('./provider-config.service');
 // causes the call to fail outright. Strip it right before stringifying for
 // the API; the unstripped object is still yielded as-is for the SSE consumer.
 function stripInternalFields(result) {
-  if (!result || typeof result !== 'object' || result._fullData === undefined) return result;
-  const { _fullData, ...rest } = result;
+  // Every underscore-prefixed top-level key is internal by contract: _fullData
+  // (the untruncated table for the data viewer) and _chatAction (the module
+  // action envelope for the chat card) ride the raw function_result event to
+  // the SSE layer but never enter the model's context.
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  const keys = Object.keys(result);
+  if (!keys.some(k => k.startsWith('_'))) return result;
+  const rest = {};
+  for (const k of keys) { if (!k.startsWith('_')) rest[k] = result[k]; }
   return rest;
 }
 

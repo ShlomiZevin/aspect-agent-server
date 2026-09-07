@@ -126,6 +126,30 @@ async function get(proposalId) {
 }
 
 /**
+ * Current state of one proposal, for a card re-rendered from history: the
+ * stored preview is in the chat message; what changed since is the status and
+ * (when executed) the operation the Undo button needs.
+ */
+async function status(datasetId, proposalId) {
+  const p = await get(proposalId);
+  if (!p || p.datasetId !== datasetId) return { error: 'Unknown proposal', code: 404 };
+  const drizzle = db.getDrizzle();
+  const [op] = await drizzle.select().from(moduleBulkOperations)
+    .where(eq(moduleBulkOperations.proposalId, p.id))
+    .limit(1);
+  const expired = p.status === 'proposed' && new Date(p.expiresAt) < new Date();
+  return {
+    proposalId: p.id,
+    status: expired ? 'expired' : p.status,
+    expiresAt: p.expiresAt,
+    targetGroup: p.target?.assignGroup ?? null,
+    operation: op
+      ? { operationId: op.id, status: op.status, applied: op.applied, skipped: op.skipped }
+      : null,
+  };
+}
+
+/**
  * Execute against the SNAPSHOT. Skus that no longer exist in the live view are
  * counted and reported, never silently substituted; the prior verdict state is
  * recorded so the whole operation reverts exactly.
@@ -203,4 +227,4 @@ async function setStatus(proposalId, status) {
     .where(eq(moduleChatProposals.id, Number(proposalId)));
 }
 
-module.exports = { MODULE_ID, SCOPE_ID, create, get, execute, cancel, revert, GROUPS };
+module.exports = { MODULE_ID, SCOPE_ID, create, get, status, execute, cancel, revert, GROUPS };

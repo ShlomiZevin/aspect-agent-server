@@ -3,6 +3,17 @@ const fs = require('fs');
 const path = require('path');
 const providerConfigService = require('./provider-config.service');
 
+/** Drop underscore-prefixed top-level keys from a tool result before it goes
+ *  into the model's context — see the tool_result push below. */
+function stripInternal(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  const keys = Object.keys(result);
+  if (!keys.some(k => k.startsWith('_'))) return result;
+  const rest = {};
+  for (const k of keys) { if (!k.startsWith('_')) rest[k] = result[k]; }
+  return rest;
+}
+
 /**
  * Claude/Anthropic LLM Service
  *
@@ -467,7 +478,11 @@ class ClaudeService {
               toolResults.push({
                 type: 'tool_result',
                 tool_use_id: toolCall.id,
-                content: JSON.stringify(result)
+                // Underscore-prefixed keys are internal by contract (_fullData,
+                // _chatAction): they ride the raw function_result event above
+                // but never enter the model's context. Same rule as
+                // llm.openai.js#stripInternalFields.
+                content: JSON.stringify(stripInternal(result))
               });
             } catch (error) {
               console.error(`❌ Tool call failed: ${toolCall.name}`, error.message);
