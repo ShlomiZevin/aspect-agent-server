@@ -33,6 +33,17 @@ const MAX_SCOPE_SKUS = 500;
 
 const norm = (v) => String(v ?? '').trim().toLowerCase();
 
+const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * NAME matching is word-start, not substring. A bare Hebrew stem inside
+ * another word is how "מטרי" (umbrella-) swept geometric planters into an
+ * umbrella move — גיאו·מטרי matched. A term now matches a name only where a
+ * word begins with it ("מטרי" → "מטריה", "מטריות"; never "גיאומטרי").
+ * Codes stay substring — a code is one token and buyers paste fragments.
+ */
+const nameWordMatcher = (term) => new RegExp(`(^|[^\\p{L}\\p{N}])${reEscape(term)}`, 'u');
+
 /** Which of the scope parameters are present on an opts object. */
 function scopeParams(opts = {}) {
   const out = {};
@@ -68,8 +79,9 @@ function applyScope(list, opts = {}) {
   }
   const term = norm(opts.search);
   if (term) {
+    const nameRe = nameWordMatcher(term);
     out = out.filter(r =>
-      norm(r.itemName).includes(term)
+      nameRe.test(norm(r.itemName))
       || norm(r.sku).includes(term)
       || norm(r.itemNumber).includes(term));
   }
@@ -80,12 +92,18 @@ function applyScope(list, opts = {}) {
  * The scope stated in words — what the buyer was actually answered about.
  * Goes into the data contract so the talker can rephrase it but not drop it.
  */
+/** First-strong isolate: a Hebrew term inside this English sentence renders
+ *  in its own direction instead of scrambling the words around it. */
+const iso = (s) => `⁨${s}⁩`;
+
 function describeScope(opts = {}, matched, ofTotal) {
   const parts = [];
   if (Array.isArray(opts.skus) && opts.skus.length) parts.push(`a provided list of ${opts.skus.length} SKUs`);
-  if (opts.category) parts.push(`category "${opts.category}" (label as delivered in the feed)`);
-  if (opts.subcategory) parts.push(`subcategory "${opts.subcategory}" (label as delivered)`);
-  if (String(opts.search ?? '').trim()) parts.push(`items whose name or code contains "${String(opts.search).trim()}"`);
+  if (opts.category) parts.push(`category "${iso(opts.category)}" (label as delivered in the feed)`);
+  if (opts.subcategory) parts.push(`subcategory "${iso(opts.subcategory)}" (label as delivered)`);
+  if (String(opts.search ?? '').trim()) {
+    parts.push(`items with a name word starting "${iso(String(opts.search).trim())}", or that text in the item code`);
+  }
   if (!parts.length) return null;
   return `Scope: ${parts.join(', ')} — ${matched.toLocaleString('en-GB')} of ${ofTotal.toLocaleString('en-GB')} items.`;
 }

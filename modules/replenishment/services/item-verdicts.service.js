@@ -13,7 +13,7 @@
 
 const db = require('../../../services/db.pg');
 const { replenishmentItemVerdicts } = require('../../../db/schema');
-const { eq, and, inArray } = require('drizzle-orm');
+const { eq, and, inArray, sql } = require('drizzle-orm');
 const { GROUPS } = require('../groups');
 
 const VALID_GROUPS = new Set(Object.values(GROUPS));
@@ -56,7 +56,12 @@ async function setVerdict(datasetId, sku, { assignedGroup, suggestedAtVerdict, n
         suggestedAtVerdict: suggestedAtVerdict ?? null,
         note: note ?? null,
         updatedBy: updatedBy ?? null,
-        updatedAt: new Date(),
+        // The DATABASE clock, deliberately: the revert ownership guard
+        // compares this against an operation's executedAt, which the DB also
+        // stamps (defaultNow). Mixing the app server's clock in — the old
+        // `new Date()` — made "was this touched after the operation?"
+        // depend on clock skew between two machines.
+        updatedAt: sql`now()`,
       },
     })
     .returning();
@@ -92,9 +97,46 @@ async function bulkAssign(datasetId, skus, assignedGroup, { note, updatedBy } = 
   }));
 }
 
-/** Restore a bulk operation's prior state exactly, per sku. */
-async function restorePrior(datasetId, priorState, { updatedBy } = {}) {
-  for (const entry of priorState || []) {
+/**
+ * Restore a bulk operation's prior state exactly, per sku.
+ *
+ * With `changedAfter` set (the operation's own executedAt), the restore is
+ * OWNERSHIP-GUARDED: a sku whose verdict was touched after that moment — by
+ * another session, another proposal, or a buyer's manual Move — is SKIPPED
+ * and counted, never clobbered back to this operation's older memory. The
+ * operation's own writes land just before its executedAt, so untouched rows
+ * pass the strict comparison.
+ */
+async function restorePrior(datasetId, priorState, { updatedBy, changedAfter } = {}) {
+  const entries = priorState || [];
+  let restored = 0;
+  let skippedChanged = 0;
+
+  // One read for the whole batch, never N.
+  const current = changedAfter && entries.length
+    ? new Map((await db.getDrizzle().select().from(replenishmentItemVerdicts).where(and(
+      eq(replenishmentItemVerdicts.datasetId, datasetId),
+      inArray(replenishmentItemVerdicts.sku, entries.map(e => e.sku)),
+    ))).map(r => [r.sku, r]))
+    : null;
+
+  for (const entry of entries) {
+    if (current) {
+      const row = current.get(entry.sku);
+      if (!row) {
+        // The verdict was CLEARED since the operation. If the prior state was
+        // "no verdict", the clear already IS the restore — count it done. If
+        // a prior verdict existed, someone deliberately cleared this item
+        // after our move; resurrecting the old verdict would overrule them.
+        if (entry.prior) { skippedChanged += 1; continue; }
+        restored += 1;
+        continue;
+      }
+      if (new Date(row.updatedAt) > new Date(changedAfter)) {
+        skippedChanged += 1;
+        continue;
+      }
+    }
     if (entry.prior) {
       await setVerdict(datasetId, entry.sku, {
         assignedGroup: entry.prior.assignedGroup, note: entry.prior.note, updatedBy,
@@ -102,7 +144,9 @@ async function restorePrior(datasetId, priorState, { updatedBy } = {}) {
     } else {
       await setVerdict(datasetId, entry.sku, { assignedGroup: null });
     }
+    restored += 1;
   }
+  return { restored, skippedChanged };
 }
 
 module.exports = { mapForDataset, setVerdict, bulkAssign, restorePrior, VALID_GROUPS };

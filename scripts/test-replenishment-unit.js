@@ -528,6 +528,24 @@ console.log('\n12 · The headline total is the value of the rows on screen');
     scope.applyScope(rows, { search: 'ml-3' }).length === 1
     && scope.applyScope(rows, { search: '101' }).length === 1);
 
+  // Word-start semantics — the גיאומטרי incident: a stem must match where a
+  // word begins, never inside another word. Codes stay plain substring.
+  const stemRows = [
+    { sku: 'U-1', itemName: 'מטריה ילדים שקופה', itemNumber: '201', category: 'חורף' },
+    { sku: 'U-2', itemName: 'מטריות ג׳מבו 95 סמ', itemNumber: '202', category: 'חורף' },
+    { sku: 'G-1', itemName: 'עציץ סוקולנט בכלי גיאומטרי מעוצב', itemNumber: '203', category: 'בית' },
+    { sku: 'G-2', itemName: 'מסגרת גיאומטרית 10*15', itemNumber: '204', category: 'בית' },
+  ];
+  const stem = scope.applyScope(stemRows, { search: 'מטרי' });
+  ok('a name stem matches only at WORD STARTS ("מטרי" → umbrellas, never גיאומטרי)',
+    stem.length === 2 && stem.every(r => r.sku.startsWith('U-')), JSON.stringify(stem.map(r => r.sku)));
+  ok('mid-code fragments still match by substring ("20" hits the item numbers)',
+    scope.applyScope(stemRows, { search: '20' }).length === 4);
+  ok('a term that starts a LATER word in the name still matches ("ג׳מבו")',
+    scope.applyScope(stemRows, { search: 'ג׳מבו' }).length === 1);
+  ok('regex metacharacters in a search term are literal, never a pattern',
+    scope.applyScope(stemRows, { search: '10*15' }).length === 1);
+
   const bySkus = scope.applyScope(rows, { skus: [' ad-1', 'BH-9 ', 'nope'] });
   ok('skus[] is the universal bridge — trims, case-insensitive, unknowns ignored',
     bySkus.length === 2, JSON.stringify(bySkus.map(r => r.sku)));

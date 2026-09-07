@@ -23,10 +23,15 @@ function buildProposeTool(datasetId, { settings = {}, conversationId, scopeConte
     description:
       'Propose moving a set of items to another group (order_now / suspicious / '
       + 'out_of_season / fading / new). Call this ONLY when the user asks to move, '
-      + 'reject, park or reclassify items — never for read questions. You choose the '
-      + 'FILTER (name text, category, current group, supplier, or an explicit SKU '
-      + 'list); the system resolves it, shows the user a preview with a Process '
-      + 'button, and nothing changes until they press it. Present the preview and its '
+      + 'reject, park or reclassify items — never for read questions. Choose the '
+      + 'STRONGEST filter available: an explicit SKU list (resolve vocabulary with '
+      + 'the read tool first), exact category/subcategory labels, or supplier; '
+      + 'nameContains is the LAST resort and matches names only at WORD STARTS '
+      + '(a stem inside another word does not match). Explore with the read tool, '
+      + 'then call this ONCE per user request — a new proposal cancels this '
+      + 'conversation\'s previous open one, so propose only your final filter. The '
+      + 'system resolves it, shows the user a preview with a Process button, and '
+      + 'nothing changes until they press it. Present the preview and its '
       + 'interpretation; NEVER say the items were moved.',
     parameters: {
       type: 'object',
@@ -92,7 +97,10 @@ function buildProposeTool(datasetId, { settings = {}, conversationId, scopeConte
       return {
         summary:
           `PREVIEW ONLY — nothing has moved. Found ${out.count} item(s): ${out.interpreted} `
-          + `Proposed move → ${params.targetGroup}. Present this preview; the user must press Process to apply it.`,
+          + `Proposed move → ${params.targetGroup}. Present this preview; the user must press Process to apply it.`
+          + (out.superseded
+            ? ` (This replaces the ${out.superseded} earlier preview(s) in this conversation — they are cancelled and their Process buttons are dead.)`
+            : ''),
         proposal,
         // The generic chat-action envelope (see module-tools.service). The
         // underscore prefix keeps it OUT of the model's context, the same

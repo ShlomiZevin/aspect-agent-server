@@ -15,7 +15,7 @@
 
 const db = require('../../../services/db.pg');
 const { moduleChatProposals, moduleBulkOperations } = require('../../../db/schema');
-const { eq, and } = require('drizzle-orm');
+const { eq, and, lt } = require('drizzle-orm');
 const scope = require('../scope');
 const { GROUPS } = require('../groups');
 const itemVerdicts = require('./item-verdicts.service');
@@ -72,6 +72,36 @@ async function create(datasetId, {
 
   const interpreted = describeFilter(filter, matched.length, res.totalUnscoped);
   const drizzle = db.getDrizzle();
+
+  // Housekeeping, opportunistic: stale open previews age into 'expired' here
+  // rather than waiting for someone to press Process on one. Tiny table, one
+  // indexed update — no scheduler needed.
+  await drizzle.update(moduleChatProposals)
+    .set({ status: 'expired' })
+    .where(and(
+      eq(moduleChatProposals.datasetId, datasetId),
+      eq(moduleChatProposals.status, 'proposed'),
+      lt(moduleChatProposals.expiresAt, new Date()),
+    ));
+
+  // A new proposal SUPERSEDES this conversation's previous open one — the
+  // 28-vs-14 incident: the model refined its filter, and the abandoned draft
+  // kept a live Process button above the real answer. The old card mutes
+  // itself (it syncs status on mount); only the newest preview stays
+  // actionable. Other conversations' proposals are untouched.
+  let superseded = 0;
+  if (conversationId) {
+    const old = await drizzle.update(moduleChatProposals)
+      .set({ status: 'cancelled' })
+      .where(and(
+        eq(moduleChatProposals.datasetId, datasetId),
+        eq(moduleChatProposals.conversationId, conversationId),
+        eq(moduleChatProposals.status, 'proposed'),
+      ))
+      .returning({ id: moduleChatProposals.id });
+    superseded = old.length;
+  }
+
   const [row] = await drizzle.insert(moduleChatProposals).values({
     datasetId,
     moduleId: MODULE_ID,
@@ -90,6 +120,7 @@ async function create(datasetId, {
     interpreted,
     targetGroup,
     count: matched.length,
+    superseded,
     expiresAt: row.expiresAt,
     sample: matched.slice(0, PREVIEW_ROWS).map(r => ({
       sku: r.sku,
@@ -155,9 +186,25 @@ async function status(datasetId, proposalId) {
  * recorded so the whole operation reverts exactly.
  */
 async function execute(datasetId, proposalId, { executedBy } = {}) {
-  const p = await get(proposalId);
-  if (!p || p.datasetId !== datasetId) return { error: 'Unknown proposal', code: 404 };
-  if (p.status !== 'proposed') return { error: `Proposal is ${p.status} — it cannot be executed`, code: 409 };
+  const drizzle = db.getDrizzle();
+
+  // ATOMIC CLAIM. Two parallel Process clicks (two tabs, a double-click) both
+  // read 'proposed' under the old check-then-act; both applied. The claim is
+  // one conditional UPDATE — exactly one caller gets the row back, everyone
+  // else falls through to an honest status message.
+  const [p] = await drizzle.update(moduleChatProposals)
+    .set({ status: 'executed' })
+    .where(and(
+      eq(moduleChatProposals.id, Number(proposalId)),
+      eq(moduleChatProposals.datasetId, datasetId),
+      eq(moduleChatProposals.status, 'proposed'),
+    ))
+    .returning();
+  if (!p) {
+    const cur = await get(proposalId);
+    if (!cur || cur.datasetId !== datasetId) return { error: 'Unknown proposal', code: 404 };
+    return { error: `Proposal is ${cur.status} — it cannot be executed`, code: 409 };
+  }
   if (new Date(p.expiresAt) < new Date()) {
     await setStatus(proposalId, 'expired');
     return { error: 'The preview expired — ask again to get a fresh one', code: 410 };
@@ -165,34 +212,42 @@ async function execute(datasetId, proposalId, { executedBy } = {}) {
 
   const snapshot = (p.skuSnapshot || []).map(String);
   const targetGroup = p.target?.assignGroup;
-  if (!itemVerdicts.VALID_GROUPS.has(targetGroup)) return { error: 'Corrupt proposal target', code: 500 };
+  if (!itemVerdicts.VALID_GROUPS.has(targetGroup)) {
+    await setStatus(proposalId, 'cancelled');
+    return { error: 'Corrupt proposal target', code: 500 };
+  }
 
-  // Existence check against the CURRENT view — a reload may have removed rows
-  // between preview and Process.
-  const still = await recommendations.getRecommendations(datasetId, { skus: snapshot, onlyDue: false });
-  if (still.error) return still;
-  const alive = new Set(still.recommendations.map(r => r.sku));
-  const apply = snapshot.filter(s => alive.has(s));
-  const skipped = snapshot.length - apply.length;
+  try {
+    // Existence check against the CURRENT view — a reload may have removed
+    // rows between preview and Process.
+    const still = await recommendations.getRecommendations(datasetId, { skus: snapshot, onlyDue: false });
+    if (still.error) { await setStatus(proposalId, 'proposed'); return still; }
+    const alive = new Set(still.recommendations.map(r => r.sku));
+    const apply = snapshot.filter(s => alive.has(s));
+    const skipped = snapshot.length - apply.length;
 
-  const priorState = await itemVerdicts.bulkAssign(datasetId, apply, targetGroup, {
-    note: p.target?.reason || `Smart Tune ${new Date().toISOString().slice(0, 10)}`,
-    updatedBy: executedBy,
-  });
+    const priorState = await itemVerdicts.bulkAssign(datasetId, apply, targetGroup, {
+      note: p.target?.reason || `Smart Tune ${new Date().toISOString().slice(0, 10)}`,
+      updatedBy: executedBy,
+    });
 
-  const drizzle = db.getDrizzle();
-  const [op] = await drizzle.insert(moduleBulkOperations).values({
-    proposalId: p.id,
-    datasetId,
-    moduleId: MODULE_ID,
-    priorState,
-    applied: apply.length,
-    skipped,
-    executedBy: executedBy ?? null,
-  }).returning();
-  await setStatus(proposalId, 'executed');
+    const [op] = await drizzle.insert(moduleBulkOperations).values({
+      proposalId: p.id,
+      datasetId,
+      moduleId: MODULE_ID,
+      priorState,
+      applied: apply.length,
+      skipped,
+      executedBy: executedBy ?? null,
+    }).returning();
 
-  return { operationId: op.id, applied: apply.length, skipped, targetGroup };
+    return { operationId: op.id, applied: apply.length, skipped, targetGroup };
+  } catch (err) {
+    // The claim was taken but the work failed — hand the proposal back so
+    // Process can be retried, rather than stranding it as "executed".
+    await setStatus(proposalId, 'proposed').catch(() => {});
+    throw err;
+  }
 }
 
 async function cancel(datasetId, proposalId) {
@@ -203,22 +258,38 @@ async function cancel(datasetId, proposalId) {
   return { ok: true };
 }
 
-/** One-click undo: restore the recorded prior state exactly, per sku. */
+/**
+ * One-click undo: restore the recorded prior state, per sku — but only for
+ * skus this operation still "owns". A verdict touched since (another session,
+ * another proposal, a manual Move) is skipped and reported, never clobbered
+ * back to this operation's older memory.
+ */
 async function revert(datasetId, operationId, { revertedBy } = {}) {
   const drizzle = db.getDrizzle();
-  const [op] = await drizzle.select().from(moduleBulkOperations)
+  // Atomic claim, same shape as execute() — two Undo clicks race here too.
+  const [op] = await drizzle.update(moduleBulkOperations)
+    .set({ status: 'reverted', revertedAt: new Date() })
     .where(and(
       eq(moduleBulkOperations.id, Number(operationId)),
       eq(moduleBulkOperations.datasetId, datasetId),
-    )).limit(1);
-  if (!op) return { error: 'Unknown operation', code: 404 };
-  if (op.status === 'reverted') return { error: 'Already reverted', code: 409 };
+      eq(moduleBulkOperations.status, 'executed'),
+    ))
+    .returning();
+  if (!op) {
+    const [cur] = await drizzle.select().from(moduleBulkOperations)
+      .where(and(
+        eq(moduleBulkOperations.id, Number(operationId)),
+        eq(moduleBulkOperations.datasetId, datasetId),
+      )).limit(1);
+    if (!cur) return { error: 'Unknown operation', code: 404 };
+    return { error: 'Already reverted', code: 409 };
+  }
 
-  await itemVerdicts.restorePrior(datasetId, op.priorState, { updatedBy: revertedBy });
-  await drizzle.update(moduleBulkOperations)
-    .set({ status: 'reverted', revertedAt: new Date() })
-    .where(eq(moduleBulkOperations.id, op.id));
-  return { ok: true, restored: (op.priorState || []).length };
+  const { restored, skippedChanged } = await itemVerdicts.restorePrior(
+    datasetId, op.priorState,
+    { updatedBy: revertedBy, changedAfter: op.executedAt },
+  );
+  return { ok: true, restored, skippedChanged };
 }
 
 async function setStatus(proposalId, status) {
