@@ -40,11 +40,18 @@ const capsCache = new Map();
 async function viewCapabilities(pool, schemaName) {
   const hit = capsCache.get(schemaName);
   if (hit && Date.now() - hit.at < CAPS_TTL_MS) return hit.caps;
+  // pg_attribute, NOT information_schema.columns: materialized views do not
+  // appear in information_schema, so the standard-catalog check reports every
+  // MV column as absent — which would silently pin the pace model to simple
+  // forever. Caught by an independent recheck the day this shipped.
   const { rows } = await pool.query(`
     SELECT
-      EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema = $1 AND table_name = 'mv_replenishment_base'
-                 AND column_name = 'qty_sold_60d') AS has60d,
+      EXISTS (SELECT 1 FROM pg_attribute a
+               JOIN pg_class c ON c.oid = a.attrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = $1 AND c.relname = 'mv_replenishment_base'
+                AND a.attname = 'qty_sold_60d'
+                AND a.attnum > 0 AND NOT a.attisdropped) AS has60d,
       EXISTS (SELECT 1 FROM pg_matviews
                WHERE schemaname = $1 AND matviewname = 'mv_replenishment_signals') AS has_signals`,
   [schemaName]);
