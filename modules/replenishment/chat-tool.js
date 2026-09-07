@@ -85,6 +85,9 @@ function buildTool(datasetId) {
           description:
             'Optional. How many days ahead still counts as "due soon". LEAVE IT UNSET '
             + 'unless the user names a window ("in the next two weeks", "לחודש הקרוב"). '
+            + 'Never pass 0 for a plain "what should we order" or "below the reorder point" '
+            + 'question — unset already answers that, and 0 makes the counts disagree with '
+            + 'the Procurement screen. '
             + 'Unset uses the horizon the client configured, which is what the Procurement '
             + 'screen shows. Choosing one changes the answer: the same supplier question '
             + 'returns 5,249 items at 30 days and 5,145 at 14, and a buyer comparing the '
@@ -183,8 +186,13 @@ async function handle(datasetId, params = {}) {
   // Which horizon produced these counts, always -- the figure moves with it, so
   // an answer that does not say which one it used cannot be reconciled against
   // the screen or against the same question asked yesterday.
-  contract.push(params.horizonDays
-    ? `"Due soon" here means within ${params.horizonDays} days, because that is the window asked for. `
+  // != null, not truthy: 0 is a real window ("due today only") and an answer
+  // computed at 0 that claims the configured window cannot be reconciled
+  // against the screen — the exact failure this line exists to prevent.
+  contract.push(params.horizonDays != null
+    ? `"Due soon" here means within ${params.horizonDays} days`
+      + (Number(params.horizonDays) === 0 ? ' — items whose order date is already today' : '')
+      + ', because that is the window asked for. '
       + 'Say so — the window configured for this client is different, and the Procurement screen uses that one.'
     : '"Due soon" uses the window configured for this client, the same one the Procurement screen uses.');
   contract.push(
