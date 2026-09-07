@@ -341,7 +341,13 @@ Always finish with a CTA — Call To Action: suggest the next question, deeper a
 
 When your answer includes a table, ranking, or list of items, render a clean, realistic table in your reply (about 15-20 rows is plenty — do NOT pad with empty, blank, or repeated rows) together with your insights. ALSO call the \`present_table\` tool with those same rows and their column headers, so the user gets a sortable/filterable table with one-click Excel export below your reply. CRITICAL: respond ENTIRELY in the language of the user's message — the prose, the table headers, the column names, and the \`title\` must all match it. If the user wrote in English, everything is in English; do not switch to Hebrew.`,
 
-      model: 'gpt-5.6',
+      // gpt-5.6-terra, not Sol (plain 'gpt-5.6'): this demo crew has no DB and
+      // just narrates + fabricates a demo table, so Sol's full reasoning budget
+      // only adds latency (measured ~5s to first token / ~8s a turn, and a
+      // 46s outlier on a heavy table turn). Terra is the balanced 5.6 tier at
+      // ~half the cost and much faster. Overridable per-session in the debug
+      // panel. (Switched 2026-09-07 after a demo slowness report.)
+      model: 'gpt-5.6-terra',
       maxTokens: 4096,
       tools: [
         {

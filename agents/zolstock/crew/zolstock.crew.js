@@ -204,7 +204,9 @@ User: "המלצות לרכש"
       // instruction (drifted into numbered lists on longer tables) —
       // gpt-5.6 complies consistently (same switch already proven
       // out for hypertoy, see project memory).
-      model: process.env.ZOLSTOCK_CREW_MODEL || 'gpt-5.6',
+      // 2026-09-07: default moved from Sol ('gpt-5.6') to the Terra tier — ~2x
+      // faster to first token, ~half the cost, still pastes tables verbatim.
+      model: process.env.ZOLSTOCK_CREW_MODEL || 'gpt-5.6-terra',
       maxTokens: 8192,
       fieldsToCollect: [],
       transitionTo: null,

@@ -4,7 +4,10 @@
 
 Aspect is a multi-vertical Business Intelligence (BI) agent that provides financial, operational, and strategic insights for retail organizations. It hosts 4 specialized crew members, each tailored to a different retail vertical. Users manually switch between crews via tabs in the UI.
 
-**Model:** GPT-5-chat-latest (crews 1-3), GPT-4o (Zer4U crew)
+**Model:** GPT-4o (Technology / FMCG / Fashion — pure-LLM demo crews; a gpt-5.x
+reasoning model added ~35s/turn and a silent SSE gap that surfaced as a "network
+error", 2026-09-07). Zer4U crew: `ZER4U_CREW_MODEL` env or `gpt-5.6` fallback.
+All overridable per-session from the debug panel.
 **Language:** Bilingual — responds in the language the user writes in (Hebrew/English)
 **Knowledge Base:** Disabled (domain knowledge embedded in guidance text)
 

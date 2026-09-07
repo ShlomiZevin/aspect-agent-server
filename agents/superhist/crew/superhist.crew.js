@@ -37,7 +37,9 @@ class SuperHistCrew extends CrewMember {
       // than every sibling. gpt-5.6 is what zolstock and hypertoy use, chosen
       // there because gpt-4o drifted off the "paste the formatted table
       // verbatim" instruction on longer tables.
-      model: process.env.SUPERHIST_CREW_MODEL || 'gpt-5.6',
+      // 2026-09-07: default moved from Sol ('gpt-5.6') to the Terra tier — ~2x
+      // faster to first token, ~half the cost, still pastes tables verbatim.
+      model: process.env.SUPERHIST_CREW_MODEL || 'gpt-5.6-terra',
       maxTokens: 8192,
 
       guidance: `You are a business intelligence advisor for הסופר החברתי (The Social Supermarket), the Histadrut's members-only online grocery in Israel (super-hist.co.il).
