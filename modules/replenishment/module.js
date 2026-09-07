@@ -263,6 +263,48 @@ module.exports = {
     },
 
     /**
+     * Scoped chat sessions this module offers (Smart Tune). A scoped turn's
+     * tool set comes from HERE ONLY — the dataset's general SQL tool is
+     * deliberately absent, which is the isolation guarantee: this chat can
+     * discuss only what the module knows.
+     */
+    chatScopes(ctx) {
+      return [{
+        scopeId: 'tune',
+        title: { en: 'Smart Tune', he: 'כוונון חכם' },
+        tools: (tctx) => [
+          require('./chat-tool').buildTool(tctx.datasetId),
+          require('./tune-tools').buildProposeTool(tctx.datasetId, {
+            settings: tctx.settings,
+            conversationId: tctx.conversationId,
+            scopeContext: tctx.context,
+          }),
+        ],
+        // D8: ask-AND-act, the model decides per message; the action appears
+        // only when the user asked for one (that is when the proposal tool is
+        // called); ambiguity gets words, not proposals.
+        promptFragment: (context) => {
+          const group = context.group || 'order_now';
+          const count = context.itemCount != null ? ` (${context.itemCount} items)` : '';
+          return 'This conversation is the SMART TUNE panel of the Procurement screen, '
+            + `opened on the group "${group}"${count}. You have exactly two tools.\n`
+            + '1. READ questions ("how many…", "which items…") → answer with '
+            + 'fetch_replenishment. Default the scope to this panel\'s group '
+            + `(currentGroup-equivalent filters) unless the user widens it.\n`
+            + '2. CHANGE requests ("move…", "reject…", "park…", "reclassify…") → answer '
+            + 'AND call propose_group_change. Present its preview and interpretation; the '
+            + 'user applies it with the Process button — NEVER say items were moved.\n'
+            + '3. AMBIGUOUS ("these look wrong") → answer, and offer the move in words '
+            + 'without proposing.\n'
+            + 'Never refuse because of vocabulary — map it to the tools\' filters '
+            + '(name text, category, supplier, SKU list). Mirror the user\'s language; '
+            + 'Hebrew in the data says nothing about the language to answer in. '
+            + 'Carry every data-contract caveat the tools return.';
+        },
+      }];
+    },
+
+    /**
      * Additions to the dataset's capability manifest.
      *
      * NOTE ON WHAT IS AND IS NOT HERE. The truths about the FEED — that no

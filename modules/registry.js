@@ -136,6 +136,27 @@ function validate(descriptor) {
         throw new Error(`${where}: missing hook '${hook}'`);
       }
     }
+    // chatScopes is OPTIONAL (a module without scoped chat simply has none),
+    // but if declared it must be a function returning well-formed scopes —
+    // a malformed scope would otherwise surface mid-chat-turn.
+    if (descriptor.hooks.chatScopes !== undefined) {
+      if (typeof descriptor.hooks.chatScopes !== 'function') {
+        throw new Error(`${where}: chatScopes must be a function when declared`);
+      }
+      const scopes = descriptor.hooks.chatScopes({ datasetId: '__validate__' }) || [];
+      for (const s of scopes) {
+        if (!s.scopeId) throw new Error(`${where}: a chat scope has no scopeId`);
+        if (!s.title?.en || !s.title?.he) {
+          throw new Error(`${where}: chat scope '${s.scopeId}' must have both 'en' and 'he' titles`);
+        }
+        if (typeof s.tools !== 'function') {
+          throw new Error(`${where}: chat scope '${s.scopeId}' must declare tools() as a function`);
+        }
+        if (s.promptFragment === undefined) {
+          throw new Error(`${where}: chat scope '${s.scopeId}' must declare a promptFragment`);
+        }
+      }
+    }
   } else if (descriptor.hooks) {
     throw new Error(`${where}: an app module must not declare data hooks`);
   }

@@ -32,6 +32,11 @@ async function runChatTurn({
   temperatureOverrides,
   topKOverrides,
   restrictedMode = false,
+  // Aspect Modules scoped chat (Smart Tune): {moduleId, scopeId, context}.
+  // Passed through to the dispatcher, which swaps the crew's tool set for the
+  // scope's own and injects its prompt fragment — only when the module is
+  // live; otherwise the turn runs exactly as a plain one.
+  moduleScope = null,
 }) {
   if (!message || !conversationId) {
     throw new Error('runChatTurn requires message and conversationId');
@@ -69,6 +74,7 @@ async function runChatTurn({
       }
 
       let inlineTransition = null;
+      const toolResults = [];
 
       for await (const chunk of dispatcherService.dispatch({
         message,
@@ -89,6 +95,7 @@ async function runChatTurn({
         topKOverrides: topKOverrides || {},
         agentId: agent?.id || null,
         restrictedMode: !!restrictedMode,
+        moduleScope: moduleScope || null,
       })) {
         if (typeof chunk === 'object' && chunk.type) {
           if (chunk.type === 'model_used') {
@@ -115,6 +122,12 @@ async function runChatTurn({
           } else if (chunk.type === 'crew_info' && chunk.crew) {
             currentCrewName = chunk.crew.name;
             currentCrewDisplayName = chunk.crew.displayName;
+          } else if (chunk.type === 'function_result') {
+            // Structured tool results, surfaced so a JSON client (the Smart
+            // Tune panel, robot scripts) can render tool payloads — e.g. an
+            // actionable proposal card — instead of re-parsing prose. The SSE
+            // path already streams these as typed events.
+            toolResults.push({ name: chunk.name, result: chunk.result });
           }
         } else {
           fullReply += chunk;
@@ -185,6 +198,7 @@ async function runChatTurn({
         modelUsed: modelUsedData?.modelUsed || modelUsedData?.model || null,
         userMessageId: userMsg.id,
         assistantMessageId: savedAssistantMessage?.id || null,
+        toolResults,
       };
     }
 

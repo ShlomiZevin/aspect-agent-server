@@ -2058,7 +2058,10 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
         temperatureOverrides: temperatureOverrides || {},
         topKOverrides: topKOverrides || {},
         agentId: agent?.id || null,
-        restrictedMode: !!restrictedMode
+        restrictedMode: !!restrictedMode,
+        // Aspect Modules scoped chat (Smart Tune) — inert unless a live
+        // module's scope validates it; see module-tools.service.attachTo.
+        moduleScope: req.body.moduleScope || null
       })) {
         // Check if chunk is a function call event (object) or text (string)
         if (typeof chunk === 'object' && chunk.type) {

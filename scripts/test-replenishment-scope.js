@@ -71,6 +71,38 @@ async function main() {
     ok('…and its counts are the scoped ones', scoped.counts.orderNow <= scoped.total || scoped.counts.ok >= 0);
   }
 
+  console.log('\n2b · Scoped attach: the tune scope swaps the tool set, and gives it back');
+  {
+    const attach = require('../modules/services/module-tools.service');
+    const ownTool = { name: 'fetch_zolstock_data', handler: async () => ({}) };
+    const crew = { datasetSchema: 'zolstock', tools: [ownTool] };
+
+    const plain = await attach.attachTo(crew);
+    ok('plain turn keeps the crew\'s own tool and adds the module\'s',
+      !plain.scoped && crew.tools.some(t => t.name === 'fetch_zolstock_data')
+      && crew.tools.some(t => t.name === 'fetch_replenishment'));
+
+    const scoped = await attach.attachTo(crew,
+      { moduleId: 'replenishment', scopeId: 'tune', context: { group: 'order_now' } },
+      { conversationId: 'scope-battery' });
+    ok('scoped turn = scope tools ONLY — the general SQL tool is not attached',
+      scoped.scoped
+      && crew.tools.some(t => t.name === 'fetch_replenishment')
+      && crew.tools.some(t => t.name === 'propose_group_change')
+      && !crew.tools.some(t => t.name === 'fetch_zolstock_data'),
+      crew.tools.map(t => t.name).join(', '));
+    ok('…and hands the dispatcher the D8 fragment', /NEVER say items were moved/i.test(scoped.fragment || ''));
+
+    const back = await attach.attachTo(crew);
+    ok('the next plain turn restores the crew\'s own tools exactly',
+      !back.scoped && crew.tools.some(t => t.name === 'fetch_zolstock_data'));
+
+    const bad = await attach.attachTo(crew, { moduleId: 'replenishment', scopeId: 'nope' });
+    ok('an unknown scope refuses into a PLAIN turn — ordinary answers, clear signal',
+      !bad.scoped && bad.refused === 'scope_unavailable'
+      && crew.tools.some(t => t.name === 'fetch_zolstock_data'));
+  }
+
   if (withChat) {
     console.log('\n3 · REAL chat turns — the screenshot conversation, both languages');
     const { runChatTurn } = require('../services/chat-turn.service');
