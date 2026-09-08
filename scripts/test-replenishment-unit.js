@@ -106,6 +106,53 @@ console.log('\n1 · The formula, on a well-behaved item');
   ok('every row carries its data-through date', r.dataThrough === THROUGH, r.dataThrough);
 }
 
+console.log('\n1b · the actionable calendar — two dates, never an instruction in the past');
+{
+  const r = computeRecommendation(baseRow(), settings(), ctx);
+  // Overdue: the diagnosis stays in the past, the instruction clamps to today.
+  ok('an overdue item says PLACE ORDER TODAY, never a past date',
+    r.placeOrderBy === TODAY, r.placeOrderBy);
+  ok('…while orderByDate keeps the diagnosis (what would have prevented it)',
+    r.orderByDate === '2026-07-19' && r.daysLate === 38, `${r.orderByDate} / ${r.daysLate}`);
+  ok('runout = data-through + days of cover', r.runoutDate === '2026-10-17', r.runoutDate);
+  ok('arrival if ordered today = today + lead', r.arrivesIfOrderedToday === '2026-11-24', r.arrivesIfOrderedToday);
+  ok('stockout gap = arrival − runout when positive',
+    r.stockoutGapDays === 38, String(r.stockoutGapDays));
+
+  // Not yet due: the instruction IS the ideal date — no clamp.
+  const early = computeRecommendation(baseRow(), settings(), { ...ctx, today: '2026-07-01' });
+  ok('a not-yet-due item keeps its future order date as the instruction',
+    early.placeOrderBy === early.orderByDate && early.placeOrderBy > '2026-07-01', early.placeOrderBy);
+  ok('…and its gap is zero — ordering on time beats the runout',
+    early.stockoutGapDays === 0, String(early.stockoutGapDays));
+
+  const dead = computeRecommendation(
+    baseRow({ qty_sold_28d: 0, qty_sold_90d: 0, qty_sold_365d: 0 }), settings(), ctx);
+  ok('no demand → no calendar (null dates, not fake ones)',
+    dead.placeOrderBy === null && dead.runoutDate === null && dead.stockoutGapDays === null,
+    JSON.stringify([dead.placeOrderBy, dead.runoutDate]));
+}
+
+console.log('\n1c · forward-looking urgency — runout first, bleed breaks ties');
+{
+  const eng = require('../modules/replenishment/engine');
+  const mk = (over) => computeRecommendation(baseRow(over), settings(), ctx);
+  // Already out, bleeding fast vs slow: same runout (=THROUGH), bleed decides.
+  const fast = mk({ sku: 'FAST', warehouse_qty: 0, on_order_qty: 0, committed_qty: 0, cost_ex_vat: 10 });
+  const slow = mk({ sku: 'SLOW', warehouse_qty: 0, on_order_qty: 0, committed_qty: 0, cost_ex_vat: 0.5 });
+  // In stock, runs out soon vs the already-out pair.
+  const soon = mk({ sku: 'SOON', warehouse_qty: 300, on_order_qty: 0, committed_qty: 0 }); // ~5 days cover
+  const sorted = [slow, soon, fast].sort(eng.compareUrgency).map(r => r.sku);
+  ok('already-out items lead (earliest runout), fast bleeder before slow',
+    sorted[0] === 'FAST' && sorted[1] === 'SLOW', sorted.join(','));
+  ok('an in-stock item running out later sorts after the stockouts',
+    sorted[2] === 'SOON', sorted.join(','));
+  const okRow = mk({ warehouse_qty: 999999 });
+  ok('adequately-stocked rows band after due rows regardless of runout',
+    [okRow, fast].sort(eng.compareUrgency)[0].sku === 'FAST',
+    okRow.status);
+}
+
 console.log('\n2 · today and the stock source are parameters, never assumptions');
 {
   const early = computeRecommendation(baseRow(), settings(), { ...ctx, today: '2026-07-01' });

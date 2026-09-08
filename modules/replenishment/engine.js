@@ -259,6 +259,27 @@ function computeRecommendation(row, settings, context = {}) {
   const orderByDate = daysOfCover === null ? null : addDays(dataThrough, daysOfCover - leadTimeDays);
   const daysLate = orderByDate ? daysBetween(today, orderByDate) : null;
 
+  // ── the actionable calendar (two-date model) ──
+  //
+  // `orderByDate` is a DIAGNOSIS: the last date an order could have gone out
+  // and still beaten the runout. Once missed it lies in the past — and a past
+  // date read as an instruction ("order by June 6") is nonsense; the client
+  // said exactly that. These four are the INSTRUCTION side, clamped to the
+  // calendar a buyer can act in:
+  //   placeOrderBy          when to actually place the order — today at the
+  //                         earliest, never a date that has already passed
+  //   runoutDate            when current stock is projected to hit zero
+  //   arrivesIfOrderedToday when goods would land if the order went out today
+  //   stockoutGapDays       projected days of zero stock even if ordered
+  //                         today (0 = an order today still beats the runout)
+  const runoutDate = daysOfCover === null ? null : addDays(dataThrough, daysOfCover);
+  const placeOrderBy = orderByDate === null ? null
+    : (daysLate !== null && daysLate > 0 ? new Date(today.getTime()) : orderByDate);
+  const arrivesIfOrderedToday = daysOfCover === null ? null : addDays(today, leadTimeDays);
+  const stockoutGapDays = runoutDate && arrivesIfOrderedToday
+    ? Math.max(0, daysBetween(arrivesIfOrderedToday, runoutDate))
+    : null;
+
   // ── quantity ──
   const targetStock = velocityDaily * (leadTimeDays + reviewDays) + safetyStock;
   const rawQty = Math.max(0, targetStock - netAvailable);
@@ -370,6 +391,10 @@ function computeRecommendation(row, settings, context = {}) {
     daysOfCover,
     orderByDate: iso(orderByDate),
     daysLate,
+    placeOrderBy: iso(placeOrderBy),
+    runoutDate: iso(runoutDate),
+    arrivesIfOrderedToday: iso(arrivesIfOrderedToday),
+    stockoutGapDays,
     targetStock,
     rawQty,
     orderQty,
@@ -398,14 +423,46 @@ function computeRecommendations(rows, settings, context = {}) {
     if (rec) out.push(rec);
   }
 
-  const rank = { [STATUS.OVERDUE]: 0, [STATUS.DUE_SOON]: 1, [STATUS.OK]: 2, [STATUS.NO_DEMAND]: 3 };
-  out.sort((a, b) => {
-    if (rank[a.status] !== rank[b.status]) return rank[a.status] - rank[b.status];
-    if (a.status === STATUS.OVERDUE) return (b.daysLate ?? 0) - (a.daysLate ?? 0);
-    if (a.status === STATUS.DUE_SOON) return String(a.orderByDate).localeCompare(String(b.orderByDate));
-    return (b.estimatedCostExVat ?? 0) - (a.estimatedCostExVat ?? 0);
-  });
+  out.sort(compareUrgency);
   return out;
+}
+
+/**
+ * FORWARD-LOOKING urgency — the one ordering every surface shares.
+ *
+ * The old rule (overdue first, most-late first) was true and useless: with an
+ * unconfigured lead time, 86% of a real due list collapsed onto one identical
+ * "93 days late" and the tiebreak was cost — a wall of long-dead rows that
+ * buried every "in stock, runs out Thursday" line the buyer actually wanted.
+ *
+ * The new rule ranks by WHEN STOCK RUNS OUT, soonest first (already-out items
+ * carry the earliest runout and lead naturally); ties — the entire already-
+ * out cohort shares one runout — break by how fast money is bleeding
+ * (velocity × unit cost per day), then by order value. Items the engine wants
+ * ordered (due) come before adequately-stocked ones, which come before
+ * no-demand rows.
+ */
+function compareUrgency(a, b) {
+  const band = r => (r.status === STATUS.OVERDUE || r.status === STATUS.DUE_SOON) ? 0
+    : r.status === STATUS.OK ? 1 : 2;
+  if (band(a) !== band(b)) return band(a) - band(b);
+
+  const runout = r => r.runoutDate ?? '9999-12-31';
+  if (runout(a) !== runout(b)) return runout(a) < runout(b) ? -1 : 1;
+
+  const bleed = r => {
+    const unit = r.orderQty > 0 && r.estimatedCostExVat != null ? r.estimatedCostExVat / r.orderQty : 0;
+    return (r.velocityDaily ?? 0) * unit;
+  };
+  const byBleed = bleed(b) - bleed(a);
+  if (byBleed !== 0) return byBleed;
+
+  const byValue = (b.estimatedCostExVat ?? 0) - (a.estimatedCostExVat ?? 0);
+  if (byValue !== 0) return byValue;
+  // Last resort: a stable, meaningless-but-repeatable key, so two runs over
+  // the same data produce the same page rather than shuffling under the
+  // buyer between refreshes.
+  return String(a.sku).localeCompare(String(b.sku));
 }
 
 /** Headline counts for the summary tiles. Derived, never separately queried. */
@@ -448,6 +505,7 @@ module.exports = {
   AVAILABLE_WINDOWS,
   computeRecommendation,
   computeRecommendations,
+  compareUrgency,
   summarize,
   // exported for the offline battery
   pickWindow,

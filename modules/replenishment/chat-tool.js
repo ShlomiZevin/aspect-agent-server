@@ -182,6 +182,10 @@ async function handle(datasetId, params = {}) {
     status: r.status,
     orderQty: r.orderQty,
     estimatedCostExVat: r.estimatedCostExVat,
+    placeOrderBy: r.placeOrderBy,
+    runoutDate: r.runoutDate,
+    arrivesIfOrderedToday: r.arrivesIfOrderedToday,
+    stockoutGapDays: r.stockoutGapDays,
     orderByDate: r.orderByDate,
     daysLate: r.daysLate,
     daysOfCover: r.daysOfCover === null ? null : Math.round(r.daysOfCover),
@@ -198,6 +202,17 @@ async function handle(datasetId, params = {}) {
   // it, but it cannot quietly drop it.
   const contract = [];
   contract.push(`Data through ${res.dataThrough || 'unknown'}; computed for ${res.today}.`);
+  // The two-date model, spelled out so answers stop presenting a diagnosis
+  // as an instruction: a client read "order by June 6" (months past) as a
+  // date to place an order, which is nonsense.
+  contract.push(
+    'DATES: `placeOrderBy` is WHEN TO ORDER — today at the earliest, never in the past; '
+    + 'present it as the action date. `runoutDate` is when current stock is projected to '
+    + 'hit zero; `arrivesIfOrderedToday` is when goods would land if ordered now, and '
+    + '`stockoutGapDays` the projected zero-stock days even so. `orderByDate` is the '
+    + 'DIAGNOSIS — the last date that would have prevented the runout; when it is in the '
+    + 'past, say "should ideally have been ordered N days ago", never present it as when '
+    + 'to order.');
   // The interpretation, stated — the buyer must see WHICH rows were answered
   // about, especially when the scope came from resolving their vocabulary.
   if (res.scope) contract.push(res.scope);

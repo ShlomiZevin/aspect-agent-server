@@ -412,6 +412,14 @@ function summarizeGroups(list) {
  * left unordered.
  */
 function sortByUrgency(list) {
+  // The engine's own comparator — ONE ordering across the screen, the chat
+  // tool and the report: soonest projected runout first, ties by how fast
+  // money bleeds. See engine.compareUrgency for the reasoning (and the wall
+  // of "93 days late" it replaces).
+  return list.slice().sort(engine.compareUrgency);
+}
+
+function sortByUrgencyOld(list) {
   const rank = {
     [engine.STATUS.OVERDUE]: 0, [engine.STATUS.DUE_SOON]: 1,
     [engine.STATUS.OK]: 2, [engine.STATUS.NO_DEMAND]: 3,
