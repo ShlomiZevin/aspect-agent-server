@@ -230,6 +230,8 @@ router.get('/:datasetId/recommendations', async (req, res) => {
       search: req.query.search,
       today: req.query.today,
       lang: req.query.lang,
+      // Whitelisted, never free-form: an unknown value silently means default.
+      sort: req.query.sort === 'runout_desc' ? 'runout_desc' : undefined,
     });
     if (refuse(res, out)) return;
     res.json(out);

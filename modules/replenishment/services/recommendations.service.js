@@ -318,9 +318,25 @@ async function getRecommendations(datasetId, opts = {}) {
     ? scoped.filter(r => r.group === opts.group)
     : scoped;
 
-  const filtered = opts.onlyDue
+  let filtered = opts.onlyDue
     ? grouped.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
     : grouped;
+
+  // The buyer's sort choice. Default is engine.compareUrgency (soonest
+  // runout first, bleed breaks ties). 'runout_desc' is the planning view the
+  // buyer asked for: the furthest-future runouts first, closer ones later,
+  // already-run-out items LAST — a timeline read toward today. Applied to
+  // the filtered list only; summaries are unaffected by construction.
+  if (opts.sort === 'runout_desc') {
+    filtered = filtered.slice().sort((a, b) => {
+      const out = r => (r.alreadyOut || !r.runoutDate) ? 1 : 0;
+      if (out(a) !== out(b)) return out(a) - out(b);
+      const ra = a.runoutDate ?? '0000-01-01';
+      const rb = b.runoutDate ?? '0000-01-01';
+      if (ra !== rb) return ra > rb ? -1 : 1;
+      return engine.compareUrgency(a, b);
+    });
+  }
 
   // A page out of the filtered set. `offset` beyond the end yields an empty
   // page rather than an error: it is what a stale pager sends after someone
