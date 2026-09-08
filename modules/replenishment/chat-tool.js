@@ -127,10 +127,22 @@ function buildTool(datasetId) {
           description:
             'Optional. overdue = the place-order date is ALREADY TODAY ("need to '
             + 'order now", "חייבים להזמין עכשיו"); due_soon = planned, the order '
-            + 'date lies ahead ("coming up", "בקרוב"). Combine freely with sortBy: '
-            + '"furthest items I must order now" = status:"overdue" + '
-            + 'sortBy:"runout_desc" — the overdue items with the most remaining '
-            + 'runway, a real and useful set. Never satisfy "now" by relabeling.',
+            + 'date lies ahead ("coming up", "בקרוב"). ONLY takes effect together '
+            + 'with statusFromUser; alone it is IGNORED — a "furthest to '
+            + 're-supply" question with no now/today wording covers BOTH overdue '
+            + 'and planned items, and adding overdue silently capped the runout '
+            + 'horizon and made the answer disagree with the screen. Combine with '
+            + 'sortBy when asked: "furthest items I must order now" = '
+            + 'status:"overdue" + sortBy:"runout_desc".',
+        },
+        statusFromUser: {
+          type: 'string',
+          description:
+            'The user\'s OWN words that restricted to overdue or planned items '
+            + '("that I need to order now", "רק מה שדחוף היום", "the upcoming '
+            + 'ones"), quoted verbatim. Required for status to take effect — it '
+            + 'exists so the overdue/planned cut is only ever applied because the '
+            + 'user asked for it.',
         },
         sortBy: {
           type: 'string',
@@ -254,6 +266,12 @@ async function handle(datasetId, params = {}) {
   const userNamedWindow = Boolean(String(params.windowFromUser ?? '').trim());
   const horizonIgnored = params.horizonDays != null && !userNamedWindow;
 
+  // Same lock for the overdue/planned cut: it changes which items exist in
+  // the answer (overdue alone caps the runout horizon at today+lead), so it
+  // applies only when the model can quote the user's words asking for it.
+  const userNamedStatus = Boolean(String(params.statusFromUser ?? '').trim());
+  const statusIgnored = params.status != null && !userNamedStatus;
+
   const opts = {
     supplier: supplierRes.supplier,
     sku: params.sku || undefined,
@@ -264,7 +282,7 @@ async function handle(datasetId, params = {}) {
     onlyDue: params.onlyDue === undefined ? true : Boolean(params.onlyDue),
     horizonDays: userNamedWindow ? params.horizonDays : undefined,
     group: Object.values(GROUPS).includes(params.group) ? params.group : undefined,
-    status: ['overdue', 'due_soon'].includes(params.status) ? params.status : undefined,
+    status: userNamedStatus && ['overdue', 'due_soon'].includes(params.status) ? params.status : undefined,
     sort: params.sortBy === 'runout_desc' ? 'runout_desc' : undefined,
     limit: Math.min(Number(params.limit) || MAX_ROWS_IN_ANSWER, 100),
   };
@@ -320,9 +338,10 @@ async function handle(datasetId, params = {}) {
   const interpretation = [
     supplierRes.supplier ? `supplier "${supplierRes.supplier}"` : 'all suppliers',
     Object.values(GROUPS).includes(params.group) ? `only the "${params.group}" group chip` : 'all group chips',
-    params.status === 'overdue' ? 'only items to order TODAY (overdue)'
-      : params.status === 'due_soon' ? 'only planned items (order date ahead)'
-        : 'items to order today AND planned ones',
+    userNamedStatus && params.status === 'overdue' ? 'only items to order TODAY (overdue)'
+      : userNamedStatus && params.status === 'due_soon' ? 'only planned items (order date ahead)'
+        : 'items to order today AND planned ones'
+          + (statusIgnored ? ' (an overdue/planned cut was proposed without the user asking — IGNORED)' : ''),
     params.sortBy === 'runout_desc' ? 'ordered by FURTHEST projected runout first (planning view)'
       : 'ordered most-urgent first',
   ].join(' · ');
