@@ -1,6 +1,11 @@
 /**
  * Otto's HTTP surface — the screen builder.
  *
+ * NOTE ON `datasets/` AND `theme/`. These two folders were `otto/data/`, which
+ * .gitignore's unanchored `data/` rule silently excluded at every depth — the
+ * files were never committed, and a fresh clone crashed at boot on the require
+ * below. Do not create a `data/` folder under a feature here.
+ *
  *   POST   /api/otto/chat            one brainstorm turn
  *   POST   /api/otto/plan            consolidate the conversation into a plan
  *   POST   /api/otto/build           build (or revise) the screen from an approved plan
@@ -24,7 +29,7 @@ const path = require('path');
 
 const otto = require('../services/otto.service');
 const store = require('../services/otto-apps.store');
-const { demoData, SCHEMA } = require('../data/demo-dataset');
+const { demoData, SCHEMA } = require('../datasets/demo-dataset');
 
 const router = express.Router();
 
@@ -139,7 +144,7 @@ router.get('/data', handle(async (_req, res) => {
  * means an app saved today picks up a theme fix tomorrow without being rebuilt.
  * Cached for an hour — it changes about as often as the brand does.
  */
-const THEME_PATH = path.join(__dirname, '..', 'data', 'app-theme.css');
+const THEME_PATH = path.join(__dirname, '..', 'theme', 'app-theme.css');
 router.get('/theme.css', handle(async (_req, res) => {
   res.type('text/css').set('Cache-Control', 'public, max-age=3600');
   res.send(fs.readFileSync(THEME_PATH, 'utf8'));

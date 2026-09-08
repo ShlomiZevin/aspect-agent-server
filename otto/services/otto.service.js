@@ -29,7 +29,7 @@
  */
 
 const llmService = require('../../services/llm');
-const { schemaForPrompt, demoData, dataSummary } = require('../data/demo-dataset');
+const { schemaForPrompt, demoData, dataSummary } = require('../datasets/demo-dataset');
 
 // NOTE: no `temperature` is passed anywhere in this file. The current Opus
 // and Sonnet models reject the parameter outright ("temperature is
