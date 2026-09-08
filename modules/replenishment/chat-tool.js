@@ -116,6 +116,17 @@ function buildTool(datasetId) {
             + 'overdue count: overdue is a STATUS, the groups are the screen\'s '
             + 'classification of those same items, and their counts differ.',
         },
+        status: {
+          type: 'string',
+          enum: ['overdue', 'due_soon'],
+          description:
+            'Optional. overdue = the place-order date is ALREADY TODAY ("need to '
+            + 'order now", "חייבים להזמין עכשיו"); due_soon = planned, the order '
+            + 'date lies ahead ("coming up", "בקרוב"). Combine freely with sortBy: '
+            + '"furthest items I must order now" = status:"overdue" + '
+            + 'sortBy:"runout_desc" — the overdue items with the most remaining '
+            + 'runway, a real and useful set. Never satisfy "now" by relabeling.',
+        },
         sortBy: {
           type: 'string',
           enum: ['urgency', 'runout_desc'],
@@ -187,6 +198,7 @@ async function handle(datasetId, params = {}) {
     onlyDue: params.onlyDue === undefined ? true : Boolean(params.onlyDue),
     horizonDays: userNamedWindow ? params.horizonDays : undefined,
     group: Object.values(GROUPS).includes(params.group) ? params.group : undefined,
+    status: ['overdue', 'due_soon'].includes(params.status) ? params.status : undefined,
     sort: params.sortBy === 'runout_desc' ? 'runout_desc' : undefined,
     limit: Math.min(Number(params.limit) || MAX_ROWS_IN_ANSWER, 100),
   };
@@ -231,6 +243,24 @@ async function handle(datasetId, params = {}) {
   // it, but it cannot quietly drop it.
   const contract = [];
   contract.push(`Data through ${res.dataThrough || 'unknown'}; computed for ${res.today}.`);
+
+  // THE INTERPRETATION, FIRST AND ALWAYS — composed from the parameters that
+  // actually ran, not from what the model believes it asked for. Three times a
+  // user's ask ("furthest", "from the Order now group", "that I need to order
+  // now") was silently bent onto whatever the tool could express, and the
+  // mislabeling was invisible. The answer MUST open by stating this
+  // interpretation in the user's language, so a mismatch with their intent is
+  // caught by the user in one glance instead of eroding their trust row by row.
+  const interpretation = [
+    params.supplier ? `supplier "${params.supplier}"` : 'all suppliers',
+    Object.values(GROUPS).includes(params.group) ? `only the "${params.group}" group chip` : 'all group chips',
+    params.status === 'overdue' ? 'only items to order TODAY (overdue)'
+      : params.status === 'due_soon' ? 'only planned items (order date ahead)'
+        : 'items to order today AND planned ones',
+    params.sortBy === 'runout_desc' ? 'ordered by FURTHEST projected runout first (planning view)'
+      : 'ordered most-urgent first',
+  ].join(' · ');
+  contract.push(`INTERPRETATION (state this openly at the top of your answer, in the user's language): ${interpretation}.`);
   // The two-date model, spelled out so answers stop presenting a diagnosis
   // as an instruction: a client read "order by June 6" (months past) as a
   // date to place an order, which is nonsense.

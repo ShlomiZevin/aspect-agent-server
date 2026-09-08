@@ -322,6 +322,16 @@ async function getRecommendations(datasetId, opts = {}) {
     ? grouped.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
     : grouped;
 
+  // The status split of the due set: overdue = the place-order date is
+  // already today; due_soon = planned, the order date lies ahead. "Items I
+  // must order NOW" is the first one, and without this filter that ask was
+  // only answerable by mislabeling something else.
+  if (opts.status === 'overdue') {
+    filtered = filtered.filter(r => r.status === engine.STATUS.OVERDUE);
+  } else if (opts.status === 'due_soon') {
+    filtered = filtered.filter(r => r.status === engine.STATUS.DUE_SOON);
+  }
+
   // The buyer's sort choice. Default is engine.compareUrgency (soonest
   // runout first, bleed breaks ties). 'runout_desc' is the planning view the
   // buyer asked for: the furthest-future runouts first, closer ones later,
