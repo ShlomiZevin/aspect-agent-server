@@ -26,6 +26,8 @@
 
 const MODELS = [
   // ── Anthropic ──
+  { id: 'claude-opus-5',     providerId: 'anthropic', name: 'Claude Opus 5',     notes: 'Newest top reasoning — same price as 4.7' },
+  { id: 'claude-sonnet-5',   providerId: 'anthropic', name: 'Claude Sonnet 5',   notes: 'Newest balanced — same price as 4.6' },
   { id: 'claude-opus-4-7',   providerId: 'anthropic', name: 'Claude Opus 4.7',   notes: 'Top reasoning — slow & expensive' },
   { id: 'claude-sonnet-4-6', providerId: 'anthropic', name: 'Claude Sonnet 4.6', notes: 'Default for thinking — fast & sharp' },
   { id: 'claude-haiku-4-5',  providerId: 'anthropic', name: 'Claude Haiku 4.5',  notes: 'Cheap & fast' },

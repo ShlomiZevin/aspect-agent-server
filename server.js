@@ -159,6 +159,11 @@ app.use('/api/admin/intelligence', require('./insights/routes/insights-admin.rou
 // modules.routes.js and tasks/pending/aspect-modules.md.
 app.use('/api/modules', require('./modules/routes/modules.routes'));
 
+// Otto — the screen builder. Talks to a non-developer, agrees a plan, then
+// writes an operational HTML screen for the Intelligence Center's Apps area.
+// See otto/services/otto.service.js for why it is three calls and not one agent.
+app.use('/api/otto', require('./otto/routes/otto.routes'));
+
 // ─── Aspect Task Board ─────────────────────────────────────────────
 // Our own task board, in its OWN database (`aspect_tasks_db`), not the platform
 // DB. The separation is physical on purpose: the existing board in

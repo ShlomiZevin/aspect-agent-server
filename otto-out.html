@@ -1,0 +1,207 @@
+<div dir="rtl">
+<style>
+  .il-wrap { font-family: system-ui, -apple-system, sans-serif; color: #1a1a1a; background: #fff; padding: 20px; }
+  .il-wrap * { box-sizing: border-box; }
+  .il-title { font-size: 22px; font-weight: 700; margin: 0 0 4px; }
+  .il-subtitle { font-size: 13px; color: #666; margin: 0 0 16px; }
+  .il-notes { background: #faf7ff; border: 1px solid #e5e5e5; border-right: 3px solid #6D28D9; padding: 10px 14px; border-radius: 8px; font-size: 12px; color: #555; margin-bottom: 20px; }
+  .il-notes ul { margin: 4px 0 0; padding-right: 18px; }
+  .il-section-title { font-size: 16px; font-weight: 600; margin: 24px 0 12px; }
+  .il-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .il-card { border: 1px solid #e5e5e5; border-radius: 8px; padding: 14px; background: #fff; }
+  .il-card-supplier { font-size: 15px; font-weight: 600; margin-bottom: 10px; color: #1a1a1a; }
+  .il-card-row { display: flex; justify-content: space-between; font-size: 13px; margin: 4px 0; color: #444; }
+  .il-card-val { font-weight: 600; color: #1a1a1a; }
+  .il-badge { display: inline-block; background: #6D28D9; color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-right: 6px; }
+  .il-supplier-block { border: 1px solid #e5e5e5; border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
+  .il-supplier-header { background: #f7f5fb; padding: 10px 14px; font-weight: 600; font-size: 14px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e5e5e5; }
+  .il-supplier-meta { font-size: 12px; color: #666; font-weight: 400; }
+  table.il-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .il-table th, .il-table td { padding: 8px 12px; text-align: right; border-bottom: 1px solid #f0f0f0; }
+  .il-table th { background: #fafafa; font-weight: 600; cursor: pointer; user-select: none; font-size: 12px; color: #555; }
+  .il-table th:hover { color: #6D28D9; }
+  .il-table tr:last-child td { border-bottom: none; }
+  .il-num { font-variant-numeric: tabular-nums; }
+  .il-shortage { color: #6D28D9; font-weight: 600; }
+  .il-order { color: #1a1a1a; font-weight: 600; }
+  .il-empty { padding: 24px; text-align: center; color: #666; font-size: 13px; border: 1px dashed #e5e5e5; border-radius: 8px; }
+  .il-toast { position: fixed; bottom: 24px; right: 24px; background: #1a1a1a; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 1000; }
+  .il-toast.show { opacity: 1; }
+  .il-actions { margin-top: 10px; padding: 10px 14px; background: #fafafa; border-top: 1px solid #f0f0f0; text-align: left; }
+  .il-btn { background: #fff; border: 1px solid #6D28D9; color: #6D28D9; padding: 6px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; font-family: inherit; }
+  .il-btn:hover { background: #6D28D9; color: #fff; }
+</style>
+
+<div class="il-wrap">
+  <h1 class="il-title">חוסרי מלאי לפי ספק</h1>
+  <p class="il-subtitle">פריטים במחסן המרכזי שנמצאים מתחת למלאי הביטחון, מקובצים לפי ספק</p>
+
+  <div class="il-notes">
+    <strong>לתשומת לב:</strong>
+    <ul>
+      <li>המלאי המוצג הוא צילום מצב נוכחי בלבד — אין היסטוריית מלאי</li>
+      <li>זמן האספקה הוזן ידנית בטבלת הספקים ואינו מחושב מנתוני קבלת סחורה בפועל</li>
+    </ul>
+  </div>
+
+  <div class="il-section-title">סיכום ספקים</div>
+  <div class="il-cards" id="il-cards"></div>
+
+  <div class="il-section-title">פריטים חסרים לפי ספק</div>
+  <div id="il-blocks"></div>
+
+  <div class="il-toast" id="il-toast"></div>
+</div>
+
+<script>
+(function() {
+  const items = DATA.items;
+  const inv = DATA.inventory;
+  const suppliers = DATA.suppliers;
+
+  const leadTimeBySupplier = {};
+  suppliers.forEach(s => { leadTimeBySupplier[s.supplier] = s.lead_time_days; });
+
+  const itemById = {};
+  items.forEach(i => { itemById[i.item_id] = i; });
+
+  const whInv = inv.filter(r => r.store_id === 'WH');
+  const invByItem = {};
+  whInv.forEach(r => { invByItem[r.item_id] = r; });
+
+  const shortages = [];
+  items.forEach(it => {
+    const rec = invByItem[it.item_id];
+    if (!rec) return;
+    const onHand = rec.qty_on_hand;
+    const safety = it.safety_stock;
+    if (onHand < safety) {
+      const shortage = safety - onHand;
+      const onOrder = rec.qty_on_order || 0;
+      const recommended = Math.max(0, shortage - onOrder);
+      shortages.push({
+        supplier: it.supplier,
+        item_id: it.item_id,
+        item_name: it.item_name,
+        on_hand: onHand,
+        safety: safety,
+        shortage: shortage,
+        on_order: onOrder,
+        recommended: recommended
+      });
+    }
+  });
+
+  const bySupplier = {};
+  shortages.forEach(s => {
+    if (!bySupplier[s.supplier]) bySupplier[s.supplier] = [];
+    bySupplier[s.supplier].push(s);
+  });
+
+  const supplierList = Object.keys(bySupplier).sort((a, b) => bySupplier[b].length - bySupplier[a].length);
+
+  const fmtNum = n => n.toLocaleString('he-IL');
+
+  const cardsEl = document.getElementById('il-cards');
+  if (supplierList.length === 0) {
+    cardsEl.innerHTML = '<div class="il-empty">אין ספקים עם פריטים מתחת למלאי הביטחון</div>';
+  } else {
+    supplierList.forEach(sup => {
+      const count = bySupplier[sup].length;
+      const lt = leadTimeBySupplier[sup];
+      const div = document.createElement('div');
+      div.className = 'il-card';
+      div.innerHTML = `
+        <div class="il-card-supplier">${sup}</div>
+        <div class="il-card-row"><span>פריטים חסרים</span><span class="il-card-val">${fmtNum(count)}</span></div>
+        <div class="il-card-row"><span>זמן אספקה</span><span class="il-card-val">${lt !== undefined ? fmtNum(lt) + ' ימים' : 'לא הוגדר'}</span></div>
+      `;
+      cardsEl.appendChild(div);
+    });
+  }
+
+  const blocksEl = document.getElementById('il-blocks');
+  if (supplierList.length === 0) {
+    blocksEl.innerHTML = '<div class="il-empty">אין פריטים להצגה</div>';
+  } else {
+    supplierList.forEach(sup => {
+      const rows = bySupplier[sup].slice();
+      const lt = leadTimeBySupplier[sup];
+      const block = document.createElement('div');
+      block.className = 'il-supplier-block';
+      const totalRec = rows.reduce((a, r) => a + r.recommended, 0);
+      block.innerHTML = `
+        <div class="il-supplier-header">
+          <div>${sup} <span class="il-badge">${fmtNum(rows.length)} פריטים</span></div>
+          <div class="il-supplier-meta">זמן אספקה: ${lt !== undefined ? fmtNum(lt) + ' ימים' : 'לא הוגדר'} · סה"כ מומלץ להזמנה: ${fmtNum(totalRec)} יח'</div>
+        </div>
+        <table class="il-table">
+          <thead>
+            <tr>
+              <th data-col="item_name">שם פריט</th>
+              <th data-col="on_hand">מלאי נוכחי</th>
+              <th data-col="safety">מלאי ביטחון</th>
+              <th data-col="shortage">חוסר</th>
+              <th data-col="on_order">בהזמנה פתוחה</th>
+              <th data-col="recommended">כמות מומלצת להזמנה</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="il-actions">
+          <button class="il-btn" data-supplier="${sup}">יצירת הזמנת רכש</button>
+        </div>
+      `;
+      blocksEl.appendChild(block);
+
+      const tbody = block.querySelector('tbody');
+      let sortCol = 'shortage';
+      let sortDir = -1;
+
+      function render() {
+        rows.sort((a, b) => {
+          const va = a[sortCol], vb = b[sortCol];
+          if (typeof va === 'string') return va.localeCompare(vb, 'he') * sortDir;
+          return (va - vb) * sortDir;
+        });
+        tbody.innerHTML = '';
+        rows.forEach(r => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${r.item_name}</td>
+            <td class="il-num">${fmtNum(r.on_hand)}</td>
+            <td class="il-num">${fmtNum(r.safety)}</td>
+            <td class="il-num il-shortage">${fmtNum(r.shortage)}</td>
+            <td class="il-num">${fmtNum(r.on_order)}</td>
+            <td class="il-num il-order">${fmtNum(r.recommended)}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+      render();
+
+      block.querySelectorAll('th').forEach(th => {
+        th.addEventListener('click', () => {
+          const col = th.dataset.col;
+          if (sortCol === col) sortDir = -sortDir; else { sortCol = col; sortDir = 1; }
+          render();
+        });
+      });
+
+      block.querySelector('.il-btn').addEventListener('click', () => {
+        showToast('הפעולה תופעל כשהמסך יחובר למערכת הרכש');
+      });
+    });
+  }
+
+  const toast = document.getElementById('il-toast');
+  let toastTimer;
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
+  }
+})();
+</script>
+</div>
