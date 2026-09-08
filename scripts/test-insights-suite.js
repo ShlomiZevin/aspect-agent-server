@@ -207,7 +207,7 @@ async function main() {
   // reported as ineffective.
   const DataReloadService = require('../services/data-reload.service');
   const dataReloadService = new DataReloadService(db);
-  for (const a of ['zer4u', 'newdeli', 'thestock', 'hypertoy', 'zolstock', 'tevanaot']) {
+  for (const a of ['zer4u', 'newdeli', 'thestock', 'hypertoy', 'zolstock', 'tevanaot', 'superhist']) {
     require(`../agents/${a}/data-reload`).register(dataReloadService);
   }
   investigation.setDataReloadService(dataReloadService);

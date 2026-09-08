@@ -150,6 +150,80 @@ module.exports = {
         he: 'נשמר עבור שלב ההתראות היזומות. כרגע לא נשלח דבר.',
       },
     },
+    // ── Procurement Groups + Smart Tune (spec sections 3.1/3.4/3.7) ──
+    {
+      key: 'paceModel', type: 'select', required: false, default: 'simple',
+      options: ['simple', 'weighted_seasonal'],
+      label: { en: 'Sales-pace model', he: 'מודל קצב המכירות' },
+      hint: {
+        en: '"weighted_seasonal" doubles the last 60 days and adjusts by each item\'s own prior-year season. Applies only once the views carry the inputs; every row states the model that actually ran.',
+        he: '"weighted_seasonal" מכפיל את משקל 60 הימים האחרונים ומתאם לעונת השנה הקודמת של הפריט. כל שורה מציינת את המודל שרץ בפועל.',
+      },
+    },
+    {
+      key: 'paceFadingRatio', type: 'number', required: false, default: 0.5,
+      label: { en: 'Fading threshold (28d vs 90d pace)', he: 'סף דעיכה (קצב 28 מול 90 יום)' },
+      hint: {
+        en: 'Below this ratio an item is grouped as Fading — its recent pace collapsed versus the 90-day average.',
+        he: 'מתחת ליחס זה פריט מסווג כדועך — הקצב האחרון קרס מול ממוצע 90 הימים.',
+      },
+    },
+    {
+      key: 'seasonalMinUnits', type: 'number', required: false, default: 200,
+      label: { en: 'Seasonality: minimum prior-year units', he: 'עונתיות: מינימום יחידות בשנה קודמת' },
+      hint: {
+        en: 'Below this, an item has too little prior-year history for the seasonal index to apply.',
+        he: 'מתחת לכך אין מספיק היסטוריה משנה קודמת להפעלת מדד עונתי.',
+      },
+    },
+    {
+      key: 'seasonalLowShare', type: 'number', required: false, default: 0.5,
+      label: { en: 'Out-of-season threshold (vs uniform)', he: 'סף מחוץ לעונה (מול אחיד)' },
+      hint: {
+        en: 'An item whose coming-90-days share last year was below this fraction of the uniform share is grouped Out of season.',
+        he: 'פריט שחלקו בשנה שעברה ב-90 הימים הקרובים היה מתחת לשיעור זה מהחלק האחיד מסווג מחוץ לעונה.',
+      },
+    },
+    {
+      key: 'staleOnOrderDays', type: 'number', required: false, default: 180,
+      label: { en: 'Open order counts as stale after (days)', he: 'הזמנה פתוחה נחשבת ישנה אחרי (ימים)' },
+      hint: {
+        en: 'An item with an open purchase order older than this is grouped as Needs checking.',
+        he: 'פריט עם הזמנת רכש פתוחה ישנה מכך מסווג כדורש בדיקה.',
+      },
+    },
+    {
+      key: 'absentStockMeansZero', type: 'boolean', required: false, default: true,
+      label: { en: 'Absent from stock file means zero', he: 'היעדר מקובץ המלאי פירושו אפס' },
+      hint: {
+        en: 'The client\'s answer switch: true = the warehouse export is complete, absence is truly zero. False routes selling items missing from the file to Needs checking.',
+        he: 'מתג התשובה של הלקוח: אמת = קובץ המחסן מלא והיעדר הוא אפס אמיתי. שקר מעביר פריטים נמכרים שחסרים בקובץ לדורש בדיקה.',
+      },
+    },
+    {
+      key: 'clientCanAssignGroups', type: 'boolean', required: false, default: true,
+      label: { en: 'Let the client move items between groups', he: 'לאפשר ללקוח להעביר פריטים בין קבוצות' },
+      hint: {
+        en: 'On by default — the buyer\'s verdicts are the correction layer for the classifier, and they run Smart Tune.',
+        he: 'דלוק כברירת מחדל — הכרעות הקניין הן שכבת התיקון של הסיווג.',
+      },
+    },
+    {
+      key: 'proposalMaxItems', type: 'number', required: false, default: 1000,
+      label: { en: 'Smart Tune: max items per change', he: 'כוונון חכם: מקסימום פריטים לשינוי' },
+      hint: {
+        en: 'The largest bulk change one previewed proposal may carry.',
+        he: 'השינוי המרבי שהצעה אחת עם תצוגה מקדימה יכולה לשאת.',
+      },
+    },
+    {
+      key: 'proposalExpiryHours', type: 'number', required: false, default: 24,
+      label: { en: 'Smart Tune: preview valid for (hours)', he: 'כוונון חכם: תוקף תצוגה מקדימה (שעות)' },
+      hint: {
+        en: 'How long a previewed change stays executable before it must be asked again.',
+        he: 'כמה זמן שינוי שהוצג נשאר ניתן לביצוע לפני שיש לבקש שוב.',
+      },
+    },
   ],
 
   notificationEvents: ['init_completed', 'init_failed', 'nightly_build_failed', 'verification_degraded'],
@@ -186,6 +260,77 @@ module.exports = {
      */
     chatTools(ctx) {
       return [require('./chat-tool').buildTool(ctx.datasetId)];
+    },
+
+    /**
+     * Scoped chat sessions this module offers (Smart Tune). A scoped turn's
+     * tool set comes from HERE ONLY — the dataset's general SQL tool is
+     * deliberately absent, which is the isolation guarantee: this chat can
+     * discuss only what the module knows.
+     */
+    chatScopes(ctx) {
+      return [{
+        scopeId: 'tune',
+        title: { en: 'Smart Tune', he: 'כוונון חכם' },
+        // Determinism over flair: the same "move the umbrellas" must resolve
+        // to the same filter on every run. Tool-argument choice is where all
+        // the answer variance enters; prose barely suffers at 0.
+        temperature: 0,
+        tools: (tctx) => [
+          require('./chat-tool').buildTool(tctx.datasetId),
+          require('./tune-tools').buildProposeTool(tctx.datasetId, {
+            settings: tctx.settings,
+            conversationId: tctx.conversationId,
+            scopeContext: tctx.context,
+          }),
+        ],
+        // D8: ask-AND-act, the model decides per message; the action appears
+        // only when the user asked for one (that is when the proposal tool is
+        // called); ambiguity gets words, not proposals.
+        promptFragment: (context) => {
+          const group = context.group || 'order_now';
+          const count = context.itemCount != null ? ` (${context.itemCount} items)` : '';
+          return 'This conversation is the SMART TUNE panel of the Procurement screen, '
+            + `opened on the group "${group}"${count}. You have exactly two tools.\n`
+            + '1. READ questions ("how many…", "which items…") → answer with '
+            + 'fetch_replenishment. Default the scope to this panel\'s group '
+            + `(currentGroup-equivalent filters) unless the user widens it.\n`
+            + '2. CHANGE requests ("move…", "reject…", "park…", "reclassify…") → answer '
+            + 'AND call propose_group_change. Present its preview and interpretation; the '
+            + 'user applies it with the Process button — NEVER say items were moved.\n'
+            + '3. AMBIGUOUS ("these look wrong") → answer, and offer the move in words '
+            + 'without proposing.\n'
+            + 'RESOLUTION for a change — match the filter to the user\'s vocabulary: '
+            + 'a department/category/supplier → its exact label as delivered; a product '
+            + 'kind named by words ("the umbrellas") → the name filter, which matches '
+            + 'word starts only and is safe for this — use the SHORTEST stem that still '
+            + 'means only the asked kind, so spelling variants (מטריה/מטרייה/מטריית → '
+            + 'stem מטרי) are all caught; an explicit SKU list only when the user '
+            + 'pasted one or you resolved the set COMPLETELY — never hand-built from a '
+            + 'paged read result, which silently drops everything beyond the page. '
+            + 'Verify the filter with the READ tool (its scoped TOTAL is the whole '
+            + 'set, not the page), then call propose_group_change ONCE per user '
+            + 'request — proposing is the commit, not the exploration, and a new '
+            + 'proposal cancels this conversation\'s previous open one.\n'
+            + 'GROUPS ARE NOT CATALOGUE CATEGORIES. The five groups are procurement '
+            + 'work-states; the catalogue\'s categories come from the client\'s source '
+            + 'system and cannot be changed here. If the user names a CATALOGUE '
+            + 'category as a move target ("move them to the Winter category"), do not '
+            + 'map it onto a group silently — ask one clarifying sentence ("groups '
+            + 'here are procurement statuses — did you mean Out of season?") and '
+            + 'propose nothing until they answer.\n'
+            + 'THIS PANEL\'S UNIVERSE is the module\'s procurement data: sales pace, '
+            + 'stock, order needs, groups. A question it cannot answer from that data '
+            + '(revenue, per-store sales detail, campaigns) gets an honest sentence '
+            + 'naming what this panel covers and pointing at Data Chat — never a '
+            + 'replenishment number bent into a sales-shaped answer, and never a '
+            + 'refusal dressed as inability to understand.\n'
+            + 'Never refuse because of vocabulary — map it to the tools\' filters '
+            + '(name text, category, supplier, SKU list). Mirror the user\'s language; '
+            + 'Hebrew in the data says nothing about the language to answer in. '
+            + 'Carry every data-contract caveat the tools return.';
+        },
+      }];
     },
 
     /**

@@ -106,6 +106,53 @@ console.log('\n1 · The formula, on a well-behaved item');
   ok('every row carries its data-through date', r.dataThrough === THROUGH, r.dataThrough);
 }
 
+console.log('\n1b · the actionable calendar — two dates, never an instruction in the past');
+{
+  const r = computeRecommendation(baseRow(), settings(), ctx);
+  // Overdue: the diagnosis stays in the past, the instruction clamps to today.
+  ok('an overdue item says PLACE ORDER TODAY, never a past date',
+    r.placeOrderBy === TODAY, r.placeOrderBy);
+  ok('…while orderByDate keeps the diagnosis (what would have prevented it)',
+    r.orderByDate === '2026-07-19' && r.daysLate === 38, `${r.orderByDate} / ${r.daysLate}`);
+  ok('runout = data-through + days of cover', r.runoutDate === '2026-10-17', r.runoutDate);
+  ok('arrival if ordered today = today + lead', r.arrivesIfOrderedToday === '2026-11-24', r.arrivesIfOrderedToday);
+  ok('stockout gap = arrival − runout when positive',
+    r.stockoutGapDays === 38, String(r.stockoutGapDays));
+
+  // Not yet due: the instruction IS the ideal date — no clamp.
+  const early = computeRecommendation(baseRow(), settings(), { ...ctx, today: '2026-07-01' });
+  ok('a not-yet-due item keeps its future order date as the instruction',
+    early.placeOrderBy === early.orderByDate && early.placeOrderBy > '2026-07-01', early.placeOrderBy);
+  ok('…and its gap is zero — ordering on time beats the runout',
+    early.stockoutGapDays === 0, String(early.stockoutGapDays));
+
+  const dead = computeRecommendation(
+    baseRow({ qty_sold_28d: 0, qty_sold_90d: 0, qty_sold_365d: 0 }), settings(), ctx);
+  ok('no demand → no calendar (null dates, not fake ones)',
+    dead.placeOrderBy === null && dead.runoutDate === null && dead.stockoutGapDays === null,
+    JSON.stringify([dead.placeOrderBy, dead.runoutDate]));
+}
+
+console.log('\n1c · forward-looking urgency — runout first, bleed breaks ties');
+{
+  const eng = require('../modules/replenishment/engine');
+  const mk = (over) => computeRecommendation(baseRow(over), settings(), ctx);
+  // Already out, bleeding fast vs slow: same runout (=THROUGH), bleed decides.
+  const fast = mk({ sku: 'FAST', warehouse_qty: 0, on_order_qty: 0, committed_qty: 0, cost_ex_vat: 10 });
+  const slow = mk({ sku: 'SLOW', warehouse_qty: 0, on_order_qty: 0, committed_qty: 0, cost_ex_vat: 0.5 });
+  // In stock, runs out soon vs the already-out pair.
+  const soon = mk({ sku: 'SOON', warehouse_qty: 300, on_order_qty: 0, committed_qty: 0 }); // ~5 days cover
+  const sorted = [slow, soon, fast].sort(eng.compareUrgency).map(r => r.sku);
+  ok('already-out items lead (earliest runout), fast bleeder before slow',
+    sorted[0] === 'FAST' && sorted[1] === 'SLOW', sorted.join(','));
+  ok('an in-stock item running out later sorts after the stockouts',
+    sorted[2] === 'SOON', sorted.join(','));
+  const okRow = mk({ warehouse_qty: 999999 });
+  ok('adequately-stocked rows band after due rows regardless of runout',
+    [okRow, fast].sort(eng.compareUrgency)[0].sku === 'FAST',
+    okRow.status);
+}
+
 console.log('\n2 · today and the stock source are parameters, never assumptions');
 {
   const early = computeRecommendation(baseRow(), settings(), { ...ctx, today: '2026-07-01' });
@@ -262,12 +309,14 @@ console.log('\n5 · Minimum order quantity and window selection');
 }
 {
   ok('an exact window is used directly', pickWindow(90).column === 'qty_sold_90d');
-  const w = pickWindow(60);
+  // 60 became a real prepared window (it backs the weighted pace model), so
+  // the unavailable-window case now uses 45 — whose nearest neighbour is 60.
+  const w = pickWindow(45);
   ok('an unavailable window falls back to the nearest prepared one',
-    w.column === 'qty_sold_90d' && w.exact === false, JSON.stringify(w));
-  const r = computeRecommendation(baseRow(), settings({ velocityWindowDays: 60 }), ctx);
+    w.column === 'qty_sold_60d' && w.exact === false, JSON.stringify(w));
+  const r = computeRecommendation(baseRow(), settings({ velocityWindowDays: 45 }), ctx);
   ok('…and the row admits which window it really used',
-    r.velocityBasis.code === 'window_average' && r.velocityBasis.params.days === 90 &&
+    r.velocityBasis.code === 'window_average' && r.velocityBasis.params.days === 60 &&
     has(r, 'window_substituted'), JSON.stringify(r.velocityBasis));
 }
 
@@ -349,9 +398,11 @@ console.log('\n11 · Every note renders in both languages');
   // Params that satisfy every renderer. Missing keys render as "undefined",
   // which is precisely what these checks are looking for.
   const params = {
-    days: 90, requested: 60, soldForDays: 20, lastSold: '2026-02-01',
+    days: 90, requested: 45, soldForDays: 20, lastSold: '2026-02-01',
     netAvailable: -600, safetyDays: 14, safetyStock: 840, leadTimeDays: 90,
     onHand: 2300, carton: 24, minOrderUnits: 100,
+    // pace model v2 (weighted seasonal)
+    recentDays: 60, seasonal: true, seasonalIdx: 1.4, idx: 1.4,
   };
 
   let bad = [];
@@ -443,6 +494,165 @@ console.log('\n12 · The headline total is the value of the rows on screen');
   ok('…and it is counted in the wider total but not the headline',
     s.estimatedTotalAllExVat > s.estimatedTotalExVat,
     `${s.estimatedTotalAllExVat} vs ${s.estimatedTotalExVat}`);
+}
+
+// ── 7b · Pace model v2: weighted + seasonal ───────────────────────────────
+//
+// The Why? copy the design ships says "weights the last 60 days double and
+// adjusts for seasonality". The copy-consistency rule: the screen must never
+// describe arithmetic that isn't running — so the basis code states the model
+// that RAN, and these assert both the arithmetic and that statement.
+{
+  console.log('\n7b · Pace model v2 — weighted + seasonal, honestly labelled');
+  const v2row = (over = {}) => baseRow({
+    qty_sold_60d: 600, qty_sold_90d: 810, qty_sold_365d: 1825,
+    py_year_units: 1000, py_next90_units: 493, ...over,
+  });
+  const v2settings = (over = {}) => settings({ paceModel: 'weighted_seasonal', seasonalMinUnits: 200, ...over });
+
+  const r = computeRecommendation(v2row(), v2settings(), ctx);
+  // weighted base: (2*600 + (1825-600)) / 425 = 2425/425 = 5.7059
+  // seasonal idx: (493/1000) / (90/365) = 0.493/0.24657 = 1.9995... ≈ 2.0
+  ok('weighted pace doubles the last 60 days', near(r.velocityDaily / ((493 / 1000) / (90 / 365)), 2425 / 425, 0.01),
+    String(r.velocityDaily));
+  ok('…and multiplies by the item\'s own prior-year seasonal index',
+    near(r.velocityDaily, (2425 / 425) * ((493 / 1000) / (90 / 365)), 0.01), String(r.velocityDaily));
+  ok('the basis states the model that ran', r.velocityBasis.code === 'weighted_seasonal'
+    && r.velocityBasis.params.seasonalIdx !== null, JSON.stringify(r.velocityBasis));
+  ok('…and a pace-model note rides every weighted row', has(r, 'pace_model_weighted'));
+
+  const noPy = computeRecommendation(v2row({ py_year_units: 50, py_next90_units: 10 }), v2settings(), ctx);
+  ok('below seasonalMinUnits the seasonal factor is NOT applied and the label says so',
+    noPy.velocityBasis.params.seasonalIdx === null && near(noPy.velocityDaily, 2425 / 425, 0.01),
+    JSON.stringify(noPy.velocityBasis));
+
+  const clamped = computeRecommendation(v2row({ py_next90_units: 0 }), v2settings(), ctx);
+  ok('a dead prior-year season clamps at 0.25×, never zeroing a selling item',
+    near(clamped.velocityDaily, (2425 / 425) * 0.25, 0.01), String(clamped.velocityDaily));
+
+  const simple = computeRecommendation(v2row(), settings(), ctx);
+  ok('without paceModel the engine is byte-identically the simple model',
+    simple.velocityBasis.code === 'window_average' && near(simple.velocityDaily, 810 / 90, 0.001));
+
+  const thin = computeRecommendation(
+    v2row({ first_sold: '2026-08-20' }), v2settings(), ctx);
+  ok('thin-history items keep their own basis — a weighted year means nothing at ten days old',
+    thin.velocityBasis.code === 'since_first_sale', JSON.stringify(thin.velocityBasis));
+
+  const oldView = computeRecommendation(
+    baseRow({ qty_sold_60d: undefined }), v2settings(), ctx);
+  ok('a view without the 60d column falls back to simple — configured ≠ ran',
+    oldView.velocityBasis.code === 'window_average');
+}
+
+// ── 8 · Scope resolution (modules/replenishment/scope.js) ─────────────────
+//
+// The chat-protocol fix: scope × arithmetic decomposition. These are the pure
+// filters behind the tool's skus[]/search/category parameters — the layer
+// whose ABSENCE produced the live refusals ("purchase recommendation for the
+// wood-products department" → refused; "items with עץ in the name" → refused).
+{
+  console.log('\n8 · Scope resolution — the vocabulary bridge');
+  const scope = require('../modules/replenishment/scope');
+
+  const rows = [
+    { sku: 'AD-1', itemName: 'שולחן עץ מתקפל', itemNumber: '100', category: 'ריהוט', subcategory: 'שולחנות' },
+    { sku: 'AD-2', itemName: 'כסא פלסטיק', itemNumber: '101', category: 'ריהוט', subcategory: 'כסאות' },
+    { sku: 'BH-9', itemName: 'קרש חיתוך עץ', itemNumber: '102', category: 'מטבח', subcategory: 'כלי הכנה' },
+    { sku: 'ML-3', itemName: 'צלחת נייר', itemNumber: '103', category: 'חד פעמי', subcategory: null },
+  ];
+
+  ok('no scope params → the list passes through untouched',
+    scope.applyScope(rows, {}) === rows || scope.applyScope(rows, {}).length === 4);
+  ok('hasScope is false for empty opts and blank search',
+    !scope.hasScope({}) && !scope.hasScope({ search: '  ' }) && !scope.hasScope({ skus: [] }));
+
+  const wood = scope.applyScope(rows, { search: 'עץ' });
+  ok('search matches the item NAME across categories ("עץ" → table + cutting board)',
+    wood.length === 2 && wood.every(r => ['AD-1', 'BH-9'].includes(r.sku)), JSON.stringify(wood.map(r => r.sku)));
+
+  ok('search also matches sku and item number',
+    scope.applyScope(rows, { search: 'ml-3' }).length === 1
+    && scope.applyScope(rows, { search: '101' }).length === 1);
+
+  // Word-start semantics — the גיאומטרי incident: a stem must match where a
+  // word begins, never inside another word. Codes stay plain substring.
+  const stemRows = [
+    { sku: 'U-1', itemName: 'מטריה ילדים שקופה', itemNumber: '201', category: 'חורף' },
+    { sku: 'U-2', itemName: 'מטריות ג׳מבו 95 סמ', itemNumber: '202', category: 'חורף' },
+    { sku: 'G-1', itemName: 'עציץ סוקולנט בכלי גיאומטרי מעוצב', itemNumber: '203', category: 'בית' },
+    { sku: 'G-2', itemName: 'מסגרת גיאומטרית 10*15', itemNumber: '204', category: 'בית' },
+  ];
+  const stem = scope.applyScope(stemRows, { search: 'מטרי' });
+  ok('a name stem matches only at WORD STARTS ("מטרי" → umbrellas, never גיאומטרי)',
+    stem.length === 2 && stem.every(r => r.sku.startsWith('U-')), JSON.stringify(stem.map(r => r.sku)));
+  ok('mid-code fragments still match by substring ("20" hits the item numbers)',
+    scope.applyScope(stemRows, { search: '20' }).length === 4);
+  ok('a term that starts a LATER word in the name still matches ("ג׳מבו")',
+    scope.applyScope(stemRows, { search: 'ג׳מבו' }).length === 1);
+  ok('regex metacharacters in a search term are literal, never a pattern',
+    scope.applyScope(stemRows, { search: '10*15' }).length === 1);
+
+  const bySkus = scope.applyScope(rows, { skus: [' ad-1', 'BH-9 ', 'nope'] });
+  ok('skus[] is the universal bridge — trims, case-insensitive, unknowns ignored',
+    bySkus.length === 2, JSON.stringify(bySkus.map(r => r.sku)));
+
+  ok('category is an exact label match, case/space-insensitive',
+    scope.applyScope(rows, { category: ' ריהוט ' }).length === 2
+    && scope.applyScope(rows, { category: 'ריה' }).length === 0);
+
+  ok('filters compose with AND (category + search)',
+    scope.applyScope(rows, { category: 'ריהוט', search: 'עץ' }).length === 1);
+
+  ok('subcategory filters, and a null subcategory never matches a value',
+    scope.applyScope(rows, { subcategory: 'כסאות' }).length === 1
+    && scope.applyScope(rows, { subcategory: 'x' }).length === 0);
+
+  const desc = scope.describeScope({ search: 'עץ', category: 'ריהוט' }, 1, 4);
+  ok('describeScope states the interpretation AND the matched-of-total counts',
+    /עץ/.test(desc) && /ריהוט/.test(desc) && /1 of 4/.test(desc), desc);
+  ok('describeScope is null when nothing was scoped — no fake scope line on plain questions',
+    scope.describeScope({}, 4, 4) === null);
+  ok('the SKU-list ceiling is exported for the tool and the batteries to share',
+    Number.isInteger(scope.MAX_SCOPE_SKUS) && scope.MAX_SCOPE_SKUS >= 100, String(scope.MAX_SCOPE_SKUS));
+}
+
+// ── 9 · The grouping classifier (modules/replenishment/groups.js) ─────────
+{
+  console.log('\n9 · Grouping classifier — doubt → season → trend → history → confidence');
+  const { GROUPS, classify, REASON_TEXT } = require('../modules/replenishment/groups');
+  const gctx = { today: '2026-09-06' };
+  const gset = { paceFadingRatio: 0.5, seasonalMinUnits: 200, seasonalLowShare: 0.5, staleOnOrderDays: 180 };
+  const rec = (over = {}) => ({ unmatched: false, netAvailable: 100, onOrderQty: 0, thinHistory: false, ...over });
+  const grow = (over = {}) => ({
+    qty_sold_28d: 280, qty_sold_90d: 900, py_year_units: 0, py_next90_units: 0,
+    in_stock_file: true, on_order_last_date: null, ...over,
+  });
+
+  ok('clean steady demand → order_now',
+    classify(rec(), grow(), gset, gctx).group === GROUPS.ORDER_NOW);
+  ok('negative availability → suspicious, before anything else',
+    classify(rec({ netAvailable: -5 }), grow({ qty_sold_28d: 0 }), gset, gctx).group === GROUPS.SUSPICIOUS);
+  ok('catalogue-unmatched → suspicious',
+    classify(rec({ unmatched: true }), grow(), gset, gctx).group === GROUPS.SUSPICIOUS);
+  ok('an open PO older than the threshold → suspicious',
+    classify(rec({ onOrderQty: 10 }), grow({ on_order_last_date: '2026-01-01' }), gset, gctx).group === GROUPS.SUSPICIOUS
+    && classify(rec({ onOrderQty: 10 }), grow({ on_order_last_date: '2026-08-01' }), gset, gctx).group === GROUPS.ORDER_NOW);
+  ok('prior year says the coming 90 days are dead → out_of_season (the September pool)',
+    classify(rec(), grow({ py_year_units: 1000, py_next90_units: 20 }), gset, gctx).group === GROUPS.OUT_OF_SEASON);
+  ok('…but thin prior-year history never triggers it',
+    classify(rec(), grow({ py_year_units: 100, py_next90_units: 0 }), gset, gctx).group === GROUPS.ORDER_NOW);
+  ok('recent pace collapsed → fading',
+    classify(rec(), grow({ qty_sold_28d: 20, qty_sold_90d: 900 }), gset, gctx).group === GROUPS.FADING);
+  ok('thin engine history → new',
+    classify(rec({ thinHistory: true }), grow(), gset, gctx).group === GROUPS.NEW);
+  ok('absentStockMeansZero=false routes selling untracked items to suspicious',
+    classify(rec(), grow({ in_stock_file: false }), { ...gset, absentStockMeansZero: false }, gctx).group === GROUPS.SUSPICIOUS
+    && classify(rec(), grow({ in_stock_file: false }), gset, gctx).group === GROUPS.ORDER_NOW);
+  ok('every reason code has a rendering', Object.values(GROUPS).length === 5
+    && ['excluded_supplier', 'not_in_catalogue', 'negative_availability', 'stale_open_order',
+      'stock_not_tracked', 'low_prior_year_share', 'recent_pace_collapsed', 'thin_history',
+      'steady_or_rising'].every(c => typeof REASON_TEXT[c] === 'string'));
 }
 
 console.log(`\n─────────────────────\n${pass}/${pass + fail} checks passed`);

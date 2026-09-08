@@ -725,7 +725,22 @@ class DispatcherService {
     // behind it. Idempotent and reversible: a module switched off loses its
     // tool on the very next turn. A crew with no datasetSchema, or a dataset
     // with no live module, is untouched.
-    await require('../../modules/services/module-tools.service').attachTo(crew);
+    //
+    // A SCOPED turn (Smart Tune: params.moduleScope) swaps the tool set for
+    // the scope's own and hands back a prompt fragment, injected below after
+    // the data-discipline block.
+    const moduleAttach = await require('../../modules/services/module-tools.service')
+      .attachTo(crew, params.moduleScope || null, { conversationId: params.conversationId });
+
+    // A scope may pin the turn's temperature (Smart Tune runs at 0: the same
+    // "move the umbrellas" must resolve to the same filter every time). Only
+    // a validated scoped turn can set this, and an explicit session override
+    // still wins — it is the debug panel's knob.
+    if (moduleAttach.scoped && moduleAttach.temperature != null
+        && temperatureOverrides[crew.name] == null) {
+      resolvedTemperature = moduleAttach.temperature;
+      console.log(`🌡️ [modules] scoped turn pins temperature=${resolvedTemperature}`);
+    }
 
     // Build tool handler map from crew member tools
     const toolHandlers = {};
@@ -771,6 +786,13 @@ class DispatcherService {
       }
       if (dataDiscipline) {
         assembledPrompt += `\n\n## Data discipline\n${dataDiscipline}`;
+      }
+      if (moduleAttach?.scoped && moduleAttach.fragment) {
+        // The scope's own rules ride ABOVE the generic context: this turn's
+        // whole tool set came from the scope, and the fragment is what tells
+        // the model how to use it (ask-and-act, preview-first, never claim a
+        // change happened).
+        assembledPrompt += `\n\n## Scoped session\n${moduleAttach.fragment}`;
       }
       if (Object.keys(remainingContext).length > 0) {
         assembledPrompt += `\n\n## Current Context\n${JSON.stringify(remainingContext, null, 2)}`;

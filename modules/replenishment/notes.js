@@ -89,6 +89,14 @@ const NOTES = {
     en: () => 'Cost is a list-price estimate excluding VAT and before discounts.',
     he: () => 'העלות היא הערכה לפי מחיר מחירון, ללא מע״מ ולפני הנחות.',
   },
+  pace_model_weighted: {
+    en: p => `Sales pace weights the last ${p.recentDays} days double${p.seasonal ? ' and adjusts for seasonality against the item\'s own prior year' : ''}.`,
+    he: p => `קצב המכירות מעניק משקל כפול ל-${p.recentDays} הימים האחרונים${p.seasonal ? ' ומתואם עונתית מול השנה הקודמת של הפריט' : ''}.`,
+  },
+  seasonal_adjustment: {
+    en: p => `Seasonal adjustment applied: the coming 90 days ran at ${p.idx}× the item's uniform pace last year.`,
+    he: p => `בוצע תיאום עונתי: בשנה שעברה 90 הימים הקרובים נמכרו בקצב של פי ${p.idx} מהממוצע.`,
+  },
 };
 
 /** How the sales pace was measured — shown under the pace figure. */
@@ -100,6 +108,10 @@ const BASIS = {
   since_first_sale: {
     en: p => `${p.days} days since first sale`,
     he: p => `${p.days} ימים מאז המכירה הראשונה`,
+  },
+  weighted_seasonal: {
+    en: p => `${p.recentDays}-day weighted${p.seasonalIdx === null ? '' : ', seasonal'}`,
+    he: p => `משוקלל ${p.recentDays} ימים${p.seasonalIdx === null ? '' : ', עונתי'}`,
   },
 };
 

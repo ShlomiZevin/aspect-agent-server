@@ -277,7 +277,43 @@ async function appModuleIsInvisible() {
   }
 }
 
+// ── Scoped chat (Smart Tune): the descriptor's chatScopes contract ────────
+//
+// The scope definition is what a SCOPED turn builds its whole tool set and
+// prompt from, so its shape is asserted offline; the live attach behavior
+// (tools swapped, restored next turn, refusal when not live) is asserted in
+// scripts/test-replenishment-scope.js, which has a database.
+function chatScopesContract() {
+  console.log('\nScoped chat — the chatScopes contract');
+  const registry = require('../modules/registry');
+  const repl = registry.get('replenishment');
+  const scopes = repl.hooks.chatScopes({ datasetId: 'x' }) || [];
+  const tune = scopes.find(s => s.scopeId === 'tune');
+
+  ok('replenishment declares the tune scope', Boolean(tune));
+  ok('the scope title carries both locales', Boolean(tune?.title?.en && tune?.title?.he));
+  ok('tools is a lazy function, not a prebuilt list', typeof tune?.tools === 'function');
+
+  const frag = tune.promptFragment({ group: 'order_now', itemCount: 2851 });
+  ok('the fragment states the panel context (group + count)',
+    /order_now/.test(frag) && /2851|2,851/.test(frag));
+  ok('the fragment carries the D8 three-way rule',
+    /READ/.test(frag) && /CHANGE/.test(frag) && /AMBIGUOUS/.test(frag));
+  ok('…and the never-claim-moved instruction', /NEVER say items were moved/i.test(frag));
+  ok('…and the never-refuse-on-vocabulary instruction', /Never refuse/i.test(frag));
+
+  const tools = tune.tools({ datasetId: 'x', context: {}, settings: {}, conversationId: null });
+  ok('the tune scope carries exactly the read tool and the proposal tool — nothing else',
+    tools.length === 2
+    && tools.some(t => t.name === 'fetch_replenishment')
+    && tools.some(t => t.name === 'propose_group_change'),
+    tools.map(t => t.name).join(', '));
+  ok('the proposal tool tells the talker to present, never claim',
+    /never say|NEVER say/i.test(tools.find(t => t.name === 'propose_group_change').description));
+}
+
 appModuleIsInvisible()
+  .then(() => { chatScopesContract(); })
   .catch(err => { console.log('  FAIL the app-module battery threw -- ' + err.message); fail++; })
   .then(() => {
     console.log('\n---------------------\n' + pass + '/' + (pass + fail) + ' checks passed');

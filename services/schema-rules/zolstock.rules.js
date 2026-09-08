@@ -84,7 +84,11 @@ sizes, a safety-stock fallback, and windows anchored to the data's last date.
 
 Therefore:
 - If a dedicated replenishment tool is available to you in this conversation,
-  USE IT. It has the delivery times and does the arithmetic correctly.
+  USE IT for the numbers. SQL's legitimate role in a reorder question is
+  SCOPE RESOLUTION: turning the user's vocabulary (a department, a brand, a
+  word in the name) into concrete item codes from the catalogue, which the
+  tool then computes over. Resolve, then compute — never refuse a reorder
+  question because of its wording.
 - If no such tool is available, do NOT silently produce a recommendation
   anyway. Answer the parts that genuinely ARE data questions — current
   warehouse stock, open customer and purchase orders, safety stock where it is

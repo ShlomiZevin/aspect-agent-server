@@ -21,6 +21,44 @@
  */
 
 const datasetRegistry = require('../../../insights/datasets/registry');
+const scope = require('../scope');
+const groupsMod = require('../groups');
+const itemVerdicts = require('./item-verdicts.service');
+
+/**
+ * Which optional columns/views the LIVE schema actually has right now.
+ *
+ * The 60-day window and the signals view arrive with the next view rebuild;
+ * until then the live schema serves the previous shape, and a query naming the
+ * new columns would error. Capability is DETECTED, not assumed — the engine
+ * and classifier already degrade honestly when the inputs are absent
+ * ("configured is not the same as ran"). Cached briefly so the check is not
+ * per-request, but short enough that a rebuild is picked up within minutes.
+ */
+const CAPS_TTL_MS = 5 * 60 * 1000;
+const capsCache = new Map();
+async function viewCapabilities(pool, schemaName) {
+  const hit = capsCache.get(schemaName);
+  if (hit && Date.now() - hit.at < CAPS_TTL_MS) return hit.caps;
+  // pg_attribute, NOT information_schema.columns: materialized views do not
+  // appear in information_schema, so the standard-catalog check reports every
+  // MV column as absent — which would silently pin the pace model to simple
+  // forever. Caught by an independent recheck the day this shipped.
+  const { rows } = await pool.query(`
+    SELECT
+      EXISTS (SELECT 1 FROM pg_attribute a
+               JOIN pg_class c ON c.oid = a.attrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = $1 AND c.relname = 'mv_replenishment_base'
+                AND a.attname = 'qty_sold_60d'
+                AND a.attnum > 0 AND NOT a.attisdropped) AS has60d,
+      EXISTS (SELECT 1 FROM pg_matviews
+               WHERE schemaname = $1 AND matviewname = 'mv_replenishment_signals') AS has_signals`,
+  [schemaName]);
+  const caps = { has60d: Boolean(rows[0]?.has60d), hasSignals: Boolean(rows[0]?.has_signals) };
+  capsCache.set(schemaName, { at: Date.now(), caps });
+  return caps;
+}
 const moduleService = require('../../services/module.service');
 const supplierSettings = require('./supplier-settings.service');
 const { localize } = require('../notes');
@@ -148,15 +186,20 @@ async function computeAll(datasetId, opts = {}) {
   if (ctx.error) return ctx;
 
   const chain = await supplierSettings.resolveAll(datasetId);
+  const verdicts = await itemVerdicts.mapForDataset(datasetId);
+  const caps = await viewCapabilities(ctx.pool, ctx.schemaName);
   const params = [];
   const filters = [];
-  if (opts.supplier) { params.push(opts.supplier); filters.push(`supplier = $${params.length}`); }
-  if (opts.sku) { params.push(opts.sku); filters.push(`sku = $${params.length}`); }
+  if (opts.supplier) { params.push(opts.supplier); filters.push(`b.supplier = $${params.length}`); }
+  if (opts.sku) { params.push(opts.sku); filters.push(`b.sku = $${params.length}`); }
 
   report({ phase: 'reading', done: 0, total: 0 });
+  // b.* so the row automatically carries whatever the current view shape has
+  // (incl. qty_sold_60d once rebuilt); signals joined only when present.
   const { rows } = await ctx.pool.query(`
-    SELECT ${BASE_COLUMNS}
-      FROM ${ctx.schemaName}.mv_replenishment_base
+    SELECT b.*${caps.hasSignals ? ', s.py_year_units, s.py_next90_units, s.in_stock_file' : ''}
+      FROM ${ctx.schemaName}.mv_replenishment_base b
+      ${caps.hasSignals ? `LEFT JOIN ${ctx.schemaName}.mv_replenishment_signals s ON s.sku = b.sku` : ''}
      ${filters.length ? `WHERE ${filters.join(' AND ')}` : ''}`, params);
   report({ phase: 'read', done: 0, total: rows.length });
 
@@ -200,6 +243,25 @@ async function computeAll(datasetId, opts = {}) {
       continue;
     }
 
+    // ── Procurement Groups: classify, then let the buyer's verdict win ──
+    const cls = groupsMod.classify(rec, row, chain.moduleSettings || {}, { today });
+    const verdict = verdicts.get(rec.sku);
+    rec.suggestedGroup = cls.group;
+    rec.groupReasonCode = cls.reasonCode;
+    rec.groupDetail = cls.detail;
+    rec.group = verdict ? verdict.assignedGroup : cls.group;
+    rec.groupSource = verdict ? 'buyer' : 'computed';
+    rec.groupNote = verdict?.note ?? null;
+    // The recompute moved under a standing verdict — flag for review, never
+    // silently revert (the buyer's group stays in force).
+    rec.suggestionChanged = Boolean(verdict && verdict.suggestedAtVerdict
+      && verdict.suggestedAtVerdict !== cls.group);
+    // D4: null means "the signals view is not built yet"; true/false means the
+    // warehouse file does/doesn't carry this item. The screen renders
+    // "not in stock file" instead of asserting a zero it cannot verify.
+    rec.stockTracked = row.in_stock_file === undefined || row.in_stock_file === null
+      ? null : Boolean(row.in_stock_file);
+
     all.push(rec);
   }
 
@@ -233,25 +295,48 @@ async function getRecommendations(datasetId, opts = {}) {
   if (base.error) return base;
   const { ordered, today, dataThrough, excluded } = base;
 
-  const due = opts.onlyDue
-    ? ordered.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
-    : ordered;
-
-  // Free-text over the three things a buyer knows an item by.
-  //
-  // Applied HERE, after the engine, and never in the query: the summary below
-  // is computed from `ordered`, so filtering in SQL made the tiles describe the
+  // Scope filters (skus[] / category / subcategory / free-text search) are
+  // applied HERE, after the engine, and never in the query: `summary` below is
+  // computed from `ordered`, so filtering in SQL made the tiles describe the
   // search results instead of the whole set — the exact thing the house rule
-  // forbids, and it is invisible until someone types in the box. The engine
-  // already runs over every row to build that summary, so this costs nothing
-  // extra.
-  const term = String(opts.search ?? '').trim().toLowerCase();
-  const filtered = term
-    ? due.filter(r =>
-      String(r.itemName ?? '').toLowerCase().includes(term)
-      || String(r.sku ?? '').toLowerCase().includes(term)
-      || String(r.itemNumber ?? '').toLowerCase().includes(term))
-    : due;
+  // forbids. The engine already runs over every row to build that summary, so
+  // this costs nothing extra.
+  //
+  // Scope is applied to `ordered` (all statuses) BEFORE the onlyDue cut, so
+  // `scopedSummary` carries the full status breakdown of the asked-about set —
+  // "in this scope: 291 overdue, 12 ok, 3 dormant" — and reduces exactly to
+  // `summary` when no scope is given. See modules/replenishment/scope.js for
+  // the protocol this implements (scope × arithmetic decomposition).
+  const scoped = scope.hasScope(opts) ? scope.applyScope(ordered, opts) : ordered;
+
+  // The group chips: counts over the DUE set (what the bar shows), computed
+  // BEFORE the group filter so the chips never describe only themselves.
+  const dueAll = ordered.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON);
+  const groupSummary = summarizeGroups(dueAll);
+
+  const grouped = opts.group
+    ? scoped.filter(r => r.group === opts.group)
+    : scoped;
+
+  let filtered = opts.onlyDue
+    ? grouped.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)
+    : grouped;
+
+  // The buyer's sort choice. Default is engine.compareUrgency (soonest
+  // runout first, bleed breaks ties). 'runout_desc' is the planning view the
+  // buyer asked for: the furthest-future runouts first, closer ones later,
+  // already-run-out items LAST — a timeline read toward today. Applied to
+  // the filtered list only; summaries are unaffected by construction.
+  if (opts.sort === 'runout_desc') {
+    filtered = filtered.slice().sort((a, b) => {
+      const out = r => (r.alreadyOut || !r.runoutDate) ? 1 : 0;
+      if (out(a) !== out(b)) return out(a) - out(b);
+      const ra = a.runoutDate ?? '0000-01-01';
+      const rb = b.runoutDate ?? '0000-01-01';
+      if (ra !== rb) return ra > rb ? -1 : 1;
+      return engine.compareUrgency(a, b);
+    });
+  }
 
   // A page out of the filtered set. `offset` beyond the end yields an empty
   // page rather than an error: it is what a stale pager sends after someone
@@ -266,6 +351,16 @@ async function getRecommendations(datasetId, opts = {}) {
     // Summaries are over EVERYTHING, not the page and not the search — a tile
     // that counted only the visible rows would be a different, wrong number.
     summary: engine.summarize(ordered),
+    // The same breakdown over the ASKED-ABOUT set. The chat tool answers a
+    // scoped question with this one (and states the scope in words); the
+    // screen's tiles keep `summary`. Identical to `summary` when no scope was
+    // given, so unscoped consumers cannot drift.
+    scopedSummary: engine.summarize(scoped),
+    scope: scope.describeScope(opts, scoped.length, ordered.length),
+    totalUnscoped: ordered.length,
+    // One entry per group over the whole due set: { count, estimatedCostExVat }.
+    groupSummary,
+    group: opts.group || null,
     dataThrough,
     // How many the filters matched, so the screen can say "showing X of Y" and
     // never truncate silently.
@@ -298,6 +393,20 @@ async function getRecommendations(datasetId, opts = {}) {
   };
 }
 
+/** Per-group counts and money over a list — what the group chips render. */
+function summarizeGroups(list) {
+  const out = {};
+  for (const g of Object.values(groupsMod.GROUPS)) {
+    out[g] = { count: 0, estimatedCostExVat: 0 };
+  }
+  for (const r of list) {
+    const g = out[r.group] || (out[r.group] = { count: 0, estimatedCostExVat: 0 });
+    g.count += 1;
+    g.estimatedCostExVat += r.estimatedCostExVat || 0;
+  }
+  return out;
+}
+
 /**
  * Same ordering rule as engine.computeRecommendations, applied to a built list.
  *
@@ -319,6 +428,14 @@ async function getRecommendations(datasetId, opts = {}) {
  * left unordered.
  */
 function sortByUrgency(list) {
+  // The engine's own comparator — ONE ordering across the screen, the chat
+  // tool and the report: soonest projected runout first, ties by how fast
+  // money bleeds. See engine.compareUrgency for the reasoning (and the wall
+  // of "93 days late" it replaces).
+  return list.slice().sort(engine.compareUrgency);
+}
+
+function sortByUrgencyOld(list) {
   const rank = {
     [engine.STATUS.OVERDUE]: 0, [engine.STATUS.DUE_SOON]: 1,
     [engine.STATUS.OK]: 2, [engine.STATUS.NO_DEMAND]: 3,
@@ -369,8 +486,14 @@ async function getPlan(datasetId, opts = {}) {
   // What the accordion lists: suppliers with something overdue or due soon.
   // The same set the header counts and totals, so the page reconciles with
   // itself by construction rather than by two places agreeing to be careful.
-  const actionable = ordered.filter(
+  const dueAll = ordered.filter(
     r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON);
+
+  // The chips count the whole due set; the accordion below reflects the
+  // ACTIVE chip — so chips and list can never disagree about what a group
+  // holds.
+  const groupSummary = summarizeGroups(dueAll);
+  const actionable = opts.group ? dueAll.filter(r => r.group === opts.group) : dueAll;
 
   const bySupplier = new Map();
   for (const r of actionable) {
@@ -403,6 +526,8 @@ async function getPlan(datasetId, opts = {}) {
     today,
     dataThrough,
     summary: engine.summarize(ordered),
+    groupSummary,
+    group: opts.group || null,
     supplierCount: suppliers.length,
     excluded,
     suppliers,
