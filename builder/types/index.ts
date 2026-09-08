@@ -1135,7 +1135,49 @@ export interface SilenceTriggerConfig {
  * @typeParam TConfig the trigger type's own config (e.g.
  *   {@link SilenceTriggerConfig} for `typeId: 'silence'`).
  */
+/**
+ * A ceiling on how often a trigger may MESSAGE somebody.
+ *
+ * Deliberately not part of any trigger type's own config. "How often are
+ * we willing to bother this person" is not a fact about silence, or
+ * about any other type — it is the same kind of restriction as quiet
+ * hours, which is why it lives on the envelope beside it and every type
+ * inherits it for free.
+ *
+ * It counts messages DELIVERED, not attempts, and that difference is the
+ * point. `maxAttempts` bounds WORK: it must count silent attempts too,
+ * or a crew that never speaks would loop forever. This bounds ANNOYANCE
+ * — a promise to a human that they will not hear from us more than this
+ * often — and a chain that ran and said nothing did not break it.
+ *
+ * Unlike `maxAttempts` it does NOT reset when the customer replies. A
+ * customer who answers every nudge could otherwise be contacted forever.
+ */
+export interface TriggerRateLimit {
+  /** Delivered messages allowed in the window. */
+  max: number;
+  /** Rolling window in days — 7 for "a week". Not a calendar week: that
+   *  needs a timezone we may not have, and creates a cliff where three
+   *  nudges land Saturday night and three more Sunday morning. */
+  days: number;
+}
+
 export interface AgentTrigger<TConfig = unknown> {
+  /**
+   * Ceilings on how often this trigger may message someone. Absent means
+   * no ceiling, so triggers written before this behave exactly as they
+   * did.
+   *
+   * An object rather than a single field because more scopes are
+   * coming: `perAgent` (every trigger on the agent counted together,
+   * which is what a customer actually experiences) slots in beside this
+   * one without changing what is already stored.
+   */
+  limits?: {
+    /** Counted for THIS trigger, in THIS conversation. */
+    perConversation?: TriggerRateLimit;
+  };
+
   id: ID;
   /** Author-facing name, e.g. "Re-engage quiet customers". */
   name: string;

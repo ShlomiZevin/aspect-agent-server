@@ -77,6 +77,7 @@ function describeZero(matched, blocked) {
   if (name === 'spacing')            return `${conv} quiet, but nudged too recently`;
   if (name === 'after switch-on')    return `${conv} quiet, but they went quiet before this trigger was switched on`;
   if (name === 'quiet long enough')  return 'nobody was quiet enough';
+  if (name === 'message cap')        return `${conv} quiet, but already at the message cap for this window`;
   return `${conv} blocked by "${name}"`;
 }
 

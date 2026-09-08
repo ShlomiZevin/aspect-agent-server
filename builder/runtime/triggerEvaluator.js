@@ -97,7 +97,19 @@ function factColumns() {
     (SELECT COUNT(*)::int FROM trigger_events e
       WHERE e.conversation_id = c.id AND e.trigger_id = $2
         AND e.matched_at > COALESCE(c.last_user_message_at, to_timestamp(0))
-    ) AS attempts_since_last_user_message
+    ) AS attempts_since_last_user_message,
+    -- When this trigger actually DELIVERED a message, most recent first.
+    -- Timestamps rather than a count because the window is authored and
+    -- the count would have to be parameterised per trigger; a short list
+    -- keeps evaluate a pure function of facts, config and now, which
+    -- is what lets the tick and the explainer agree by construction.
+    -- Bounded at 90 days, which is also the ceiling the window allows.
+    (SELECT COALESCE(array_agg(e.matched_at ORDER BY e.matched_at DESC), '{}')
+       FROM trigger_events e
+      WHERE e.conversation_id = c.id AND e.trigger_id = $2
+        AND e.outcome = 'spoke'
+        AND e.matched_at > now() - interval '90 days'
+    ) AS delivered_at
   `;
 }
 
@@ -109,6 +121,65 @@ function rowToFacts(row) {
     createdAt:                    row.created_at,
     lastEventAt:                  row.last_event_at,
     attemptsSinceLastUserMessage: Number(row.attempts_since_last_user_message) || 0,
+    deliveredAt:                  Array.isArray(row.delivered_at) ? row.delivered_at : [],
+  };
+}
+
+/** Window bounds: at least a day, never past what `factColumns` fetches. */
+const MIN_WINDOW_DAYS = 1;
+const MAX_WINDOW_DAYS = 90;
+
+/**
+ * Envelope clauses — restrictions that belong to TRIGGERS, not to any
+ * one type.
+ *
+ * Returned as ordinary clauses so everything downstream keeps working
+ * unchanged: the blocked-reason counting, the "why nothing fired" line,
+ * the Activity panel and the explainer all read clauses and none of them
+ * needs to know this one came from somewhere else.
+ *
+ * Pure, like a type's own `evaluate`. That is what makes the tick and
+ * the explainer incapable of disagreeing.
+ */
+function limitClauses({ trigger, facts, now }) {
+  const lim = trigger?.limits?.perConversation;
+  const max = Number(lim?.max);
+  if (!Number.isFinite(max) || max < 1) return [];
+
+  const rawDays = Number(lim?.days);
+  const days = Number.isFinite(rawDays)
+    ? Math.min(MAX_WINDOW_DAYS, Math.max(MIN_WINDOW_DAYS, Math.floor(rawDays)))
+    : 7;
+
+  const cutoff = now.getTime() - days * 24 * 60 * 60 * 1000;
+  const sent = (facts.deliveredAt || [])
+    .filter(t => new Date(t).getTime() > cutoff).length;
+
+  const window = days === 7 ? 'week' : days === 1 ? 'day' : `${days} days`;
+  return [{
+    name: 'message cap',
+    ok: sent < max,
+    why: sent < max
+      ? `${sent} of ${max} message${max === 1 ? '' : 's'} in the last ${window}`
+      : `already ${sent} message${sent === 1 ? '' : 's'} in the last ${window}, max is ${max}`,
+  }];
+}
+
+/**
+ * A type's own verdict plus the envelope's.
+ *
+ * Every caller goes through here rather than calling `type.evaluate`
+ * directly, so a limit cannot be enforced on the tick and forgotten by
+ * the explainer — the failure that would make the explainer lie.
+ */
+function evaluateAll({ type, facts, trigger, now }) {
+  const base = type.evaluate({ facts, trigger, config: trigger.config || {}, now });
+  const extra = limitClauses({ trigger, facts, now });
+  if (extra.length === 0) return base;
+  return {
+    ...base,
+    clauses: [...(base.clauses || []), ...extra],
+    ok: base.ok && extra.every(c => c.ok),
   };
 }
 
@@ -172,7 +243,7 @@ async function findDue({ legacyAgentId, trigger, now = new Date(), limit = 200, 
   const blocked = {};
   for (const row of rows) {
     const facts = rowToFacts(row);
-    const evaluation = type.evaluate({ facts, trigger, config: trigger.config || {}, now });
+    const evaluation = evaluateAll({ type, facts, trigger, now });
     if (evaluation.ok) {
       due.push({ facts, evaluation });
     } else {
@@ -200,7 +271,7 @@ async function checkOne({ trigger, conversationId, now = new Date() }) {
   if (rows.length === 0) throw new Error(`Conversation ${conversationId} not found`);
 
   const facts = rowToFacts(rows[0]);
-  const evaluation = type.evaluate({ facts, trigger, config: trigger.config || {}, now });
+  const evaluation = evaluateAll({ type, facts, trigger, now });
   return { facts, evaluation, at: now };
 }
 
@@ -252,7 +323,16 @@ async function explainAt({ trigger, conversationId, at }) {
                  WHERE m2.conversation_id = c.id AND m2.role = 'user'
                    AND (m2.created_at AT TIME ZONE 'UTC') <= $3
               ), to_timestamp(0))
-      ) AS attempts_since_last_user_message
+      ) AS attempts_since_last_user_message,
+      -- As of $3, so the explainer answers about the moment asked about
+      -- rather than about now.
+      (SELECT COALESCE(array_agg(e.matched_at ORDER BY e.matched_at DESC), '{}')
+         FROM trigger_events e
+        WHERE e.conversation_id = c.id AND e.trigger_id = $2
+          AND e.outcome = 'spoke'
+          AND e.matched_at <= $3
+          AND e.matched_at > $3 - interval '90 days'
+      ) AS delivered_at
      FROM conversations c
     WHERE c.id = $1
     `,
@@ -261,7 +341,7 @@ async function explainAt({ trigger, conversationId, at }) {
   if (rows.length === 0) throw new Error(`Conversation ${conversationId} not found`);
 
   const facts = rowToFacts(rows[0]);
-  const evaluation = type.evaluate({ facts, trigger, config: trigger.config || {}, now: when });
+  const evaluation = evaluateAll({ type, facts, trigger, now: when });
   return {
     at: when,
     facts,

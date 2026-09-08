@@ -304,6 +304,25 @@ function checkTriggers(triggers, errors) {
     if (typeof t.activeSince !== 'string' || Number.isNaN(Date.parse(t.activeSince))) {
       pushErr(errors, `${at}.activeSince`, 'required ISO timestamp — stamped when the trigger is switched on; without it the trigger would reach back into old conversations');
     }
+    // Limits are optional, but a malformed one would silently stop
+    // enforcing rather than fail loudly, so the shape is checked.
+    if ('limits' in t && t.limits !== undefined) {
+      if (!isObject(t.limits)) {
+        pushErr(errors, `${at}.limits`, 'when present must be an object');
+      } else if ('perConversation' in t.limits && t.limits.perConversation !== undefined) {
+        const lim = t.limits.perConversation;
+        if (!isObject(lim)) {
+          pushErr(errors, `${at}.limits.perConversation`, 'when present must be an object { max, days }');
+        } else {
+          if (!Number.isFinite(lim.max) || lim.max < 1) {
+            pushErr(errors, `${at}.limits.perConversation.max`, 'required number >= 1 (messages allowed in the window)');
+          }
+          if (!Number.isFinite(lim.days) || lim.days < 1 || lim.days > 90) {
+            pushErr(errors, `${at}.limits.perConversation.days`, 'required number 1-90 (rolling window in days; 90 is the ceiling the stored history covers)');
+          }
+        }
+      }
+    }
     if (!isObject(t.run)) {
       pushErr(errors, `${at}.run`, 'required object { crewId, brief? }');
     } else {
@@ -319,7 +338,7 @@ function checkTriggers(triggers, errors) {
       if (!isObject(q)) pushErr(errors, `${at}.quietHours`, 'when present must be an object');
       else {
         for (const k of ['from', 'to']) {
-          if (!/^d{2}:d{2}$/.test(String(q[k] || ''))) {
+          if (!/^\d{2}:\d{2}$/.test(String(q[k] || ''))) {
             pushErr(errors, `${at}.quietHours.${k}`, 'required "HH:MM" (24h)');
           }
         }
@@ -394,6 +413,23 @@ function validateAgentBody(body) {
         }
         if (typeof e.name !== 'string' || !e.name) pushErr(errors, `enums[${i}].name`, 'required string');
         if (!Array.isArray(e.values)) pushErr(errors, `enums[${i}].values`, 'required array');
+      });
+    }
+  }
+
+  // Parameters — untyped by design: name + PLAIN STRING value. A
+  // non-string value (e.g. 14) breaks the client editor, and typed
+  // params don't exist no matter what a prompt hallucinated.
+  if ('parameters' in body && body.parameters !== undefined) {
+    if (!Array.isArray(body.parameters)) {
+      pushErr(errors, 'parameters', 'when present must be an array');
+    } else {
+      body.parameters.forEach((p, i) => {
+        if (!isObject(p)) { pushErr(errors, `parameters[${i}]`, 'must be an object'); return; }
+        if (typeof p.id !== 'string' || !p.id) pushErr(errors, `parameters[${i}].id`, 'required string');
+        if (typeof p.name !== 'string' || !p.name) pushErr(errors, `parameters[${i}].name`, 'required string');
+        if (typeof p.value !== 'string')
+          pushErr(errors, `parameters[${i}].value`, 'must be a plain STRING (parameters are untyped — write numbers as strings, e.g. "14")');
       });
     }
   }

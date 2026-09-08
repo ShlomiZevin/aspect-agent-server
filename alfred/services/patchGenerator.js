@@ -258,6 +258,12 @@ function renderTriggerTemplatesSection() {
       'for. `enabled: false` is deliberate: a trigger messages real customers,',
       'so the human switches it on, never you.',
       '',
+      'A message ceiling ("no more than 2 a week") is NOT part of config — add',
+      '`limits: { perConversation: { max, days } }` beside `run`. It counts',
+      'messages the customer RECEIVED and does not reset when they reply,',
+      'which is what makes it different from `config.maxAttempts`. Omit the',
+      'key entirely when the user did not ask for a ceiling.',
+      '',
       '```json',
       JSON.stringify(fresh, null, 2),
       '```',
@@ -308,6 +314,11 @@ const SYSTEM_PROMPT = [
   '  addons, fields.',
   '- Return ONLY the sections the change touches. Do NOT return',
   '  sections you didn\'t change — omitting them is what preserves them.',
+  '- If, after checking the current body, NOTHING needs to change (the',
+  '  requested items already exist as asked), call submit_changes with',
+  '  an EMPTY `changes` object (`{}`) and say why in `reasoning`. That',
+  '  is the correct answer for an already-done request — never invent a',
+  '  change just to return something.',
   '- Every returned section must be COMPLETE — the entire value of that',
   '  section AFTER your change. Never return a partial array as a',
   '  section value.',
@@ -385,6 +396,11 @@ const SYSTEM_PROMPT = [
   '  addon\'s output — same-step members share the pre-step memory',
   '  snapshot and cannot see each other\'s writes. Dependents go in a',
   '  later step.',
+  '',
+  '# Parameters',
+  '- A ParameterDef is `{ id, name, value, description? }` and `value` is',
+  '  emitted as a JSON string (`"14"`). Type annotations that appear in a',
+  '  change description are commentary, not properties to store.',
   '',
   '# Choice fields (fields with a fixed value list)',
   'DECISION RULE — Choice vs Targeted KB: a "choice field" / "options" /',
@@ -720,6 +736,25 @@ async function generatePatch({
 
   if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
     throw new Error('Patch generator: submit_changes called without a valid `changes` object.');
+  }
+
+  // An EMPTY changes object is a legitimate answer: the generator
+  // verified and found nothing to change (e.g. the requested items
+  // already exist — idempotent re-apply). Surface it as a graceful
+  // no-op, not an error. Keys that were ALL ignored is different —
+  // that's malformed output and still fails loudly.
+  if (Object.keys(changes).length === 0) {
+    console.log(`[patch] ${entity} "${entityName}" verified — nothing to change.`);
+    return {
+      newBody: currentBody,
+      changedSections: [],
+      noChange: true,
+      reasoning,
+      tokens: usage
+        ? { input: usage.inputTokens, output: usage.outputTokens, total: usage.inputTokens + usage.outputTokens }
+        : { input: 0, output: 0, total: 0 },
+      durationMs,
+    };
   }
 
   const { next: newBody, applied, ignored } = mergeChanges(entity, currentBody, changes);

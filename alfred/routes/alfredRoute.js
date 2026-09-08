@@ -380,6 +380,9 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
     // `latestAgentBody` is updated as we go so any subsequent crew
     // target sees the post-patch agent body (with newly added fields).
     const prepared = [];
+    // Targets the generator verified as already-done — reported back
+    // so the UI can say "already in place" instead of erroring.
+    const skipped = [];
     let latestAgentBody = null;
 
     for (const target of orderedTargets) {
@@ -443,6 +446,20 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
           ownerUserId,
           conversationId: Number(chatId),
         });
+        // Graceful no-op: the generator verified and found nothing to
+        // change (already-done request). Skip this target — no
+        // validation (body unchanged), no working-copy write.
+        if (out.noChange) {
+          skipped.push({
+            entity:     target.entity,
+            entityId:   target.entityId,
+            entityName: entityNameSnap,
+            what_to_do: target.what_to_do || '',
+            reasoning:  out.reasoning || '',
+          });
+          if (target.entity === 'agent' && !latestAgentBody) latestAgentBody = currentBody;
+          continue;
+        }
         newBody = out.newBody;
       } catch (err) {
         return res.status(422).json({
@@ -527,6 +544,7 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
         bodyBefore:  p.currentBody,
         newBody:     p.newBody,
       })),
+      skipped,
     });
   } catch (err) {
     console.error('[alfred] apply/generate failed:', err);

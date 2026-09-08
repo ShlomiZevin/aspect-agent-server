@@ -330,6 +330,55 @@ fires then. No holding mechanism, no queue.
 
 ---
 
+## Message limits — a ceiling on how often, not on when
+
+`AgentTrigger.limits.perConversation = { max, days }` — "at most 3
+messages every 7 days to the same person". Absent means no ceiling, so
+every trigger written before this behaves exactly as it did.
+
+**Why it is on the ENVELOPE, not in a type's config.** "How often are we
+willing to bother this person" is not a fact about silence, or about any
+other type. It is the same kind of restriction as quiet hours, which is
+why it sits beside it and every type inherits it for free. It is applied
+by `evaluateAll()` in the evaluator, which appends envelope clauses to
+whatever the type returned — so the blocked-reason counting, the "why
+nothing fired" line, the Activity panel and the explainer all keep
+working unchanged, none of them knowing the clause came from elsewhere.
+
+**It counts DELIVERED messages, and that differs from `maxAttempts` on
+purpose.**
+
+| | Bounds | Counts | Resets on reply |
+|---|---|---|---|
+| `maxAttempts` | work | every attempt, silent ones included | yes |
+| `limits.perConversation` | annoyance | only `outcome = 'spoke'` | **no** |
+
+`maxAttempts` has to count silent attempts or a crew that never speaks
+would loop forever. This one is a promise to a human — a chain that ran
+and said nothing did not break it. And it must not reset on reply, or a
+customer who answers every nudge could be contacted forever.
+
+**Rolling, not calendar.** A calendar week needs a timezone the trigger
+may not have, and creates a cliff where three nudges land Saturday night
+and three more Sunday morning.
+
+**Known limit, accepted knowingly.** The ceiling is per TRIGGER. Two
+triggers on one agent means a customer can receive 2x the cap while each
+rule correctly reports itself as obeying its own. A true per-customer
+ceiling is `limits.perAgent`, which slots in beside `perConversation`
+without changing what is already stored — the field is an object for
+exactly that reason.
+
+**No migration.** `trigger_events` is already the state; the count is a
+read over rows that exist. The fact is fetched as a short list of
+delivered timestamps rather than a count, because the window is authored
+and a count would have to be parameterised per trigger — a list keeps
+`evaluate` a pure function of facts, config and now, which is what lets
+the tick and the explainer agree by construction. Bounded at 90 days,
+which is also the ceiling the window setting allows.
+
+---
+
 ## The Filter — the second gate
 
 Optional, per trigger. Reuses the **existing** Filter component and
