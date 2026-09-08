@@ -4,18 +4,18 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * Runner for 048_add_item_verdicts_and_proposals.sql — Procurement Groups +
+ * Runner for 049_add_item_verdicts_and_proposals.sql — Procurement Groups +
  * Smart Tune storage, in the PLATFORM DB. Strictly additive (three new
  * tables); idempotent; run through the Cloud SQL Proxy like every migration
  * here.
  */
 async function runMigration() {
   try {
-    console.log('Starting migration: 048_add_item_verdicts_and_proposals');
+    console.log('Starting migration: 049_add_item_verdicts_and_proposals');
     await db.initialize();
     const drizzle = db.getDrizzle();
 
-    const sql = fs.readFileSync(path.join(__dirname, '048_add_item_verdicts_and_proposals.sql'), 'utf8');
+    const sql = fs.readFileSync(path.join(__dirname, '049_add_item_verdicts_and_proposals.sql'), 'utf8');
     const statements = sql
       .split('\n').filter(l => !l.trim().startsWith('--')).join('\n')
       .split(';').map(s => s.trim()).filter(Boolean);
