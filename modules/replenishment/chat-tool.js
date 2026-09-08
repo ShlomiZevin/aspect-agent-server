@@ -22,6 +22,7 @@
 
 const recommendationsService = require('./services/recommendations.service');
 const { MAX_SCOPE_SKUS } = require('./scope');
+const { GROUPS } = require('./groups');
 
 const MAX_ROWS_IN_ANSWER = 25;
 
@@ -103,6 +104,18 @@ function buildTool(datasetId) {
             + 'take effect — it exists so a window is only ever applied because the '
             + 'user asked for one.',
         },
+        group: {
+          type: 'string',
+          enum: Object.values(GROUPS),
+          description:
+            'Optional. Filter to ONE of the Procurement screen\'s group chips: '
+            + 'order_now ("Order now" / "להזמין עכשיו"), suspicious ("Needs checking" '
+            + '/ "דורש בדיקה"), out_of_season ("מחוץ לעונה"), fading ("דועך"), new '
+            + '("חדש"). Use it whenever the user names a group — "from the Order now '
+            + 'group" MUST become group:"order_now", never a re-labeling of the '
+            + 'overdue count: overdue is a STATUS, the groups are the screen\'s '
+            + 'classification of those same items, and their counts differ.',
+        },
         sortBy: {
           type: 'string',
           enum: ['urgency', 'runout_desc'],
@@ -173,6 +186,7 @@ async function handle(datasetId, params = {}) {
     subcategory: params.subcategory || undefined,
     onlyDue: params.onlyDue === undefined ? true : Boolean(params.onlyDue),
     horizonDays: userNamedWindow ? params.horizonDays : undefined,
+    group: Object.values(GROUPS).includes(params.group) ? params.group : undefined,
     sort: params.sortBy === 'runout_desc' ? 'runout_desc' : undefined,
     limit: Math.min(Number(params.limit) || MAX_ROWS_IN_ANSWER, 100),
   };
@@ -263,11 +277,26 @@ async function handle(datasetId, params = {}) {
     `${counts.ok} adequately stocked, ${counts.noDemand} with no recent sales` +
     (res.scope ? ' — within the stated scope.' : '.'));
 
+  const gs = res.scopedGroupSummary;
+  const activeGroup = Object.values(GROUPS).includes(params.group) ? params.group : null;
+
+  // When ONE group chip was asked for, its own count and money ARE the
+  // headline — the status counts above describe the whole scope. Without this
+  // an answer relabeled "5,020 overdue" as "5,020 in the Order now group",
+  // which is a different (and wrong) number.
+  if (activeGroup && gs?.[activeGroup]) {
+    contract.push(
+      `GROUP FILTER: only the "${activeGroup}" chip — ${gs[activeGroup].count} item(s), estimated order `
+      + `cost ₪${Math.round(gs[activeGroup].estimatedCostExVat).toLocaleString('en-GB')} ex-VAT. THESE are `
+      + 'the headline figures. The overdue/due-soon counts above cover the whole scope across all groups — '
+      + 'never present them as this group\'s size.');
+  }
+
   // The money, LABELED — the tool returns two totals (the due set's, and the
   // whole scope's including adequately-stocked items) and answers have quoted
   // the wrong one as the other. Worded here so the talker copies a sentence
   // instead of choosing between two raw numbers.
-  if (counts.estimatedTotalExVat != null) {
+  if (!activeGroup && counts.estimatedTotalExVat != null) {
     const due = Math.round(counts.estimatedTotalExVat).toLocaleString('en-GB');
     const all = counts.estimatedTotalAllExVat != null
       ? Math.round(counts.estimatedTotalAllExVat).toLocaleString('en-GB') : null;
@@ -283,8 +312,7 @@ async function handle(datasetId, params = {}) {
   // groups until clicked; a chat total over the whole due set therefore
   // differs from the chip by composition, and the buyer comparing the two
   // (they always do) must be told which groups the figures include.
-  const gs = res.scopedGroupSummary;
-  if (gs) {
+  if (gs && !activeGroup) {
     const parts = Object.entries(gs)
       .filter(([, v]) => v.count > 0)
       .map(([g, v]) => `${g}: ${v.count}`);
