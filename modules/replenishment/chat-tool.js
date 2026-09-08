@@ -50,7 +50,12 @@ function buildTool(datasetId) {
       properties: {
         supplier: {
           type: 'string',
-          description: 'Optional. Limit to one supplier, exactly as the data names it.',
+          description:
+            'Optional. Limit to one supplier — pass the USER\'S OWN words for it; '
+            + 'the system resolves shorthand and near-names to the exact catalog '
+            + 'name deterministically and reports the resolution (an ambiguous '
+            + 'name comes back as a candidate list to ask about). Never expand or '
+            + 'correct the name yourself.',
         },
         sku: {
           type: 'string',
@@ -153,6 +158,47 @@ function buildTool(datasetId) {
 }
 
 /**
+ * Resolve a user-worded supplier to the exact name the data uses.
+ *
+ * The filter is exact-match SQL, and users shorten names constantly —
+ * "ב.א. זול סטוק" for the full legal name, "BA zol stock" in Latin. Passing
+ * their words verbatim silently produced an empty scope six times in one
+ * robustness run. Resolution is DETERMINISTIC (normalize, then containment;
+ * a Latin first token falls back to the supplier CODE), reported in the
+ * contract when it changed anything, and refuses into a candidate list when
+ * ambiguous — never a guess, never a silent zero.
+ */
+async function resolveSupplier(datasetId, input) {
+  const list = await recommendationsService.listSuppliers(datasetId);
+  if (list.error || !Array.isArray(list.suppliers)) return { supplier: input };
+  const rows = list.suppliers;
+  const norm = (s) => String(s ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const inNorm = norm(input);
+
+  const exact = rows.find(s => s.supplier === input) || rows.find(s => norm(s.supplier) === inNorm);
+  if (exact) return { supplier: exact.supplier, resolvedFrom: exact.supplier === input ? null : input };
+
+  const contains = inNorm.length >= 3
+    ? rows.filter(s => norm(s.supplier).includes(inNorm) || inNorm.includes(norm(s.supplier)))
+    : [];
+  if (contains.length === 1) return { supplier: contains[0].supplier, resolvedFrom: input };
+
+  if (contains.length === 0) {
+    const codeTok = String(input).trim().split(/\s+/)[0].toUpperCase();
+    const byCode = codeTok.length >= 2
+      ? rows.filter(s => s.supplierCode && String(s.supplierCode).toUpperCase().startsWith(codeTok))
+      : [];
+    if (byCode.length === 1) return { supplier: byCode[0].supplier, resolvedFrom: input };
+  }
+
+  return {
+    supplier: null,
+    unresolved: input,
+    candidates: (contains.length ? contains : rows).slice(0, 8).map(s => s.supplier),
+  };
+}
+
+/**
  * Run the engine and render a result the talker can rephrase but not
  * contradict.
  *
@@ -180,6 +226,26 @@ async function handle(datasetId, params = {}) {
     };
   }
 
+  // Supplier names arrive as the USER worded them; the filter is exact-match.
+  // Resolve first, refuse honestly on ambiguity — see resolveSupplier above.
+  let supplierRes = { supplier: params.supplier || undefined };
+  if (params.supplier) {
+    supplierRes = await resolveSupplier(datasetId, params.supplier);
+    if (supplierRes.supplier === null) {
+      return {
+        summary:
+          `No supplier matches "${supplierRes.unresolved}". The names as the data spells them: `
+          + `${supplierRes.candidates.join(' | ')}. Ask the user which one they mean, or retry with `
+          + 'the exact name — never pick one silently.',
+        dataContract: [
+          `Supplier "${supplierRes.unresolved}" resolved to NOTHING — no rows were computed. `
+          + 'Present the candidate names and ask; do not answer with numbers.'],
+        total: 0,
+        recommendations: [],
+      };
+    }
+  }
+
   // THE HORIZON IS NOT THE MODEL'S TO CHOOSE. Twice now a plain question got
   // a window the user never named (0 days once, 25 another), and the same
   // question answered differently across runs. A horizon only applies when
@@ -189,7 +255,7 @@ async function handle(datasetId, params = {}) {
   const horizonIgnored = params.horizonDays != null && !userNamedWindow;
 
   const opts = {
-    supplier: params.supplier || undefined,
+    supplier: supplierRes.supplier,
     sku: params.sku || undefined,
     skus: skus && skus.length ? skus : undefined,
     search: params.search || undefined,
@@ -252,7 +318,7 @@ async function handle(datasetId, params = {}) {
   // interpretation in the user's language, so a mismatch with their intent is
   // caught by the user in one glance instead of eroding their trust row by row.
   const interpretation = [
-    params.supplier ? `supplier "${params.supplier}"` : 'all suppliers',
+    supplierRes.supplier ? `supplier "${supplierRes.supplier}"` : 'all suppliers',
     Object.values(GROUPS).includes(params.group) ? `only the "${params.group}" group chip` : 'all group chips',
     params.status === 'overdue' ? 'only items to order TODAY (overdue)'
       : params.status === 'due_soon' ? 'only planned items (order date ahead)'
@@ -261,6 +327,11 @@ async function handle(datasetId, params = {}) {
       : 'ordered most-urgent first',
   ].join(' · ');
   contract.push(`INTERPRETATION (state this openly at the top of your answer, in the user's language): ${interpretation}.`);
+  if (supplierRes.resolvedFrom) {
+    contract.push(
+      `Supplier resolved: the user's "${supplierRes.resolvedFrom}" was matched to "${supplierRes.supplier}" `
+      + '(the exact name in the data). Mention the resolution once.');
+  }
   // The two-date model, spelled out so answers stop presenting a diagnosis
   // as an instruction: a client read "order by June 6" (months past) as a
   // date to place an order, which is nonsense.
