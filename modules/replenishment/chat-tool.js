@@ -103,6 +103,20 @@ function buildTool(datasetId) {
             + 'take effect — it exists so a window is only ever applied because the '
             + 'user asked for one.',
         },
+        sortBy: {
+          type: 'string',
+          enum: ['urgency', 'runout_desc'],
+          description:
+            'Optional row ordering — the same two the Procurement screen offers. '
+            + 'Default "urgency": most urgent first (already-out and soonest-runout '
+            + 'items lead, ranked by money at stake per day) — for "most urgent", '
+            + '"most overdue", "what should we order first". '
+            + '"runout_desc": the PLANNING view — the FURTHEST-future runouts first, '
+            + 'already-run-out items last — for "furthest", "הרחוק להיגמר", "least '
+            + 'urgent", "planning ahead". The two are near-opposites: a wrong guess '
+            + 'reverses the list, so pick from the user\'s words and say which '
+            + 'ordering the rows use.',
+        },
         limit: {
           type: 'number',
           description: `Optional, default ${MAX_ROWS_IN_ANSWER}. Maximum rows to return.`,
@@ -159,6 +173,7 @@ async function handle(datasetId, params = {}) {
     subcategory: params.subcategory || undefined,
     onlyDue: params.onlyDue === undefined ? true : Boolean(params.onlyDue),
     horizonDays: userNamedWindow ? params.horizonDays : undefined,
+    sort: params.sortBy === 'runout_desc' ? 'runout_desc' : undefined,
     limit: Math.min(Number(params.limit) || MAX_ROWS_IN_ANSWER, 100),
   };
 
@@ -262,6 +277,33 @@ async function handle(datasetId, params = {}) {
         ? `. (₪${all} would be the whole scope including not-yet-due items — quote that ONLY if you label it as such.)`
         : '.'));
   }
+
+  // GROUPS — reconciliation against the screen's chips, by construction. The
+  // Procurement screen OPENS on its "Order now" chip and hides the other
+  // groups until clicked; a chat total over the whole due set therefore
+  // differs from the chip by composition, and the buyer comparing the two
+  // (they always do) must be told which groups the figures include.
+  const gs = res.scopedGroupSummary;
+  if (gs) {
+    const parts = Object.entries(gs)
+      .filter(([, v]) => v.count > 0)
+      .map(([g, v]) => `${g}: ${v.count}`);
+    if (parts.length > 1) {
+      contract.push(
+        `GROUPS: these due items split across the screen's group chips — ${parts.join(', ')}. `
+        + 'The Procurement screen opens on "Order now" only, so a total over all groups will not match '
+        + 'that chip. If the user is comparing with the screen, say which groups your figures include.');
+    }
+  }
+
+  // ROW ORDER, always stated — the two available orderings are near-opposites
+  // and an answer that does not say which one it used cannot be compared with
+  // the screen or with the same question asked yesterday.
+  contract.push(params.sortBy === 'runout_desc'
+    ? 'ROW ORDER: the planning view — furthest-future projected runout first, already-run-out items last. Say so.'
+    : 'ROW ORDER: most urgent first — already-out and soonest-runout items lead, ranked by money at stake '
+      + 'per day. Say so; if the user actually asked for the FURTHEST/planning view, call again with '
+      + 'sortBy="runout_desc" instead of reinterpreting these rows.');
 
   const assumed = res.recommendations.filter(r => r.leadTimeSource !== 'supplier');
   if (assumed.length) {

@@ -356,6 +356,12 @@ async function getRecommendations(datasetId, opts = {}) {
     // screen's tiles keep `summary`. Identical to `summary` when no scope was
     // given, so unscoped consumers cannot drift.
     scopedSummary: engine.summarize(scoped),
+    // The group split of the ASKED-ABOUT due set — what lets a chat answer
+    // reconcile against the screen's chips: the screen opens on "Order now"
+    // and hides the other groups, so a chat total over all groups differs
+    // from the chip by composition, and the answer must be able to say so.
+    scopedGroupSummary: summarizeGroups(
+      scoped.filter(r => r.status === engine.STATUS.OVERDUE || r.status === engine.STATUS.DUE_SOON)),
     scope: scope.describeScope(opts, scoped.length, ordered.length),
     totalUnscoped: ordered.length,
     // One entry per group over the whole due set: { count, estimatedCostExVat }.
