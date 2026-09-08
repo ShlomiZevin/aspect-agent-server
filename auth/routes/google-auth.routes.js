@@ -21,7 +21,7 @@ const db = require('../../services/db.pg');
 const { allowedEmails } = require('../../db/schema');
 const signin = require('../../services/google-auth.service');
 const passwords = require('../../services/password.service');
-const moduleService = require('../../modules/services/module.service');
+const conversationService = require('../../services/conversation.service');
 const { requireSuperAdmin } = require('../../services/super-admin');
 
 const router = express.Router();
@@ -43,37 +43,74 @@ function handle(fn) {
 
 router.get('/config', handle(async (req, res) => {
   const tenant = String(req.query.tenant || '');
-  const state = tenant ? await moduleService.getForDataset(tenant, 'google-auth') : null;
-  const live = Boolean(state?.live);
-  const methods = live ? (state.settings.methods || 'both') : null;
+  const live = tenant ? await signin.isLiveFor(tenant) : false;
+  const methods = live ? await signin.methodsFor(tenant) : null;
+  const purpose = live ? await signin.purposeFor(tenant) : 'gate';
 
   res.json({
     enabled: live,
-    // Google needs a client id as well as the setting. Reporting it available
-    // without one would draw a button that cannot work.
-    google: live && methods !== 'password' && signin.isConfigured(),
+    // 'gate' closes the surface until sign-in; 'sync' leaves it open and the
+    // sign-in is only there to save history to an account.
+    purpose,
+    // Whether this client OFFERS Google — the button belongs on screen wherever
+    // the setting allows it. Whether the button can actually complete a sign-in
+    // is `clientId`: without a configured OAuth client the UI shows it disabled
+    // rather than hiding the option and looking like it was never built.
+    google: live && methods !== 'password',
     password: live && methods !== 'google',
     clientId: live && signin.isConfigured() ? signin.CLIENT_ID : '',
   });
 }));
 
-/** `userId` is the external id, which is what every surface stores and sends back. */
-function session(res, user, via) {
-  res.json({ userId: user.externalId, name: user.name, email: user.email, role: user.role, via });
+/**
+ * `userId` is the external id, which is what every surface stores and sends back.
+ *
+ * When the browser was chatting anonymously and passes that `anonUserId`, its
+ * conversations for this agent are re-parented onto the identity just proven, so
+ * the history the person already has is not stranded on a session they can no
+ * longer reach. Signing in on another device skips this (no anon history there)
+ * and simply reads the account's conversations back.
+ */
+async function session(res, user, via, { anonUserId, agentName } = {}) {
+  if (anonUserId && anonUserId !== user.externalId) {
+    try {
+      await conversationService.attachAnonConversations(anonUserId, user.externalId, agentName || null);
+    } catch (err) {
+      // A failed merge must not fail the sign-in — the person is still signed
+      // in, they just keep seeing the anon history until it is retried.
+      console.error('[google-auth] attachAnonConversations:', err.message);
+    }
+  }
+
+  let conversations = [];
+  try {
+    conversations = await conversationService.getUserConversations(user.externalId, agentName || null);
+  } catch (err) {
+    console.error('[google-auth] getUserConversations:', err.message);
+  }
+
+  res.json({
+    userId: user.externalId,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    via,
+    conversations,
+  });
 }
 
 router.post('/google', handle(async (req, res) => {
-  const { idToken, tenant } = req.body;
+  const { idToken, tenant, anonUserId, agentName } = req.body;
   if (!tenant) return res.status(400).json({ error: 'tenant is required' });
   const { user, via } = await signin.signInWithGoogle(idToken, tenant);
-  session(res, user, via);
+  await session(res, user, via, { anonUserId, agentName });
 }));
 
 router.post('/password', handle(async (req, res) => {
-  const { email, password, tenant } = req.body;
+  const { email, password, tenant, anonUserId, agentName } = req.body;
   if (!tenant) return res.status(400).json({ error: 'tenant is required' });
   const { user, via } = await signin.signInWithPassword(email, password, tenant);
-  session(res, user, via);
+  await session(res, user, via, { anonUserId, agentName });
 }));
 
 // --- invitations (super-admin) --------------------------------------------------

@@ -108,6 +108,16 @@ async function moduleSettings(tenant) {
   return state?.live ? state.settings : {};
 }
 
+/**
+ * @returns {'gate'|'sync'} what signing in is for.
+ *  - 'gate'  the surface is closed until an invited person signs in (default)
+ *  - 'sync'  the surface stays open; signing in only saves history to an account
+ */
+async function purposeFor(tenant) {
+  const settings = await moduleSettings(tenant);
+  return settings.purpose === 'sync' ? 'sync' : 'gate';
+}
+
 /** @returns {'both'|'google'|'password'} how this client signs in. */
 async function methodsFor(tenant) {
   const settings = await moduleSettings(tenant);
@@ -147,13 +157,18 @@ async function signInWithGoogle(idToken, tenant) {
 
   const identity = await verify(idToken);
   const grant = await grantFor(identity.email, tenant);
-  if (!grant) throw new AuthError(DENIED, 403);
+
+  // In 'sync' mode there is no invitation to check: anyone with a Google account
+  // may sign in, and all it buys them is their own chat history on every device.
+  // An invitation, if one happens to exist, still decides the role.
+  const sync = (await purposeFor(tenant)) === 'sync';
+  if (!grant && !sync) throw new AuthError(DENIED, 403);
 
   const user = await upsertUser({
     externalId: `google_${identity.sub}`,
     email: identity.email,
     name: identity.name,
-    role: grant.role,
+    role: grant?.role || 'user',
     tenant,
   });
 
@@ -241,6 +256,7 @@ module.exports = {
   verify,
   grantFor,
   methodsFor,
+  purposeFor,
   isConfigured,
   isLiveFor,
   AuthError,

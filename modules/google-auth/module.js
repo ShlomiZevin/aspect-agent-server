@@ -25,6 +25,26 @@ module.exports = {
 
   settingsSchema: [
     {
+      key: 'purpose',
+      type: 'select',
+      required: false,
+      default: 'gate',
+      options: [
+        { value: 'gate', label: { en: 'Gate access — only invited emails may in', he: 'שער כניסה — רק כתובות שהוזמנו' } },
+        { value: 'sync', label: { en: 'Save history — anyone may sign in to sync their chats across devices', he: 'שמירת היסטוריה — כל אחד יכול להתחבר ולסנכרן שיחות בין מכשירים' } },
+      ],
+      label: { en: 'What signing in is for', he: 'למה משמשת ההתחברות' },
+      hint: {
+        en: 'Gate keeps the surface closed until an invited person signs in. '
+          + 'Save history leaves the chat open to everyone and only adds an optional '
+          + '"sign in" button — signing in attaches the current chats to the account '
+          + 'and the same history follows the person to any other device.',
+        he: 'שער חוסם את המסך עד שאדם מוזמן מתחבר. שמירת היסטוריה משאירה את הצ׳אט '
+          + 'פתוח לכולם ומוסיפה כפתור "התחברות" לא-חובה — ההתחברות מצמידה את השיחות '
+          + 'הנוכחיות לחשבון, ואותה היסטוריה נמשכת לכל מכשיר אחר.',
+      },
+    },
+    {
       key: 'methods',
       type: 'select',
       required: false,

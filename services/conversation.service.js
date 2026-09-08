@@ -414,6 +414,55 @@ class ConversationService {
   }
 
   /**
+   * Move an anonymous browser session's conversations onto a signed-in identity.
+   *
+   * This is the "sign in to keep your history" path: the person chatted while
+   * anonymous, then proved who they are. Their anon conversations are re-parented
+   * to the identity's user row so the same history shows up on any device that
+   * signs in as them. Nothing is deleted and the conversation externalIds are
+   * left alone — only the owning user_id changes.
+   *
+   * @param {string} anonExternalId - the anon_* user the browser was using
+   * @param {string} targetExternalId - the signed-in user (google_* / email_*)
+   * @param {string} [agentName] - only move this agent's conversations
+   * @returns {Promise<{moved:number}>}
+   */
+  async attachAnonConversations(anonExternalId, targetExternalId, agentName = null) {
+    if (!this.drizzle) this.initialize();
+    if (!anonExternalId || !targetExternalId || anonExternalId === targetExternalId) {
+      return { moved: 0 };
+    }
+
+    const [anon] = await this.drizzle
+      .select().from(users).where(eq(users.externalId, anonExternalId)).limit(1);
+    const [target] = await this.drizzle
+      .select().from(users).where(eq(users.externalId, targetExternalId)).limit(1);
+
+    if (!anon || !target || anon.id === target.id) return { moved: 0 };
+
+    let agentId = null;
+    if (agentName) {
+      const [agent] = await this.drizzle
+        .select({ id: agents.id }).from(agents).where(eq(agents.name, agentName)).limit(1);
+      if (!agent) return { moved: 0 };
+      agentId = agent.id;
+    }
+
+    const where = agentId
+      ? and(eq(conversations.userId, anon.id), eq(conversations.agentId, agentId))
+      : eq(conversations.userId, anon.id);
+
+    const moved = await this.drizzle
+      .update(conversations)
+      .set({ userId: target.id, updatedAt: new Date() })
+      .where(where)
+      .returning({ id: conversations.id });
+
+    console.log(`🔗 Attached ${moved.length} conversation(s) from ${anonExternalId} → ${targetExternalId}`);
+    return { moved: moved.length };
+  }
+
+  /**
    * Update conversation metadata
    * @param {string} externalConversationId - External conversation ID
    * @param {Object} metadataUpdate - Metadata to update
