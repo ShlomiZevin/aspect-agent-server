@@ -19,6 +19,8 @@ npm run db:studio          # drizzle-kit studio
 # Verification (run these before/after touching the data pipeline)
 node scripts/test-insights-unit.js          # fast, offline — 38 assertions, no DB or LLM
 node scripts/test-schema-contract.js        # every relation/column named in the rules must exist; exit 1 on violation
+node scripts/test-modules-unit.js           # module framework, offline — incl. the byte-identical no-module assertion
+node scripts/test-replenishment-unit.js     # engine/scope/groups, offline — run after touching modules/replenishment
 node scripts/test-insights-suite.js <ds> all # real investigations + auto-verify every figure (slow, ~1-2 min/case)
 node scripts/recheck-insights-suite.js      # re-verify captured results without re-running them
 node scripts/summarize-insights-suite.js    # render the report
@@ -118,6 +120,25 @@ The rule must say only "mirror the prompt", and must state that Hebrew **in the 
 **Suggested reports are shared, not per-user.** `bootstrap()` writes under the fixed `system` user; `listGenerated` merges those into every session's own list as read-only suggestions. Saving one **clones it to the user** (`seededFrom` links the copy, so the original stops showing) — ownership starts at Save, which is also why a saved report is a frozen snapshot while suggestions keep refreshing. Deleting a suggestion is not offered: it belongs to everyone. Copying per-user on first visit was tried and rejected — each copy freezes at that user's first visit, so two people would see different "current" numbers for the same dataset.
 
 **Scheduled work that depends on a data load is self-checking, not clock-scheduled.** `scheduler-tick.service.js` runs every minute from one Cloud Scheduler job. Jobs with a fixed hour (`import`, `drive_sync`) read their window from `schedule-config.service`; jobs that must follow the load — `ensureIndexed`, and `insights-refresh.service.js` — instead run every tick and no-op unless their precondition holds ("loaded today, not yet done today"). A nightly report built before the load lands describes yesterday's data.
+
+**Scoped chat, chat actions, and the determinism rule (2026-09).** A module
+may declare `chatScopes()` — a scoped conversation in the REAL chat (Smart
+Tune is scope #1): scoped turns swap the crew's tool set for the scope's own,
+the conversation gets a server-side `moduleScope` metadata stamp, and a tool
+result may carry a `_chatAction` envelope that the stream persists as a
+`chat_action` thinking step (the client renders it as an action card, live and
+on history reload). Underscore-prefixed top-level keys on any tool result
+(`_fullData`, `_chatAction`) are internal by contract — all three LLM
+providers strip them from the model's context. Two incident-derived rules
+bind every module tool: **the model never chooses a parameter that changes a
+headline number** (a horizon applies only alongside the user's quoted words
+asking for one — "LEAVE IT UNSET" in a description demonstrably fails), and
+**one universe per answer** (a side query's row count is never the answer's
+item count; money goes to the talker as labeled sentences, not raw fields to
+choose between). The full authoring checklist — including the action
+lifecycle: supersede-on-new, atomic execute claim, snapshot execution,
+ownership-guarded revert — is in `docs/features/modules.md` § "Authoring a
+chat scope".
 
 **A module never fails the thing it plugs into.** `modules/` hooks sit inside the reload (phase 2, before the swap), the dispatcher (tool attach) and the Insights PLAN step. Every one of them is wrapped: a module that throws is marked `degraded` and the host path continues. The reload is the platform's most important scheduled job and every dataset depends on it — an optional module breaking it would be a catastrophic trade. Two switches gate everything (`enabled` AND `status='ready'`); `moduleService.getLiveModules()` is the single definition of "live", and no caller reads the two columns itself.
 
