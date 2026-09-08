@@ -39,8 +39,11 @@
 
 const { isSafeIdentifier, isSafeRowFilter } = require('./binding-contract');
 
-/** Trailing demand windows, in days. Fixed: the engine names them by length. */
-const WINDOWS = [28, 90, 365];
+/** Trailing demand windows, in days. Fixed: the engine names them by length.
+ *  60 exists for the weighted pace model ("last 60 days count double") — the
+ *  design's Why-panel copy describes that model, and the copy must never
+ *  describe arithmetic that is not running. */
+const WINDOWS = [28, 60, 90, 365];
 
 /**
  * Guard every interpolation. The binding comes from an LLM, and while
@@ -253,6 +256,90 @@ CREATE MATERIALIZED VIEW ${s}.mv_suppliers AS
    GROUP BY 1`.trim();
 }
 
+// ── mv_replenishment_signals ─────────────────────────────────────────────
+
+/**
+ * Grain: sku. Raw MEASURES for the item-grouping classifier and the seasonal
+ * pace model — deliberately NO derived `suggested_group` column: classification
+ * happens at READ time from the module settings, so a threshold edit in the
+ * admin tab applies instantly instead of waiting for the next nightly build
+ * (the same aggregate-nightly/compute-on-read rule the recommendations follow).
+ *
+ * Seasonal measures are prior-year same-period, anchored to data_through:
+ *   py_next90_units — demand in the SAME upcoming-90-days window one year ago
+ *                     (dt−365, dt−275]
+ *   py_year_units   — demand in the full 365-day span ending 90 days ago
+ *                     (dt−455, dt−90], which contains that window
+ * share = py_next90/py_year vs the uniform 90/365 is the out-of-season signal.
+ *
+ * in_stock_file distinguishes "the stock file says 0" from "the item is absent
+ * from the stock file" — the D4 honesty display and the absentStockMeansZero
+ * switch both read it.
+ *
+ * Built AFTER mv_replenishment_base (it reads the base view's grain from the
+ * TARGET schema, demand from the SOURCE schema — same target/source contract
+ * as everything else).
+ */
+function renderSignals(schemas, b) {
+  const s = ident(schemas.target, 'targetSchema');
+  const q = ident(schemas.source, 'sourceSchema');
+
+  const dTable = ident(b.demand.table, 'demand.table');
+  const dDate = ident(b.demand.dateCol, 'demand.dateCol');
+  const dQty = ident(b.demand.qtyCol, 'demand.qtyCol');
+  const dKey = ident(b.demand.itemKey, 'demand.itemKey');
+  const dFilter = filter(b.demand.rowFilter, 'demand.rowFilter');
+
+  const cTable = ident(b.catalog.table, 'catalog.table');
+  const cKey = ident(b.catalog.itemKey, 'catalog.itemKey');
+  const rKey = ident(b.catalog.replenishmentKey, 'catalog.replenishmentKey');
+
+  const wh = b.stock.warehouse;
+  const whTable = ident(wh.table || b.demand.table, 'stock.warehouse.table');
+  const whKey = ident(wh.itemKey, 'stock.warehouse.itemKey');
+  const whFilter = filter(wh.rowFilter, 'stock.warehouse.rowFilter');
+
+  return `
+CREATE MATERIALIZED VIEW ${s}.mv_replenishment_signals AS
+  WITH data_through AS (
+    SELECT MAX(${dDate}) AS d
+      FROM ${q}.${dTable}
+      ${where(dFilter)}
+  ),
+  bridge AS (
+    SELECT ${cKey} AS item_number, MAX(${rKey}) AS rkey
+      FROM ${q}.${cTable}
+     WHERE ${rKey} IS NOT NULL AND ${cKey} IS NOT NULL
+     GROUP BY ${cKey}
+  ),
+  py AS (
+    SELECT br.rkey,
+           COALESCE(SUM(f.${dQty}) FILTER (
+             WHERE f.${dDate} > dt.d - INTERVAL '455 days'
+               AND f.${dDate} <= dt.d - INTERVAL '90 days'), 0)  AS py_year_units,
+           COALESCE(SUM(f.${dQty}) FILTER (
+             WHERE f.${dDate} > dt.d - INTERVAL '365 days'
+               AND f.${dDate} <= dt.d - INTERVAL '275 days'), 0) AS py_next90_units
+      FROM ${q}.${dTable} f
+      JOIN bridge br ON br.item_number = f.${dKey}
+     CROSS JOIN data_through dt
+      ${where(dFilter)}
+     GROUP BY br.rkey
+  ),
+  stock_file AS (
+    SELECT DISTINCT w.${whKey} AS rkey
+      FROM ${q}.${whTable} w
+      ${where(whFilter, `w.${whKey} IS NOT NULL`)}
+  )
+  SELECT base.sku,
+         COALESCE(py.py_year_units, 0)   AS py_year_units,
+         COALESCE(py.py_next90_units, 0) AS py_next90_units,
+         (sf.rkey IS NOT NULL)           AS in_stock_file
+    FROM ${s}.mv_replenishment_base base
+    LEFT JOIN py ON py.rkey = base.sku
+    LEFT JOIN stock_file sf ON sf.rkey = base.sku`.trim();
+}
+
 // ── indexes ──────────────────────────────────────────────────────────────
 
 /**
@@ -267,6 +354,8 @@ function renderIndexes(schemas, b) {
     ON ${s}.mv_replenishment_base (sku)`,
     `CREATE INDEX IF NOT EXISTS idx_mv_replenishment_base_supplier
     ON ${s}.mv_replenishment_base (supplier)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_replenishment_signals_sku
+    ON ${s}.mv_replenishment_signals (sku)`,
   ];
   if (b.catalog.supplierCol) {
     out.push(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_suppliers_supplier
@@ -275,4 +364,4 @@ function renderIndexes(schemas, b) {
   return out;
 }
 
-module.exports = { renderReplenishmentBase, renderSuppliers, renderIndexes, WINDOWS };
+module.exports = { renderReplenishmentBase, renderSuppliers, renderSignals, renderIndexes, WINDOWS };

@@ -11,8 +11,15 @@ const providerConfigService = require('./provider-config.service');
 // causes the call to fail outright. Strip it right before stringifying for
 // the API; the unstripped object is still yielded as-is for the SSE consumer.
 function stripInternalFields(result) {
-  if (!result || typeof result !== 'object' || result._fullData === undefined) return result;
-  const { _fullData, ...rest } = result;
+  // Every underscore-prefixed top-level key is internal by contract: _fullData
+  // (the untruncated table for the data viewer) and _chatAction (the module
+  // action envelope for the chat card) ride the raw function_result event to
+  // the SSE layer but never enter the model's context.
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  const keys = Object.keys(result);
+  if (!keys.some(k => k.startsWith('_'))) return result;
+  const rest = {};
+  for (const k of keys) { if (!k.startsWith('_')) rest[k] = result[k]; }
   return rest;
 }
 
@@ -524,7 +531,7 @@ class OpenAIService {
         maxIterations--;
 
         // Use Responses API with inline instructions - stateless (no conversation object)
-        const stream = await this.client.responses.create({
+        const request = {
           model: model,
           instructions: fullInstructions,
           input: currentInput,
@@ -541,7 +548,27 @@ class OpenAIService {
           store: false,
           include: ['file_search_call.results'],
           stream: true
-        });
+        };
+        let stream;
+        try {
+          stream = await this.client.responses.create(request);
+        } catch (err) {
+          // Reasoning-family models (gpt-5*, o*) reject sampling params
+          // outright with a 400. A caller pinning temperature (Smart Tune
+          // pins 0 for determinism) must not kill the turn on such a model —
+          // strip the rejected knobs and retry once. Capability by attempt,
+          // not by a model-name list that rots.
+          const msg = String(err?.message || '');
+          if (err?.status === 400 && /'(temperature|top_p)' is not supported/.test(msg)
+              && (request.temperature !== undefined || request.top_p !== undefined)) {
+            console.warn(`⚠️ ${model} rejects sampling params — retrying without them (${msg.slice(0, 90)})`);
+            delete request.temperature;
+            delete request.top_p;
+            stream = await this.client.responses.create(request);
+          } else {
+            throw err;
+          }
+        }
 
         let fullReply = '';
         const pendingFunctionCalls = [];

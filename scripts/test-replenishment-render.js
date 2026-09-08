@@ -128,19 +128,28 @@ console.log('\n2 · Identifier and filter safety');
 
 console.log('\n3 · Rendered DDL — statement set and order');
 const stmts = renderInfra('zolstock', zolstockBinding());
+// Located by CONTENT, not position: the statement list grows with the module
+// (signals joined it for the grouping classifier) and positional indexing made
+// every later assertion fail for the wrong reason.
+const findStmt = (re) => stmts.find(s => re.test(s)) || '';
+const idxOf = (re) => stmts.findIndex(s => re.test(s));
 {
-  ok('renders 7 statements', stmts.length === 7, String(stmts.length));
-  ok('drops mv_suppliers before mv_replenishment_base (it depends on it)',
-    /DROP .*mv_suppliers/.test(stmts[0]) && /DROP .*mv_replenishment_base/.test(stmts[1]));
-  ok('creates the base view before the supplier view',
-    /CREATE MATERIALIZED VIEW zolstock\.mv_replenishment_base/.test(stmts[2]) &&
-    /CREATE MATERIALIZED VIEW zolstock\.mv_suppliers/.test(stmts[3]));
-  ok('indexes come last', stmts.slice(4).every(s => /CREATE .*INDEX/.test(s)));
+  ok('renders 10 statements (3 drops, 3 views, 4 indexes)', stmts.length === 10, String(stmts.length));
+  ok('dependent views drop before the base view they read',
+    idxOf(/DROP .*mv_suppliers/) < idxOf(/DROP .*mv_replenishment_base/)
+    && idxOf(/DROP .*mv_replenishment_signals/) < idxOf(/DROP .*mv_replenishment_base/));
+  ok('creates the base view before the views built on it',
+    idxOf(/CREATE MATERIALIZED VIEW zolstock\.mv_replenishment_base/) >= 0
+    && idxOf(/CREATE MATERIALIZED VIEW zolstock\.mv_replenishment_base/) < idxOf(/CREATE MATERIALIZED VIEW zolstock\.mv_suppliers/)
+    && idxOf(/CREATE MATERIALIZED VIEW zolstock\.mv_replenishment_base/) < idxOf(/CREATE MATERIALIZED VIEW zolstock\.mv_replenishment_signals/));
+  ok('indexes come last', stmts.filter(s => /CREATE .*INDEX/.test(s)).length === 4
+    && stmts.slice(-4).every(s => /CREATE .*INDEX/.test(s)));
 }
 
-const base = stmts[2];
-const suppliers = stmts[3];
-const indexes = stmts.slice(4).join('\n');
+const base = findStmt(/CREATE MATERIALIZED VIEW zolstock\.mv_replenishment_base/);
+const suppliers = findStmt(/CREATE MATERIALIZED VIEW zolstock\.mv_suppliers/);
+const signals = findStmt(/CREATE MATERIALIZED VIEW zolstock\.mv_replenishment_signals/);
+const indexes = stmts.filter(s => /CREATE .*INDEX/.test(s)).join('\n');
 
 console.log('\n4 · ZS-2 correctness rules are actually in the SQL');
 {
@@ -161,8 +170,22 @@ console.log('\n4 · ZS-2 correctness rules are actually in the SQL');
     /f\.row_date > dt\.data_through - INTERVAL '90 days'/.test(base));
   ok('CURRENT_DATE / now() appear nowhere',
     !/CURRENT_DATE|\bnow\(\)/i.test(base), 'the feed lags the calendar');
-  ok('all three windows are rendered',
-    ['28', '90', '365'].every(n => base.includes(`qty_sold_${n}d`)));
+  ok('all four windows are rendered (60 backs the weighted pace model)',
+    ['28', '60', '90', '365'].every(n => base.includes(`qty_sold_${n}d`)));
+}
+{
+  // The signals view — raw measures for the grouping classifier. No derived
+  // group column: classification is read-time so settings apply instantly.
+  ok('signals view exists and reads the base view from the TARGET schema',
+    /FROM zolstock\.mv_replenishment_base/.test(signals));
+  ok('signals prior-year windows anchor to data_through, never the clock',
+    /INTERVAL '455 days'/.test(signals) && /INTERVAL '365 days'/.test(signals)
+    && !/CURRENT_DATE|\bnow\(\)/i.test(signals));
+  ok('signals carries in_stock_file (absence vs explicit zero — the D4 switch)',
+    /AS in_stock_file/.test(signals));
+  ok('signals carries NO baked-in group column', !/suggested_group/.test(signals));
+  ok('signals has a UNIQUE index on its grain',
+    /CREATE UNIQUE INDEX[\s\S]*?mv_replenishment_signals \(sku\)/.test(indexes));
 }
 {
   // Rule 3 — two item keys, bridged.
@@ -197,8 +220,8 @@ console.log('\n5 · Optional sections degrade cleanly');
   const b = zolstockBinding();
   delete b.onOrder; delete b.committed; delete b.stock.store;
   const only = renderInfra('zolstock', b);
-  const baseOnly = only[2];
-  ok('renders without the optional sections', only.length === 7, String(only.length));
+  const baseOnly = only.find(s => /CREATE MATERIALIZED VIEW zolstock\.mv_replenishment_base/.test(s)) || '';
+  ok('renders without the optional sections', only.length === 10, String(only.length));
   ok('the column list is unchanged (a stable view shape)',
     ['on_order_qty', 'committed_qty', 'store_qty_total', 'on_order_last_date']
       .every(c => baseOnly.includes(c)));
@@ -213,7 +236,8 @@ console.log('\n5 · Optional sections degrade cleanly');
     !noSupplier.some(s => /mv_suppliers/.test(s) && /CREATE/.test(s)),
     String(noSupplier.length));
   ok('the base view still renders a typed NULL supplier column',
-    /NULL::text AS supplier/.test(noSupplier[2]));
+    /NULL::text AS supplier/.test(
+      noSupplier.find(s => /CREATE MATERIALIZED VIEW zolstock\.mv_replenishment_base/.test(s)) || ''));
 }
 
 console.log('\n6 · Determinism (the property the golden test rests on)');

@@ -217,6 +217,50 @@ Modules may mount their own client API underneath, e.g.
 Nothing in the admin UI, the router, the init orchestrator or the nightly
 hook changes — they all read the descriptor.
 
+## Authoring a chat scope (learned on Smart Tune, binding #1)
+
+A `chatScopes()` entry gives a module its own scoped conversation in the
+REAL chat — the framework handles the isolation (scope tools only, general
+SQL tool absent), the conversation metadata stamp, the history tag, the
+scoped welcome, and the optional `temperature` pin (Smart Tune pins `0`;
+providers that reject sampling params are stripped-and-retried
+automatically). What the framework CANNOT do for you is keep the answers
+deterministic and honest — these rules came out of real incidents and every
+new scope should follow them:
+
+- **The model never chooses a parameter that changes a headline number.**
+  Any tool knob that moves counts or money (Smart Tune's `horizonDays`) must
+  only take effect alongside a parameter quoting the user's words that asked
+  for it; alone it is ignored and the data contract says so. Asking nicely
+  in the description demonstrably fails.
+- **One universe per answer.** State in the data contract which universe the
+  figures cover, and forbid quoting a side query's row count as the answer's
+  item count. Word the money as finished, LABELED sentences — a tool that
+  returns two raw totals will see the wrong one quoted eventually.
+- **Actions are commits, not exploration.** An action tool is called once
+  per user request, after verifying the filter with the read tool; creating
+  a new actionable object supersedes the conversation's previous open one.
+  Execution claims its row with one conditional UPDATE (two clicks race, one
+  wins), acts on a frozen snapshot, records prior state, and reverts only
+  what it still owns.
+- **Name the scope's boundaries in the prompt fragment**: what data universe
+  the scope covers and where the rest lives (an honest pointer, never a
+  bent number), and what the action's targets are and are NOT (Smart Tune:
+  groups are procurement work-states, not catalogue categories — a
+  catalogue-category move target gets one clarifying sentence, no proposal).
+- **Free-text name matching is word-start, shortest-stem.** A substring
+  stem inside another word swept geometric planters into an umbrella move
+  once; `scope.js`'s matcher is the reference implementation.
+
+The proposal/operation TABLES (`module_chat_proposals`,
+`module_bulk_operations`) are framework-level and dataset-namespaced; the
+lifecycle logic currently lives in `modules/replenishment/services/
+proposals.service.js`. When a SECOND module needs previewed actions, lift
+that service into `modules/services/` rather than copying it — the shape
+(create→supersede→claim→snapshot-execute→guarded-revert) is module-agnostic
+already. Same trigger applies client-side to `ChatActionCard.tsx`: one
+renderer branch per action `kind`, added the way the shell adds an app page.
+
 ---
 
 ## Testing

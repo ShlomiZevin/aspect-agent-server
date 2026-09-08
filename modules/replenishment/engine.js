@@ -27,7 +27,7 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Windows the prepared view carries. Keep in step with templates.js WINDOWS. */
-const AVAILABLE_WINDOWS = [28, 90, 365];
+const AVAILABLE_WINDOWS = [28, 60, 90, 365];
 
 const STATUS = {
   OVERDUE: 'overdue',
@@ -138,9 +138,49 @@ function computeRecommendation(row, settings, context = {}) {
   // item is dormant, not slow; treating stale demand as current would keep
   // reordering something that stopped selling.
   const staleDemand = Boolean(lastSold && daysBetween(dataThrough, lastSold) > win.days);
-  const velocityDaily = staleDemand || effectiveDays <= 0 ? 0 : qtyInWindow / effectiveDays;
+  let velocityDaily = staleDemand || effectiveDays <= 0 ? 0 : qtyInWindow / effectiveDays;
   if (staleDemand) {
     notes.push({ code: 'stale_demand', params: { days: win.days, lastSold: iso(lastSold) } });
+  }
+
+  // ── pace model v2: the last 60 days count double, adjusted by the item's
+  //    own prior-year seasonality ──
+  //
+  // Opt-in via settings.paceModel = 'weighted_seasonal', and applied ONLY when
+  // the prepared row actually carries the inputs (qty_sold_60d from the base
+  // view; py_* from the signals view). The basis code always states the
+  // arithmetic that RAN, never the one configured — the Why? panel must not
+  // describe a model that didn't run. Thin-history and dormant items keep
+  // their own bases: a weighted year means nothing for an item ten days old,
+  // and a dormant item's pace stays zero.
+  if (settings.paceModel === 'weighted_seasonal' && !staleDemand && !thinHistory
+      && row.qty_sold_60d !== undefined && row.qty_sold_60d !== null) {
+    const q60 = num(row.qty_sold_60d);
+    const q365 = num(row.qty_sold_365d);
+    // 60 recent days at weight 2, the remaining 305 at weight 1.
+    let v = (2 * q60 + Math.max(0, q365 - q60)) / (2 * 60 + 305);
+    let seasonalIdx = null;
+    const pyYear = num(row.py_year_units);
+    const pyNext90 = num(row.py_next90_units);
+    if (pyYear >= num(settings.seasonalMinUnits, 200)) {
+      // How the coming 90 days compared to a uniform share, one year ago —
+      // clamped so a single odd year cannot zero an item or 10x it.
+      const raw = (pyNext90 / pyYear) / (90 / 365);
+      seasonalIdx = Math.min(4, Math.max(0.25, raw));
+      v *= seasonalIdx;
+    }
+    velocityDaily = v;
+    velocityBasis = {
+      code: 'weighted_seasonal',
+      params: {
+        recentDays: 60,
+        seasonalIdx: seasonalIdx === null ? null : Math.round(seasonalIdx * 100) / 100,
+      },
+    };
+    notes.push({ code: 'pace_model_weighted', params: { recentDays: 60, seasonal: seasonalIdx !== null } });
+    if (seasonalIdx !== null && (seasonalIdx <= 0.5 || seasonalIdx >= 2)) {
+      notes.push({ code: 'seasonal_adjustment', params: { idx: Math.round(seasonalIdx * 100) / 100 } });
+    }
   }
 
   // ── availability ──
@@ -219,6 +259,27 @@ function computeRecommendation(row, settings, context = {}) {
   const orderByDate = daysOfCover === null ? null : addDays(dataThrough, daysOfCover - leadTimeDays);
   const daysLate = orderByDate ? daysBetween(today, orderByDate) : null;
 
+  // ── the actionable calendar (two-date model) ──
+  //
+  // `orderByDate` is a DIAGNOSIS: the last date an order could have gone out
+  // and still beaten the runout. Once missed it lies in the past — and a past
+  // date read as an instruction ("order by June 6") is nonsense; the client
+  // said exactly that. These four are the INSTRUCTION side, clamped to the
+  // calendar a buyer can act in:
+  //   placeOrderBy          when to actually place the order — today at the
+  //                         earliest, never a date that has already passed
+  //   runoutDate            when current stock is projected to hit zero
+  //   arrivesIfOrderedToday when goods would land if the order went out today
+  //   stockoutGapDays       projected days of zero stock even if ordered
+  //                         today (0 = an order today still beats the runout)
+  const runoutDate = daysOfCover === null ? null : addDays(dataThrough, daysOfCover);
+  const placeOrderBy = orderByDate === null ? null
+    : (daysLate !== null && daysLate > 0 ? new Date(today.getTime()) : orderByDate);
+  const arrivesIfOrderedToday = daysOfCover === null ? null : addDays(today, leadTimeDays);
+  const stockoutGapDays = runoutDate && arrivesIfOrderedToday
+    ? Math.max(0, daysBetween(arrivesIfOrderedToday, runoutDate))
+    : null;
+
   // ── quantity ──
   const targetStock = velocityDaily * (leadTimeDays + reviewDays) + safetyStock;
   const rawQty = Math.max(0, targetStock - netAvailable);
@@ -292,6 +353,7 @@ function computeRecommendation(row, settings, context = {}) {
     itemNumber: row.item_number ?? null,
     itemName: row.item_name ?? null,
     category: row.category ?? null,
+    subcategory: row.subcategory ?? null,
     supplier: row.supplier ?? null,
     supplierCode: row.supplier_code ?? null,
 
@@ -329,6 +391,10 @@ function computeRecommendation(row, settings, context = {}) {
     daysOfCover,
     orderByDate: iso(orderByDate),
     daysLate,
+    placeOrderBy: iso(placeOrderBy),
+    runoutDate: iso(runoutDate),
+    arrivesIfOrderedToday: iso(arrivesIfOrderedToday),
+    stockoutGapDays,
     targetStock,
     rawQty,
     orderQty,
@@ -357,14 +423,46 @@ function computeRecommendations(rows, settings, context = {}) {
     if (rec) out.push(rec);
   }
 
-  const rank = { [STATUS.OVERDUE]: 0, [STATUS.DUE_SOON]: 1, [STATUS.OK]: 2, [STATUS.NO_DEMAND]: 3 };
-  out.sort((a, b) => {
-    if (rank[a.status] !== rank[b.status]) return rank[a.status] - rank[b.status];
-    if (a.status === STATUS.OVERDUE) return (b.daysLate ?? 0) - (a.daysLate ?? 0);
-    if (a.status === STATUS.DUE_SOON) return String(a.orderByDate).localeCompare(String(b.orderByDate));
-    return (b.estimatedCostExVat ?? 0) - (a.estimatedCostExVat ?? 0);
-  });
+  out.sort(compareUrgency);
   return out;
+}
+
+/**
+ * FORWARD-LOOKING urgency — the one ordering every surface shares.
+ *
+ * The old rule (overdue first, most-late first) was true and useless: with an
+ * unconfigured lead time, 86% of a real due list collapsed onto one identical
+ * "93 days late" and the tiebreak was cost — a wall of long-dead rows that
+ * buried every "in stock, runs out Thursday" line the buyer actually wanted.
+ *
+ * The new rule ranks by WHEN STOCK RUNS OUT, soonest first (already-out items
+ * carry the earliest runout and lead naturally); ties — the entire already-
+ * out cohort shares one runout — break by how fast money is bleeding
+ * (velocity × unit cost per day), then by order value. Items the engine wants
+ * ordered (due) come before adequately-stocked ones, which come before
+ * no-demand rows.
+ */
+function compareUrgency(a, b) {
+  const band = r => (r.status === STATUS.OVERDUE || r.status === STATUS.DUE_SOON) ? 0
+    : r.status === STATUS.OK ? 1 : 2;
+  if (band(a) !== band(b)) return band(a) - band(b);
+
+  const runout = r => r.runoutDate ?? '9999-12-31';
+  if (runout(a) !== runout(b)) return runout(a) < runout(b) ? -1 : 1;
+
+  const bleed = r => {
+    const unit = r.orderQty > 0 && r.estimatedCostExVat != null ? r.estimatedCostExVat / r.orderQty : 0;
+    return (r.velocityDaily ?? 0) * unit;
+  };
+  const byBleed = bleed(b) - bleed(a);
+  if (byBleed !== 0) return byBleed;
+
+  const byValue = (b.estimatedCostExVat ?? 0) - (a.estimatedCostExVat ?? 0);
+  if (byValue !== 0) return byValue;
+  // Last resort: a stable, meaningless-but-repeatable key, so two runs over
+  // the same data produce the same page rather than shuffling under the
+  // buyer between refreshes.
+  return String(a.sku).localeCompare(String(b.sku));
 }
 
 /** Headline counts for the summary tiles. Derived, never separately queried. */
@@ -407,6 +505,7 @@ module.exports = {
   AVAILABLE_WINDOWS,
   computeRecommendation,
   computeRecommendations,
+  compareUrgency,
   summarize,
   // exported for the offline battery
   pickWindow,

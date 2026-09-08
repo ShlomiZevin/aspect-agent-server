@@ -560,6 +560,54 @@ const supplierSettings = pgTable('supplier_settings', {
   updatedAt:     timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+// Procurement Groups: the buyer's group assignments. A row exists ONLY while
+// a buyer override is in force — deleting it returns the item to the computed
+// suggestion. See db/migrations/048.
+const replenishmentItemVerdicts = pgTable('replenishment_item_verdicts', {
+  id:                 bigserial('id', { mode: 'number' }).primaryKey(),
+  datasetId:          text('dataset_id').notNull(),
+  sku:                text('sku').notNull(),
+  assignedGroup:      text('assigned_group').notNull(),
+  suggestedAtVerdict: text('suggested_at_verdict'),
+  note:               text('note'),
+  updatedBy:          text('updated_by'),
+  updatedAt:          timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Smart Tune: previewed change sets. Execution acts on sku_snapshot — the set
+// the buyer SAW (decision D5). See db/migrations/048.
+const moduleChatProposals = pgTable('module_chat_proposals', {
+  id:             bigserial('id', { mode: 'number' }).primaryKey(),
+  datasetId:      text('dataset_id').notNull(),
+  moduleId:       text('module_id').notNull(),
+  scopeId:        text('scope_id').notNull(),
+  filter:         jsonb('filter').notNull(),
+  interpreted:    text('interpreted').notNull(),
+  target:         jsonb('target').notNull(),
+  skuSnapshot:    jsonb('sku_snapshot').notNull(),
+  status:         text('status').default('proposed').notNull(),
+  conversationId: text('conversation_id'),
+  createdBy:      text('created_by'),
+  createdAt:      timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt:      timestamp('expires_at', { withTimezone: true }).notNull(),
+});
+
+// Smart Tune: executed bulk changes, with prior per-SKU state for one-click
+// undo. proposal_id deliberately not a FK — history outlives pruning.
+const moduleBulkOperations = pgTable('module_bulk_operations', {
+  id:         bigserial('id', { mode: 'number' }).primaryKey(),
+  proposalId: bigint('proposal_id', { mode: 'number' }),
+  datasetId:  text('dataset_id').notNull(),
+  moduleId:   text('module_id').notNull(),
+  priorState: jsonb('prior_state').notNull(),
+  applied:    integer('applied').default(0).notNull(),
+  skipped:    integer('skipped').default(0).notNull(),
+  status:     text('status').default('executed').notNull(),
+  executedBy: text('executed_by'),
+  executedAt: timestamp('executed_at', { withTimezone: true }).defaultNow().notNull(),
+  revertedAt: timestamp('reverted_at', { withTimezone: true }),
+});
+
 // V2 builder tables (the JSON-based plugin builder; coexists with
 // the legacy `agents` / `crewMembers` above which power v1 chats).
 const builderSchema = require('./builder');
@@ -620,6 +668,9 @@ module.exports = {
   moduleRuns,
   moduleOutbox,
   supplierSettings,
+  replenishmentItemVerdicts,
+  moduleChatProposals,
+  moduleBulkOperations,
   // V2 builder
   builderProjects:        builderSchema.builderProjects,
   builderWorkspaces:      builderSchema.builderWorkspaces,

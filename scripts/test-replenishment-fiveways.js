@@ -59,6 +59,15 @@ async function main() {
   const recs = require('../modules/replenishment/services/recommendations.service');
   const { summary } = await recs.getRecommendations('zolstock', { limit: 1 });
   const count = summary.orderNow;
+  // The engine's own money totals, with slack for the horizon the talker's
+  // tool call happened to use (a 0-day window moves the due total by <1%).
+  // Hardcoding the total here went stale the first time the data reloaded.
+  const engineTotals = [summary.estimatedTotalExVat, summary.estimatedTotalAllExVat]
+    .filter(Boolean);
+  const nearEngineTotal = (x) => {
+    const n = Number(String(x).replace(/[,. ](?=\d{3})/g, ''));
+    return engineTotals.some(t => Math.abs(n - t) / t < 0.02);
+  };
   // Match by NORMALISING the reply rather than by building a regex out of
   // escaped backslashes. A `\b` written into a template literal is a
   // backspace character, not a word boundary — the first version of this file
@@ -85,7 +94,7 @@ async function main() {
         viaModule: tools.some(s => /fetch_replenishment/.test(s)),
         hasCount: carriesCount(t),
         // Any multi-thousand money figure that is not the engine's total.
-        contradicting: money.filter(x => /^\d{1,3}([,.]\d{3}){2,}/.test(x) && !/11[,.]?44/.test(x)),
+        contradicting: money.filter(x => /^\d{1,3}([,.]\d{3}){2,}/.test(x) && !nearEngineTotal(x)),
       });
     }
   }

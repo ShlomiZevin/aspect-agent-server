@@ -19,6 +19,17 @@ let clientApiKey = null;
 
 const providerConfigService = require('./provider-config.service');
 
+/** Drop underscore-prefixed top-level keys from a tool result before it goes
+ *  into the model's context — see the functionResponse push below. */
+function stripInternal(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  const keys = Object.keys(result);
+  if (!keys.some(k => k.startsWith('_'))) return result;
+  const rest = {};
+  for (const k of keys) { if (!k.startsWith('_')) rest[k] = result[k]; }
+  return rest;
+}
+
 /**
  * Lazily initialize the Google GenAI client
  * Uses dynamic import() for ESM compatibility
@@ -580,7 +591,11 @@ class GoogleService {
             functionResponseParts.push({
               functionResponse: {
                 name: funcCall.name,
-                response: { result },
+                // Underscore-prefixed keys are internal by contract (_fullData,
+                // _chatAction): they ride the raw function_result event above
+                // but never enter the model's context. Same rule as
+                // llm.openai.js#stripInternalFields.
+                response: { result: stripInternal(result) },
               },
             });
           } catch (error) {

@@ -16,7 +16,9 @@
  */
 
 const { validateBinding } = require('./binding-contract');
-const { renderReplenishmentBase, renderSuppliers, renderIndexes } = require('./templates');
+const {
+  renderReplenishmentBase, renderSuppliers, renderSignals, renderIndexes,
+} = require('./templates');
 
 /**
  * TARGET vs SOURCE are separate, and the distinction is load-bearing.
@@ -53,15 +55,20 @@ function renderInfra(schema, binding) {
 
   const statements = [];
 
-  // Drop dependents first. CASCADE covers indexes; naming both explicitly
+  // Drop dependents first. CASCADE covers indexes; naming each explicitly
   // keeps the intent readable rather than relying on cascade order.
+  // mv_suppliers and mv_replenishment_signals both read the base view, so
+  // they go first and come back after it.
   statements.push(`DROP MATERIALIZED VIEW IF EXISTS ${schemas.target}.mv_suppliers CASCADE`);
+  statements.push(`DROP MATERIALIZED VIEW IF EXISTS ${schemas.target}.mv_replenishment_signals CASCADE`);
   statements.push(`DROP MATERIALIZED VIEW IF EXISTS ${schemas.target}.mv_replenishment_base CASCADE`);
 
   statements.push(renderReplenishmentBase(schemas, binding));
 
   const suppliers = renderSuppliers(schemas, binding);
   if (suppliers) statements.push(suppliers);
+
+  statements.push(renderSignals(schemas, binding));
 
   statements.push(...renderIndexes(schemas, binding));
 
