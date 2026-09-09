@@ -22,6 +22,7 @@
 
 const recommendationsService = require('./services/recommendations.service');
 const { MAX_SCOPE_SKUS } = require('./scope');
+const { GROUPS } = require('./groups');
 
 const MAX_ROWS_IN_ANSWER = 25;
 
@@ -49,7 +50,12 @@ function buildTool(datasetId) {
       properties: {
         supplier: {
           type: 'string',
-          description: 'Optional. Limit to one supplier, exactly as the data names it.',
+          description:
+            'Optional. Limit to one supplier — pass the USER\'S OWN words for it; '
+            + 'the system resolves shorthand and near-names to the exact catalog '
+            + 'name deterministically and reports the resolution (an ambiguous '
+            + 'name comes back as a candidate list to ask about). Never expand or '
+            + 'correct the name yourself.',
         },
         sku: {
           type: 'string',
@@ -103,6 +109,55 @@ function buildTool(datasetId) {
             + 'take effect — it exists so a window is only ever applied because the '
             + 'user asked for one.',
         },
+        group: {
+          type: 'string',
+          enum: Object.values(GROUPS),
+          description:
+            'Optional. Filter to ONE of the Procurement screen\'s group chips: '
+            + 'order_now ("Order now" / "להזמין עכשיו"), suspicious ("Needs checking" '
+            + '/ "דורש בדיקה"), out_of_season ("מחוץ לעונה"), fading ("דועך"), new '
+            + '("חדש"). Use it whenever the user names a group — "from the Order now '
+            + 'group" MUST become group:"order_now", never a re-labeling of the '
+            + 'overdue count: overdue is a STATUS, the groups are the screen\'s '
+            + 'classification of those same items, and their counts differ.',
+        },
+        status: {
+          type: 'string',
+          enum: ['overdue', 'due_soon'],
+          description:
+            'Optional. overdue = the place-order date is ALREADY TODAY ("need to '
+            + 'order now", "חייבים להזמין עכשיו"); due_soon = planned, the order '
+            + 'date lies ahead ("coming up", "בקרוב"). ONLY takes effect together '
+            + 'with statusFromUser; alone it is IGNORED — a "furthest to '
+            + 're-supply" question with no now/today wording covers BOTH overdue '
+            + 'and planned items, and adding overdue silently capped the runout '
+            + 'horizon and made the answer disagree with the screen. Combine with '
+            + 'sortBy when asked: "furthest items I must order now" = '
+            + 'status:"overdue" + sortBy:"runout_desc".',
+        },
+        statusFromUser: {
+          type: 'string',
+          description:
+            'The user\'s OWN words that restricted to overdue or planned items '
+            + '("that I need to order now", "רק מה שדחוף היום", "the upcoming '
+            + 'ones"), quoted verbatim. Required for status to take effect — it '
+            + 'exists so the overdue/planned cut is only ever applied because the '
+            + 'user asked for it.',
+        },
+        sortBy: {
+          type: 'string',
+          enum: ['urgency', 'runout_desc'],
+          description:
+            'Optional row ordering — the same two the Procurement screen offers. '
+            + 'Default "urgency": most urgent first (already-out and soonest-runout '
+            + 'items lead, ranked by money at stake per day) — for "most urgent", '
+            + '"most overdue", "what should we order first". '
+            + '"runout_desc": the PLANNING view — the FURTHEST-future runouts first, '
+            + 'already-run-out items last — for "furthest", "הרחוק להיגמר", "least '
+            + 'urgent", "planning ahead". The two are near-opposites: a wrong guess '
+            + 'reverses the list, so pick from the user\'s words and say which '
+            + 'ordering the rows use.',
+        },
         limit: {
           type: 'number',
           description: `Optional, default ${MAX_ROWS_IN_ANSWER}. Maximum rows to return.`,
@@ -111,6 +166,47 @@ function buildTool(datasetId) {
       required: [],
     },
     handler: async (params) => handle(datasetId, params),
+  };
+}
+
+/**
+ * Resolve a user-worded supplier to the exact name the data uses.
+ *
+ * The filter is exact-match SQL, and users shorten names constantly —
+ * "ב.א. זול סטוק" for the full legal name, "BA zol stock" in Latin. Passing
+ * their words verbatim silently produced an empty scope six times in one
+ * robustness run. Resolution is DETERMINISTIC (normalize, then containment;
+ * a Latin first token falls back to the supplier CODE), reported in the
+ * contract when it changed anything, and refuses into a candidate list when
+ * ambiguous — never a guess, never a silent zero.
+ */
+async function resolveSupplier(datasetId, input) {
+  const list = await recommendationsService.listSuppliers(datasetId);
+  if (list.error || !Array.isArray(list.suppliers)) return { supplier: input };
+  const rows = list.suppliers;
+  const norm = (s) => String(s ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const inNorm = norm(input);
+
+  const exact = rows.find(s => s.supplier === input) || rows.find(s => norm(s.supplier) === inNorm);
+  if (exact) return { supplier: exact.supplier, resolvedFrom: exact.supplier === input ? null : input };
+
+  const contains = inNorm.length >= 3
+    ? rows.filter(s => norm(s.supplier).includes(inNorm) || inNorm.includes(norm(s.supplier)))
+    : [];
+  if (contains.length === 1) return { supplier: contains[0].supplier, resolvedFrom: input };
+
+  if (contains.length === 0) {
+    const codeTok = String(input).trim().split(/\s+/)[0].toUpperCase();
+    const byCode = codeTok.length >= 2
+      ? rows.filter(s => s.supplierCode && String(s.supplierCode).toUpperCase().startsWith(codeTok))
+      : [];
+    if (byCode.length === 1) return { supplier: byCode[0].supplier, resolvedFrom: input };
+  }
+
+  return {
+    supplier: null,
+    unresolved: input,
+    candidates: (contains.length ? contains : rows).slice(0, 8).map(s => s.supplier),
   };
 }
 
@@ -142,6 +238,26 @@ async function handle(datasetId, params = {}) {
     };
   }
 
+  // Supplier names arrive as the USER worded them; the filter is exact-match.
+  // Resolve first, refuse honestly on ambiguity — see resolveSupplier above.
+  let supplierRes = { supplier: params.supplier || undefined };
+  if (params.supplier) {
+    supplierRes = await resolveSupplier(datasetId, params.supplier);
+    if (supplierRes.supplier === null) {
+      return {
+        summary:
+          `No supplier matches "${supplierRes.unresolved}". The names as the data spells them: `
+          + `${supplierRes.candidates.join(' | ')}. Ask the user which one they mean, or retry with `
+          + 'the exact name — never pick one silently.',
+        dataContract: [
+          `Supplier "${supplierRes.unresolved}" resolved to NOTHING — no rows were computed. `
+          + 'Present the candidate names and ask; do not answer with numbers.'],
+        total: 0,
+        recommendations: [],
+      };
+    }
+  }
+
   // THE HORIZON IS NOT THE MODEL'S TO CHOOSE. Twice now a plain question got
   // a window the user never named (0 days once, 25 another), and the same
   // question answered differently across runs. A horizon only applies when
@@ -150,8 +266,14 @@ async function handle(datasetId, params = {}) {
   const userNamedWindow = Boolean(String(params.windowFromUser ?? '').trim());
   const horizonIgnored = params.horizonDays != null && !userNamedWindow;
 
+  // Same lock for the overdue/planned cut: it changes which items exist in
+  // the answer (overdue alone caps the runout horizon at today+lead), so it
+  // applies only when the model can quote the user's words asking for it.
+  const userNamedStatus = Boolean(String(params.statusFromUser ?? '').trim());
+  const statusIgnored = params.status != null && !userNamedStatus;
+
   const opts = {
-    supplier: params.supplier || undefined,
+    supplier: supplierRes.supplier,
     sku: params.sku || undefined,
     skus: skus && skus.length ? skus : undefined,
     search: params.search || undefined,
@@ -159,6 +281,9 @@ async function handle(datasetId, params = {}) {
     subcategory: params.subcategory || undefined,
     onlyDue: params.onlyDue === undefined ? true : Boolean(params.onlyDue),
     horizonDays: userNamedWindow ? params.horizonDays : undefined,
+    group: Object.values(GROUPS).includes(params.group) ? params.group : undefined,
+    status: userNamedStatus && ['overdue', 'due_soon'].includes(params.status) ? params.status : undefined,
+    sort: params.sortBy === 'runout_desc' ? 'runout_desc' : undefined,
     limit: Math.min(Number(params.limit) || MAX_ROWS_IN_ANSWER, 100),
   };
 
@@ -202,6 +327,30 @@ async function handle(datasetId, params = {}) {
   // it, but it cannot quietly drop it.
   const contract = [];
   contract.push(`Data through ${res.dataThrough || 'unknown'}; computed for ${res.today}.`);
+
+  // THE INTERPRETATION, FIRST AND ALWAYS — composed from the parameters that
+  // actually ran, not from what the model believes it asked for. Three times a
+  // user's ask ("furthest", "from the Order now group", "that I need to order
+  // now") was silently bent onto whatever the tool could express, and the
+  // mislabeling was invisible. The answer MUST open by stating this
+  // interpretation in the user's language, so a mismatch with their intent is
+  // caught by the user in one glance instead of eroding their trust row by row.
+  const interpretation = [
+    supplierRes.supplier ? `supplier "${supplierRes.supplier}"` : 'all suppliers',
+    Object.values(GROUPS).includes(params.group) ? `only the "${params.group}" group chip` : 'all group chips',
+    userNamedStatus && params.status === 'overdue' ? 'only items to order TODAY (overdue)'
+      : userNamedStatus && params.status === 'due_soon' ? 'only planned items (order date ahead)'
+        : 'items to order today AND planned ones'
+          + (statusIgnored ? ' (an overdue/planned cut was proposed without the user asking — IGNORED)' : ''),
+    params.sortBy === 'runout_desc' ? 'ordered by FURTHEST projected runout first (planning view)'
+      : 'ordered most-urgent first',
+  ].join(' · ');
+  contract.push(`INTERPRETATION (state this openly at the top of your answer, in the user's language): ${interpretation}.`);
+  if (supplierRes.resolvedFrom) {
+    contract.push(
+      `Supplier resolved: the user's "${supplierRes.resolvedFrom}" was matched to "${supplierRes.supplier}" `
+      + '(the exact name in the data). Mention the resolution once.');
+  }
   // The two-date model, spelled out so answers stop presenting a diagnosis
   // as an instruction: a client read "order by June 6" (months past) as a
   // date to place an order, which is nonsense.
@@ -248,11 +397,26 @@ async function handle(datasetId, params = {}) {
     `${counts.ok} adequately stocked, ${counts.noDemand} with no recent sales` +
     (res.scope ? ' — within the stated scope.' : '.'));
 
+  const gs = res.scopedGroupSummary;
+  const activeGroup = Object.values(GROUPS).includes(params.group) ? params.group : null;
+
+  // When ONE group chip was asked for, its own count and money ARE the
+  // headline — the status counts above describe the whole scope. Without this
+  // an answer relabeled "5,020 overdue" as "5,020 in the Order now group",
+  // which is a different (and wrong) number.
+  if (activeGroup && gs?.[activeGroup]) {
+    contract.push(
+      `GROUP FILTER: only the "${activeGroup}" chip — ${gs[activeGroup].count} item(s), estimated order `
+      + `cost ₪${Math.round(gs[activeGroup].estimatedCostExVat).toLocaleString('en-GB')} ex-VAT. THESE are `
+      + 'the headline figures. The overdue/due-soon counts above cover the whole scope across all groups — '
+      + 'never present them as this group\'s size.');
+  }
+
   // The money, LABELED — the tool returns two totals (the due set's, and the
   // whole scope's including adequately-stocked items) and answers have quoted
   // the wrong one as the other. Worded here so the talker copies a sentence
   // instead of choosing between two raw numbers.
-  if (counts.estimatedTotalExVat != null) {
+  if (!activeGroup && counts.estimatedTotalExVat != null) {
     const due = Math.round(counts.estimatedTotalExVat).toLocaleString('en-GB');
     const all = counts.estimatedTotalAllExVat != null
       ? Math.round(counts.estimatedTotalAllExVat).toLocaleString('en-GB') : null;
@@ -262,6 +426,32 @@ async function handle(datasetId, params = {}) {
         ? `. (₪${all} would be the whole scope including not-yet-due items — quote that ONLY if you label it as such.)`
         : '.'));
   }
+
+  // GROUPS — reconciliation against the screen's chips, by construction. The
+  // Procurement screen OPENS on its "Order now" chip and hides the other
+  // groups until clicked; a chat total over the whole due set therefore
+  // differs from the chip by composition, and the buyer comparing the two
+  // (they always do) must be told which groups the figures include.
+  if (gs && !activeGroup) {
+    const parts = Object.entries(gs)
+      .filter(([, v]) => v.count > 0)
+      .map(([g, v]) => `${g}: ${v.count}`);
+    if (parts.length > 1) {
+      contract.push(
+        `GROUPS: these due items split across the screen's group chips — ${parts.join(', ')}. `
+        + 'The Procurement screen opens on "Order now" only, so a total over all groups will not match '
+        + 'that chip. If the user is comparing with the screen, say which groups your figures include.');
+    }
+  }
+
+  // ROW ORDER, always stated — the two available orderings are near-opposites
+  // and an answer that does not say which one it used cannot be compared with
+  // the screen or with the same question asked yesterday.
+  contract.push(params.sortBy === 'runout_desc'
+    ? 'ROW ORDER: the planning view — furthest-future projected runout first, already-run-out items last. Say so.'
+    : 'ROW ORDER: most urgent first — already-out and soonest-runout items lead, ranked by money at stake '
+      + 'per day. Say so; if the user actually asked for the FURTHEST/planning view, call again with '
+      + 'sortBy="runout_desc" instead of reinterpreting these rows.');
 
   const assumed = res.recommendations.filter(r => r.leadTimeSource !== 'supplier');
   if (assumed.length) {

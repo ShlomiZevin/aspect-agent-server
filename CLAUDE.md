@@ -135,10 +135,20 @@ headline number** (a horizon applies only alongside the user's quoted words
 asking for one — "LEAVE IT UNSET" in a description demonstrably fails), and
 **one universe per answer** (a side query's row count is never the answer's
 item count; money goes to the talker as labeled sentences, not raw fields to
-choose between). The full authoring checklist — including the action
-lifecycle: supersede-on-new, atomic execute claim, snapshot execution,
-ownership-guarded revert — is in `docs/features/modules.md` § "Authoring a
-chat scope".
+choose between). The **quoted-words lock** is the enforcement shape: a
+headline-changing parameter (`horizonDays`+`windowFromUser`,
+`status`+`statusFromUser`) takes effect ONLY alongside the user's verbatim
+words asking for it — passed alone it is ignored and the contract says so
+("asking nicely" in a description demonstrably failed three times). Every
+answer opens with an INTERPRETATION line composed from the parameters that
+ACTUALLY ran (supplier · group · status · ordering), so a mislabeled scope
+is a one-glance mismatch instead of a trust leak. Supplier names are
+resolved server-side (normalize → containment → unique match, or refuse into
+a candidate list) — never passed verbatim into the exact-match SQL filter,
+which silently emptied the scope six times in one paraphrase run. The full
+authoring checklist — including the action lifecycle: supersede-on-new,
+atomic execute claim, snapshot execution, ownership-guarded revert — is in
+`docs/features/modules.md` § "Authoring a chat scope".
 
 **A module never fails the thing it plugs into.** `modules/` hooks sit inside the reload (phase 2, before the swap), the dispatcher (tool attach) and the Insights PLAN step. Every one of them is wrapped: a module that throws is marked `degraded` and the host path continues. The reload is the platform's most important scheduled job and every dataset depends on it — an optional module breaking it would be a catastrophic trade. Two switches gate everything (`enabled` AND `status='ready'`); `moduleService.getLiveModules()` is the single definition of "live", and no caller reads the two columns itself.
 
