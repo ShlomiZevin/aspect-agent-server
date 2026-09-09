@@ -180,6 +180,14 @@ async function run(ctx) {
           reason: `Rule ${num} matched`,
           fireImmediately: action.fireImmediately !== false,
         };
+        // A fire-immediately transition ends THIS crew's chain (task
+        // #828): the target crew's chain answers this turn instead.
+        // Without this the origin Talker AND the cascade Talker both
+        // spoke, and the user got two concatenated replies. Deferred
+        // transitions (fireImmediately: false) let the current chain
+        // finish — the new crew takes over on the next user turn,
+        // exactly like the Transition Router's semantics.
+        if (transition.fireImmediately) breakChain = true;
         done.push({ type: 'transition', target: action.target });
       } else if (action.type === 'stop') {
         breakChain = true;
