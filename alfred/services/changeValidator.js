@@ -148,4 +148,4 @@ async function validateClaim({ bodyBefore, bodyAfter, claim, entity, agentSlug, 
   return { matches, note };
 }
 
-module.exports = { validateClaim };
+module.exports = { validateClaim, MODEL };

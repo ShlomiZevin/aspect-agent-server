@@ -143,6 +143,22 @@ async function deleteMessage(messageId) {
     .where(eq(messages.id, Number(messageId)));
 }
 
+/**
+ * Read-modify-write on the conversation's metadata blob. `mutator`
+ * receives the current metadata object and returns the next one.
+ * Used by the pinned-files service (pins live in metadata so the
+ * ✅ Applied marker slice can never consume them).
+ */
+async function updateChatMetadata(chatId, mutator) {
+  const chat = await getChat(chatId);
+  if (!chat) throw new Error('Chat not found');
+  const next = mutator({ ...(chat.metadata || {}) });
+  await drizzle().update(conversations)
+    .set({ metadata: next, updatedAt: new Date() })
+    .where(eq(conversations.id, Number(chatId)));
+  return next;
+}
+
 async function renameChat(chatId, name) {
   const chat = await getChat(chatId);
   if (!chat) return null;
@@ -185,6 +201,7 @@ module.exports = {
   updateMessageContent,
   getMessage,
   deleteMessage,
+  updateChatMetadata,
   renameChat,
   setChatNameIfBlank,
   deleteChat,
