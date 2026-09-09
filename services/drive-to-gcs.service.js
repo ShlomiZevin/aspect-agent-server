@@ -47,7 +47,13 @@ const CLIENTS = {
     skipStems: new Set(),
   },
   superhist: {
-    folderId: '1CDG5hJbXDJVoa28TOYuW7lZ7EDdAOORa',
+    // Set from the Data Loader → Configuration tab (superhist_drive_folder_id),
+    // NOT hardcoded: the value that used to sit here ('1CDG5hJ…') was stale and
+    // pointed at a folder holding ZolStock files, so a sync that fell back to it
+    // (the DB key was briefly unregistered — see provider-config.service.js)
+    // mirrored ZolStock CSVs into superhist/. With no code default, a missing
+    // DB value fails the sync loudly instead of pulling the wrong folder.
+    folderId: null,
     gcsPrefix: 'superhist/',
     // Passthrough: reload-superhist.js keys FILE_TO_TABLE on the exact Drive
     // names, Hebrew and all ("OrderLineהסופר החברתי_CSV.csv").
