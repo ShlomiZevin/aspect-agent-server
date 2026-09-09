@@ -25,6 +25,7 @@ const db = require('./db.pg');
 const { users, allowedEmails } = require('../db/schema');
 const moduleService = require('../modules/services/module.service');
 const conversationService = require('./conversation.service');
+const insightsStore = require('../insights/services/insights-store.service');
 const passwords = require('./password.service');
 
 const MODULE_ID = 'google-auth';
@@ -263,20 +264,31 @@ async function upsertUser({ externalId, email, name, role, tenant }) {
  * Turns an authenticated user into the session payload the browser stores.
  *
  * `userId` is the external id — what every surface already stores and sends
- * back. When the browser was chatting anonymously and passes that `anonUserId`,
- * those conversations are re-parented onto this account first, so the history
- * the person already has is not stranded on a session they can no longer reach.
- * A second device signing in as the same person has no anon history to move and
- * simply reads the account's conversations back.
+ * back. When the browser was anonymous and passes that `anonUserId`, what it
+ * built while anonymous is re-parented onto this account first, so it is not
+ * stranded on a session the person can no longer reach:
+ *   - chat conversations (always — `attachAnonConversations`)
+ *   - Aspect Intelligence reports, saved + history (only into an account with
+ *     none of its own for this dataset — `attachAnonInsights`; `tenant` is the
+ *     dataset id, so this only runs for an Intelligence sign-in)
+ * A second device signing in as the same person has nothing anon to move and
+ * simply reads the account's data back.
  *
- * Neither step may fail the sign-in: the person is authenticated either way.
+ * None of these may fail the sign-in: the person is authenticated either way.
  */
-async function toSession(user, via, { anonUserId = null, agentName = null } = {}) {
+async function toSession(user, via, { anonUserId = null, agentName = null, tenant = null } = {}) {
   if (anonUserId && anonUserId !== user.externalId) {
     try {
       await conversationService.attachAnonConversations(anonUserId, user.externalId, agentName);
     } catch (err) {
       console.error('[sign-in] attachAnonConversations:', err.message);
+    }
+    if (tenant) {
+      try {
+        await insightsStore.attachAnonInsights(anonUserId, user.externalId, tenant);
+      } catch (err) {
+        console.error('[sign-in] attachAnonInsights:', err.message);
+      }
     }
   }
 

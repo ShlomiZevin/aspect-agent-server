@@ -76,14 +76,14 @@ router.post('/google', handle(async (req, res) => {
   const tenant = requireTenant(req);
   const { anonUserId, agentName } = req.body;
   const { user, via } = await signin.signInWithGoogle(req.body.idToken, tenant);
-  res.json(await signin.toSession(user, via, { anonUserId, agentName }));
+  res.json(await signin.toSession(user, via, { anonUserId, agentName, tenant }));
 }));
 
 router.post('/password', handle(async (req, res) => {
   const tenant = requireTenant(req);
   const { email, password, anonUserId, agentName } = req.body;
   const { user, via } = await signin.signInWithPassword(email, password, tenant);
-  res.json(await signin.toSession(user, via, { anonUserId, agentName }));
+  res.json(await signin.toSession(user, via, { anonUserId, agentName, tenant }));
 }));
 
 // --- invitations (super-admin) --------------------------------------------------

@@ -168,6 +168,38 @@ async function run() {
   }
   ok('a grant with no tenant works on every agent');
 
+  // --- anon → account: Intelligence reports move with the person ---------------
+  const insightsStore = require('../../insights/services/insights-store.service');
+  const ANON = `anon_verif_${Date.now()}`;
+  const mkInsight = id => ({ id, headline: id, createdAt: Date.now(), tracked: id === 'r-saved' });
+  await insightsStore.insert(AGENT, ANON, mkInsight('r-saved'));
+  await insightsStore.insert(AGENT, ANON, mkInsight('r-history'));
+
+  // a fresh account with no reports of its own → the anon's move over
+  const fresh = { externalId: `google_verif_${Date.now()}`, email: 'verif-merge@example.com' };
+  await drizzle.insert(require('../../db/schema').users)
+    .values({ externalId: fresh.externalId, email: fresh.email, name: 'verif', role: 'user', source: 'web' });
+  const merged = await signin.toSession(
+    { externalId: fresh.externalId, name: 'verif', email: fresh.email, role: 'user' },
+    'google', { anonUserId: ANON, agentName: AGENT, tenant: AGENT });
+  assert.strictEqual(merged.userId, fresh.externalId);
+  const movedAll = await insightsStore.listByUser(AGENT, fresh.externalId);
+  assert.strictEqual(movedAll.length, 2, 'both anon reports re-parented to the new account');
+  assert.strictEqual((await insightsStore.listTracked(AGENT, fresh.externalId)).length, 1, 'the saved one stays saved');
+  assert.strictEqual((await insightsStore.listByUser(AGENT, ANON)).length, 0, 'nothing left on the anon session');
+  ok('anon reports (saved + history) move onto a fresh account on sign-in');
+
+  // a returning account that already has a report → the anon's are NOT folded in
+  await insightsStore.insert(AGENT, fresh.externalId, mkInsight('r-own'));
+  const ANON2 = `anon_verif2_${Date.now()}`;
+  await insightsStore.insert(AGENT, ANON2, mkInsight('r-stranger'));
+  await signin.toSession(
+    { externalId: fresh.externalId, name: 'verif', email: fresh.email, role: 'user' },
+    'google', { anonUserId: ANON2, agentName: AGENT, tenant: AGENT });
+  assert.strictEqual((await insightsStore.listByUser(AGENT, fresh.externalId)).length, 3, 'the account keeps its own, the stranger anon is not merged');
+  assert.strictEqual((await insightsStore.listByUser(AGENT, ANON2)).length, 1, 'the stranger anon is untouched');
+  ok('a returning account with its own reports does not absorb a stranger anon session');
+
   // --- the hashing itself -------------------------------------------------------
   const h = await passwords.hash(SECRET);
   assert.ok(h.startsWith('scrypt$'));
@@ -192,7 +224,11 @@ async function cleanup() {
       await drizzle.execute(
         `DELETE FROM allowed_emails WHERE invited_by = 'verification'`);
       await drizzle.execute(
-        `DELETE FROM users WHERE external_id LIKE 'email_%-check@example.com'`);
+        `DELETE FROM users WHERE external_id LIKE 'email_%-check@example.com'
+           OR external_id LIKE 'google_verif_%'`);
+      await drizzle.execute(
+        `DELETE FROM intelligence_insights WHERE user_id LIKE 'anon_verif%'
+           OR user_id LIKE 'google_verif_%'`);
       const left = await drizzle.execute('SELECT count(*)::int AS n FROM allowed_emails');
       console.log(`   cleaned up — ${(left.rows || left)[0].n} invitation(s) remain`);
     }

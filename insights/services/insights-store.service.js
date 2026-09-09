@@ -136,4 +136,36 @@ async function reorderTracked(datasetId, userId, insightIds) {
   }
 }
 
-module.exports = { listByUser, listAll, getById, getByIdAny, insert, remove, removeAny, updateInsight, updateInsightAny, listTracked, reorderTracked };
+/**
+ * Move an anonymous session's Intelligence reports (saved + history — every
+ * row is one, `tracked` just flags the saved ones) onto a signed-in account,
+ * the same "sign in to keep your history" path `attachAnonConversations` runs
+ * for chat.
+ *
+ * Guarded, unlike the chat move: only merges into an account that has NO
+ * reports of its own for this dataset yet. A returning user with their own
+ * Intelligence history keeps it — we don't fold a stranger's anon session into
+ * it. (Kosta's rule, 2026-09-09.) The guard also sidesteps the
+ * (dataset_id, user_id, insight_id) unique index.
+ *
+ * @returns {Promise<{moved:number, skipped?:string}>}
+ */
+async function attachAnonInsights(anonUserId, targetUserId, datasetId) {
+  if (!anonUserId || !targetUserId || !datasetId || anonUserId === targetUserId) {
+    return { moved: 0 };
+  }
+  const { rows: own } = await db.query(
+    `SELECT 1 FROM ${TABLE} WHERE dataset_id = $1 AND user_id = $2 LIMIT 1`,
+    [datasetId, targetUserId],
+  );
+  if (own.length) return { moved: 0, skipped: 'target has its own history' };
+
+  const { rowCount } = await db.query(
+    `UPDATE ${TABLE} SET user_id = $3 WHERE dataset_id = $1 AND user_id = $2`,
+    [datasetId, anonUserId, targetUserId],
+  );
+  if (rowCount) console.log(`🔗 Attached ${rowCount} report(s) from ${anonUserId} → ${targetUserId} (${datasetId})`);
+  return { moved: rowCount };
+}
+
+module.exports = { listByUser, listAll, getById, getByIdAny, insert, remove, removeAny, updateInsight, updateInsightAny, listTracked, reorderTracked, attachAnonInsights };
