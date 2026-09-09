@@ -2,10 +2,14 @@
  * Sign-in: proving who someone is, deciding whether they may in, and handing
  * back the session the browser then holds.
  *
- * Two ways to prove it — a Google identity, or an email and a password — and
- * ONE place (`authenticate`) that turns a proven identity into a platform user,
- * so the rules about invitations, revocation and roles cannot drift apart
- * between them.
+ * Two ways to prove it, and they are NOT symmetric:
+ *   - a Google identity is open — signing in with Google is how a person
+ *     registers, no invitation needed;
+ *   - an email and a password work only for addresses added ahead of time on
+ *     the Access page.
+ * `toSession` is the one place that turns either proven identity into a
+ * platform user, so anon-merge, history read-back and role handling cannot
+ * drift apart between them.
  *
  * Nothing about the person is trusted from the request body: the email, the
  * name and the Google subject all come out of the verified ID token, because a
@@ -51,12 +55,13 @@ class AuthError extends Error {
  *
  *   live     — the Sign-In module is switched on for this agent
  *   methods  — 'both' | 'google' | 'password'
- *   purpose  — 'gate'  the surface is closed until an invited person signs in
+ *   purpose  — 'gate'  the surface is closed until the person signs in
  *              'sync'  the surface stays open; signing in only ties the person's
  *                      history to an account so it follows them between devices.
  *
- * `purpose` never changes WHO may sign in — only invited addresses may, both
- * ways — it changes whether the chat is usable before they do.
+ * `purpose` changes only whether the chat is usable before sign-in, never who
+ * may sign in: Google is open to anyone either way, a password still needs an
+ * invitation either way.
  *
  * @returns {Promise<{live:boolean, methods:'both'|'google'|'password', purpose:'gate'|'sync'}>}
  */
@@ -133,12 +138,16 @@ async function verify(idToken) {
 }
 
 /**
- * The invitation that lets this email into this agent, or null.
+ * The invitation for this email on this agent, or null.
  *
- * Access is granted ahead of time, one address at a time. A grant with no
- * tenant spans every agent — that is us, not a customer — and a grant for a
- * specific agent wins over it, so a person can be an admin on one client and an
- * ordinary user everywhere else.
+ * For a password sign-in this is what permits it at all. For a Google sign-in
+ * it is consulted only for the role it carries — an invited address signs in as
+ * the role it was invited as, everyone else as a plain 'user'.
+ *
+ * Grants are added ahead of time, one address at a time. A grant with no tenant
+ * spans every agent — that is us, not a customer — and a grant for a specific
+ * agent wins over it, so a person can be an admin on one client and an ordinary
+ * user everywhere else.
  */
 async function grantFor(email, tenant) {
   const [grant] = await db.getDrizzle()
@@ -158,15 +167,17 @@ async function grantFor(email, tenant) {
 // ── the two ways in ─────────────────────────────────────────────────────────
 
 /**
- * Sign in with Google.
+ * Sign in with Google — this IS the registration path.
  *
- * The user row keys on `google_<sub>`, not on the email: Google subjects are
- * stable and addresses are not, and someone who changes their address should
- * keep their history rather than arrive as a stranger.
+ * Anyone with a verified Google account may sign in; there is no invitation to
+ * hold. The user row keys on `google_<sub>`, not on the email: Google subjects
+ * are stable and addresses are not, and someone who changes their address
+ * should keep their history rather than arrive as a stranger.
  *
- * An invitation is required regardless of `purpose` — 'sync' opens the chat to
- * anonymous use, it does not open sign-in to strangers. Accounts are added on
- * the Access page.
+ * An invitation, if one exists for the address, is consulted only for its role;
+ * without one the person signs in as a plain 'user'. `purpose` ('gate' vs
+ * 'sync') decides whether the chat works before this happens, not whether it
+ * may happen.
  */
 async function signInWithGoogle(idToken, tenant) {
   const policy = await policyFor(tenant);
@@ -175,13 +186,12 @@ async function signInWithGoogle(idToken, tenant) {
 
   const identity = await verify(idToken);
   const grant = await grantFor(identity.email, tenant);
-  if (!grant) throw new AuthError(DENIED, 403);
 
   const user = await upsertUser({
     externalId: `google_${identity.sub}`,
     email: identity.email,
     name: identity.name,
-    role: grant.role,
+    role: grant?.role || 'user',
     tenant,
   });
 

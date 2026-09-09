@@ -1,17 +1,19 @@
 /**
  * Sign-In — Aspect Module, kind 'app'.
  *
- * Who may use this client's surfaces and how they prove it. Access is always by
- * invitation — addresses are added ahead of time on the Access page — and this
- * module only decides two things on top of that:
+ * Who may use this client's surfaces and how they prove it. This module decides
+ * two things:
  *
- *   methods  how a person proves the address is theirs: Google, a password, or either.
- *   purpose  whether the surface is closed until they do ('gate'), or stays open
- *            and sign-in just ties their chat history to an account so it follows
- *            them between devices ('sync').
+ *   methods  Google (open — signing in with Google is how a person registers),
+ *            a password (only for addresses added ahead of time on the Access
+ *            page), or either.
+ *   purpose  whether the surface is closed until a person signs in ('gate'), or
+ *            stays open for anonymous use and sign-in just ties their chat
+ *            history to an account so it follows them between devices ('sync').
  *
- * `purpose: sync` never widens access — a stranger still cannot sign in, the
- * chat is simply usable anonymously before anyone does.
+ * `purpose` never changes who may sign in — only whether the chat works before
+ * they do. A client that wants access truly restricted sets methods to
+ * 'password'.
  *
  * A module rather than a platform-wide setting because Shlomi flagged that the
  * customer may want a different mechanism, so a single baked-in answer was never
@@ -43,15 +45,15 @@ module.exports = {
       ],
       label: { en: 'When people sign in', he: 'מתי מתחברים' },
       hint: {
-        en: 'Require closes the agent until an invited person signs in. Optional '
-          + 'leaves it open for anonymous use and adds a "sign in" button — '
-          + 'signing in moves the current chats onto the account and the same '
-          + 'history then follows the person to any other device. Either way, only '
-          + 'addresses added on the Access page can sign in.',
-        he: 'חובה חוסם את הסוכן עד שאדם מוזמן מתחבר. רשות משאיר אותו פתוח לשימוש '
-          + 'אנונימי ומוסיף כפתור "התחברות" — ההתחברות מעבירה את השיחות הנוכחיות '
-          + 'לחשבון, ואותה היסטוריה נמשכת לכל מכשיר אחר. כך או כך, רק כתובות '
-          + 'שנוספו בעמוד ההרשאות יכולות להתחבר.',
+        en: 'Require closes the agent until the person signs in — with any Google '
+          + 'account, or a password added on the Access page. Optional leaves it '
+          + 'open for anonymous use and adds a "sign in" button — signing in moves '
+          + 'the current chats onto the account and the same history then follows '
+          + 'the person to any other device.',
+        he: 'חובה חוסם את הסוכן עד שהאדם מתחבר — עם חשבון Google כלשהו, או עם סיסמה '
+          + 'שנוספה בעמוד ההרשאות. רשות משאיר אותו פתוח לשימוש אנונימי ומוסיף כפתור '
+          + '"התחברות" — ההתחברות מעבירה את השיחות הנוכחיות לחשבון, ואותה היסטוריה '
+          + 'נמשכת לכל מכשיר אחר.',
       },
     },
     {

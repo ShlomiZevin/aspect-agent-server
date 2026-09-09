@@ -18,6 +18,11 @@ const registry = require('../../modules/registry');
  * invitation lookup, revocation, and password hashing — because that is where
  * an access decision gets made wrong quietly.
  *
+ * Note the two ways in are not symmetric: Google is open (a verified account
+ * signs in with no invitation, an invitation only supplies the role), a
+ * password works only for an invited address. The invitation lookup below is
+ * therefore the whole gate for passwords and role-only for Google.
+ *
  *   node verification/google-auth/test-google-auth.js
  *
  * Removes every row it creates, including on failure.
