@@ -1,19 +1,27 @@
 /**
  * Sign-In — Aspect Module, kind 'app'.
  *
- * Who may use this client's surfaces, and how they prove it. Two ways in:
- * Google, or an email and a password. Which of them this client accepts is the
- * module's only setting.
+ * Who may use this client's surfaces and how they prove it. Access is always by
+ * invitation — addresses are added ahead of time on the Access page — and this
+ * module only decides two things on top of that:
+ *
+ *   methods  how a person proves the address is theirs: Google, a password, or either.
+ *   purpose  whether the surface is closed until they do ('gate'), or stays open
+ *            and sign-in just ties their chat history to an account so it follows
+ *            them between devices ('sync').
+ *
+ * `purpose: sync` never widens access — a stranger still cannot sign in, the
+ * chat is simply usable anonymously before anyone does.
  *
  * A module rather than a platform-wide setting because Shlomi flagged that the
- * customer may want a different mechanism, so "everyone signs in with Google"
- * was never a safe assumption to bake in.
+ * customer may want a different mechanism, so a single baked-in answer was never
+ * safe.
  *
  * APP module: it owns no customer data, has nothing to audit and nothing to
- * build, so it declares none of the data hooks. Enabling it IS the installation.
- * CLIENT scope: the clients that want it are agents, not datasets.
+ * build, so it declares none of the data hooks — enabling it IS the
+ * installation. CLIENT scope: the things that want it are agents, not datasets.
  *
- * No chatTools and no manifestFragment on purpose. Who may log in is not
+ * No chatTools and no manifestFragment on purpose: who may log in is not
  * something a chat agent should be able to answer questions about.
  */
 module.exports = {
@@ -30,18 +38,20 @@ module.exports = {
       required: false,
       default: 'gate',
       options: [
-        { value: 'gate', label: { en: 'Gate access — only invited emails may in', he: 'שער כניסה — רק כתובות שהוזמנו' } },
-        { value: 'sync', label: { en: 'Save history — anyone may sign in to sync their chats across devices', he: 'שמירת היסטוריה — כל אחד יכול להתחבר ולסנכרן שיחות בין מכשירים' } },
+        { value: 'gate', label: { en: 'Require sign-in to use the agent', he: 'חייב התחברות כדי להשתמש בסוכן' } },
+        { value: 'sync', label: { en: 'Optional — sign in to sync chat history across devices', he: 'רשות — התחברות לסנכרון היסטוריית שיחות בין מכשירים' } },
       ],
-      label: { en: 'What signing in is for', he: 'למה משמשת ההתחברות' },
+      label: { en: 'When people sign in', he: 'מתי מתחברים' },
       hint: {
-        en: 'Gate keeps the surface closed until an invited person signs in. '
-          + 'Save history leaves the chat open to everyone and only adds an optional '
-          + '"sign in" button — signing in attaches the current chats to the account '
-          + 'and the same history follows the person to any other device.',
-        he: 'שער חוסם את המסך עד שאדם מוזמן מתחבר. שמירת היסטוריה משאירה את הצ׳אט '
-          + 'פתוח לכולם ומוסיפה כפתור "התחברות" לא-חובה — ההתחברות מצמידה את השיחות '
-          + 'הנוכחיות לחשבון, ואותה היסטוריה נמשכת לכל מכשיר אחר.',
+        en: 'Require closes the agent until an invited person signs in. Optional '
+          + 'leaves it open for anonymous use and adds a "sign in" button — '
+          + 'signing in moves the current chats onto the account and the same '
+          + 'history then follows the person to any other device. Either way, only '
+          + 'addresses added on the Access page can sign in.',
+        he: 'חובה חוסם את הסוכן עד שאדם מוזמן מתחבר. רשות משאיר אותו פתוח לשימוש '
+          + 'אנונימי ומוסיף כפתור "התחברות" — ההתחברות מעבירה את השיחות הנוכחיות '
+          + 'לחשבון, ואותה היסטוריה נמשכת לכל מכשיר אחר. כך או כך, רק כתובות '
+          + 'שנוספו בעמוד ההרשאות יכולות להתחבר.',
       },
     },
     {

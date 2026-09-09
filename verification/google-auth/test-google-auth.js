@@ -52,7 +52,7 @@ async function run() {
     }
   };
 
-  assert.strictEqual(await signin.isLiveFor(AGENT), false);
+  assert.strictEqual((await signin.policyFor(AGENT)).live, false);
   ok('not live until it is switched on');
 
   for (const [name, call] of [
