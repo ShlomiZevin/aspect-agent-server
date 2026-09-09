@@ -639,6 +639,11 @@ async function generatePatch({
   agentSlug,
   ownerUserId,
   conversationId,
+  /** Pinned chat files: { anthropicFileIds: string[], texts: [{name, text}] }.
+   *  PDFs ride as native document blocks (sendOneShot's knowledgeBase
+   *  path); extracted texts are appended below. The attached content is
+   *  the source of truth when the change description references it. */
+  attachments = null,
 }) {
   const start = Date.now();
 
@@ -659,6 +664,25 @@ async function generatePatch({
       '```json',
       JSON.stringify(agentBodyContext, null, 2),
       '```',
+    );
+  }
+
+  if (attachments && Array.isArray(attachments.texts) && attachments.texts.length > 0) {
+    for (const t of attachments.texts) {
+      sections.push(
+        '',
+        `## Attached file: ${t.name} (source of truth where the change description references it)`,
+        t.text,
+      );
+    }
+  }
+  if (attachments && Array.isArray(attachments.anthropicFileIds) && attachments.anthropicFileIds.length > 0) {
+    sections.push(
+      '',
+      '## Attached documents',
+      'The attached PDF document(s) are provided alongside this message.',
+      'Where the change description references them, they are the source of',
+      'truth — copy exact wording from the document, not from memory.',
     );
   }
 
@@ -686,6 +710,10 @@ async function generatePatch({
       maxTokens: MAX_TOKENS,
       tools: [SUBMIT_CHANGES_TOOL],
       toolChoice: { type: 'tool', name: 'submit_changes' },
+      // Pinned PDFs as native document blocks (existing injection path).
+      ...(attachments && attachments.anthropicFileIds && attachments.anthropicFileIds.length > 0
+        ? { knowledgeBase: { anthropicFileIds: attachments.anthropicFileIds } }
+        : {}),
     });
   } catch (err) {
     // A truncated call still billed its full output — log the usage the
@@ -780,7 +808,7 @@ async function generatePatch({
   };
 }
 
-module.exports = { generatePatch, mergeChanges };
+module.exports = { generatePatch, mergeChanges, MODEL };
 
 // Exported for the Alfred wiring check in scripts/test-alfred-triggers.js —
 // the protocol's failure mode is a section that silently never reaches the

@@ -17,6 +17,7 @@ const claudeService = require('../../services/llm.claude');
 const { logUsage } = require('../../services/usageLogger');
 const { SYSTEM_PROMPT, buildProjectSummary } = require('./alfredContext');
 const alfredChats = require('./alfredChats');
+const alfredFiles = require('./alfredFiles');
 const stopRegistry = require('../../builder/runtime/stopRegistry');
 const alfredTools = require('./alfredTools');
 const { hydrateProject } = require('../../builder/services/builderProjects');
@@ -272,7 +273,30 @@ async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConvers
   // user is looking at — same contract as the preview runtime and
   // Apply generation. Falls back to the saved state when absent.
   const summary = await buildProjectSummary({ agentSlug, ownerUserId, workingBodies });
-  const systemPrompt = `${SYSTEM_PROMPT}\n\n## Current project state\n${summary}`;
+
+  // Pinned files: chat-scoped attachments, delivered on EVERY turn
+  // while pinned (that's what "pinned" means — no lazy fetch in v1).
+  // PDFs/images ride as native blocks on the current user message;
+  // extracted texts as a labeled text block. Failure to load pins
+  // must never kill the chat.
+  let pins = [];
+  try { pins = await alfredFiles.forContext(chatId); }
+  catch (err) { console.error('[alfred] pinned-files load failed:', err.message); }
+  const systemPrompt = `${SYSTEM_PROMPT}\n\n## Current project state\n${summary}${alfredFiles.pinnedNote(pins)}`;
+
+  if (pins.length > 0) {
+    const blocks = alfredFiles.buildBrainstormBlocks(pins);
+    if (blocks.length > 0) {
+      const last = messagesForClaude[messagesForClaude.length - 1];
+      const lastText = typeof last.content === 'string'
+        ? [{ type: 'text', text: last.content }]
+        : last.content;
+      messagesForClaude[messagesForClaude.length - 1] = {
+        role: 'user',
+        content: [...blocks, ...lastText],
+      };
+    }
+  }
 
   // 3. Streaming loop with tool support. Each iteration: stream the
   //    model's response; if it ended with tool_use blocks, run them
@@ -439,4 +463,4 @@ async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConvers
   };
 }
 
-module.exports = { runBrainstormTurn };
+module.exports = { runBrainstormTurn, ALFRED_MODEL };

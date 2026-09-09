@@ -210,7 +210,7 @@ function resolveTargets(planTargets, project) {
  * @param {string} args.ownerUserId
  * @returns {Promise<{ summary, description, targets, tokens, durationMs }>}
  */
-async function consolidate({ chatId, agentSlug, ownerUserId, workingBodies }) {
+async function consolidate({ chatId, agentSlug, ownerUserId, workingBodies, pinnedFileNames = [] }) {
   const start = Date.now();
 
   // 1. Recent chat history — sliced at the last apply marker. Every
@@ -269,6 +269,13 @@ async function consolidate({ chatId, agentSlug, ownerUserId, workingBodies }) {
     '## Entity ids',
     idTable,
     '',
+    ...(pinnedFileNames.length > 0 ? [
+      '## Pinned files',
+      `The user attached: ${pinnedFileNames.join(', ')}. Their contents are`,
+      'delivered to the change generator — when a change derives from a file,',
+      'say so in its what_to_do (e.g. "per the attached spec.pdf").',
+      '',
+    ] : []),
     '## Alfred brainstorm transcript (most recent first turns last)',
     formatHistory(history),
     '',
@@ -339,4 +346,4 @@ async function consolidate({ chatId, agentSlug, ownerUserId, workingBodies }) {
   };
 }
 
-module.exports = { consolidate };
+module.exports = { consolidate, MODEL };

@@ -74,11 +74,13 @@ class KBAnthropicService {
 
   /**
    * Get raw file content from Anthropic Files API.
+   * The SDK method is `download` (returns a Response) — `.content`
+   * does not exist and threw the moment the route was first exercised.
    * @param {string} fileId
    * @returns {Promise<Response>}
    */
   async getFileContent(fileId) {
-    return this.client.beta.files.content(fileId);
+    return this.client.beta.files.download(fileId);
   }
 }
 

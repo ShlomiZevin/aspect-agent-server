@@ -39,6 +39,7 @@ const {
   builderCrewVersions,
 } = require('../../db/schema');
 const alfredChats = require('../services/alfredChats');
+const alfredFiles = require('../services/alfredFiles');
 const stopRegistry = require('../../builder/runtime/stopRegistry');
 const alfredRunner = require('../services/alfredRunner');
 const applyConsolidator = require('../services/applyConsolidator');
@@ -158,6 +159,94 @@ router.get('/chats/:chatId/messages', async (req, res) => {
     res.json({ messages });
   } catch (err) {
     console.error('[alfred] GET messages failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /models — which model each Alfred step actually runs. Read from
+ * the services' own constants so the settings popover can never drift
+ * from the server truth (the client's BUILDER_HELPER_MODEL constant
+ * is only a fallback).
+ */
+router.get('/models', (_req, res) => {
+  res.json({
+    steps: [
+      { id: 'brainstorm',     label: 'Brainstorm chat',            model: alfredRunner.ALFRED_MODEL },
+      { id: 'apply-plan',     label: 'Apply — plan',               model: applyConsolidator.MODEL },
+      { id: 'apply-generate', label: 'Apply — generation',         model: patchGenerator.MODEL },
+      { id: 'validate-log',   label: 'Validate & Log',             model: changeValidator.MODEL },
+    ],
+  });
+});
+
+// ─── Pinned files ──────────────────────────────────────────────────
+// Chat-scoped attachments (chips in BuilderChat). Pins live in the
+// conversation's metadata — the ✅ marker slice never touches them.
+
+const multer = require('multer');
+const filesUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: alfredFiles.MAX_BYTES },
+});
+
+/** POST /chats/:chatId/files — multipart field `file`. */
+router.post('/chats/:chatId/files', filesUpload.single('file'), async (req, res) => {
+  try {
+    const chat = await alfredChats.getChat(req.params.chatId);
+    if (!chat) return res.status(404).json({ error: 'Chat not found' });
+    if (!req.file) return res.status(400).json({ error: 'Missing file' });
+    const out = await alfredFiles.addFile({
+      chatId: req.params.chatId,
+      buffer: req.file.buffer,
+      filename: req.file.originalname,
+      mimeType: req.file.mimetype,
+    });
+    res.json(out);
+  } catch (err) {
+    console.error('[alfred] file upload failed:', err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/** GET /chats/:chatId/files — the pinned list (client-safe). */
+router.get('/chats/:chatId/files', async (req, res) => {
+  try {
+    res.json({ files: await alfredFiles.listFiles(req.params.chatId) });
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+/** DELETE /chats/:chatId/files/:fileId — unpin (✕ on the chip). */
+router.delete('/chats/:chatId/files/:fileId', async (req, res) => {
+  try {
+    res.json(await alfredFiles.removeFile(req.params.chatId, req.params.fileId));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/** GET /chats/:chatId/files/:fileId/content — click-to-open. PDFs and
+ *  images stream back from the Files API; text kinds serve the
+ *  extracted text. */
+router.get('/chats/:chatId/files/:fileId/content', async (req, res) => {
+  try {
+    const pins = await alfredFiles.forContext(req.params.chatId);
+    const entry = alfredFiles.getFile(pins, req.params.fileId);
+    if (!entry) return res.status(404).json({ error: 'No such pinned file' });
+    if (entry.anthropicFileId) {
+      const kbAnthropic = require('../../services/kb.anthropic.service');
+      const content = await kbAnthropic.getFileContent(entry.anthropicFileId);
+      const buf = Buffer.from(await content.arrayBuffer());
+      res.setHeader('Content-Type', entry.mime || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(entry.name)}"`);
+      return res.send(buf);
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.send(entry.extractedText || '(no extracted text)');
+  } catch (err) {
+    console.error('[alfred] file content failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -310,12 +399,19 @@ router.post('/chats/:chatId/apply/preview', async (req, res) => {
     if (!agentSlug)   return res.status(400).json({ error: 'Missing agentSlug' });
     if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
 
+    // Pinned files: names go to the consolidator (contents go to the
+    // generator); the presented list rides back for the "Based on" row.
+    let pins = [];
+    try { pins = await alfredFiles.forContext(Number(chatId)); }
+    catch { /* chat without pins */ }
+
     const plan = await applyConsolidator.consolidate({
       chatId: Number(chatId),
       agentSlug,
       ownerUserId,
       // Client working copies — the plan is built against the draft.
       workingBodies,
+      pinnedFileNames: pins.map(p => p.name),
     });
 
     res.json({
@@ -323,6 +419,7 @@ router.post('/chats/:chatId/apply/preview', async (req, res) => {
       description:    plan.description,
       targets:        plan.targets,
       alreadyApplied: plan.alreadyApplied === true,
+      pinnedFiles:    alfredFiles.attachmentsForGenerator(pins).basedOn,
     });
   } catch (err) {
     console.error('[alfred] apply/preview failed:', err);
@@ -385,6 +482,22 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
     const skipped = [];
     let latestAgentBody = null;
 
+    // Pinned files reach EVERY generator call (per target): PDFs as
+    // native document blocks, extracted texts inline. Images are
+    // chat-only in v1.
+    let generatorAttachments = null;
+    let basedOnFiles = [];
+    try {
+      const pins = await alfredFiles.forContext(Number(chatId));
+      if (pins.length > 0) {
+        const a = alfredFiles.attachmentsForGenerator(pins);
+        basedOnFiles = a.basedOn;
+        if (a.anthropicFileIds.length > 0 || a.texts.length > 0) {
+          generatorAttachments = { anthropicFileIds: a.anthropicFileIds, texts: a.texts };
+        }
+      }
+    } catch { /* chat without pins */ }
+
     for (const target of orderedTargets) {
       if (!target || !target.entity || !target.entityId)
         return res.status(400).json({ error: 'Malformed target' });
@@ -445,6 +558,7 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
           agentSlug,
           ownerUserId,
           conversationId: Number(chatId),
+          attachments: generatorAttachments,
         });
         // Graceful no-op: the generator verified and found nothing to
         // change (already-done request). Skip this target — no
@@ -545,6 +659,8 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
         newBody:     p.newBody,
       })),
       skipped,
+      // What actually reached the generator (honest "Based on" list).
+      basedOnFiles,
     });
   } catch (err) {
     console.error('[alfred] apply/generate failed:', err);
