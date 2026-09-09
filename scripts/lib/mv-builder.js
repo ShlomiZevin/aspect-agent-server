@@ -18,8 +18,11 @@
  * MV definitions:
  *   { name, sql, indexes? }
  *   - sql: the full body `SELECT ...` (no `CREATE MATERIALIZED VIEW ... AS`)
- *   - indexes: array of { name, col } to create on the MV after build
- *     (a normal btree index on key columns makes MV reads fast)
+ *   - indexes: array of { name, col, unique?, include? } to create on the MV
+ *     after build (a normal btree index on key columns makes MV reads fast).
+ *     `include` (PG 11+) adds non-key payload columns for a covering /
+ *     index-only scan — worth it on a freshly-built (all-visible) MV where the
+ *     hot query aggregates a couple of measures over a key-column range.
  */
 
 const HEARTBEAT_MS = 30000;
@@ -64,8 +67,9 @@ async function ensureMV({ pool, schema, mv, displayIdx, total, statementTimeoutM
           // blocks every read of the view for its whole duration. On a view
           // that takes minutes to rebuild that is a partial outage, not a slow
           // moment. Declare one wherever the view has a natural key.
+          const includeClause = idx.include ? ` INCLUDE (${idx.include})` : '';
           await client.query(
-            `CREATE${idx.unique ? ' UNIQUE' : ''} INDEX ${idx.name} ON ${fqName} (${idx.col})`
+            `CREATE${idx.unique ? ' UNIQUE' : ''} INDEX ${idx.name} ON ${fqName} (${idx.col})${includeClause}`
           );
           log(`    indexed ${mv.name}.${idx.name} (${Date.now() - idxStart}ms)`);
         }

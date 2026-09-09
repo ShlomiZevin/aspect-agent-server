@@ -57,6 +57,15 @@ function mvs(schema) {
         { name: 'idx_mv_sales_part',    col: 'part' },
         { name: 'idx_mv_sales_warhs',   col: 'warhs' },
         { name: 'idx_mv_sales_invoice', col: 'invoice_number' },
+        // Covering index for the hot chat path: "aggregate measures over a date
+        // window, GROUP BY part", which every top-models / by-colour / by-gender
+        // / by-season / by-family question resolves to before it joins
+        // mv_parts_dim. Without the INCLUDE payload each of those did an index
+        // range-scan on transaction_date then a random heap fetch for ~0.5-1M
+        // rows — 20-33s on db-g1-small, past the 15s chat timeout. With it the
+        // aggregate is an index-only scan on the freshly-built (all-visible) MV.
+        { name: 'idx_mv_sales_date_part_cov', col: 'transaction_date, part',
+          include: 'qty_sold, sales_ex_vat, sales_inc_vat' },
       ],
     },
 
