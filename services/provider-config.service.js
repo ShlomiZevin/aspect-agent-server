@@ -39,6 +39,7 @@ const ENV_FALLBACKS = {
   hypertoy_import_months:            'HYPERTOY_IMPORT_MONTHS',
   newdeli_import_months:             'NEWDELI_IMPORT_MONTHS',
   thestock_import_months:            'THESTOCK_IMPORT_MONTHS',
+  superhist_import_months:           'SUPERHIST_IMPORT_MONTHS',
   // Data Loader — per-schema kill switch, checked on every load/index call
   // (see services/reload-guard.js). Edited from the Data Loader Configuration tab.
   zer4u_reload_enabled:              'ZER4U_RELOAD_ENABLED',
@@ -58,6 +59,7 @@ const ENV_FALLBACKS = {
   hypertoy_gcs_folder:               'HYPERTOY_GCS_FOLDER',
   zolstock_gcs_folder:               'ZOLSTOCK_GCS_FOLDER',
   tevanaot_gcs_folder:               'TEVANAOT_GCS_FOLDER',
+  superhist_gcs_folder:              'SUPERHIST_GCS_FOLDER',
   // Google Drive source folder ID - optional per schema. Only zer4u/hypertoy
   // have one configured today, but the field/mechanism is available to every
   // schema; setting it is what turns on Drive sync for that client.
@@ -67,6 +69,7 @@ const ENV_FALLBACKS = {
   hypertoy_drive_folder_id:          'HYPERTOY_DRIVE_FOLDER_ID',
   zolstock_drive_folder_id:          'ZOLSTOCK_DRIVE_FOLDER_ID',
   tevanaot_drive_folder_id:          'TEVANAOT_DRIVE_FOLDER_ID',
+  superhist_drive_folder_id:         'SUPERHIST_DRIVE_FOLDER_ID',
 };
 
 // All known config keys (in display order)
