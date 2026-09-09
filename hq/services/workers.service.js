@@ -69,6 +69,94 @@ async function update(slug, patch = {}) {
 
 // ─── Conversations ───────────────────────────────────────────────────────────
 
+/**
+ * Alfred only — the requesting user's OWN builder conversations
+ * (kind='alfred', across all agents), for the personal half of his HQ
+ * rail. Read-only from HQ; continuing/applying happens in the builder
+ * (?alfredChat deep link). Generals stay shared; these are "yours".
+ */
+async function builderAlfredConversations(ownerUserId, limit = 100) {
+  if (!ownerUserId) return [];
+  const { rows } = await db.query(
+    `SELECT cv.id,
+            cv.metadata->>'name' AS title,
+            cv.updated_at,
+            a.url_slug AS agent_slug,
+            a.name AS agent_name
+       FROM conversations cv
+       JOIN agents a ON a.id = cv.agent_id
+       JOIN users u ON u.id = cv.user_id
+      WHERE cv.kind = 'alfred' AND u.external_id = $1
+      ORDER BY cv.updated_at DESC
+      LIMIT $2`, [String(ownerUserId), limit]);
+  return rows.map(r => ({
+    id: r.id,
+    title: r.title || 'Builder chat',
+    updated_at: r.updated_at,
+    agentSlug: r.agent_slug,
+    agentName: r.agent_name,
+    origin: 'builder',
+  }));
+}
+
+/**
+ * One builder conversation, fetched so HQ can SHOW it (read-only
+ * history). Ownership-guarded — only the requester's own kind='alfred'
+ * rows resolve. Continuing/applying stays in the builder.
+ */
+async function builderAlfredConversation(chatId, ownerUserId) {
+  if (!ownerUserId || !Number(chatId)) return null;
+  const { rows } = await db.query(
+    `SELECT cv.id, cv.metadata->>'name' AS title, cv.updated_at,
+            a.url_slug AS agent_slug, a.name AS agent_name
+       FROM conversations cv
+       JOIN agents a ON a.id = cv.agent_id
+       JOIN users u ON u.id = cv.user_id
+      WHERE cv.id = $1 AND cv.kind = 'alfred' AND u.external_id = $2`,
+    [Number(chatId), String(ownerUserId)]);
+  if (!rows.length) return null;
+  const r = rows[0];
+  const { rows: msgs } = await db.query(
+    `SELECT id, role, content, metadata, created_at
+       FROM messages
+      WHERE conversation_id = $1 AND role IN ('user','assistant')
+      ORDER BY created_at`, [Number(chatId)]);
+  return {
+    conversation: {
+      id: r.id, title: r.title || 'Builder chat', updated_at: r.updated_at,
+      agentSlug: r.agent_slug, agentName: r.agent_name, origin: 'builder',
+    },
+    messages: msgs.map(m => ({
+      id: m.id, role: m.role, content: m.content,
+      metadata: m.metadata || {}, created_at: m.created_at,
+    })),
+  };
+}
+
+/**
+ * The MOVE — a General HQ conversation becomes the user's own builder
+ * conversation for one agent (Shlomi's model: tagging is a move, not a
+ * label). Runs AFTER the turn's assistant reply is persisted, so the
+ * full exchange travels. Copy transcript → create builder chat under
+ * the user's identity → delete the HQ conversation (clean move —
+ * nothing left in General). On any failure the HQ conversation is left
+ * untouched.
+ */
+async function moveConversationToAgent(conversationId, agentSlug, ownerUserId) {
+  const alfredChats = require('../../alfred/services/alfredChats');
+  const history = await messages(conversationId);
+  const { id: builderChatId } = await alfredChats.createChat({ agentSlug, ownerUserId });
+  for (const m of history) {
+    if (m.role !== 'user' && m.role !== 'assistant') continue;
+    if (!m.content || !m.content.trim()) continue;
+    await alfredChats.appendMessage({ chatId: builderChatId, role: m.role, content: m.content });
+  }
+  await alfredChats.setChatNameIfBlank(builderChatId,
+    history.find(m => m.role === 'user')?.content || 'From HQ');
+  await deleteConversation(conversationId);
+  return { agentSlug, builderChatId };
+}
+
 async function conversations(workerId, limit = 40) {
   const { rows } = await db.query(
     `SELECT c.*,
@@ -341,7 +429,7 @@ English. Be concrete and brief.`;
  * The loop runs server-side and writes as it goes, so closing the tab loses the
  * live view but never the work.
  */
-async function send({ worker, conversationId, message, onEvent = null }) {
+async function send({ worker, conversationId, message, onEvent = null, ownerUserId = null }) {
   await addMessage(conversationId, 'user', message);
 
   // Name it now, from what was asked. Doing this after the reply meant the rail
@@ -405,7 +493,7 @@ async function send({ worker, conversationId, message, onEvent = null }) {
 
   const ctx = {
     workerId: worker.id, worker: effectiveWorker, conversationId, jobId: null,
-    brief: message, onEvent, imageModel,
+    brief: message, onEvent, imageModel, ownerUserId,
     // The voice model cannot read document blocks, so write_copy passes this
     // through as the facts its copy must be accurate to.
     materials: brief ? brief.digest : null,
@@ -458,8 +546,21 @@ FOR THIS CONVERSATION: every image must be generated with ` +
       `The person chose it. Do not use a different image model, and do not ask about it.`
     : '';
 
+  // Alfred-the-employee: same brain as builder Alfred. His platform
+  // knowledge is appended from the single source in alfred/ (import
+  // direction hq -> alfred blessed 9.9) — role_definition stays thin
+  // persona/conduct, so the two workplaces can never drift apart.
+  let alfredKnowledge = '';
+  if (worker.slug === 'alfred') {
+    try {
+      alfredKnowledge = '\n\n' + require('../../alfred/services/alfredContext').buildHqKnowledge();
+    } catch (err) {
+      console.error('[workers] alfred knowledge append failed:', err.message);
+    }
+  }
+
   const result = await loop.run({
-    system: systemPrompt(worker, lessons) + pinned + inventory,
+    system: systemPrompt(worker, lessons) + alfredKnowledge + pinned + inventory,
     messages: [...opening, ...priorTurns],
     tools: bound,
     model: thinkingModel,
@@ -529,13 +630,41 @@ FOR THIS CONVERSATION: every image must be generated with ` +
     jobId: ctx.jobId,
   });
 
-  return { text: result.text, jobId: ctx.jobId, toolCalls: result.toolCalls, usage: result.usage };
+  // A confirmed move (tag_agent) executes only now — after the reply
+  // above is persisted, so the complete exchange travels with the
+  // conversation. Failure leaves the HQ conversation intact.
+  let moved = null;
+  let moveError = null;
+  if (ctx.pendingMove) {
+    if (!ownerUserId) {
+      moveError = 'No user identity on this request — cannot assign the moved conversation.';
+      console.error('[workers] move skipped:', moveError);
+    } else {
+      try {
+        const out = await moveConversationToAgent(conversationId, ctx.pendingMove.agentSlug, ownerUserId);
+        moved = { ...out, agentName: ctx.pendingMove.agentName || ctx.pendingMove.agentSlug };
+        require('./log.service').message(worker.slug, conversationId,
+          `[moved to ${ctx.pendingMove.agentSlug} as builder chat ${out.builderChatId}]`);
+      } catch (err) {
+        moveError = err.message;
+        console.error('[workers] conversation move failed:', err.message);
+      }
+    }
+  }
+
+  return {
+    text: result.text, jobId: ctx.jobId, toolCalls: result.toolCalls, usage: result.usage,
+    ...(moved ? { moved } : {}),
+    ...(moveError ? { moveError } : {}),
+  };
 }
 
 module.exports = {
   conversation, setConversationModels, deleteConversation,
   list, get, update,
   conversations, createConversation, messages, addMessage,
+  moveConversationToAgent, builderAlfredConversation,
+  builderAlfredConversations,
   jobs, cancelJob, reclaimStaleJobs, spend,
   send, systemPrompt, lessonsFor, allLessons, addLesson, updateLesson, removeLesson,
   media,

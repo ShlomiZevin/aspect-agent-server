@@ -148,7 +148,7 @@ chat scope".
 
 **Migrations** are hand-written: add `NNN_description.sql` and a paired `run-NNN-description.js` runner, then run the runner. `003_general_feedback.sql` made `message_feedback.assistant_message_id` nullable so feedback can be volunteered from the sidebar rather than attached to a reply — any query over that table must LEFT join the message, or message-less rows vanish from the inbox. The `drizzle-kit` npm scripts exist but the repo has no drizzle journal; do not assume `db:migrate` reflects reality.
 
-**Import rule — one direction only.** `hq/` may import from `services/` and `builder/`. **Nothing in the product may import from `hq/`.**
+**Import rule — one direction only.** `hq/` may import from `services/`, `builder/` and `alfred/` (the alfred extension was blessed 9.9 for HQ-Alfred — shared knowledge + read tools). **Nothing in the product may import from `hq/`.**
 
 **`builder/types/index.ts` is server-owned.** The client mirrors it at build time via its `sync-builder-types.cjs`; the client copy is gitignored. Edit it here.
 

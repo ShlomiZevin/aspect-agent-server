@@ -3,7 +3,8 @@
 Our internal company brain. **Not a product, not part of the builder, never customer-facing.**
 Design doc: [`docs/guides/LYBI_HQ.md`](../docs/guides/LYBI_HQ.md).
 
-> **Import rule — one direction only.** `hq/` may import from `services/` and `builder/`.
+> **Import rule — one direction only.** `hq/` may import from `services/`, `builder/` and
+> `alfred/` (blessed 9.9 for HQ-Alfred — shared knowledge + read-only tools).
 > **Nothing in the product may import from `hq/`.** That rule is what keeps the tiers separate
 > while living in one repo.
 

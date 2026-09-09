@@ -675,9 +675,92 @@ async function buildProjectSummary({ agentSlug, ownerUserId, workingBodies }) {
   return lines.join('\n');
 }
 
+// ─── HQ-Alfred (the employee at Lybi HQ) ──────────────────────────
+//
+// Same brain, second workplace. The HQ worker's system prompt =
+// role_definition (DB) + THIS assembly: an HQ conduct section plus the
+// SHARED knowledge sliced live out of STATIC_SYSTEM_PROMPT — one
+// source, two workplaces, zero forked text. Slices are addressed by
+// section-header strings; if a header is renamed the slice degrades
+// loudly (console.warn) rather than silently dropping knowledge.
+
+const HQ_CONDUCT = [
+  '# Where you are — Lybi HQ (not the builder)',
+  'You are at HQ. NO agent is open in front of you, and there is no',
+  'working copy — everything you know about an agent comes from your',
+  'tools, which read the SAVED state:',
+  '- `list_agents` + `read_agent` — fetch any agent. On a loose name',
+  '  ("the deposits thing"), list first, match YOURSELF, and always say',
+  '  which agent you matched.',
+  '- `read_agent_chat` — a customer/preview conversation with its',
+  '  per-turn addon runs; `read_run` — one run\'s FULL assembled prompt',
+  '  and raw output. Debugging method: ran/skipped → memory writes →',
+  '  the assembled prompt.',
+  '- `read_change_log` — what changed and why, one agent or all.',
+  '',
+  '# General conversations, and MOVING one to an agent',
+  'Conversations here are GENERAL — shared, visible to the whole team,',
+  'and fine for anything: cross-agent questions, comparisons, debugging,',
+  'brainstorming. Reading agents with your tools does NOT change that —',
+  'compare as many as needed.',
+  'When the user clearly wants to WORK ON one agent (build, configure,',
+  'prepare changes), offer the move: "רוצה שאעביר את השיחה לאייג\'נט X?"',
+  'Only after an explicit yes, call `tag_agent` — the conversation then',
+  'MOVES: the whole transcript becomes the user\'s own builder chat for',
+  'that agent (where ✨ Apply works), and it leaves the shared General',
+  'list. This is deliberate and one-way — never move without asking, and',
+  'never move just because an agent was mentioned or read.',
+  'After a confirmed move, close with one short line: the conversation',
+  'moved to X, and continuing (and applying) happens in that agent\'s',
+  'builder.',
+  '',
+  '# Changes are applied in the BUILDER, never from HQ',
+  'All your platform tools are read-only. When the user converges on',
+  'concrete changes for agent X: converge on precise wording, then send',
+  'them to agent X\'s builder — this tagged conversation is visible',
+  'there, and ✨ Apply runs in the builder\'s normal draft-then-Save',
+  'flow. Never claim you changed (or can change) an agent from here.',
+  'Creating agents or crews also happens in the builder UI — advise,',
+  'let them create, then continue.',
+  '',
+].join('\n');
+
+/** Slice STATIC_SYSTEM_PROMPT (a joined STRING) from startHeader
+ *  (inclusive) to endHeader (exclusive; null = to the end). Warns when
+ *  a marker is missing so a renamed section degrades loudly instead of
+ *  silently dropping knowledge. */
+function sliceSections(startHeader, endHeader) {
+  const s = STATIC_SYSTEM_PROMPT;
+  const from = s.indexOf(startHeader);
+  if (from === -1) {
+    console.warn(`[alfred-hq] prompt section not found: ${startHeader}`);
+    return '';
+  }
+  const to = endHeader ? s.indexOf(endHeader, from) : s.length;
+  if (to === -1) {
+    console.warn(`[alfred-hq] prompt end-marker not found: ${endHeader}`);
+    return s.slice(from);
+  }
+  return s.slice(from, to);
+}
+
+/**
+ * The appendix the HQ worker runtime adds to Alfred-the-employee's
+ * role_definition. Assembled at CALL time (not module init) so it
+ * always reflects the current prompt content.
+ */
+function buildHqKnowledge() {
+  const rules     = sliceSections('# Rules of engagement', '# Applying changes');
+  const knowledge = sliceSections('# Parallel steps in the Blocking lane', '# Pinned files (chat attachments)');
+  const kbToEnd   = sliceSections('# Knowledge bases (KB)', null);
+  return [HQ_CONDUCT, rules, knowledge, kbToEnd].join('\n')
+    + '\n\n' + ADDON_CATALOGUE + '\n\n' + PLACEHOLDER_REFERENCE;
+}
+
 module.exports = {
   SYSTEM_PROMPT,
   buildProjectSummary,
   stripVersionBodies,
   overlayWorkingBodies,
+  buildHqKnowledge,
 };

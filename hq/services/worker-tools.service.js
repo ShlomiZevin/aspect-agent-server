@@ -758,12 +758,156 @@ const learn = {
   },
 };
 
+// ─── Alfred (agent-builder) tools ────────────────────────────────────────────
+// Read-only lenses over the agent platform, wrapping the SAME
+// implementations builder Alfred uses (alfred/services/alfredTools —
+// hq -> alfred import blessed 9.9). Plus conversation tagging: every
+// HQ conversation is tagged with the agent it's about (null = General).
+
+const alfredPlatform = require('../../alfred/services/alfredTools');
+
+const alfredListAgents = {
+  name: 'list_agents',
+  description:
+    'List every agent on the platform (name, slug, project, last activity). Use FIRST when ' +
+    'a loose/partial agent name is mentioned — match it yourself, then read_agent its slug.',
+  input_schema: { type: 'object', properties: {} },
+  async handler(_input, ctx) {
+    ctx.onEvent?.({ type: 'tool_progress', tool: 'list_agents' });
+    return { text: await alfredPlatform.listAgents() };
+  },
+};
+
+const alfredReadAgent = {
+  name: 'read_agent',
+  description:
+    'Read an agent\'s full JSON (crews, addons with prompts, fields, enums, snippets, ' +
+    'personas, panels). READ-ONLY, and reading does NOT move the conversation — compare ' +
+    'as many agents as the discussion needs; moving is tag_agent\'s job.',
+  input_schema: {
+    type: 'object',
+    properties: { slug: { type: 'string', description: 'Exact agent slug (from list_agents).' } },
+    required: ['slug'],
+  },
+  async handler({ slug }, ctx) {
+    ctx.onEvent?.({ type: 'tool_progress', tool: 'read_agent', title: slug });
+    return { text: await alfredPlatform.readAgent(String(slug || '').trim(), 'hq') };
+  },
+};
+
+const alfredReadAgentChat = {
+  name: 'read_agent_chat',
+  description:
+    'Debug an agent\'s chats. With agentSlug: list its recent conversations. With ' +
+    'conversationId: the full transcript + per-turn addon-run digest (skipped filters, ' +
+    'memory writes, transitions, parse errors). Zoom into one run with read_run.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      agentSlug:      { type: 'string', description: 'List recent chats of this agent.' },
+      conversationId: { type: 'number', description: 'Read this conversation in full.' },
+      limit:          { type: 'number', description: 'Max conversations when listing (default 10).' },
+    },
+  },
+  async handler({ agentSlug, conversationId, limit }, ctx) {
+    ctx.onEvent?.({ type: 'tool_progress', tool: 'read_agent_chat' });
+    if (conversationId != null) {
+      return { text: await alfredPlatform.readConversation({ conversationId }) };
+    }
+    if (agentSlug) {
+      return { text: await alfredPlatform.listConversations({ agentSlug: String(agentSlug).trim(), limit }) };
+    }
+    return { text: 'Pass agentSlug (to list chats) or conversationId (to read one).' };
+  },
+};
+
+const alfredReadRun = {
+  name: 'read_run',
+  description:
+    'Zoom into ONE addon run: the FULL assembled prompt exactly as the LLM received it, ' +
+    'raw + parsed output, memory writes. Use after read_agent_chat.',
+  input_schema: {
+    type: 'object',
+    properties: { runId: { type: 'string', description: 'Run id from a read_agent_chat digest.' } },
+    required: ['runId'],
+  },
+  async handler({ runId }, ctx) {
+    ctx.onEvent?.({ type: 'tool_progress', tool: 'read_run' });
+    return { text: await alfredPlatform.readRun({ runId: String(runId || '').trim() }) };
+  },
+};
+
+const alfredChangeLog = {
+  name: 'read_change_log',
+  description:
+    'The builder change history — what was changed, which sections, and WHY. Default: all ' +
+    'agents. Pass agentSlug for one agent.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      agentSlug: { type: 'string', description: 'Limit to one agent (slug).' },
+      limit:     { type: 'number', description: 'Max entries (default 20, max 100).' },
+    },
+  },
+  async handler({ agentSlug, limit }, ctx) {
+    ctx.onEvent?.({ type: 'tool_progress', tool: 'read_change_log' });
+    let agentId = null;
+    if (agentSlug) {
+      const builderProjects = require('../../builder/services/builderProjects');
+      const rows = await builderProjects.listProjects();
+      const hit = rows.find(r => r.agentSlug === String(agentSlug).trim());
+      if (!hit) return { text: `No agent with slug "${agentSlug}" — use list_agents.` };
+      agentId = hit.agentId;
+    }
+    return { text: await alfredPlatform.changeLogText({ agentId, limit }) };
+  },
+};
+
+const alfredTagAgent = {
+  name: 'tag_agent',
+  description:
+    'MOVE this General conversation to an agent — it becomes the user\'s own builder ' +
+    'conversation for that agent (full transcript travels; continuing and applying happen ' +
+    'in the builder) and leaves the shared General list. DELIBERATE and irreversible: call ' +
+    'it only after the user explicitly confirmed they want to work ON this agent. Merely ' +
+    'discussing or comparing agents is NOT a reason to move.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      slug: { type: 'string', description: 'The agent to move this conversation to (exact slug).' },
+    },
+    required: ['slug'],
+  },
+  async handler({ slug }, ctx) {
+    if (!ctx.conversationId) return { text: 'No conversation context.' };
+    const target = String(slug || '').trim();
+    if (!target) return { text: 'tag_agent requires an agent slug.' };
+    // Validate the agent exists BEFORE promising a move.
+    const builderProjects = require('../../builder/services/builderProjects');
+    const rows = await builderProjects.listProjects();
+    const hit = rows.find(r => r.agentSlug === target);
+    if (!hit) return { text: `No agent with slug "${target}" — use list_agents.` };
+    // The move itself runs AFTER this turn completes (the reply must land
+    // in the conversation before it travels) — workers.service picks
+    // this up from ctx once the assistant message is persisted.
+    ctx.pendingMove = { agentSlug: target, agentName: hit.agentName };
+    ctx.onEvent?.({ type: 'tool_progress', tool: 'tag_agent', title: target });
+    return {
+      text: `Confirmed — at the end of this turn the conversation moves to "${hit.agentName}" `
+        + '(it will appear in that agent\'s builder chat, where changes can be applied). '
+        + 'Tell the user, and that continuing happens in the builder.',
+    };
+  },
+};
+
 // ─── Registry ────────────────────────────────────────────────────────────────
 
 const ALL = [
   startJob, updateStep, finishJob,
   generateImage, renderHtml, publishReport, writeCopy,
   searchHq, brandKit, remember, learn,
+  alfredListAgents, alfredReadAgent, alfredReadAgentChat,
+  alfredReadRun, alfredChangeLog, alfredTagAgent,
 ];
 const BY_NAME = new Map(ALL.map(t => [t.name, t]));
 

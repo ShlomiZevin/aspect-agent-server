@@ -70,8 +70,27 @@ router.get('/:slug', async (req, res) => {
     res.json({
       worker,
       conversations: await workers.conversations(worker.id),
+      // Alfred only: the requester's OWN builder conversations across
+      // all agents — the "yours + agent" half of his rail. Generals
+      // (the hq conversations above) are shared; these are personal.
+      builderConversations: worker.slug === 'alfred'
+        ? await workers.builderAlfredConversations(req.query.ownerUserId).catch(() => [])
+        : [],
       spend: await workers.spend(worker.id, worker.slug).catch(() => null),
     });
+  } catch (err) { fail(res, err); }
+});
+
+/**
+ * READ one of the requester's builder conversations inside HQ — the
+ * rail row opens this as watchable history. Continuing it happens only
+ * through the in-conversation link to the builder, never from here.
+ */
+router.get('/:slug/builder-conversations/:id', async (req, res) => {
+  try {
+    const data = await workers.builderAlfredConversation(req.params.id, req.query.ownerUserId);
+    if (!data) return res.status(404).json({ error: 'No such conversation (or not yours)' });
+    res.json(data);
   } catch (err) { fail(res, err); }
 });
 
@@ -282,6 +301,9 @@ router.post('/:slug/conversations/:id/message', async (req, res) => {
 
     const result = await workers.send({
       worker, conversationId, message,
+      // The requester's builder identity — who a moved conversation
+      // belongs to. Sent by the HQ client from builder:ownerUserId.
+      ownerUserId: req.body?.ownerUserId || null,
       onEvent: (e) => {
         if (e.type === 'job_started') workers.registerActive(e.job.id);
         send('event', e);
