@@ -810,11 +810,14 @@ export type TransitionCondition =
   | { type: 'fields-collected'; fields: string[] }
   | {
       type: 'field';
+      /** Field NAME, or `#paramName` to compare an agent parameter. */
       field: string;
       op: FieldOp;
-      /** Scalar value for binary ops; ignored for `in` / `not-in`. */
+      /** Scalar value for binary ops; ignored for `in` / `not-in`.
+       *  `#paramName` reads that parameter instead of a literal. */
       value?: unknown;
-      /** Multi-value for `in` / `not-in`; ignored for binary ops. */
+      /** Multi-value for `in` / `not-in`; ignored for binary ops.
+       *  Members may be `#paramName`. */
       values?: unknown[];
     }
   | {
@@ -912,13 +915,15 @@ export interface RuleComputeDef {
  *  optional keys apply — emit only the keys for that type. */
 export interface RuleAction {
   type: 'set' | 'clear' | 'transition' | 'stop' | 'reply';
-  /** set/clear: target field NAME (a declared agent/crew field). */
+  /** set/clear: target field NAME (a declared agent/crew field).
+   *  NEVER a `#parameter` — parameters are static config, read-only. */
   field?: string;
   /** set: how the value is produced. Default 'fixed'. */
   valueMode?: 'fixed' | 'copy' | 'formula' | 'compute';
-  /** set + fixed: the literal value. */
+  /** set + fixed: the literal value, or `#paramName` to use an agent
+   *  parameter's value. */
   value?: string;
-  /** set + copy: source field NAME to copy from. */
+  /** set + copy: source field NAME, or `#paramName`. */
   fromField?: string;
   /** set + formula: SINGLE JavaScript expression over {{field}} tokens
    *  (e.g. `yearsSince({{birthdate}})`, `{{a}} + {{b}}`,

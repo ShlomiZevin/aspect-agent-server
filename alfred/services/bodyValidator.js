@@ -187,6 +187,11 @@ function checkAddonInstance(addon, path, errors, knownFieldIds) {
             }
             if ((a.type === 'set' || a.type === 'clear') && (typeof a.field !== 'string' || !a.field))
               pushErr(errors, `${ap}.field`, 'required field name for set/clear');
+            // A parameter is static config — readable everywhere, writable
+            // nowhere. Caught here because the runtime would just write a
+            // field literally named "#x" and look like it worked (#826).
+            if ((a.type === 'set' || a.type === 'clear') && typeof a.field === 'string' && a.field.startsWith('#'))
+              pushErr(errors, `${ap}.field`, 'cannot write to a parameter — `#name` is read-only config; the target must be a field');
             if (a.type === 'set' && a.valueMode === 'formula' && (typeof a.formula !== 'string' || !a.formula.trim()))
               pushErr(errors, `${ap}.formula`, 'required expression when valueMode is "formula"');
             if (a.type === 'transition' && (typeof a.target !== 'string' || !a.target))
