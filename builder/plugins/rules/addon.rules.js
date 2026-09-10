@@ -29,7 +29,9 @@
  */
 
 const { registerPlugin } = require('../../runtime/pluginRegistry');
-const { evaluateConditions } = require('../../runtime/conditionMatcher');
+const {
+  evaluateConditions, isParamRef, resolveParamRef,
+} = require('../../runtime/conditionMatcher');
 const builderMemory = require('../../runtime/builderMemory');
 const formulaEval = require('../../runtime/formulaEval');
 const descriptor = require('../../addons/rules.addon.json');
@@ -75,7 +77,9 @@ function computeValue(compute, memory, overlay) {
 }
 
 async function run(ctx) {
-  const { instance, memory } = ctx;
+  // `parameters` — agent-wide statics, so a rule can compare against
+  // (or write) `#minorAge` instead of a retyped literal (task #826).
+  const { instance, memory, parameters } = ctx;
   const start = Date.now();
   const cfg = instance.config || {};
   const rules = Array.isArray(cfg.rules) ? cfg.rules : [];
@@ -115,7 +119,10 @@ async function run(ctx) {
       const shadow = Object.keys(overlay).length > 0
         ? mergeOverlay(memory, overlay)
         : memory;
-      const res = evaluateConditions(shadow, conditions, { instanceId: instance.instanceId });
+      const res = evaluateConditions(shadow, conditions, {
+        instanceId: instance.instanceId,
+        parameters,
+      });
       matched = res.ok;
       evaluations = res.evaluations;
     }
@@ -131,11 +138,30 @@ async function run(ctx) {
       if (action.type === 'set' && action.field) {
         let value;
         if (action.valueMode === 'copy') {
-          value = readField(memory, overlay, action.fromField);
+          // The source may be a `#parameter` rather than a field (#826).
+          if (isParamRef(action.fromField)) {
+            const r = resolveParamRef(action.fromField, parameters);
+            if (r.error) {
+              done.push({ type: 'set', field: action.field, error: r.error });
+              continue;
+            }
+            value = r.value;
+          } else {
+            value = readField(memory, overlay, action.fromField);
+          }
         } else if (action.valueMode === 'formula') {
           // Real-JS single expression via the fenced evaluator
           // (lint + vm timeout). {{field}} tokens see the overlay.
-          const r = formulaEval.evaluate(action.formula, name => readField(memory, overlay, name));
+          // `{{#parameter}}` resolves to the agent parameter; a bad
+          // reference throws and is reported as a formula error (#826).
+          const r = formulaEval.evaluate(action.formula, (name) => {
+            if (isParamRef(name)) {
+              const pr = resolveParamRef(name, parameters);
+              if (pr.error) throw new Error(pr.error);
+              return pr.value;
+            }
+            return readField(memory, overlay, name);
+          });
           if (!r.ok) {
             done.push({ type: 'set', field: action.field, error: r.error, formula: r.substituted });
             continue;
@@ -159,6 +185,15 @@ async function run(ctx) {
             continue;
           }
           value = r;
+        } else if (isParamRef(action.value)) {
+          // A fixed value may reference a parameter (`#standardFee`)
+          // instead of hard-coding the number in the rule (task #826).
+          const r = resolveParamRef(action.value, parameters);
+          if (r.error) {
+            done.push({ type: 'set', field: action.field, error: r.error });
+            continue;
+          }
+          value = r.value;
         } else {
           value = action.value;
         }

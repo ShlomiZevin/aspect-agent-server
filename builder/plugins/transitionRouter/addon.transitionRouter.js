@@ -50,6 +50,8 @@ async function run(ctx) {
   // THIS router's per-conversation count off the brain blob.
   const { ok: allOk, evaluations } = evaluateConditions(memory, conditions, {
     instanceId: ctx.instance.instanceId,
+    // `#parameter` operands resolve against the agent's parameters (#826)
+    parameters: ctx.parameters,
   });
 
   if (!allOk) {

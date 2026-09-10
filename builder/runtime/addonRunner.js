@@ -171,6 +171,8 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
       // Pass `instanceId` via ctx so legacy `run-count` conditions
       // (transition router) keep working.
       const evalResult = evaluateConditions(memory, filter.conditions, {
+        // `#parameter` operands resolve against the agent's parameters (#826)
+        parameters: agentParameters,
         instanceId: instance.instanceId,
       });
       const mode = filter.mode === 'exclude' ? 'exclude' : 'include';
@@ -388,6 +390,10 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
       // Task #816: lets a streaming plugin (Talker) stop consuming
       // chunks once the builder pressed Stop. Optional — most ignore it.
       isStopped: ctx.isStopped,
+      // Agent-wide static parameters. Plugins that evaluate conditions
+      // (Rules, Transition Router) pass these through so `#name`
+      // operands resolve (task #826).
+      parameters: agentParameters,
     });
   } catch (err) {
     emit('addon.error', {

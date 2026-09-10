@@ -22,7 +22,10 @@
 const vm = require('vm');
 
 const TIMEOUT_MS = 50;
-const TOKEN_RE = /\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
+// `#name` inside a token addresses an agent PARAMETER rather than a
+// field — `{{#minorAge}}` (task #826). The resolver the caller passes
+// decides what each name means; this only has to let `#` through.
+const TOKEN_RE = /\{\{\s*(#?[A-Za-z0-9_.-]+)\s*\}\}/g;
 
 const FORBIDDEN = [
   { re: /\b(for|while|do)\b/,            msg: 'loops aren\'t allowed — a formula is a single expression' },
@@ -83,7 +86,8 @@ function substituteTokens(expr, resolveField) {
 
 /**
  * Evaluate a formula.
- * @param {string} expr — the authored formula, `{{field}}` tokens allowed
+ * @param {string} expr — the authored formula, `{{field}}` and
+ *                       `{{#parameter}}` tokens allowed
  * @param {(name: string) => unknown} resolveField — field value lookup
  * @returns {{ ok: boolean, value?: unknown, error?: string, substituted?: string }}
  */
@@ -95,9 +99,12 @@ function evaluate(expr, resolveField) {
     if (rule.re.test(text)) return { ok: false, error: rule.msg, substituted: text };
   }
 
-  const { substituted } = substituteTokens(text, resolveField);
-
+  // Substitution runs INSIDE the try so a resolver that rejects a bad
+  // token (e.g. an undefined `{{#parameter}}`) surfaces as a normal
+  // formula error instead of throwing out of the evaluator.
+  let substituted = text;
   try {
+    ({ substituted } = substituteTokens(text, resolveField));
     const value = vm.runInNewContext(`( ${substituted} )`, buildSandbox(), {
       timeout: TIMEOUT_MS,
       displayErrors: false,
