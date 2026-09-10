@@ -127,9 +127,7 @@ const REGISTRY = {
     schemaName: 'superhist',
     getPool: superhist.getPool,
     defaultMeta: {
-      // The customer is Hebrew-speaking and the product is Hebrew-branded
-      // (הסופר החברתי / super-hist.co.il); the shell header shows this verbatim.
-      name: 'הסופר החברתי',
+      name: 'The Social Supermarket',
       description: "AI-powered business intelligence for הסופר החברתי, the Histadrut's members-only online grocery — orders, products, members, subsidy.",
       logoText: 'SH',
       gradientFrom: '#1D4ED8',
@@ -137,19 +135,40 @@ const REGISTRY = {
     },
     defaultBrandLabel: "The Social Supermarket, the Histadrut's members-only online grocery",
     defaultDataModelDescription: "an online grocery order model: orders joined to their order lines and a product catalogue. Common measures: order revenue (what members paid, VAT-inclusive), order count, units, basket size, subsidy funded by the union, shipping charged. Common dimensions: date (day/week/month), product, member, payment method, shipping method, order status. IMPORTANT: there is NO product category (the field is populated on 3.3% of the catalogue and all on one id, and the categories table holds marketing collections, not a taxonomy), NO cost or margin (no cost column exists anywhere in the feed), and NO store/branch/cashier — the shop is online only. Subsidy is the union's contribution recorded alongside what the member paid and must never be subtracted from revenue.",
-    // Hebrew — the customer is Hebrew-speaking; the synthesize step mirrors the
-    // prompt language, so Hebrew prompts produce Hebrew reports.
     defaultBootstrapPrompts: [
-      'כיצד מתפתחת הכנסת ההזמנות משבוע לשבוע, ומה מניע את השינוי',
-      'אילו מוצרים נמכרים ביחידות הרבות ביותר, ואילו יושבים במלאי ללא מכירה',
-      'כמה חברים מזמינים יותר מפעם אחת, וכיצד הסל שלהם משתווה לאחרים',
-      'כמה סבסוד מממנת ההסתדרות, ועל אילו מוצרים',
+      'How is order revenue trending week over week, and what is driving it',
+      'Which products sell the most units, and which are sitting in stock unsold',
+      'How many members order more than once, and how does their basket compare',
+      'How much subsidy is the union funding, and on which products',
     ],
     defaultExamplePrompts: [
-      'אילו מוצרים מאבדים מכירות בשקט משבוע לשבוע',
-      'לאן הולך הסבסוד, והאם הוא מגיע לסלים הפעילים ביותר',
-      'אילו חברים הזמינו פעם אחת ולא חזרו',
+      'Which products are quietly losing sales week over week',
+      'Where is subsidy going, and is it reaching the busiest baskets',
+      'Which members ordered once and never came back',
     ],
+    // The customer is Hebrew-speaking (super-hist.co.il, a Histadrut members'
+    // grocery). `reportLang` makes bootstrap() generate the shared "Suggested
+    // reports" set in Hebrew; the `i18n` block gives the shell header name and
+    // the hero chips a Hebrew face when the viewer's UI language is Hebrew,
+    // falling back to the English defaults above otherwise. See localeName() /
+    // examplePromptsFor() / bootstrapPromptsFor() below.
+    reportLang: 'he',
+    i18n: {
+      he: {
+        name: 'הסופר החברתי',
+        examplePrompts: [
+          'אילו מוצרים מאבדים מכירות בשקט משבוע לשבוע',
+          'לאן הולך הסבסוד, והאם הוא מגיע לסלים הפעילים ביותר',
+          'אילו חברים הזמינו פעם אחת ולא חזרו',
+        ],
+        bootstrapPrompts: [
+          'כיצד מתפתחת הכנסת ההזמנות משבוע לשבוע, ומה מניע את השינוי',
+          'אילו מוצרים נמכרים ביחידות הרבות ביותר, ואילו יושבים במלאי ללא מכירה',
+          'כמה חברים מזמינים יותר מפעם אחת, וכיצד הסל שלהם משתווה לאחרים',
+          'כמה סבסוד מממנת ההסתדרות, ועל אילו מוצרים',
+        ],
+      },
+    },
   },
   zolstock: {
     id: 'zolstock',
@@ -219,4 +238,32 @@ function all() {
   return Object.values(REGISTRY);
 }
 
-module.exports = { get, all };
+// ── Per-language display overlays ──────────────────────────────────────────
+// A dataset's English defaults are canonical (used by the admin, logs, and as
+// the fallback everywhere). An optional `entry.i18n[lang]` block overrides the
+// viewer-facing name and prompt sets when the UI is in that language. Only
+// datasets serving a client who works in another language carry one — for
+// every other dataset these helpers return the English defaults unchanged, so
+// nothing about them moves.
+
+/** Normalises an arbitrary lang query param to a supported code. */
+function normalizeLang(lang) {
+  return lang === 'he' ? 'he' : 'en';
+}
+
+/** @returns {string} the dataset's display name in `lang`, English otherwise. */
+function localeName(entry, lang) {
+  return entry.i18n?.[normalizeLang(lang)]?.name || entry.defaultMeta.name;
+}
+
+/** @returns {string[]} the hero example chips in `lang` (falls back to the resolved config value passed in, then English). */
+function examplePromptsFor(entry, lang, configValue) {
+  return entry.i18n?.[normalizeLang(lang)]?.examplePrompts || configValue || entry.defaultExamplePrompts;
+}
+
+/** @returns {string[]} the bootstrap prompt set for this dataset's report language (`entry.reportLang`), else the resolved config value. */
+function bootstrapPromptsFor(entry, configValue) {
+  return (entry.reportLang && entry.i18n?.[entry.reportLang]?.bootstrapPrompts) || configValue || entry.defaultBootstrapPrompts;
+}
+
+module.exports = { get, all, normalizeLang, localeName, examplePromptsFor, bootstrapPromptsFor };

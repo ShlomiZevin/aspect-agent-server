@@ -97,12 +97,19 @@ function handleError(res, err, context) {
 // that's currently enabled (see ../services/intelligence-config.service.js).
 // Adding a new dataset to the registry + enabling it in the admin panel is
 // the only step needed for it to appear here.
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
   try {
+    const lang = registry.normalizeLang(req.query.lang);
     const configs = await intelligenceConfigService.getAllConfigs();
     const datasets = configs
       .filter(c => c.enabled)
-      .map(c => ({ id: c.id, ...registry.get(c.id).defaultMeta }));
+      .map(c => {
+        const entry = registry.get(c.id);
+        // `name` follows the viewer's UI language (?lang) where the dataset
+        // has a localised label; everything else in defaultMeta is
+        // language-neutral (logo mark, gradient).
+        return { id: c.id, ...entry.defaultMeta, name: registry.localeName(entry, lang) };
+      });
     res.json({ datasets });
   } catch (err) {
     handleError(res, err, 'list datasets');
@@ -125,7 +132,9 @@ router.get('/:datasetId/prompts', async (req, res) => {
   try {
     await requireEnabled(req.params.datasetId);
     const config = await intelligenceConfigService.getConfig(req.params.datasetId);
-    res.json({ examplePrompts: config.examplePrompts || [] });
+    const entry = registry.get(req.params.datasetId);
+    const examplePrompts = registry.examplePromptsFor(entry, req.query.lang, config.examplePrompts) || [];
+    res.json({ examplePrompts });
   } catch (err) {
     handleError(res, err, 'prompts');
   }

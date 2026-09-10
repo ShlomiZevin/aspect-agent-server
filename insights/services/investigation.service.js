@@ -1321,8 +1321,13 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
 async function bootstrap(datasetId) {
   const config = await intelligenceConfigService.getConfig(datasetId);
   if (!config) throw new Error(`Unknown dataset: ${datasetId}`);
+  // A dataset serving a non-English client (entry.reportLang) generates its
+  // shared suggestions in that language — the synthesize step mirrors the
+  // prompt, so a Hebrew prompt set yields Hebrew reports. Every other dataset
+  // falls through to its (English) configured set unchanged.
+  const prompts = registry.bootstrapPromptsFor(registry.get(datasetId), config.bootstrapPrompts);
   const results = [];
-  for (const prompt of config.bootstrapPrompts) {
+  for (const prompt of prompts) {
     try {
       const insight = await investigate(datasetId, BOOTSTRAP_USER_ID, prompt);
       results.push(insight);
