@@ -127,7 +127,9 @@ const REGISTRY = {
     schemaName: 'superhist',
     getPool: superhist.getPool,
     defaultMeta: {
-      name: 'The Social Supermarket',
+      // The customer is Hebrew-speaking and the product is Hebrew-branded
+      // (הסופר החברתי / super-hist.co.il); the shell header shows this verbatim.
+      name: 'הסופר החברתי',
       description: "AI-powered business intelligence for הסופר החברתי, the Histadrut's members-only online grocery — orders, products, members, subsidy.",
       logoText: 'SH',
       gradientFrom: '#1D4ED8',
@@ -135,16 +137,18 @@ const REGISTRY = {
     },
     defaultBrandLabel: "The Social Supermarket, the Histadrut's members-only online grocery",
     defaultDataModelDescription: "an online grocery order model: orders joined to their order lines and a product catalogue. Common measures: order revenue (what members paid, VAT-inclusive), order count, units, basket size, subsidy funded by the union, shipping charged. Common dimensions: date (day/week/month), product, member, payment method, shipping method, order status. IMPORTANT: there is NO product category (the field is populated on 3.3% of the catalogue and all on one id, and the categories table holds marketing collections, not a taxonomy), NO cost or margin (no cost column exists anywhere in the feed), and NO store/branch/cashier — the shop is online only. Subsidy is the union's contribution recorded alongside what the member paid and must never be subtracted from revenue.",
+    // Hebrew — the customer is Hebrew-speaking; the synthesize step mirrors the
+    // prompt language, so Hebrew prompts produce Hebrew reports.
     defaultBootstrapPrompts: [
-      'How is order revenue trending week over week, and what is driving it',
-      'Which products sell the most units, and which are sitting in stock unsold',
-      'How many members order more than once, and how does their basket compare',
-      'How much subsidy is the union funding, and on which products',
+      'כיצד מתפתחת הכנסת ההזמנות משבוע לשבוע, ומה מניע את השינוי',
+      'אילו מוצרים נמכרים ביחידות הרבות ביותר, ואילו יושבים במלאי ללא מכירה',
+      'כמה חברים מזמינים יותר מפעם אחת, וכיצד הסל שלהם משתווה לאחרים',
+      'כמה סבסוד מממנת ההסתדרות, ועל אילו מוצרים',
     ],
     defaultExamplePrompts: [
-      'Which products are quietly losing sales week over week',
-      'Where is subsidy going, and is it reaching the busiest baskets',
-      'Which members ordered once and never came back',
+      'אילו מוצרים מאבדים מכירות בשקט משבוע לשבוע',
+      'לאן הולך הסבסוד, והאם הוא מגיע לסלים הפעילים ביותר',
+      'אילו חברים הזמינו פעם אחת ולא חזרו',
     ],
   },
   zolstock: {
