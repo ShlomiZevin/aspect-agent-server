@@ -628,6 +628,18 @@ class GoogleService {
 
         // Process response to function results
         for await (const chunk of responseStream) {
+          // Same capture as the first stream above (line ~445) — every BI
+          // chat agent's single crew always calls its one tool, so this
+          // post-tool stream is the ONLY one that ever carries the real
+          // final usage. Without this, `lastUsage` stayed whatever the
+          // pre-tool stream left it (often null, since Gemini frequently
+          // omits usageMetadata on a stream that ends in a function call),
+          // so every tool-using conversation logged zero usage (#62).
+          if (chunk.usageMetadata) {
+            lastUsage = chunk.usageMetadata;
+            console.log(`📊 Google usage (post-tool): prompt=${chunk.usageMetadata.promptTokenCount}, output=${chunk.usageMetadata.candidatesTokenCount}, total=${chunk.usageMetadata.totalTokenCount}`);
+          }
+
           const parts = chunk.candidates?.[0]?.content?.parts || [];
           if (parts.length > 0) {
             for (const part of parts) {

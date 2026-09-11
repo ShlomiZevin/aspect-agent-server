@@ -361,6 +361,14 @@ class ClaudeService {
       let maxIterations = 10;
       let currentMessages = messages;
 
+      // Accumulated ACROSS every iteration of the tool loop, not reset per
+      // iteration — a turn that calls a tool (every BI chat agent's single
+      // crew always does) used to log only the FINAL iteration's usage,
+      // silently dropping the tokens spent on the call that decided to
+      // invoke the tool in the first place (#62).
+      let claudeInputTokens = 0;
+      let claudeOutputTokens = 0;
+
       while (maxIterations > 0) {
         maxIterations--;
 
@@ -391,8 +399,6 @@ class ClaudeService {
 
         let fullReply = '';
         const pendingToolCalls = [];
-        let claudeInputTokens = 0;
-        let claudeOutputTokens = 0;
 
         for await (const event of stream) {
           // Track usage from message events
