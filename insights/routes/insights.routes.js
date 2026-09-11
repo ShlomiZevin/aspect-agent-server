@@ -140,6 +140,26 @@ router.get('/:datasetId/prompts', async (req, res) => {
   }
 });
 
+/**
+ * The Data Chat welcome screen's quick-question tiles (task #63) — per
+ * client, admin-set via the hidden /intelligence/admin quick-questions
+ * editor. `{ icon, title, question }[]`, empty when a client hasn't been
+ * configured — ChatWelcome.tsx falls back to its own hardcoded
+ * quickQuestions (src/agents/<slug>.config.ts) in that case, so this is
+ * additive and cannot regress a client that never gets configured here.
+ *
+ * Registered above /:datasetId/:insightId for the same reason "prompts" is.
+ */
+router.get('/:datasetId/quick-questions', async (req, res) => {
+  try {
+    await requireEnabled(req.params.datasetId);
+    const config = await intelligenceConfigService.getConfig(req.params.datasetId);
+    res.json({ quickQuestions: config.quickQuestions || [] });
+  } catch (err) {
+    handleError(res, err, 'quick-questions');
+  }
+});
+
 // Registered before the generic /:datasetId/:insightId route below so
 // "insights" and "tracked" are matched as static segments, not an insightId.
 router.get('/:datasetId/insights', async (req, res) => {
