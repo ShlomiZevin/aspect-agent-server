@@ -821,6 +821,10 @@ class DispatcherService {
       toolHandlers,
       knowledgeBase: resolvedKB,
       anthropicDocuments: resolvedKB?.provider === 'anthropic' ? (resolvedKB.anthropicFileIds || []) : [],
+      // Per-customer LLM key routing (task #61) — llm.claude.js/llm.openai.js
+      // resolve a <agent>_anthropic_api_key / <agent>_openai_api_key override
+      // when one is configured; every agent without one is unaffected.
+      agentName,
       agentConfig,
       transitionSystemPrompt: resolvedTransitionPrompt,
       isNewCrewTransition,

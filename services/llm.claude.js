@@ -3,6 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const providerConfigService = require('./provider-config.service');
 
+/** Agent display name ("ZolStock") -> per-customer key scope ("zolstock").
+ *  Matches the ENV_FALLBACKS naming in provider-config.service.js exactly. */
+function normalizeScope(agentName) {
+  return agentName ? String(agentName).toLowerCase().replace(/[^a-z0-9]/g, '') : null;
+}
+
 /** Drop underscore-prefixed top-level keys from a tool result before it goes
  *  into the model's context — see the tool_result push below. */
 function stripInternal(result) {
@@ -24,20 +30,30 @@ function stripInternal(result) {
  */
 class ClaudeService {
   constructor() {
-    this._client = null;
-    this._clientApiKey = null;
+    // Keyed by the resolved API key rather than a single cached client, so
+    // a per-customer key (task #61) and the shared default key each get
+    // their own SDK instance instead of thrashing one cached client.
+    this._clients = new Map();
 
     // Default model - can be overridden per request
     this.model = process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514';
   }
 
-  get client() {
-    const currentKey = providerConfigService.getCached('anthropic_api_key') || process.env.ANTHROPIC_API_KEY;
-    if (currentKey !== this._clientApiKey || !this._client) {
-      this._clientApiKey = currentKey;
-      this._client = new Anthropic({ apiKey: currentKey });
+  /**
+   * Resolve the Anthropic client for this call. `agentName`, when given and
+   * a `<scope>_anthropic_api_key` is configured for it, uses that customer's
+   * own key ("Thinking module", task #61) — otherwise the shared key, byte
+   * -identical to before this existed.
+   */
+  _clientFor(agentName) {
+    const scope = normalizeScope(agentName);
+    const apiKey = providerConfigService.getScopedCached('anthropic_api_key', scope) || process.env.ANTHROPIC_API_KEY;
+    let client = this._clients.get(apiKey);
+    if (!client) {
+      client = new Anthropic({ apiKey });
+      this._clients.set(apiKey, client);
     }
-    return this._client;
+    return client;
   }
 
 
@@ -65,7 +81,7 @@ class ClaudeService {
     if (tools.length) params.tools = tools;
     if (temperature !== undefined) params.temperature = temperature;
 
-    const response = await this.client.messages.create(params);
+    const response = await this._clientFor(null).messages.create(params);
 
     return {
       // Raw blocks, so the caller can push this straight back as the
@@ -117,6 +133,9 @@ class ClaudeService {
        * previous behaviour exactly, so no existing caller changes.
        */
       temperature,
+      // Per-customer key routing (task #61) — see _clientFor. Every existing
+      // caller that doesn't pass this keeps using the shared key.
+      agentName,
     } = options;
 
     try {
@@ -198,7 +217,8 @@ class ClaudeService {
       if (useFilesApi) {
         requestParams.betas = ['files-api-2025-04-14'];
       }
-      const messagesApi = useFilesApi ? this.client.beta.messages : this.client.messages;
+      const client = this._clientFor(agentName);
+      const messagesApi = useFilesApi ? client.beta.messages : client.messages;
 
       const response = await messagesApi.create(requestParams);
 
@@ -274,6 +294,8 @@ class ClaudeService {
       anthropicDocuments = [], // Anthropic file IDs to inject as document blocks
       temperature,
       topK,
+      // Per-customer key routing (task #61) — see _clientFor.
+      agentName,
     } = config;
 
     try {
@@ -388,9 +410,10 @@ class ClaudeService {
         }
 
         // Use beta.messages when document blocks are present (requires Files API beta)
+        const client = this._clientFor(agentName);
         const messagesApi = anthropicDocuments && anthropicDocuments.length > 0
-          ? this.client.beta.messages
-          : this.client.messages;
+          ? client.beta.messages
+          : client.messages;
         if (anthropicDocuments && anthropicDocuments.length > 0) {
           requestParams.betas = ['files-api-2025-04-14'];
         }

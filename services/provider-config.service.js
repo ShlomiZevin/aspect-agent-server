@@ -70,6 +70,17 @@ const ENV_FALLBACKS = {
   zolstock_drive_folder_id:          'ZOLSTOCK_DRIVE_FOLDER_ID',
   tevanaot_drive_folder_id:          'TEVANAOT_DRIVE_FOLDER_ID',
   superhist_drive_folder_id:         'SUPERHIST_DRIVE_FOLDER_ID',
+  // Per-customer LLM keys (task #61) — overrides the shared anthropic_api_key
+  // / openai_api_key ("Thinking" / "Talking" module) for one agent at a time,
+  // so its spend is 100% attributable to that customer's own key. Falls back
+  // to the shared key when unset — every agent without one of these is
+  // unaffected, LYBI included (it must never get one here without being
+  // asked for explicitly). No real env var backs these; the naming just
+  // follows the *_import_months / *_gcs_folder convention above.
+  zolstock_anthropic_api_key:        'ZOLSTOCK_ANTHROPIC_API_KEY',
+  zolstock_openai_api_key:           'ZOLSTOCK_OPENAI_API_KEY',
+  superhist_anthropic_api_key:       'SUPERHIST_ANTHROPIC_API_KEY',
+  superhist_openai_api_key:          'SUPERHIST_OPENAI_API_KEY',
 };
 
 // All known config keys (in display order)
@@ -83,6 +94,10 @@ const SENSITIVE_KEYS = new Set([
   'anthropic_admin_api_key',
   'gemini_api_key',
   'gcp_billing_service_account_json',
+  'zolstock_anthropic_api_key',
+  'zolstock_openai_api_key',
+  'superhist_anthropic_api_key',
+  'superhist_openai_api_key',
 ]);
 
 class ProviderConfigService {
@@ -142,6 +157,27 @@ class ProviderConfigService {
     }
     const envKey = ENV_FALLBACKS[key];
     return envKey ? (process.env[envKey] || null) : null;
+  }
+
+  /**
+   * Get the effective value for a key, preferring a per-customer override.
+   *
+   * `scope` is a lowercased, alnum-only agent slug (e.g. 'zolstock'). Looks
+   * up `<scope>_<baseKey>` first (task #61's per-customer keys); falls back
+   * to the plain `baseKey` when there is no scope, no `<scope>_<baseKey>`
+   * entry in ENV_FALLBACKS at all, or it resolves to nothing. This is what
+   * makes the feature additive: a customer nobody has set up a key for gets
+   * exactly the old shared-key behavior.
+   */
+  getScopedCached(baseKey, scope) {
+    if (scope) {
+      const scopedKey = `${scope}_${baseKey}`;
+      if (ENV_FALLBACKS[scopedKey]) {
+        const value = this.getCached(scopedKey);
+        if (value) return value;
+      }
+    }
+    return this.getCached(baseKey);
   }
 
   /**
