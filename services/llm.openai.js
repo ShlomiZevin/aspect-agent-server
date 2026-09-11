@@ -10,6 +10,12 @@ const providerConfigService = require('./provider-config.service');
 // rows) serialized into the tool output overflows the model's context and
 // causes the call to fail outright. Strip it right before stringifying for
 // the API; the unstripped object is still yielded as-is for the SSE consumer.
+/** Agent display name ("ZolStock") -> per-customer key scope ("zolstock").
+ *  Matches the ENV_FALLBACKS naming in provider-config.service.js exactly. */
+function normalizeScope(agentName) {
+  return agentName ? String(agentName).toLowerCase().replace(/[^a-z0-9]/g, '') : null;
+}
+
 function stripInternalFields(result) {
   // Every underscore-prefixed top-level key is internal by contract: _fullData
   // (the untruncated table for the data viewer) and _chatAction (the module
@@ -49,6 +55,8 @@ class OpenAIService {
     this.functionRegistry = functionRegistry;
   }
 
+  /** Legacy single-client accessor — the shared key only, used by the older
+   *  Assistants-API-style methods below that are not customer-scoped. */
   get client() {
     const currentKey = providerConfigService.getCached('openai_api_key') || process.env.OPENAI_API_KEY;
     if (currentKey !== this._clientApiKey || !this._client) {
@@ -56,6 +64,26 @@ class OpenAIService {
       this._client = new OpenAI({ apiKey: currentKey });
     }
     return this._client;
+  }
+
+  /**
+   * Resolve the OpenAI client for this call, keyed by the resolved API key
+   * (not `agentName`, so the shared key and any per-customer key each get
+   * their own SDK instance rather than thrashing one cached client).
+   * `agentName`, when given and a `<scope>_openai_api_key` is configured for
+   * it, uses that customer's own key ("Talking module", task #61) —
+   * otherwise the shared key, byte-identical to before this existed.
+   */
+  _clientFor(agentName) {
+    const scope = normalizeScope(agentName);
+    const apiKey = providerConfigService.getScopedCached('openai_api_key', scope) || process.env.OPENAI_API_KEY;
+    if (!this._scopedClients) this._scopedClients = new Map();
+    let client = this._scopedClients.get(apiKey);
+    if (!client) {
+      client = new OpenAI({ apiKey });
+      this._scopedClients.set(apiKey, client);
+    }
+    return client;
   }
 
   /**
@@ -447,6 +475,8 @@ class OpenAIService {
         knowledgeBase = null,
         temperature,
         topK,
+        // Per-customer key routing (task #61) — see _clientFor.
+        agentName,
       } = config;
 
       // Build tools array
@@ -558,9 +588,10 @@ class OpenAIService {
           include: ['file_search_call.results'],
           stream: true
         };
+        const client = this._clientFor(agentName);
         let stream;
         try {
-          stream = await this.client.responses.create(request);
+          stream = await client.responses.create(request);
         } catch (err) {
           // Reasoning-family models (gpt-5*, o*) reject sampling params
           // outright with a 400. A caller pinning temperature (Smart Tune
@@ -573,7 +604,7 @@ class OpenAIService {
             console.warn(`⚠️ ${model} rejects sampling params — retrying without them (${msg.slice(0, 90)})`);
             delete request.temperature;
             delete request.top_p;
-            stream = await this.client.responses.create(request);
+            stream = await client.responses.create(request);
           } else {
             throw err;
           }
@@ -985,7 +1016,8 @@ class OpenAIService {
    * @returns {Promise<string>} - The response text
    */
   async sendOneShot(instructions, message, options = {}) {
-    const { model = 'gpt-4o-mini', maxTokens = 8192, jsonOutput = false, knowledgeBase, historyMessages } = options;
+    // agentName: per-customer key routing (task #61) — see _clientFor.
+    const { model = 'gpt-4o-mini', maxTokens = 8192, jsonOutput = false, knowledgeBase, historyMessages, agentName } = options;
 
     try {
       // Build instructions. The current user message used to be
@@ -1040,7 +1072,7 @@ class OpenAIService {
         console.log(`📚 OpenAI OneShot: file_search enabled with stores: ${storeIds.join(', ')}`);
       }
 
-      const response = await this.client.responses.create(requestParams);
+      const response = await this._clientFor(agentName).responses.create(requestParams);
 
       const outputItem = response.output.find(item => item.type === 'message');
       const text = outputItem?.content.find(c => c.type === 'output_text')?.text || '';
