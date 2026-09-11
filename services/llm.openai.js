@@ -527,6 +527,15 @@ class OpenAIService {
       let maxIterations = 10;
       let currentInput = [...historyMessages, currentUserMessage];
 
+      // Accumulated ACROSS every iteration of the tool loop, not reset per
+      // iteration — a turn that calls a tool (every BI chat agent's single
+      // crew always does) used to log only the FINAL iteration's usage,
+      // silently dropping the tokens spent on the call that decided to
+      // invoke the tool in the first place (#62).
+      let oaiInputTokens = 0;
+      let oaiOutputTokens = 0;
+      let oaiReasoningTokens = null;
+
       while (maxIterations > 0) {
         maxIterations--;
 
@@ -573,22 +582,21 @@ class OpenAIService {
         let fullReply = '';
         const pendingFunctionCalls = [];
         let currentFunctionCall = null;
-        let oaiInputTokens = 0;
-        let oaiOutputTokens = 0;
-        // Reasoning models bill internal "thinking" inside output_tokens
-        // without ever emitting it as text. Capturing the split makes an
-        // empty-but-billed reply self-explanatory in the run log (#809).
-        let oaiReasoningTokens = null;
 
         // Yield each chunk as it arrives
         for await (const chunk of stream) {
-          // Track usage from completed response
+          // Track usage from completed response — added to the running total
+          // (see declaration above the while loop), not overwritten, so a
+          // multi-iteration tool turn keeps every leg's tokens.
           if (chunk.type === 'response.completed' && chunk.response?.usage) {
             const u = chunk.response.usage;
-            oaiInputTokens = u.input_tokens || 0;
-            oaiOutputTokens = u.output_tokens || 0;
+            oaiInputTokens += u.input_tokens || 0;
+            oaiOutputTokens += u.output_tokens || 0;
+            // Reasoning models bill internal "thinking" inside output_tokens
+            // without ever emitting it as text. Capturing the split makes an
+            // empty-but-billed reply self-explanatory in the run log (#809).
             const rt = u.output_tokens_details && u.output_tokens_details.reasoning_tokens;
-            oaiReasoningTokens = typeof rt === 'number' ? rt : null;
+            if (typeof rt === 'number') oaiReasoningTokens = (oaiReasoningTokens || 0) + rt;
           }
 
           // Handle error events from OpenAI stream
