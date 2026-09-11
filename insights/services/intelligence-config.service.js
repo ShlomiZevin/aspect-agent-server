@@ -32,6 +32,10 @@ const HISTORY_LIMIT = 20;
 const SECTION_FIELDS = {
   config: ['brandLabel', 'dataModelDescription'],
   prompts: ['bootstrapPrompts', 'examplePrompts'],
+  // Per-client Data Chat quick questions (task #63) — {icon, title, question}[].
+  // Separate section (own history) because it's edited from its own hidden
+  // admin page, on its own schedule, independent of the other two.
+  quickQuestions: ['quickQuestions'],
 };
 
 function keyFor(datasetId) {
@@ -52,6 +56,11 @@ function defaultsFor(datasetId) {
     brandLabel: entry.defaultBrandLabel,
     bootstrapPrompts: entry.defaultBootstrapPrompts,
     examplePrompts: entry.defaultExamplePrompts,
+    // Empty by default, not sourced from the registry: the client's Data
+    // Chat welcome screen (ChatWelcome.tsx) falls back to the agent's own
+    // hardcoded quickQuestions (src/agents/<slug>.config.ts) whenever this
+    // is empty, so an unconfigured dataset is unaffected.
+    quickQuestions: [],
   };
 }
 
@@ -64,7 +73,7 @@ async function getRawValue(datasetId) {
 /** Parses the stored blob (or defaults if none) into every field, INCLUDING both section histories — internal use only, see parseEntry() for the public (history-stripped) shape. */
 function parseFull(raw, datasetId) {
   const defaults = defaultsFor(datasetId);
-  if (!raw) return { ...defaults, configHistory: [], promptsHistory: [] };
+  if (!raw) return { ...defaults, configHistory: [], promptsHistory: [], quickQuestionsHistory: [] };
   try {
     const parsed = JSON.parse(raw);
     return {
@@ -73,11 +82,13 @@ function parseFull(raw, datasetId) {
       brandLabel: parsed.brandLabel || defaults.brandLabel,
       bootstrapPrompts: Array.isArray(parsed.bootstrapPrompts) ? parsed.bootstrapPrompts : defaults.bootstrapPrompts,
       examplePrompts: Array.isArray(parsed.examplePrompts) ? parsed.examplePrompts : defaults.examplePrompts,
+      quickQuestions: Array.isArray(parsed.quickQuestions) ? parsed.quickQuestions : defaults.quickQuestions,
       configHistory: Array.isArray(parsed.configHistory) ? parsed.configHistory : [],
       promptsHistory: Array.isArray(parsed.promptsHistory) ? parsed.promptsHistory : [],
+      quickQuestionsHistory: Array.isArray(parsed.quickQuestionsHistory) ? parsed.quickQuestionsHistory : [],
     };
   } catch {
-    return { ...defaults, configHistory: [], promptsHistory: [] };
+    return { ...defaults, configHistory: [], promptsHistory: [], quickQuestionsHistory: [] };
   }
 }
 
@@ -107,6 +118,7 @@ async function setConfig(datasetId, patch) {
     brandLabel: typeof patch.brandLabel === 'string' ? patch.brandLabel : current.brandLabel,
     bootstrapPrompts: Array.isArray(patch.bootstrapPrompts) ? patch.bootstrapPrompts : current.bootstrapPrompts,
     examplePrompts: Array.isArray(patch.examplePrompts) ? patch.examplePrompts : current.examplePrompts,
+    quickQuestions: Array.isArray(patch.quickQuestions) ? patch.quickQuestions : current.quickQuestions,
   };
 
   const histories = {};
