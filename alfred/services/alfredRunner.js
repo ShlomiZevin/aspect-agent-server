@@ -302,7 +302,11 @@ async function runBrainstormTurn({ chatId, agentSlug, ownerUserId, activeConvers
   //    model's response; if it ended with tool_use blocks, run them
   //    and append both the assistant turn and the tool results, then
   //    loop. Otherwise we're done.
-  const client = claudeService.client;
+  // Shared Anthropic key. `_clientFor(null)` is what llm.claude.js's own
+  // one-shot path uses; the `.client` getter it replaced (task #61) is gone,
+  // and reading it silently yielded undefined. Alfred is build tooling, not a
+  // customer-facing agent, so he never routes onto a per-customer key.
+  const client = claudeService._clientFor(null);
   let collected    = '';
   let firstTokenMs = null;
   let inputTokens  = 0;

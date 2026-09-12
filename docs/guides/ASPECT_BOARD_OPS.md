@@ -162,6 +162,15 @@ background he did not give. His words: *"don't dig. Stick to what I write, just
 phrase it more clearly and complete it, but don't add things."* Show him the
 English wording before opening it.
 
+**Descriptions are HTML, not plain text.** The board renders `description`
+through a rich text editor, so `\n` line breaks collapse into one run-on
+paragraph (task #61 had to be rewritten). Write the markup the editor's own
+toolbar produces — the sanitizer allowlist is `p` `h3` `b`/`strong` `u` `i`
+`ul`/`ol`/`li` `pre` `code` `br` `div` `span` (see
+`src/taskboard/components/RichTextEditor/sanitize.ts`); anything else is
+unwrapped to bare text. A short intro `<p>`, an `<h3>` per section and `<ul>`
+lists read cleanly.
+
 **Hebrew in a task body needs a file, not `-d`.** A task title or description
 containing Hebrew sent as `curl -d '{...}'` from Git Bash arrives as mojibake and
 is stored that way — it is not a display problem, it round-trips broken. Write
@@ -176,7 +185,11 @@ io.open('body.json','wb').write(json.dumps(body, ensure_ascii=False).encode('utf
 curl -s -X POST "$BOARD/tasks" -H 'Content-Type: application/json; charset=utf-8'   --data-binary @body.json
 ```
 
-Always read the task back afterwards and check the Hebrew survived. This hit
+Always read the task back afterwards and check the Hebrew survived — but read
+it back **from a file** (`curl -o t.json`, then `io.open(..., encoding='utf-8')`).
+Piping `curl | python` on Windows decodes stdin as cp1252, so any non-ASCII
+character (Hebrew, `→`) looks corrupted even when it is stored correctly; this
+raised a false alarm on task #65. This hit
 task #60 and had to be repaired with a PATCH.
 
 **Check before creating.** `GET /tasks?openOnly=true` first; the board is small
