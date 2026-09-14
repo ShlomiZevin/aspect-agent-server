@@ -127,7 +127,7 @@ async function buildSchemasFromHeaders(gcsFiles, emitLog) {
         const def = lookup.get(csvName);
         if (def && !claimed.has(def.dbName)) {
           claimed.add(def.dbName);
-          return { csvName, name: def.dbName, type: def.type };
+          return { csvName, name: def.dbName, type: def.type, format: def.format };
         }
         if (def) {
           emitLog('scanning', `${file.basename}: '${csvName}' also maps to ${def.dbName}, which is already taken — keeping the raw header`);

@@ -22,16 +22,24 @@ const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.
 /**
  * Convert a single CSV field value to the target PostgreSQL type.
  * Returns the converted string, or '' (empty = NULL in COPY) on bad input.
+ *
+ * `format` is an optional per-column override for DATE fields whose source
+ * disagrees with the DD/MM/YYYY every client's export otherwise uses — e.g.
+ * superhist's stock_history.snapshot_date, which arrives MM/DD/YYYY (see
+ * column-aliases-superhist.js). Undefined means DD/MM/YYYY, same as before
+ * this parameter existed.
  */
-function convertField(raw, type) {
+function convertField(raw, type, format) {
   const v = raw.trim();
   if (v === '') return '';
 
   if (type === 'DATE') {
-    // Accept DD/MM/YYYY or D/M/YYYY — convert to ISO YYYY-MM-DD
+    // Accept D/M/YYYY (or M/D/YYYY when format is 'MDY') — convert to ISO YYYY-MM-DD
     const m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
     if (!m) return '';
-    return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+    const [, g1, g2, year] = m;
+    const [month, day] = format === 'MDY' ? [g1, g2] : [g2, g1];
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
   }
 
   if (type === 'INTEGER') {
@@ -139,7 +147,8 @@ function serializeCSVLine(fields) {
  *
  * - Reads the CSV header line to determine column positions (then passes it through).
  * - For each subsequent data line, converts fields at typed positions:
- *     DATE    → ISO YYYY-MM-DD  (from DD/MM/YYYY)
+ *     DATE    → ISO YYYY-MM-DD  (from DD/MM/YYYY, or MM/DD/YYYY for a column
+ *                whose schema entry sets format: 'MDY' — see convertField)
  *     INTEGER → clean integer   (strips ".0", non-numeric → empty = NULL)
  *     NUMERIC → clean decimal   (non-numeric → empty = NULL)
  * - TEXT columns are passed through byte-for-byte without touching them.
@@ -155,7 +164,7 @@ function serializeCSVLine(fields) {
  */
 function createTypeConvertTransform(schema, dateCutoff = null) {
   const typedPositions = schema.columns
-    .map((col, idx) => ({ idx, type: col.type, name: col.name }))
+    .map((col, idx) => ({ idx, type: col.type, name: col.name, format: col.format }))
     .filter(c => c.type !== 'TEXT');
 
   // Date filtering only applies to DATE-typed columns (zer4u: sales.sale_date).
@@ -211,10 +220,10 @@ function createTypeConvertTransform(schema, dateCutoff = null) {
   // Returns the serialized converted line, or null if the date filter dropped it.
   function convertLine(line) {
     const fields = parseCSVLine(line);
-    for (const { idx, type, name } of typedPositions) {
+    for (const { idx, type, name, format } of typedPositions) {
       if (idx < fields.length) {
         const raw = fields[idx];
-        const converted = convertField(raw, type);
+        const converted = convertField(raw, type, format);
         // Track nullification: non-empty value that became empty (= NULL in COPY)
         if (converted === '' && raw.trim() !== '') {
           stats[name].nullified++;
@@ -274,8 +283,9 @@ function monthCutoff(maxISO, months) {
  * parseable dates. Reads the whole file but only parses the single date column.
  */
 async function scanMaxDate(schema) {
-  const dateIdx = (schema.columns || []).findIndex(c => c.type === 'DATE');
-  if (dateIdx === -1) return null;
+  const dateCol = (schema.columns || []).find(c => c.type === 'DATE');
+  if (!dateCol) return null;
+  const dateIdx = schema.columns.indexOf(dateCol);
 
   const gcsStream = gcsService.getFileStream(schema.filePath);
   const decoder = new StringDecoder('utf8');
@@ -286,7 +296,7 @@ async function scanMaxDate(schema) {
   const consider = (line) => {
     if (!line) return;
     const fields = parseCSVLine(line);
-    const iso = convertField(fields[dateIdx] ?? '', 'DATE');
+    const iso = convertField(fields[dateIdx] ?? '', 'DATE', dateCol.format);
     if (iso && (maxISO === null || iso > maxISO)) maxISO = iso;
   };
 
