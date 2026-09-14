@@ -34,6 +34,20 @@
  *      The manifest refuses category questions rather than answering them from
  *      3% of the catalogue.
  *
+ * STOCK HISTORY (task #72, added 2026-09-14, not yet in a delivery — see
+ * FILE_TO_TABLE below). Reut (the client's BI developer) added a StockHistory
+ * file to the Drive folder that snapshots inventory daily; her own words:
+ * "Right now it only has today's data, but it will accumulate the inventory
+ * every day." So on the FIRST load after this file starts arriving, the table
+ * holds exactly one day — do not treat that as evidence of a trend, and do
+ * not silently drop it as noise the way a one-row table normally would be.
+ * Its column aliases (column-aliases-superhist.js) are a best guess from the
+ * existing products.stock_qty / item_id naming, NOT measured against a real
+ * file — Qlik export headers can differ; verify against the first actual
+ * delivery in GCS (basename, and buildSchemasFromHeaders' "unmapped
+ * header(s)" log line) before trusting the load, and update the aliases file
+ * if headers came out differently.
+ *
  * Files delivered but NOT loaded, by omission from FILE_TO_TABLE:
  *   Dim / Dim1 / Measure / Measures — QlikSense's own dashboard metadata (the
  *   field picker's sort order and a table of formula strings). They describe
@@ -68,6 +82,13 @@ const FILE_TO_TABLE = {
   'Productsהסופר החברתי_CSV.csv': 'products',
   'Categoriesהסופר החברתי_CSV.csv': 'categories',
   'Calanderהסופר החברתי_CSV.csv': 'calendar',
+  // Task #72 — daily inventory snapshot, see the header comment. Filename
+  // follows the same "<Entity><client Hebrew name>_CSV.csv" pattern every
+  // other file here uses; not yet confirmed against a real delivery (the
+  // file was only just added to Drive, hadn't reached GCS as of 2026-09-14).
+  // If a reload logs it under "Expected but not delivered", check the exact
+  // basename Reut's export actually produced against this string first.
+  'StockHistoryהסופר החברתי_CSV.csv': 'stock_history',
   // Deliberately NOT loaded (see header): Dim, Dim1, Measure, Measures,
   // OrderLine_Last_7_Days_1.
 };

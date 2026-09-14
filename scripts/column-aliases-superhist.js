@@ -130,6 +130,20 @@ const COLUMN_MAP = {
     { csvName: 'קטגוריה',            dbName: 'category_name',       type: 'TEXT'    },
   ],
 
+  // ── stock history (task #72) ───────────────────────────────────────────────
+  // BEST GUESS, not measured — no real file existed at write time (see
+  // reload-superhist.js's header comment). Modeled on products' own מזהה
+  // פריט / מלאי columns, since this is presumably the same inventory figure
+  // snapshotted daily rather than a new concept. Any header that doesn't
+  // match lands as TEXT under its own raw name (see buildSchemasFromHeaders)
+  // rather than failing the load, so a wrong guess here degrades, it doesn't
+  // break — but still needs correcting once the real headers are visible.
+  stock_history: [
+    { csvName: 'מזהה פריט',          dbName: 'item_id',             type: 'TEXT'    },
+    { csvName: 'מלאי',               dbName: 'stock_qty',           type: 'NUMERIC' },
+    { csvName: 'תאריך',              dbName: 'snapshot_date',       type: 'DATE'    },
+  ],
+
   // ── calendar ────────────────────────────────────────────────────────────────
   // Covers all of 2026 while the orders cover 42 days. Joining to it without a
   // date filter invents 323 empty days; every trend must be driven by the
