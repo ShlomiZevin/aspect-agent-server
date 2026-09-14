@@ -295,6 +295,7 @@ const crewMembers = pgTable('crew_members', {
 const taskAssignees = pgTable('task_assignees', {
   id: serial('id').primaryKey(),
   name: varchar('name', { length: 100 }).notNull().unique(),
+  seenUntil: timestamp('seen_until'), // What's New watermark — tasks deployed after this show in the popup; null = no popup
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -321,6 +322,10 @@ const tasks = pgTable('tasks', {
   deployedAt: timestamp('deployed_at'), // When this task was deployed to production
   deployedReviewedBy: jsonb('deployed_reviewed_by').default([]), // Names of users who dismissed from "What's New"
   deployedEmailSentTo: jsonb('deployed_email_sent_to').default([]), // Names of recipients who already got this task in a What's New digest email
+  doneAt: timestamp('done_at'), // When the task last moved to Done — cleared when it leaves Done
+  notForRelease: boolean('not_for_release').default(false).notNull(), // Excluded from the Release list — cleared when it leaves Done
+  whatChanged: text('what_changed'), // Assignee's plain-language note: what changed, what to check
+  whatsNewHeadline: varchar('whats_new_headline', { length: 255 }), // One line shown in the What's New popup
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

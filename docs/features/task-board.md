@@ -238,6 +238,31 @@ Separates "developer thinks it's done" from "PM verified and approved."
 
 ---
 
+## Release Flow (What changed → Release → What's New → Close)
+
+Added 2026-09-14 (task #837). Session rules for Claude live in `c:/workspace/aspect/.claude/skills/lybi-task-board/SKILL.md`.
+
+| Step | Who | What |
+|---|---|---|
+| **Done** | Assignee | While a task is Done, a green **What changed** box shows at the top of the task: a one-line headline + a short note (Hebrew, non-technical). Editable only by the assignee; read-only for everyone else. Not enforced. |
+| **Release** | Shlomi only | **🚀 Release** in the board header lists every task waiting for release, newest *moved to Done* first. Tick what shipped → marked deployed (same notifications + digest email as the per-task Deploy). **Not for release** drops a row from the list. |
+| **What's New** | Everyone with a watermark | A Hebrew RTL popup listing tasks released since the person's **seen until** date, grouped by release day (sticky headers). **On Builder V2 pages only** (`/builder`, `/:agent/builder/*`) it acts by itself: opens on arrival and when they come back after 20+ min away; a release that lands while they work shows a corner "incoming update" message for 20s, then a 🎁 badge with a count that stays until **Got it** (live via the board stream, plus a re-check on page change, window focus and every 60s). Elsewhere it opens only from the task board's What's New button. **Got it** moves the watermark to the newest item shown. |
+| **Close** | Reviewer | A released, unclosed task shows **Released … Does it work?** — **✓ Works** sets `is_completed`; **✗ Not yet** moves it back to Todo with the reason as a comment. |
+
+**Data** (migration 053):
+- `tasks.done_at` — stamped when a task enters Done, cleared when it leaves.
+- `tasks.not_for_release` — cleared when a task leaves Done, so moving an excluded task out and back puts it on the Release list again.
+- `tasks.what_changed`, `tasks.whats_new_headline`.
+- `task_assignees.seen_until` — the What's New watermark. NULL = no popup. Never moves backwards or past now.
+
+**Waiting for release** = `status = 'done'` AND NOT `not_for_release` AND NOT draft AND type not goal/agenda AND (`deployed_at` IS NULL OR `deployed_at < done_at`). A task reworked after release is waiting again.
+
+**API:** `GET /api/tasks/release-candidates` · `POST /api/tasks/release {taskIds, identity}` · `GET /api/tasks/whats-new?identity=` → `{tasks, seenUntil}` · `POST /api/tasks/whats-new/seen {identity, until}`.
+
+**One-time setup** (`scripts/release-flow-initial-setup.js`, applied 2026-09-14): watermarks for Noa, Hila and Shlomi; every Done-never-deployed task marked Not for release. Refuses to run twice.
+
+---
+
 ## Assignee Management
 
 ### Default Assignees

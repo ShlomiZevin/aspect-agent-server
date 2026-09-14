@@ -226,6 +226,11 @@ class EmailSchedulerService {
           WHERE deployed_at IS NOT NULL
             AND NOT (COALESCE(deployed_reviewed_by, '[]'::jsonb) ? $1)
             AND NOT (COALESCE(deployed_email_sent_to, '[]'::jsonb) ? $1)
+            -- Already acknowledged in the What's New popup (at or before their watermark)
+            AND NOT EXISTS (
+              SELECT 1 FROM task_assignees p
+              WHERE lower(p.name) = lower($1) AND p.seen_until IS NOT NULL AND tasks.deployed_at <= p.seen_until
+            )
             AND domain = ANY($2::text[])
           ORDER BY deployed_at DESC
         `, [recipient, domains]);

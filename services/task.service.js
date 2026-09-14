@@ -1,8 +1,11 @@
 const db = require('./db.pg');
 const { tasks, taskAssignees } = require('../db/schema');
-const { eq, desc, and, ilike, isNotNull, getTableColumns } = require('drizzle-orm');
+const { eq, desc, and, or, gt, lt, ilike, isNull, notInArray, sql } = require('drizzle-orm');
 const notificationsService = require('./notifications.service');
 const boardEventsService = require('./boardEvents.service');
+
+// Sidebar items, never shipped — kept out of the Release list and What's New.
+const NON_RELEASE_TYPES = ['goal', 'agenda'];
 
 /**
  * Task Board Service
@@ -164,6 +167,7 @@ class TaskService {
         isDraft: isDraft || false,
         createdBy: createdBy || null,
         opener: opener || null,
+        doneAt: status === 'done' ? new Date() : null,
       })
       .returning();
 
@@ -212,6 +216,21 @@ class TaskService {
     if (updates.createdBy !== undefined) updateData.createdBy = updates.createdBy || null;
     if (updates.deployedAt !== undefined) updateData.deployedAt = updates.deployedAt || null;
     if (updates.deployedReviewedBy !== undefined) updateData.deployedReviewedBy = updates.deployedReviewedBy;
+    if (updates.whatChanged !== undefined) updateData.whatChanged = typeof updates.whatChanged === 'string' ? (updates.whatChanged.trim() || null) : null;
+    if (updates.whatsNewHeadline !== undefined) updateData.whatsNewHeadline = typeof updates.whatsNewHeadline === 'string' ? (updates.whatsNewHeadline.trim().slice(0, 255) || null) : null;
+    if (updates.notForRelease !== undefined) updateData.notForRelease = !!updates.notForRelease;
+
+    // Release flow: entering Done stamps done_at; leaving Done clears it and the
+    // Not-for-release flag, so a task that comes back to Done is on the Release list again.
+    if (before && updates.status !== undefined && updates.status !== before.status) {
+      if (updates.status === 'done') {
+        updateData.doneAt = new Date();
+        updateData.notForRelease = false;
+      } else if (before.status === 'done') {
+        updateData.doneAt = null;
+        updateData.notForRelease = false;
+      }
+    }
 
     const [task] = await this.drizzle
       .update(tasks)
@@ -317,28 +336,114 @@ class TaskService {
     return task;
   }
 
+  // ─── Release flow ────────────────────────────────────────────────────
+
   /**
-   * Get tasks that were deployed and not yet reviewed by the given identity
+   * Tasks waiting for release: Done, not released since they were done, not marked
+   * Not for release. Newest "moved to Done" first; tasks done before done_at existed last.
+   */
+  async getReleaseCandidates() {
+    if (!this.drizzle) this.initialize();
+
+    return this.drizzle
+      .select({
+        id: tasks.id,
+        title: tasks.title,
+        type: tasks.type,
+        assignee: tasks.assignee,
+        doneAt: tasks.doneAt,
+        whatsNewHeadline: tasks.whatsNewHeadline,
+        whatChanged: tasks.whatChanged,
+      })
+      .from(tasks)
+      .where(and(
+        eq(tasks.status, 'done'),
+        eq(tasks.notForRelease, false),
+        eq(tasks.isDraft, false),
+        notInArray(tasks.type, NON_RELEASE_TYPES),
+        or(isNull(tasks.deployedAt), lt(tasks.deployedAt, tasks.doneAt)),
+      ))
+      .orderBy(sql`${tasks.doneAt} DESC NULLS LAST`, desc(tasks.id));
+  }
+
+  /**
+   * Mark several tasks as deployed at once (the Release window). Same effect as
+   * markDeployed per task: notifications, digest email, What's New.
+   */
+  async releaseTasks(taskIds, releasedBy) {
+    const released = [];
+    for (const id of taskIds) {
+      const task = await this.markDeployed(id, releasedBy);
+      if (task) released.push(task.id);
+    }
+    return released;
+  }
+
+  async _findPerson(identity) {
+    const [person] = await this.drizzle
+      .select()
+      .from(taskAssignees)
+      .where(sql`lower(${taskAssignees.name}) = lower(${identity})`)
+      .limit(1);
+    return person || null;
+  }
+
+  /**
+   * What's New for one person: tasks deployed after their "seen until" watermark,
+   * newest first. People without a watermark get nothing (no popup).
+   *
+   * Never selects `description` (can hold pasted base64 images) — this is polled.
    */
   async getWhatsNew(identity) {
     if (!this.drizzle) this.initialize();
-    if (!identity) return [];
+    if (!identity) return { tasks: [], seenUntil: null };
 
-    // Deliberately excludes `description` (can hold pasted base64 images, up to
-    // several hundred KB per task) and filters deployedAt in SQL instead of
-    // fetching every task - this endpoint is polled every 10s per open tab, and
-    // a full-table SELECT * was slow enough to hit the statement timeout.
-    const { description, ...rest } = getTableColumns(tasks);
-    const deployedTasks = await this.drizzle
-      .select(rest)
+    const person = await this._findPerson(identity);
+    const seenUntil = person?.seenUntil || null;
+    if (!seenUntil) return { tasks: [], seenUntil: null };
+
+    const items = await this.drizzle
+      .select({
+        id: tasks.id,
+        title: tasks.title,
+        whatsNewHeadline: tasks.whatsNewHeadline,
+        whatChanged: tasks.whatChanged,
+        deployedAt: tasks.deployedAt,
+      })
       .from(tasks)
-      .where(isNotNull(tasks.deployedAt))
+      .where(and(
+        gt(tasks.deployedAt, seenUntil),
+        eq(tasks.isDraft, false),
+        notInArray(tasks.type, NON_RELEASE_TYPES),
+      ))
       .orderBy(desc(tasks.deployedAt));
 
-    return deployedTasks.filter(t => {
-      const reviewedBy = t.deployedReviewedBy || [];
-      return !reviewedBy.includes(identity);
-    });
+    return { tasks: items, seenUntil };
+  }
+
+  /**
+   * "Got it": move a person's watermark forward to `until` (the newest item they saw).
+   * Never moves backwards, never past now, never creates a watermark.
+   */
+  async markWhatsNewSeen(identity, until) {
+    if (!this.drizzle) this.initialize();
+
+    const untilDate = new Date(until);
+    if (!identity || Number.isNaN(untilDate.getTime())) {
+      throw new Error('identity and a valid until are required');
+    }
+    const now = new Date();
+    const capped = untilDate > now ? now : untilDate;
+
+    const person = await this._findPerson(identity);
+    if (!person || !person.seenUntil) return null;
+    if (capped <= person.seenUntil) return person.seenUntil;
+
+    await this.drizzle
+      .update(taskAssignees)
+      .set({ seenUntil: capped })
+      .where(eq(taskAssignees.id, person.id));
+    return capped;
   }
 
   /**

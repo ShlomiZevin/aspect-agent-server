@@ -4825,13 +4825,13 @@ app.post('/api/tasks/:id/deploy', async (req, res) => {
   }
 });
 
-// Get "What's New" — deployed tasks not yet reviewed by identity
+// Get "What's New" — tasks deployed after this person's "seen until" watermark
 app.get('/api/tasks/whats-new', async (req, res) => {
   try {
     const { identity } = req.query;
     if (!identity) return res.status(400).json({ error: 'identity query param required' });
-    const tasks = await taskService.getWhatsNew(identity);
-    res.json({ tasks });
+    const result = await taskService.getWhatsNew(identity); // { tasks, seenUntil }
+    res.json(result);
   } catch (err) {
     console.error('Failed to get whats-new tasks:', err);
     res.status(500).json({ error: 'Failed to get whats-new' });
@@ -4849,6 +4849,45 @@ app.post('/api/tasks/:id/dismiss-deployed', async (req, res) => {
   } catch (err) {
     console.error('Failed to dismiss deployed task:', err);
     res.status(500).json({ error: 'Failed to dismiss' });
+  }
+});
+
+// Move a person's What's New watermark forward ("Got it")
+app.post('/api/tasks/whats-new/seen', async (req, res) => {
+  try {
+    const { identity, until } = req.body;
+    if (!identity || !until) return res.status(400).json({ error: 'identity and until are required' });
+    const seenUntil = await taskService.markWhatsNewSeen(identity, until);
+    res.json({ seenUntil });
+  } catch (err) {
+    console.error('Failed to mark What\'s New as seen:', err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Release list — Done tasks not released since they were done (Shlomi's Release window)
+app.get('/api/tasks/release-candidates', async (req, res) => {
+  try {
+    const tasks = await taskService.getReleaseCandidates();
+    res.json({ tasks });
+  } catch (err) {
+    console.error('Failed to get release candidates:', err);
+    res.status(500).json({ error: 'Failed to get release candidates' });
+  }
+});
+
+// Mark several tasks as released (deployed) at once
+app.post('/api/tasks/release', async (req, res) => {
+  try {
+    const { taskIds, identity } = req.body;
+    const ids = Array.isArray(taskIds) ? taskIds.map(Number).filter(Number.isInteger) : [];
+    if (ids.length === 0) return res.status(400).json({ error: 'taskIds must be a non-empty array of task ids' });
+    if (ids.length > 200) return res.status(400).json({ error: 'At most 200 tasks per release' });
+    const released = await taskService.releaseTasks(ids, identity);
+    res.json({ released });
+  } catch (err) {
+    console.error('Failed to release tasks:', err);
+    res.status(500).json({ error: 'Failed to release tasks' });
   }
 });
 
