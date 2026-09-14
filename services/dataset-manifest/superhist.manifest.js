@@ -82,6 +82,18 @@ module.exports = {
       status: 'unreliable',
       detail: 'products.brand_id is 0 on the rows sampled; there is no brand name table',
     },
+    // Task #72, added 2026-09-14. NOT measured — no real delivery existed
+    // yet when this was written (see reload-superhist.js's header comment
+    // and column-aliases-superhist.js). Reut, the client's BI developer,
+    // said it accumulates one snapshot per day going forward, so on day one
+    // it is a single date and stays 'limited' until there is enough history
+    // for a real trend — update this entry (and ideally add a measured
+    // dataFacts line with the actual day count) once several days have
+    // loaded.
+    'inventory / stock history': {
+      status: 'limited',
+      detail: 'stock_history.stock_qty per item_id per snapshot_date — a NEW daily inventory snapshot, separate from products.stock_qty (which is only the CURRENT level). Accumulates one day at a time from whenever this file started arriving; there is no inventory data for any earlier date, so a question about stock on a past date, or an inventory trend, can only be answered from the days actually loaded so far',
+    },
   },
 
   vocabulary: [
@@ -101,6 +113,7 @@ module.exports = {
     { fact: 'The final loaded month is PARTIAL. Comparing it with a full month shows a fall that is an artefact of the export, not the business', appliesTo: 'any month-over-month comparison touching the latest month' },
     { fact: 'The calendar table covers the whole year while orders cover weeks — it is a date dimension, never evidence that a date has orders', appliesTo: 'any trend or date-range claim' },
     { fact: '141 of the 1,481 items sold are absent from the product catalogue and carry 8% of revenue. They have no name and no price on file — report them as unidentified items rather than dropping them or guessing', appliesTo: 'top-seller lists and any per-product total' },
+    { fact: 'stock_history (task #72) is a NEW daily inventory snapshot that only started accumulating recently — it does not reach back before whenever the first file arrived, so it cannot answer "what was the stock on <an earlier date>" for dates before that', appliesTo: 'any historical or trend question about inventory levels' },
   ],
 
   coverage: {
