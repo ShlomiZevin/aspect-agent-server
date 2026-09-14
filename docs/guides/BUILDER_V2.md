@@ -312,9 +312,12 @@ The Add Field modal asks: name / type / source / **scope** (agent or
 crew) / domain / how-to-extract / **which extractors extract this
 one** (multi-select, grouped by crew). The field def is written to
 `agent.fields` or `crew.fields` based on scope, and its id is
-appended to each ticked extractor's `extractsFields[]`. At least one
-extractor must be ticked; if the agent has no extractors anywhere
-yet, the modal auto-creates one in the current crew on submit.
+appended to each ticked extractor's `extractsFields[]`. To save, the
+field needs a connection: a ticked extractor, a prompt that mentions it
+with `{{fieldname:NAME}}` (e.g. a Thinker that returns it), or an
+explicit **⏳ Connect later**. If the agent has no extractors anywhere
+and none of those apply, the modal auto-creates one in the current crew
+on submit. (Task #832 — the same rule applies in the field editor.)
 
 ### Editing / removing a field
 
@@ -1581,7 +1584,8 @@ The Field Editor's "Extracted by" affordance is a multi-select of
 every Field Extractor across the entire agent (grouped by crew).
 Tick to add to the set, untick to remove. No single "primary"
 extractor — a field is either extracted by an extractor or it
-isn't. Required: at least one tick before Save is enabled. Empty
+isn't. Save needs a tick, a `{{fieldname:NAME}}` prompt mention, or
+**⏳ Connect later** (task #832). Empty
 selection is flagged with an amber "⚠ no extractor" chip on the
 FieldsPanel row.
 
