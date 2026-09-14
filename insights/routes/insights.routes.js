@@ -22,6 +22,7 @@
  *   GET  /api/insights/:datasetId/tracked              — the subset of insights marked "tracked", as strip cards
  *   POST /api/insights/:datasetId/tracked/reorder       — { insightIds: string[] } -> persists "Manage tracking" drag-to-reorder
  *   GET  /api/insights/:datasetId/:insightId           — full insight detail (generated only)
+ *   PUT  /api/insights/:datasetId/quick-questions      — customer-editable, quickQuestions only (task #69)
  *   POST /api/insights/:datasetId/classify-prompt      — { prompt } -> { isSimpleQuery } — is this a quick lookup or a real investigation?
  *   POST /api/insights/:datasetId/investigate          — { prompt? } -> runs a real investigation, returns its result (no prompt = Aspect picks the angle itself)
  *   POST /api/insights/:datasetId/bootstrap            — runs a curated set of real investigations to populate an empty feed
@@ -157,6 +158,35 @@ router.get('/:datasetId/quick-questions', async (req, res) => {
     res.json({ quickQuestions: config.quickQuestions || [] });
   } catch (err) {
     handleError(res, err, 'quick-questions');
+  }
+});
+
+/**
+ * Customer-facing write side of the above (task #69) — the Intelligence
+ * Center settings page the customer edits their own tiles from. Deliberately
+ * NOT a thin passthrough to intelligenceConfigService.setConfig(): that also
+ * accepts enabled/brandLabel/dataModelDescription/bootstrapPrompts/
+ * examplePrompts, which belong to the internal admin surface
+ * (/api/admin/intelligence) only. This route accepts and can only ever
+ * change quickQuestions, so a customer's own settings page can't become a
+ * path to editing the rest of their dataset's config.
+ */
+router.put('/:datasetId/quick-questions', async (req, res) => {
+  try {
+    await requireEnabled(req.params.datasetId);
+    const { quickQuestions } = req.body;
+    if (!Array.isArray(quickQuestions)) {
+      const err = new Error('quickQuestions must be an array');
+      err.status = 400;
+      throw err;
+    }
+    const clean = quickQuestions
+      .filter(q => q && typeof q === 'object' && String(q.text || '').trim() && String(q.question || '').trim())
+      .map(q => ({ icon: String(q.icon || '').slice(0, 8), text: String(q.text).trim().slice(0, 60), question: String(q.question).trim().slice(0, 300) }));
+    const config = await intelligenceConfigService.setConfig(req.params.datasetId, { quickQuestions: clean });
+    res.json({ quickQuestions: config.quickQuestions });
+  } catch (err) {
+    handleError(res, err, 'quick-questions update');
   }
 });
 
