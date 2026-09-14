@@ -82,14 +82,14 @@ module.exports = {
       status: 'unreliable',
       detail: 'products.brand_id is 0 on the rows sampled; there is no brand name table',
     },
-    // Task #72, added 2026-09-14. NOT measured — no real delivery existed
-    // yet when this was written (see reload-superhist.js's header comment
-    // and column-aliases-superhist.js). Reut, the client's BI developer,
-    // said it accumulates one snapshot per day going forward, so on day one
-    // it is a single date and stays 'limited' until there is enough history
-    // for a real trend — update this entry (and ideally add a measured
-    // dataFacts line with the actual day count) once several days have
-    // loaded.
+    // Task #72, added 2026-09-14. Columns confirmed against the real file in
+    // GCS (see column-aliases-superhist.js), but it has not been through
+    // Phase 1/2 yet, so row counts below are still a projection, not a
+    // measurement. Reut, the client's BI developer, said it accumulates one
+    // snapshot per day going forward, so on day one it is a single date and
+    // stays 'limited' until there is enough history for a real trend —
+    // update this entry (and ideally add a measured dataFacts line with the
+    // actual day count) once several days have loaded.
     'inventory / stock history': {
       status: 'limited',
       detail: 'stock_history.stock_qty per item_id per snapshot_date — a NEW daily inventory snapshot, separate from products.stock_qty (which is only the CURRENT level). Accumulates one day at a time from whenever this file started arriving; there is no inventory data for any earlier date, so a question about stock on a past date, or an inventory trend, can only be answered from the days actually loaded so far',
