@@ -4305,6 +4305,21 @@ app.get('/api/admin/scheduler/schedules', async (req, res) => {
   }
 });
 
+// GET /api/admin/scheduler/last-runs — every schema's last completed
+// import->index cycle (start/end/duration), for the same reference tab —
+// so "is the schedule gap actually enough" is answerable at a glance instead
+// of opening each project's own Data Loader page one at a time.
+app.get('/api/admin/scheduler/last-runs', async (req, res) => {
+  try {
+    const dataReloadService = req.app.get('dataReloadService');
+    const lastRuns = await dataReloadService.getLastCycles();
+    res.json({ lastRuns });
+  } catch (err) {
+    console.error('❌ scheduler getLastCycles error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/admin/data-loader/:schema/schedule — this schema's import + drive-sync schedule
 app.get('/api/admin/data-loader/:schema/schedule', async (req, res) => {
   try {
