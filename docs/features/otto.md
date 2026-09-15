@@ -71,9 +71,17 @@ in `translations.ts` (both locales).
 - **Build** runs server-side; the page polls and registers a shell task, so
   the header pill shows the same progress and survives in-app navigation.
 - **Save to Apps** → confirm dialog ("visible to everyone in your
-  organization") → `status: active` → the same URL now renders the published
-  page. Published screens are frozen: no edit, no client delete (super-admin
-  removal only). Draft delete is hard.
+  organization") → `status: active` and a **publish snapshot**
+  (`published_state`, migration 055) → the same URL now renders the
+  published page.
+- **Edit after publish** (2026-09-15): the published page's **Edit** button
+  warns, then unpublishes (`status: ready`, snapshot kept) and the same URL
+  opens the builder. A message after a build starts a *revision round*: the
+  step strip resets to Chat and the badge to Draft while the built version
+  stays on the canvas. **Cancel changes** (shown instead of Delete for any
+  app that has ever been published) restores the snapshot and goes live
+  again. Republishing refreshes the snapshot — one-level undo, by design.
+  Hard delete refuses ever-published apps; their removal is super-admin only.
 
 ## Guard rails (structural, not policed)
 
@@ -90,7 +98,7 @@ in `translations.ts` (both locales).
 
 ## Verification
 
-- `node scripts/test-otto-unit.js` — offline battery (80 checks): grammar,
+- `node scripts/test-otto-unit.js` — offline battery (87 checks): grammar,
   brief/plan/spec validation, compiler SQL, probes, progress monotonicity,
   descriptor, shelf byte-identity.
 - `node scripts/test-otto-knowledge.js <ds> [--propose]` — audit + brief
@@ -105,9 +113,10 @@ in `translations.ts` (both locales).
   regardless.
 - KPI cards do not react to filter selections (deliberate: verified totals
   don't quietly shrink); a per-filter KPI needs an aggregate result set.
-- `chart` renders line/bar only; `exportCsv` and `stub` are the only
-  actions. Extending = one block/action type in `spec.contract.js` + one
-  renderer branch.
+- `chart` renders line/bar/pie (pie ≤ 10 slices; the plan's named type is
+  honored deterministically by `coerceChartVariants`); `exportCsv` and
+  `stub` are the only actions. Extending = one block/action type in
+  `spec.contract.js` + one renderer branch.
 - The shelf's `custom` section and gate mean Otto-off datasets are
   untouched, but `hasApps()` now also returns true when only `canCreate` is
   set — the Apps tab appears for a client with Otto and no other app module.

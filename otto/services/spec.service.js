@@ -144,7 +144,10 @@ function coerceChartVariants(spec, plan) {
   const chartBlocks = (spec.blocks || []).filter(b => b.kind === 'chart');
   const named = (plan.charts || [])
     .map(c => {
-      const text = `${c.label?.en || ''} ${c.detail?.en || ''}`.toLowerCase();
+      // LABEL only — the plan prompt puts the type there ("... (pie)"). The
+      // detail is prose where "one line per store" appears incidentally and
+      // must not flip a chart the user never asked to change.
+      const text = String(c.label?.en || '').toLowerCase();
       if (/\bpie\b|\bdonut\b/.test(text)) return 'pie';
       if (/\bbar\b/.test(text)) return 'bar';
       if (/\bline\b|\btrend\b/.test(text)) return 'line';

@@ -77,7 +77,7 @@ function replyLanguageOk(reply, language) {
  */
 async function brainstorm({ messages, currentPlan = null, brief, settings, language = null }) {
   const existing = currentPlan
-    ? `\n\nA screen already exists: "${currentPlan.title?.en}" — ${currentPlan.summary?.en || ''}.\nThe conversation is now about CHANGING that screen. Understand exactly what the user wants to add, remove or change. Do not plan a new screen from scratch.`
+    ? `\n\nAn app already exists: "${currentPlan.title?.en}" — ${currentPlan.summary?.en || ''}.\nThe conversation is now about CHANGING that app. Understand exactly what the user wants to add, remove or change. Do not plan a new app from scratch.`
     : '';
 
   const system = `You are Otto, the app builder of the Intelligence Center. You are talking to a retail employee who is not a developer. They want an operational app for their daily work: a table, filters, KPI cards, a chart. Your job in this phase is ONLY to understand exactly what they need — not to build. In everything you say to the user, call the thing you build an APP (never a "screen").

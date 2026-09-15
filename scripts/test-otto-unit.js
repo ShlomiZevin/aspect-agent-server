@@ -388,6 +388,59 @@ console.log('8. registry accepts the otto descriptor');
     otto.settingsSchema.find(f => f.key === 'buildModel')?.default === 'claude-opus-5');
 }
 
+// ── 8b · plan charts, pie variant, chart-type coercion ───────────────────
+
+console.log('8b. plan charts / pie / coercion');
+{
+  const { validatePlan, validateSpec } = require('../otto/services/spec.contract');
+  const { coerceChartVariants } = require('../otto/services/spec.service');
+
+  const planWithChart = {
+    title: { en: 'Pie test', he: 'בדיקה' }, summary: { en: 'x', he: 'x' }, icon: 'chart',
+    sources: [{ id: 'stock', label: { en: 'Stock', he: 'מלאי' } }],
+    columns: [{ field: 'store', label: { en: 'Store', he: 'סניף' } }],
+    charts: [{ label: { en: 'Stock by supplier (pie)', he: 'מלאי לפי ספק (עוגה)' }, detail: { en: 'one slice per supplier', he: 'פרוסה לספק' } }],
+  };
+  check('plan with charts validates', validatePlan(planWithChart, BRIEF).length === 0,
+    validatePlan(planWithChart, BRIEF).join('; '));
+  const badChart = clone(planWithChart);
+  delete badChart.charts[0].label.he;
+  check('chart label must be bilingual', validatePlan(badChart, BRIEF).some(e => e.includes('charts[0]')));
+
+  const pieSpec = clone(SPEC);
+  pieSpec.resultSets.push({
+    id: 'by_supplier', source: 'stock',
+    aggregate: { groupBy: ['supplier'], measures: [{ id: 'total_qty', agg: 'sum', field: 'qty', label: { en: 'T', he: 'ט' } }] },
+    orderBy: { field: 'total_qty', dir: 'desc' }, limit: 10,
+  });
+  pieSpec.blocks.push({ kind: 'chart', from: 'by_supplier', variant: 'pie', category: 'supplier', series: ['total_qty'], title: { en: 'Pie', he: 'עוגה' } });
+  check('pie is a valid chart variant', validateSpec(pieSpec, BRIEF).length === 0, validateSpec(pieSpec, BRIEF).join('; '));
+  const badVariant = clone(pieSpec);
+  badVariant.blocks[badVariant.blocks.length - 1].variant = 'donut';
+  check('unknown variant rejected', validateSpec(badVariant, BRIEF).some(e => e.includes('variant')));
+
+  const coerced = clone(pieSpec);
+  coerced.blocks[coerced.blocks.length - 1].variant = 'bar';
+  coerceChartVariants(coerced, planWithChart);
+  check('plan-named pie overrides a bar the model chose', coerced.blocks[coerced.blocks.length - 1].variant === 'pie');
+
+  // "one line per store" in the DETAIL must not flip a bar chart to line.
+  const barPlan = clone(planWithChart);
+  barPlan.charts[0].label = { en: 'Stock by supplier (bar)', he: 'x' };
+  barPlan.charts[0].detail = { en: 'one line per store, sorted by stock', he: 'x' };
+  const stays = clone(pieSpec);
+  stays.blocks[stays.blocks.length - 1].variant = 'bar';
+  coerceChartVariants(stays, barPlan);
+  check('detail prose never flips the variant', stays.blocks[stays.blocks.length - 1].variant === 'bar');
+
+  const untyped = clone(planWithChart);
+  untyped.charts[0].label = { en: 'Stock by supplier', he: 'x' };
+  const keep = clone(pieSpec);
+  keep.blocks[keep.blocks.length - 1].variant = 'line';
+  coerceChartVariants(keep, untyped);
+  check('untyped plan chart leaves the model choice alone', keep.blocks[keep.blocks.length - 1].variant === 'line');
+}
+
 // ── 9 · shelf shape guarantee ────────────────────────────────────────────
 
 console.log('9. Apps shelf byte-identical with Otto off');
