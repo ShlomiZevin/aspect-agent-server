@@ -20,6 +20,7 @@ const thestock = require('../../services/db.thestock');
 const zolstock = require('../../services/db.zolstock');
 const tevanaot = require('../../services/db.tevanaot');
 const superhist = require('../../services/db.superhist');
+const aspect = require('../../services/db.aspect');
 
 const REGISTRY = {
   hypertoy: {
@@ -225,6 +226,34 @@ const REGISTRY = {
       'Main risks for the next 6 months',
       'Which stores are declining fastest',
       'Which shoe models are overstocked',
+    ],
+  },
+  aspect: {
+    id: 'aspect',
+    schemaName: 'aspect',
+    getPool: aspect.getPool,
+    defaultMeta: {
+      name: 'TechZone',
+      description: 'AI-powered business intelligence for TechZone, an electronics retail chain — sales, attach rate, warranty, inventory.',
+      logoText: 'TZ',
+      gradientFrom: '#2563EB',
+      gradientTo: '#7C3AED',
+    },
+    defaultBrandLabel: 'TechZone, an electronics retail chain',
+    // Synthetic demo data (task #73) — the Aspect demo agent's Technology
+    // vertical only; there is no real client feed behind it. See
+    // scripts/seed-aspect-synthetic.js and agents/aspect/AGENT.md.
+    defaultDataModelDescription: 'a sales-line facts table joined to stores (28 physical branches plus one row with is_online=true representing the online channel — never count that row as a physical store) and products (SKU, category, brand, price, cost, plus is_accessory/is_warranty flags). Common measures: revenue and profit (price/cost are recorded ex-VAT on each line), units sold, attach rate (share of transactions, grouped by transaction_id, that include an accessory line alongside a non-accessory line), extended warranty attach rate (same idea, is_warranty line), online revenue share. Common dimensions: store, category, brand, date (day/week/month/quarter), transaction. IMPORTANT: this is a synthetic demo dataset for the Technology vertical only (TechZone) — it has no FMCG or Fashion data, no customer/loyalty dimension, and no sales-target table.',
+    defaultBootstrapPrompts: [
+      'How is revenue trending month over month, and what is driving it',
+      'Which product categories have the steepest margin decline recently',
+      'Which stores have the strongest accessory attach rate, and which lag behind',
+      'What is the online revenue share trend over the last several months',
+    ],
+    defaultExamplePrompts: [
+      'Main risks for the next few months',
+      'Which stores have the weakest accessory attach rate',
+      'Which product category has the steepest margin decline',
     ],
   },
 };
