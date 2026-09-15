@@ -72,7 +72,7 @@ THE SPEC FORMAT — return ONLY this JSON shape:
           "agg": "countWhere", "where": "shortfall > 0", "format": "int", "tone": "alarm" } ] },
     { "kind": "filterBar", "from": "rows", "filters": ["<text column ids>"] },
     { "kind": "dataTable", "from": "rows", "columns": ["<column ids in display order>"], "sortable": true, "pageSize": 50 },
-    { "kind": "chart", "from": "sets_may_differ", "variant": "bar", "category": "<column id>", "series": ["<numeric column ids>"], "title": {"en":"","he":""} },
+    { "kind": "chart", "from": "sets_may_differ", "variant": "<line|bar|pie — match what the plan's CHARTS entry names>", "category": "<column id>", "series": ["<numeric column ids>"], "title": {"en":"","he":""} },
     { "kind": "actionsBar", "actions": [
         { "id": "export", "type": "exportCsv", "from": "rows", "label": {"en":"","he":""} },
         { "id": "po", "type": "stub", "label": {"en":"","he":""}, "notice": {"en":"what will happen when this is wired","he":""} } ] }
@@ -82,12 +82,13 @@ THE SPEC FORMAT — return ONLY this JSON shape:
 Rules — all binding:
 1. Block kinds: ${BLOCK_KINDS.join(', ')}. Nothing else exists.
 2. A result set reads ONE source. For grouped data use "aggregate": { "groupBy": [...], "measures": [ { "id", "agg" (${MEASURE_AGGS.join('/')}), "field", "label", "format" } ] } INSTEAD of "select".
-3. KPI aggs: ${KPI_AGGS.join(', ')}. Chart variants: ${CHART_VARIANTS.join(', ')}.
+3. KPI aggs: ${KPI_AGGS.join(', ')}. Chart variants: ${CHART_VARIANTS.join(', ')}. A pie chart needs ONE series of non-negative values and at most 10 categories — give its result set an orderBy and a limit of 10 or less.
 4. Expressions ("expr", "where") are plain arithmetic and one comparison over column ids — no functions, no strings, no AND/OR.
 5. Every label carries BOTH "en" and "he" — the screen renders in either language.
 6. Never invent a number, a field or a caveat. Caveats come from the brief's list only.
 7. If the plan names a note that matches a brief caveat, open the screen with a noteLine block.
-8. Order blocks as the user will read them: noteLine, kpiCards, filterBar, dataTable/chart, actionsBar.`;
+8. Order blocks as the user will read them: noteLine, kpiCards, filterBar, dataTable/chart, actionsBar.
+9. When a CHARTS entry names its type — "(pie)", "(bar)", "(line)" — that IS the variant. Never substitute a different chart type for the one the user approved.`;
 
   const revision = previousSpec
     ? `\n\nTHE CURRENT SPEC (this is a revision — change ONLY what the plan's change list names, keep everything else identical):\n${JSON.stringify(previousSpec)}`
@@ -121,6 +122,7 @@ Rules — all binding:
       continue;
     }
 
+    coerceChartVariants(spec, plan);
     const errors = validateSpec(spec, brief);
     if (errors.length === 0) return spec;
     feedback = errors;
@@ -131,4 +133,27 @@ Rules — all binding:
   throw err;
 }
 
-module.exports = { buildSpec, planForPrompt };
+/**
+ * The user approved a chart TYPE in the plan ("...(pie)"), but the build
+ * model kept defaulting the variant to bar regardless — a plan-approved
+ * choice silently overridden, which the design forbids. When the plan names
+ * exactly one chart type and the spec has exactly one chart block, honor the
+ * plan deterministically instead of trusting the model to echo it.
+ */
+function coerceChartVariants(spec, plan) {
+  const chartBlocks = (spec.blocks || []).filter(b => b.kind === 'chart');
+  const named = (plan.charts || [])
+    .map(c => {
+      const text = `${c.label?.en || ''} ${c.detail?.en || ''}`.toLowerCase();
+      if (/\bpie\b|\bdonut\b/.test(text)) return 'pie';
+      if (/\bbar\b/.test(text)) return 'bar';
+      if (/\bline\b|\btrend\b/.test(text)) return 'line';
+      return null;
+    })
+    .filter(Boolean);
+  if (chartBlocks.length === 1 && named.length === 1 && chartBlocks[0].variant !== named[0]) {
+    chartBlocks[0].variant = named[0];
+  }
+}
+
+module.exports = { buildSpec, planForPrompt, coerceChartVariants };

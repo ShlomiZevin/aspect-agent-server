@@ -22,7 +22,7 @@ const ACTION_TYPES = ['exportCsv', 'stub'];
 const TONES = ['normal', 'alarm', 'warn', 'good'];
 const ICONS = ['grid', 'box', 'chart', 'truck', 'tag', 'alert', 'list', 'calendar'];
 const FORMATS = ['money', 'int', 'decimal', 'percent', 'date', 'text'];
-const CHART_VARIANTS = ['line', 'bar'];
+const CHART_VARIANTS = ['line', 'bar', 'pie'];
 
 const MAX_RESULT_SETS = 4;
 const MAX_BLOCKS = 10;
