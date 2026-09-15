@@ -21,6 +21,9 @@ node scripts/test-insights-unit.js          # fast, offline — 38 assertions, n
 node scripts/test-schema-contract.js        # every relation/column named in the rules must exist; exit 1 on violation
 node scripts/test-modules-unit.js           # module framework, offline — incl. the byte-identical no-module assertion
 node scripts/test-replenishment-unit.js     # engine/scope/groups, offline — run after touching modules/replenishment
+node scripts/test-otto-unit.js              # Otto custom screens, offline — grammar/validation/compiler/probes + shelf byte-identity
+node scripts/test-otto-knowledge.js <ds>    # Otto brief vs the LIVE schema (stale-names check); --propose runs the LLM pass
+node scripts/test-otto-e2e-dry.js <ds>      # full Otto pipeline on real data, ZERO writes (3 LLM calls, ~2 min)
 node scripts/test-insights-suite.js <ds> all # real investigations + auto-verify every figure (slow, ~1-2 min/case)
 node scripts/recheck-insights-suite.js      # re-verify captured results without re-running them
 node scripts/summarize-insights-suite.js    # render the report
@@ -52,6 +55,7 @@ Env: `.env` locally, `.env.production` in the container; `deploy.sh` picks `.env
 | `verification/` | Verification runs, one subfolder per thing checked. See the rule below. |
 | `hq/` | Lybi HQ — internal company brain. See `hq/README.md`. |
 | `modules/` | **Aspect Modules** — optional per-client capabilities, one folder + one descriptor each. Smart Replenishment is module #1. A dataset with no module row is byte-identical to before, and that is unit-asserted. See `docs/features/modules.md`. |
+| `otto/` | **Otto** — client-built custom screens (chat → plan → spec build, probe-verified; the model never writes SQL or HTML). Gated per client on the `otto` module; run `scripts/test-otto-unit.js` after touching it. See `docs/features/otto.md`. |
 | `db/schema/*.js` | Drizzle table definitions (`index.js`, `builder.js`). |
 | `db/migrations/` | ~46 `.sql` + ~43 `run-*.js` runners. |
 | `docs/` | See `docs/INDEX.md`. `docs/features/` documents shipped features; `docs/guides/` is how-to. |
