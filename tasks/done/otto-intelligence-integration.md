@@ -6,8 +6,10 @@
 > as M1–M5; copy them into `docs/design/otto-v2/` as step 0 of implementation
 > so the spec is reproducible after the Downloads folder is gone).
 >
-> Status: **awaiting approval — do not implement until the owner signs off.**
-> Open questions are in §12; everything else is proposed as decided.
+> Status: **DONE — shipped 2026-09-15 on `vl_us_otto_intelligence_integration`**
+> (both repos). §12 questions were all resolved before implementation;
+> §13 below is the execution log, including everything the owner's live
+> verification added on top of the original scope.
 >
 > Branches: `vl_us_otto_intelligence_integration` on both repos.
 
@@ -613,3 +615,92 @@ per client deliberately).
 
 **All §12 questions are resolved. The spec is fully approved for
 implementation as of 2026-09-14.**
+
+---
+
+## 13 · Execution log (2026-09-14 → 15) — what actually shipped
+
+Phases P0–P6 were executed as planned; this section records the deltas
+between the spec and what is on the branch, the bugs the real runs caught,
+and the follow-up scope the owner added during verification. Feature doc:
+`docs/features/otto.md`. Run records: `verification/otto-integration/`.
+
+### 13.1 Built as specified
+- Module #5 `otto` (descriptor at `modules/otto/module.js`, hooks in
+  `otto/services/brief.service.js`); knowledge pass = init pipeline;
+  `notificationEmails` made OPTIONAL after the first init attempt (delivery
+  is mocked — requiring an address blocked init for ceremony).
+- Spec contract + grammar + compiler + probes + polled build job + screens
+  store + doc store + gate middleware; migration 054 (three tables).
+- Client: three-panel `OttoBuilder`, block catalog `ScreenRenderer`
+  (kpiCards / filterBar / dataTable / chart via `InsightChart` / actionsBar /
+  noteLine), `CustomScreenPage`, `CustomScreenRouter`, `OttoFigure` (the
+  approved Orb, SVG+CSS), shelf tiles, `otto.*` i18n in both locales.
+- v1 removed on both repos (routes, service, demo dataset, theme, page,
+  14 image assets, root litter).
+
+### 13.2 What the real runs caught (each fixed on the branch)
+1. `information_schema.columns` omits materialized views → audit + verify
+   read `pg_attribute`.
+2. Hebrew token cost truncated JSON at three stages → budgets raised
+   (knowledge 16k, plan 5k, spec 12k); brief prompt budget 6k → 9k chars.
+3. First Send visually "reloaded the page": the URL swap /apps/new →
+   /apps/<id> remounted the builder mid-reply → router keeps the mounted
+   builder for a draft it created (`ownedId`); builder never reloads a
+   screen it holds.
+4. English question, Hebrew reply (the documented mirror failure) → the
+   client sends the shell's EN/HE toggle; prompt names the language; a
+   script-share check retries once if the model disobeys.
+5. A requested chart was silently dropped → plans carry `charts[]`.
+6. Opus defaulted chart variant to bar regardless of the approved plan →
+   `coerceChartVariants` honors the type the plan LABEL names.
+7. Breadcrumb blanked on the URL swap (parent reset effect beat the child's
+   report) → crumb keyed by appId, no reset effect.
+8. **Stale server processes survived restarts and served old code** —
+   several "still broken" sightings (Hebrew replies, bar-not-pie) were this.
+   Operational rule: after pulling, kill the port's actual PID, not just the
+   shell job.
+
+### 13.3 Scope the owner added during verification (all shipped)
+- Wording: screen → **app** everywhere (both locales, model replies too);
+  pill reads "Creating app"; drafts default to "New app".
+- Breadcrumbs: custom apps report their own leaf — builder "Draft - <name>",
+  published page the name.
+- Tap-to-answer **suggestion chips** under every Otto reply (0–3, interface
+  language); each press appends its own line to the composer, never sends.
+- Status checklist rows carry Otto's own one-line read of the request
+  instead of "Request understood"; the published page's button is "Edit".
+- **Edit-after-publish lifecycle** (migration 055, `published_state`):
+  publish snapshots; Edit warns then unpublishes (snapshot kept); a message
+  after a build starts a revision round (strip → Chat, badge → Draft, built
+  version stays); **Cancel changes** restores the snapshot and goes live
+  (shown instead of Delete for ever-published apps; hard delete refuses
+  them). One-level undo by design.
+- **Pie charts** (contract + `InsightChart` opening view + 10-slice cap;
+  PieView angle accumulation made render-safe).
+- Figure: motion runs regardless of the OS reduced-motion flag (owner
+  override, twice); enter/exit choreography; new `await` pose with a
+  pulsing ellipsis and a flow-progress ring that fills chat → plan →
+  approve → build.
+
+### 13.4 Deviations from the spec, stated honestly
+- ProcurementPage was NOT refactored onto the shared blocks (survey: table
+  is a hand-synced CSS grid with 15-prop domain rows — a redesign, not a
+  move). Catalog components are new, styled to match. Open follow-up.
+- Charts remain the hand-rolled `InsightChart` (no chart library exists in
+  the client); axis ticks/tooltips/label wrapping are a known weakness —
+  owner to decide between adopting a library, promoting BI's richer renderer,
+  or polishing in place.
+- `hasApps()` on both sides now also answers true for `canCreate` alone —
+  the Apps tab appears for a client with Otto and no other app module.
+
+### 13.5 Verification state at handoff
+- Offline: `test-otto-unit.js` 87/87; modules 52/52, insights 53/53,
+  replenishment 125/125 unchanged; client tsc clean, eslint at master
+  baseline, production build clean.
+- Real data (zolstock, via the live API on a branch server): knowledge pass
+  converges round 1 (8 matview sources, 34.6M-row facts refused); three
+  full builds passed probes; revision path added a chart over a new
+  GROUP BY set; publish → edit → rename → delete-refused → revert → data
+  served; pie request rendered pie. All test screens deleted.
+- Owner's own browser walk (EN + HE) in progress on the pushed branch.

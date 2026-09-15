@@ -5,7 +5,7 @@
  * `otto` live for that dataset). The old v1 surface — /chat, /plan, /build,
  * /build/stream, /data, /theme.css, /apps/* on the demo dataset with no
  * auth — is gone with the generated-HTML architecture it served. See
- * docs/features/otto.md and tasks/pending/otto-intelligence-integration.md.
+ * docs/features/otto.md and tasks/done/otto-intelligence-integration.md.
  *
  *   GET    /:datasetId/screens                 shelf payload (summaries)
  *   POST   /:datasetId/screens                 create a draft

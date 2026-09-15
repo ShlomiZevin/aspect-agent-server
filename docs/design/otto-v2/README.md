@@ -2,7 +2,7 @@
 
 Provided by the owner on 2026-09-14 (originally in
 `Downloads/Purchase feature redesign/Ottos`); referenced as M1–M5 by
-`tasks/pending/otto-intelligence-integration.md`.
+`tasks/done/otto-intelligence-integration.md`.
 
 | File | What it shows |
 |---|---|

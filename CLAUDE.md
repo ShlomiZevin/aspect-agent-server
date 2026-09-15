@@ -156,6 +156,29 @@ atomic execute claim, snapshot execution, ownership-guarded revert — is in
 
 **A module never fails the thing it plugs into.** `modules/` hooks sit inside the reload (phase 2, before the swap), the dispatcher (tool attach) and the Insights PLAN step. Every one of them is wrapped: a module that throws is marked `degraded` and the host path continues. The reload is the platform's most important scheduled job and every dataset depends on it — an optional module breaking it would be a catastrophic trade. Two switches gate everything (`enabled` AND `status='ready'`); `moduleService.getLiveModules()` is the single definition of "live", and no caller reads the two columns itself.
 
+**Otto (custom screens) — the model never writes SQL or UI code (2026-09).**
+`otto/` is registry module #5; enabling it per client IS the "can build apps"
+switch, and its init pipeline's LLM pass writes the *dataset brief* into the
+module binding — everything Otto can discuss, plan, compile or render is
+bounded by that brief. The build emits a validated JSON **spec** (block
+catalog + declared result sets); `compiler.service` writes the SQL
+(schema-qualified, quoted, LIMIT ≤ 2000, 15s `statement_timeout`, heavy
+relations only via views); `probes.service` gates every build ("Validating
+totals" — a failed probe feeds one more compose round, never ships). Rules
+learned on real runs, all unit-asserted in `scripts/test-otto-unit.js`:
+read schema catalogs from `pg_attribute`, never `information_schema.columns`
+(it omits matviews); Hebrew labels are token-expensive, so output budgets are
+generous (16k/5k/12k) and a truncation shows as "invalid JSON mid-array"; the
+reply language is ENFORCED — the client sends the shell's EN/HE toggle, and a
+script-share check retries once if the model disobeys; a plan-approved chart
+type is honored deterministically (`coerceChartVariants`, label only) because
+Opus defaulted to bar regardless; publish stores a snapshot
+(`published_state`) that Edit keeps and Cancel changes restores — one-level
+undo by design; hard delete refuses ever-published apps. Anything a client
+ever typed lives in the platform DB (`custom_modules`, `custom_module_data`),
+never a dataset schema. Full record: `docs/features/otto.md`,
+`tasks/done/otto-intelligence-integration.md` §13.
+
 **New features get their own folder with a router**, mounted with one line in `server.js` — the pattern `bi/`, `insights/`, `hq/`, `builder/` all follow. Do not add to the inline-route pile.
 
 **Config that admins edit** goes in the generic `provider_config` key/value table as one JSON blob, layered over code defaults — see `insights/services/intelligence-config.service.js` and `services/schedule-config.service.js`. No new table needed.
@@ -168,6 +191,7 @@ atomic execute claim, snapshot execution, ownership-guarded revert — is in
 
 ## Gotchas
 
+- **A stale `node server.js` can survive a restart and keep the port.** During the Otto verification (2026-09-15) several "still broken" sightings — Hebrew replies, bar charts instead of pie — were an old process serving pre-fix code while a new one had silently failed to bind. After pulling, kill the port's actual PID (`netstat -ano | findstr :3000` → `taskkill /PID … /F`), not just the shell job, before concluding a fix didn't work.
 - **Hebrew final-form letters break naive regexes.** Five letters change shape at word end (ן/נ, ם/מ, ץ/צ, ף/פ, ך/כ) — a pattern written with the regular form matches the plural but silently misses the singular: `/מכירות\s+סוכנ/` caught "סוכנים" and missed "סוכן" (final ן), so a customer's bare follow-up slipped the capability gate (2026-08-27). Write character classes (`סוכ[נן]`) for any Hebrew stem that can end a word.
 - `require('dns').setDefaultResultOrder('ipv4first')` at the top of `server.js` is load-bearing — googleapis hosts are unreachable over IPv6 from Cloud Run.
 - Anything written to a path inside the build context is baked into the Docker image by `COPY . .` and reset on every deploy. Persist state in Postgres or GCS, never a repo-relative file. (This cost live production insights once; see `docs/features/insights.md`.)

@@ -3,7 +3,7 @@
 Otto lets a client's own users build operational screens on their real data
 by talking: chat → structured plan → approval → build. Built 2026-09-14 on
 `vl_us_otto_intelligence_integration` (both repos); full decision record in
-`tasks/pending/otto-intelligence-integration.md`, mockups in
+`tasks/done/otto-intelligence-integration.md`, mockups in
 `docs/design/otto-v2/`.
 
 v1 (the standalone demo-data page that generated raw HTML into an iframe,

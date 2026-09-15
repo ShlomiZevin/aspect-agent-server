@@ -7,7 +7,7 @@
  *
  *   node scripts/test-otto-e2e-dry.js <dataset> ["<request>"]
  *
- * This is the P3 gate of tasks/pending/otto-intelligence-integration.md:
+ * This is the P3 gate of tasks/done/otto-intelligence-integration.md:
  * "a scripted end-to-end build of Safety Stock on zolstock passes probes" —
  * runnable before any module row exists, so testing costs three LLM calls
  * and no production state.

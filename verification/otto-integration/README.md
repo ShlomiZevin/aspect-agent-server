@@ -2,7 +2,7 @@
 
 What was checked when the feature was built (2026-09-14/15, branch
 `vl_us_otto_intelligence_integration` on both repos), and how to reproduce
-each check. Spec: `tasks/pending/otto-intelligence-integration.md`; feature
+each check. Spec: `tasks/done/otto-intelligence-integration.md`; feature
 doc: `docs/features/otto.md`.
 
 ## How to reproduce
@@ -82,3 +82,17 @@ npm run build
   without the owner's go-ahead.
 - Build-cost realities (Opus spec latency) beyond the dry run's single
   measurement.
+
+## Later manual runs (2026-09-15, live API against a branch server on :3010)
+
+| Run | Result |
+|---|---|
+| Full flow, 5 English turns with the shell language sent | every reply English (0 Hebrew chars); plan "Top Items by Revenue" with both manifest caveats; build 3/3 probes; KPIs ₪689.7M / ₪323.3M |
+| Revision path: "add a bar chart of revenue by category" | change plan carried `isChange` + the chart; rebuild kept everything and added a chart block over a new GROUP BY set (41 rows) |
+| Edit-after-publish lifecycle | publish → snapshot stored · Edit → `ready`, snapshot kept · rename mid-edit · DELETE refused (`deleted:false`) · Cancel changes → title restored, `active` · double revert refused · data served (4.59M units KPI) |
+| Suggestion chips | 2 tap-to-answer options matching the question asked; answering via the first drove `readyToPlan` |
+| Pie request ("pie chart of the top 10 items by revenue") | plan "(pie)"; built variant **pie**, result set limit 10 ordered by revenue — after a clean server restart (a stale process had served bar twice) |
+
+All test screens (created_by `claude-*`) deleted afterwards; the users' own screens untouched.
+
+**Operational lesson:** several "still broken" observations during the owner's verification (Hebrew replies, bar instead of pie) were a stale `node server.js` surviving restarts and serving pre-fix code. After pulling, kill the port's actual PID (`netstat -ano | findstr :3000` → `taskkill /PID … /F`), not just the shell job.
