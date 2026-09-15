@@ -25,14 +25,73 @@ function getXLSX() {
   return XLSX;
 }
 
+/** Swap every byte pair — turns UTF-16BE bytes into UTF-16LE for Buffer#toString. */
+function swapBytes(buf) {
+  const out = Buffer.allocUnsafe(buf.length - (buf.length % 2));
+  for (let i = 0; i + 1 < buf.length; i += 2) {
+    out[i] = buf[i + 1];
+    out[i + 1] = buf[i];
+  }
+  return out;
+}
+
+/**
+ * UTF-16 without a byte-order mark: valid UTF-8 text never contains zero
+ * bytes, while UTF-16 puts one in every ASCII code unit (space, digits,
+ * punctuation, newlines) — on the odd bytes for LE, the even bytes for BE.
+ */
+function sniffUtf16(buffer) {
+  const n = Math.min(buffer.length - (buffer.length % 2), 8192);
+  if (n < 4) return null;
+  let evenZeros = 0;
+  let oddZeros = 0;
+  for (let i = 0; i < n; i += 2) {
+    if (buffer[i] === 0) evenZeros++;
+    if (buffer[i + 1] === 0) oddZeros++;
+  }
+  const pairs = n / 2;
+  if (oddZeros >= 2 && oddZeros / pairs > 0.05 && evenZeros <= oddZeros / 10) return 'le';
+  if (evenZeros >= 2 && evenZeros / pairs > 0.05 && oddZeros <= evenZeros / 10) return 'be';
+  return null;
+}
+
+/**
+ * Decode a text file honouring its real encoding. Windows tools (Notepad's
+ * "Unicode", PowerShell redirects) save UTF-16; reading that as UTF-8 turned
+ * Hebrew into garbage and ASCII into NUL characters, which Postgres refuses to
+ * store (task #846).
+ */
+function decodeText(buffer) {
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return buffer.subarray(3).toString('utf-8');
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return buffer.subarray(2).toString('utf16le');
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    return swapBytes(buffer.subarray(2)).toString('utf16le');
+  }
+  const utf16 = sniffUtf16(buffer);
+  if (utf16 === 'le') return buffer.toString('utf16le');
+  if (utf16 === 'be') return swapBytes(buffer).toString('utf16le');
+  return buffer.toString('utf-8');
+}
+
 /**
  * Extract plain text from a file buffer based on its type.
+ * The result never contains NUL characters — Postgres rejects them in text
+ * and jsonb, and they carry no meaning in extracted text.
  * @param {Buffer} buffer - File content
  * @param {string} fileName - Original file name
  * @param {string} [mimeType] - MIME type
  * @returns {Promise<{ text: string, pages?: number }>}
  */
 async function extractText(buffer, fileName, mimeType) {
+  const out = await extractRawText(buffer, fileName, mimeType);
+  return { ...out, text: typeof out.text === 'string' ? out.text.replace(/\u0000/g, '') : out.text };
+}
+
+async function extractRawText(buffer, fileName, mimeType) {
   const ext = fileName.split('.').pop().toLowerCase();
 
   // PDF
@@ -66,16 +125,16 @@ async function extractText(buffer, fileName, mimeType) {
 
   // CSV
   if (ext === 'csv' || mimeType === 'text/csv') {
-    return { text: buffer.toString('utf-8') };
+    return { text: decodeText(buffer) };
   }
 
   // TXT / MD / JSON / other text formats
   if (['txt', 'md', 'json', 'html', 'xml', 'rtf', 'log'].includes(ext) || mimeType?.startsWith('text/')) {
-    return { text: buffer.toString('utf-8') };
+    return { text: decodeText(buffer) };
   }
 
   // Fallback: try to read as text
-  const text = buffer.toString('utf-8');
+  const text = decodeText(buffer);
   if (text && !text.includes('\ufffd')) {
     return { text };
   }
