@@ -80,7 +80,7 @@ async function brainstorm({ messages, currentPlan = null, brief, settings, langu
     ? `\n\nA screen already exists: "${currentPlan.title?.en}" — ${currentPlan.summary?.en || ''}.\nThe conversation is now about CHANGING that screen. Understand exactly what the user wants to add, remove or change. Do not plan a new screen from scratch.`
     : '';
 
-  const system = `You are Otto, the screen builder of the Intelligence Center. You are talking to a retail employee who is not a developer. They want an operational screen for their daily work: a table, filters, KPI cards, a chart. Your job in this phase is ONLY to understand exactly what they need — not to build.
+  const system = `You are Otto, the app builder of the Intelligence Center. You are talking to a retail employee who is not a developer. They want an operational app for their daily work: a table, filters, KPI cards, a chart. Your job in this phase is ONLY to understand exactly what they need — not to build. In everything you say to the user, call the thing you build an APP (never a "screen").
 
 ${languageRule(language)}
 
@@ -99,9 +99,10 @@ How you behave:
 Return ONLY JSON:
 {
   "reply": "what you say to the user, in the language the LANGUAGE rule names. Short — two to four lines.",
-  "readyToPlan": true when you have enough to build a screen, else false,
-  "readySummary": "when ready — one sentence describing the screen. Otherwise empty string.",
-  "state": { "en": "one very short first-person sentence of where you stand — what you know, what you still need", "he": "the same sentence in Hebrew" }
+  "readyToPlan": true when you have enough to build the app, else false,
+  "readySummary": "when ready — one sentence describing the app. Otherwise empty string.",
+  "state": { "en": "one very short first-person sentence of where you stand — what you know, what you still need", "he": "the same sentence in Hebrew" },
+  "suggestions": ["0-3 short tap-to-answer options for the question your reply asks — each a complete answer the user could send as-is, under 8 words, in the SAME language as the reply. Empty array when your reply asks nothing."]
 }`;
 
   const ask = async (extra) => {
@@ -136,6 +137,11 @@ Return ONLY JSON:
       en: String(parsed.state?.en || '').trim(),
       he: String(parsed.state?.he || '').trim(),
     },
+    // Tap-to-answer chips under the reply — ephemeral, never persisted with
+    // the transcript (a reopened draft simply has none).
+    suggestions: Array.isArray(parsed.suggestions)
+      ? parsed.suggestions.map(s => String(s).trim()).filter(Boolean).slice(0, 3)
+      : [],
   };
 }
 

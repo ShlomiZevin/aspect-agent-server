@@ -98,7 +98,24 @@ router.patch('/:datasetId/screens/:id', handle(async (req, res) => {
   const screen = await loadScreen(req);
   const body = req.body || {};
 
-  // Published screens are frozen (D4) — the only PATCH they accept is none.
+  // "Edit app": the ONE operation a published app accepts — it drops back
+  // to 'ready' (editable) while the publish snapshot stays for Cancel
+  // changes. Must run before the frozen guard below.
+  if (body.unpublish === true) {
+    const row = await screens.unpublish(req.params.datasetId, screen.id);
+    if (!row) { const e = new Error('Only a published app can be edited'); e.status = 409; throw e; }
+    return res.json({ screen: row });
+  }
+
+  // "Cancel changes": restore the last published state and go live again.
+  if (body.revert === true) {
+    const row = await screens.revert(req.params.datasetId, screen.id);
+    if (!row) { const e = new Error('There is no published state to return to'); e.status = 409; throw e; }
+    require('../services/data.service').invalidate(req.params.datasetId, screen.id);
+    return res.json({ screen: row });
+  }
+
+  // Published screens are frozen (D4) — everything else refuses.
   if (screen.status === 'active') {
     const err = new Error('A published screen cannot be edited');
     err.status = 409;

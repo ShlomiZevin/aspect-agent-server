@@ -628,6 +628,9 @@ const customModules = pgTable('custom_modules', {
   conversation: jsonb('conversation').default([]).notNull(),
   // draft | ready | active | archived (CHECKed in SQL)
   status:       text('status').default('draft').notNull(),
+  // The last PUBLISHED state {title, summary, icon, plan, screenSpec,
+  // conversation} — written at every publish, restored by Cancel changes.
+  publishedState: jsonb('published_state'),
   createdBy:    text('created_by'),
   createdAt:    timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt:    timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

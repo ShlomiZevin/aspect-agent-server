@@ -13,7 +13,7 @@
 const crypto = require('crypto');
 const db = require('../../services/db.pg');
 const { customModules } = require('../../db/schema');
-const { eq, and, desc, ne } = require('drizzle-orm');
+const { eq, and, desc, ne, isNull } = require('drizzle-orm');
 
 const MAX_CONVERSATION = 60; // turns kept on a draft — enough to reopen mid-thought
 
@@ -61,7 +61,7 @@ async function create(datasetId, { title, plan, conversation, createdBy }) {
   const [row] = await drizzle.insert(customModules).values({
     id: newId(),
     datasetId,
-    title: title || { en: 'New screen', he: 'מסך חדש' },
+    title: title || { en: 'New app', he: 'אפליקציה חדשה' },
     plan: plan || {},
     conversation: (conversation || []).slice(-MAX_CONVERSATION),
     status: 'draft',
@@ -109,21 +109,78 @@ async function storeSpec(datasetId, screenId, screenSpec) {
   return row || null;
 }
 
+/** What "Cancel changes" restores — captured at every publish. */
+function snapshotOf(row) {
+  return {
+    title: row.title,
+    summary: row.summary,
+    icon: row.icon,
+    plan: row.plan,
+    screenSpec: row.screenSpec,
+    conversation: row.conversation,
+  };
+}
+
 async function publish(datasetId, screenId) {
+  const current = await get(datasetId, screenId);
+  if (!current || current.status !== 'ready') return null;
   const drizzle = db.getDrizzle();
   const [row] = await drizzle.update(customModules)
-    .set({ status: 'active', updatedAt: new Date() })
+    .set({
+      status: 'active',
+      // Every publish refreshes the snapshot — this is the state Cancel
+      // changes returns to during the NEXT edit session.
+      publishedState: snapshotOf(current),
+      updatedAt: new Date(),
+    })
     .where(and(
       eq(customModules.datasetId, datasetId),
       eq(customModules.id, screenId),
-      eq(customModules.status, 'ready'),   // only a built, reviewable screen publishes
+      eq(customModules.status, 'ready'),   // only a built, reviewable app publishes
     ))
     .returning();
   return row || null;
 }
 
-/** Hard delete — drafts only. Published screens refuse (super-admin removal
- *  goes through a different path when it exists). */
+/** Edit a published app: back to 'ready' (editable), snapshot untouched. */
+async function unpublish(datasetId, screenId) {
+  const drizzle = db.getDrizzle();
+  const [row] = await drizzle.update(customModules)
+    .set({ status: 'ready', updatedAt: new Date() })
+    .where(and(
+      eq(customModules.datasetId, datasetId),
+      eq(customModules.id, screenId),
+      eq(customModules.status, 'active'),
+    ))
+    .returning();
+  return row || null;
+}
+
+/** Cancel changes: restore the last published state and go live again. */
+async function revert(datasetId, screenId) {
+  const current = await get(datasetId, screenId);
+  if (!current?.publishedState || current.status === 'active') return null;
+  const s = current.publishedState;
+  const drizzle = db.getDrizzle();
+  const [row] = await drizzle.update(customModules)
+    .set({
+      title: s.title,
+      summary: s.summary ?? null,
+      icon: s.icon ?? null,
+      plan: s.plan,
+      screenSpec: s.screenSpec ?? null,
+      conversation: s.conversation ?? [],
+      status: 'active',
+      updatedAt: new Date(),
+    })
+    .where(and(eq(customModules.datasetId, datasetId), eq(customModules.id, screenId)))
+    .returning();
+  return row || null;
+}
+
+/** Hard delete — never-published drafts only. An app that has EVER been
+ *  published keeps Cancel changes as its escape hatch; deleting it is
+ *  super-admin territory. */
 async function removeDraft(datasetId, screenId) {
   const drizzle = db.getDrizzle();
   const rows = await drizzle.delete(customModules)
@@ -131,9 +188,10 @@ async function removeDraft(datasetId, screenId) {
       eq(customModules.datasetId, datasetId),
       eq(customModules.id, screenId),
       ne(customModules.status, 'active'),
+      isNull(customModules.publishedState),
     ))
     .returning({ id: customModules.id });
   return rows.length > 0;
 }
 
-module.exports = { list, get, create, update, storeSpec, publish, removeDraft, toSummary };
+module.exports = { list, get, create, update, storeSpec, publish, unpublish, revert, removeDraft, toSummary };
