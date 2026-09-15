@@ -51,11 +51,15 @@ module.exports = {
       },
     },
     {
-      key: 'notificationEmails', type: 'emails', required: true,
+      // OPTIONAL, unlike replenishment's: Otto only emits init events and
+      // delivery is still the mocked outbox — requiring an address for a
+      // channel that sends nothing blocked the first init attempt for
+      // ceremony (owner, 2026-09-15).
+      key: 'notificationEmails', type: 'emails', required: false,
       label: { en: 'Notification emails', he: 'כתובות למשלוח התראות' },
       hint: {
-        en: 'Who is told when setup fails.',
-        he: 'למי נודע כשההתקנה נכשלת.',
+        en: 'Who is told when setup fails. Optional while delivery is mocked.',
+        he: 'למי נודע כשההתקנה נכשלת. אופציונלי כל עוד המשלוח מדומה.',
       },
     },
     {
