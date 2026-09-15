@@ -12,12 +12,28 @@
 const llmService = require('../../services/llm');
 const { renderBriefForPrompt } = require('./brief.service');
 
-/** Shared by all three calls — the exact mirror wording, no more. */
+/** Fallback when no interface language is given — the exact mirror wording, no more. */
 const LANGUAGE_RULE =
   'LANGUAGE: mirror the prompt — answer in the language the user\'s message was written in. '
   + 'Hebrew IN THE DATA (store names, product names, suppliers) says nothing about the requested '
   + 'language; database values are never translated. Fields where this contract asks for BOTH '
   + '"en" and "he" always carry both, regardless of the conversation language.';
+
+/**
+ * The rule that actually ships: the shell has an explicit EN/HE toggle, so
+ * the client SENDS the interface language and Otto follows it — same
+ * practice as Data Chat and reports, and deterministic where mirroring is
+ * not (the first live test wrote English and got Hebrew back: the brief's
+ * Hebrew labels pulled the reply language, the exact documented failure).
+ */
+function languageRule(language) {
+  if (language !== 'en' && language !== 'he') return LANGUAGE_RULE;
+  const name = language === 'he' ? 'HEBREW' : 'ENGLISH';
+  return `LANGUAGE: the user's interface is set to ${name} — write "reply" in ${name}, `
+    + 'whatever language the user typed and whatever language appears in the data. '
+    + 'Database values (store names, product names, suppliers) are never translated. '
+    + 'Fields where this contract asks for BOTH "en" and "he" always carry both.';
+}
 
 function extractJSON(text) {
   const raw = String(text || '').trim();
@@ -40,14 +56,14 @@ function transcriptOf(messages) {
  * One turn. `currentPlan` flips the footing from "design a screen" to
  * "change the screen you already have" — same composer, different contract.
  */
-async function brainstorm({ messages, currentPlan = null, brief, settings }) {
+async function brainstorm({ messages, currentPlan = null, brief, settings, language = null }) {
   const existing = currentPlan
     ? `\n\nA screen already exists: "${currentPlan.title?.en}" — ${currentPlan.summary?.en || ''}.\nThe conversation is now about CHANGING that screen. Understand exactly what the user wants to add, remove or change. Do not plan a new screen from scratch.`
     : '';
 
   const system = `You are Otto, the screen builder of the Intelligence Center. You are talking to a retail employee who is not a developer. They want an operational screen for their daily work: a table, filters, KPI cards, a chart. Your job in this phase is ONLY to understand exactly what they need — not to build.
 
-${LANGUAGE_RULE}
+${languageRule(language)}
 
 You know this organization's data — and ONLY this. Anything not listed here does not exist for you:
 
@@ -63,7 +79,7 @@ How you behave:
 
 Return ONLY JSON:
 {
-  "reply": "what you say to the user. Mirror their language. Short — two to four lines.",
+  "reply": "what you say to the user, in the language the LANGUAGE rule names. Short — two to four lines.",
   "readyToPlan": true when you have enough to build a screen, else false,
   "readySummary": "when ready — one sentence describing the screen. Otherwise empty string.",
   "state": { "en": "one very short first-person sentence of where you stand — what you know, what you still need", "he": "the same sentence in Hebrew" }
@@ -88,4 +104,4 @@ Return ONLY JSON:
   };
 }
 
-module.exports = { brainstorm, LANGUAGE_RULE, extractJSON, transcriptOf };
+module.exports = { brainstorm, LANGUAGE_RULE, languageRule, extractJSON, transcriptOf };
