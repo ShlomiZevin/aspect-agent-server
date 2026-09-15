@@ -52,6 +52,25 @@ function transcriptOf(messages) {
     .join('\n\n');
 }
 
+/** Share of Hebrew letters among the non-space characters — the
+ *  deterministic check behind the language enforcement below. */
+function hebrewShare(text) {
+  const t = String(text || '').replace(/\s/g, '');
+  if (!t) return 0;
+  return ((t.match(/[\u0590-\u05FF]/g) || []).length) / t.length;
+}
+
+/** Did the reply actually come back in the requested language? Thresholds
+ *  are loose on purpose: an English reply legitimately quotes Hebrew store
+ *  names, and a Hebrew reply quotes column words — only a WRONG-language
+ *  reply moves the share decisively. */
+function replyLanguageOk(reply, language) {
+  const share = hebrewShare(reply);
+  if (language === 'en') return share < 0.4;
+  if (language === 'he') return share > 0.25;
+  return true;
+}
+
 /**
  * One turn. `currentPlan` flips the footing from "design a screen" to
  * "change the screen you already have" — same composer, different contract.
@@ -85,14 +104,30 @@ Return ONLY JSON:
   "state": { "en": "one very short first-person sentence of where you stand — what you know, what you still need", "he": "the same sentence in Hebrew" }
 }`;
 
-  const response = await llmService.sendOneShot(system, transcriptOf(messages), {
-    model: settings?.talkModel || 'claude-sonnet-5',
-    maxTokens: 900,
-    jsonOutput: true,
-    context: 'otto_brainstorm',
-  });
+  const ask = async (extra) => {
+    const response = await llmService.sendOneShot(system, transcriptOf(messages) + (extra || ''), {
+      model: settings?.talkModel || 'claude-sonnet-5',
+      maxTokens: 900,
+      jsonOutput: true,
+      context: 'otto_brainstorm',
+    });
+    return extractJSON(response);
+  };
 
-  const parsed = extractJSON(response);
+  let parsed = await ask();
+
+  // ENFORCED, not requested: the first live test asked in English and got a
+  // Hebrew reply despite the rule — the brief's Hebrew labels pull the
+  // model. A wrong-script reply gets exactly one corrective retry; the
+  // check is a character count, so it cannot be argued with.
+  if (!replyLanguageOk(parsed.reply, language)) {
+    const name = language === 'he' ? 'HEBREW' : 'ENGLISH';
+    console.warn(`[otto] brainstorm reply came back in the wrong language (wanted ${name}) — retrying once`);
+    parsed = await ask(`\n\n[CORRECTION: your previous reply was written in the wrong language. `
+      + `The interface is set to ${name} — rewrite the SAME reply in ${name}. `
+      + `Keep database values (store/product/supplier names) exactly as they are.]`);
+  }
+
   return {
     reply: String(parsed.reply || '').trim(),
     readyToPlan: Boolean(parsed.readyToPlan),
