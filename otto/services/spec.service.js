@@ -28,6 +28,7 @@ function planForPrompt(plan) {
   ];
   if (plan.filters?.length) parts.push(`FILTERS: ${plan.filters.map(f => `${f.field} ("${line(f.label)}")`).join(', ')}`);
   if (plan.kpis?.length) parts.push(`KPIS:\n${plan.kpis.map(k => `  - ${line(k.label)} — ${k.detail ? line(k.detail) : ''}`).join('\n')}`);
+  if (plan.charts?.length) parts.push(`CHARTS (each becomes a chart block):\n${plan.charts.map(c => `  - ${line(c.label)} — ${c.detail ? line(c.detail) : ''}`).join('\n')}`);
   if (plan.actions?.length) parts.push(`ACTIONS: ${plan.actions.map(a => line(a.label)).join(', ')}`);
   if (plan.notes?.length) parts.push(`NOTES:\n${plan.notes.map(n => `  - ${line(n)}`).join('\n')}`);
   if (plan.isChange && plan.changes?.length) {

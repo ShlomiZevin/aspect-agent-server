@@ -41,12 +41,13 @@ Return ONLY JSON:
   "columns": [ { "field": "brief field id", "label": { "en": "", "he": "" } } ],
   "filters": [ { "field": "brief field id (a text field worth filtering by)", "label": { "en": "", "he": "" } } ],
   "kpis":    [ { "label": { "en": "", "he": "" }, "detail": { "en": "how it is computed, one phrase", "he": "" } } ],
+  "charts":  [ { "label": { "en": "e.g. Revenue by category (bar)", "he": "" }, "detail": { "en": "what it plots and how it is grouped", "he": "" } } ],
   "actions": [ { "label": { "en": "", "he": "" } } ],
   "notes":   [ { "en": "a data limitation the user must know (from the caveats)", "he": "" } ],
   "changes": [ { "en": "only for a change plan: what changes, one line each", "he": "" } ]
 }
 
-3 to 8 columns, 0 to 3 filters, 0 to 4 KPIs, 0 to 2 actions. If something in the plan leans on data that does not exist above — do not silently drop it; put it in notes.`;
+3 to 8 columns, 0 to 3 filters, 0 to 4 KPIs, 0 to 2 charts, 0 to 2 actions. EVERYTHING the user asked for appears somewhere in the plan — a request you cannot honor goes in notes, never silently dropped.`;
 
   const transcript = transcriptOf(messages);
   const model = settings?.talkModel || 'claude-sonnet-5';
@@ -79,6 +80,7 @@ Return ONLY JSON:
       if (!Array.isArray(plan.kpis)) plan.kpis = [];
       if (!Array.isArray(plan.actions)) plan.actions = [];
       if (!Array.isArray(plan.filters)) plan.filters = [];
+      if (!Array.isArray(plan.charts)) plan.charts = [];
       return plan;
     }
     lastErrors = errors;

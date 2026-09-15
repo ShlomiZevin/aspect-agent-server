@@ -75,6 +75,10 @@ function validatePlan(plan, brief) {
   refList('filters', plan.filters);
   refList('kpis', plan.kpis, { requireField: false });
   refList('actions', plan.actions, { requireField: false });
+  // Charts got their own plan section after the first manual E2E: a chart
+  // asked for in chat had nowhere to live in the plan and was silently
+  // dropped from the built screen — the exact omission the design forbids.
+  refList('charts', plan.charts, { requireField: false });
 
   if (plan.notes !== undefined) {
     if (!Array.isArray(plan.notes)) errors.push('notes must be an array');
