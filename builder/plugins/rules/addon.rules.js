@@ -12,7 +12,9 @@
  *   clear      → per-field delete across all domains (builderMemory
  *                honors { clear:true, domain:'*' } writes).
  *   transition → same contract as the Transition Router: returns a
- *                `transition` the engine acts on (fires same turn).
+ *                `transition` the engine acts on. `onMatch` (continue |
+ *                break) and `fireImmediately` mean exactly what they
+ *                mean on the router (task #833).
  *   stop       → breakChain: skip the rest of this turn's chain,
  *                including the Talker.
  *   reply      → fixed assistant text. Pair with stop so the Talker
@@ -210,20 +212,22 @@ async function run(ctx) {
         overlay[action.field] = undefined;
         done.push({ type: 'clear', field: action.field });
       } else if (action.type === 'transition' && action.target) {
+        const fireImmediately = action.fireImmediately !== false;
+        // Rest of THIS crew's chain — the same two knobs as the Transition
+        // Router (task #833). Unset keeps the legacy pairing (task #828): a
+        // fire-immediately transition ends this chain so the origin Talker
+        // and the target crew's Talker don't both answer; a deferred one
+        // lets the chain finish and the new crew takes the next user turn.
+        const onMatch = action.onMatch === 'continue' || action.onMatch === 'break'
+          ? action.onMatch
+          : (fireImmediately ? 'break' : 'continue');
         transition = {
           to: action.target,
           reason: `Rule ${num} matched`,
-          fireImmediately: action.fireImmediately !== false,
+          fireImmediately,
         };
-        // A fire-immediately transition ends THIS crew's chain (task
-        // #828): the target crew's chain answers this turn instead.
-        // Without this the origin Talker AND the cascade Talker both
-        // spoke, and the user got two concatenated replies. Deferred
-        // transitions (fireImmediately: false) let the current chain
-        // finish — the new crew takes over on the next user turn,
-        // exactly like the Transition Router's semantics.
-        if (transition.fireImmediately) breakChain = true;
-        done.push({ type: 'transition', target: action.target });
+        if (onMatch === 'break') breakChain = true;
+        done.push({ type: 'transition', target: action.target, onMatch, fireImmediately });
       } else if (action.type === 'stop') {
         breakChain = true;
         done.push({ type: 'stop' });
@@ -263,7 +267,9 @@ function describeAction(a) {
   if (a.type === 'set' && a.formula) return `set ${a.field} = ${JSON.stringify(a.value)}  [${a.formula}]`;
   if (a.type === 'set') return `set ${a.field} = ${JSON.stringify(a.value)}`;
   if (a.type === 'clear') return `clear ${a.field}`;
-  if (a.type === 'transition') return `transition → ${a.target}`;
+  if (a.type === 'transition') {
+    return `transition → ${a.target} (${a.onMatch === 'continue' ? 'continue chain' : 'stop chain'}, ${a.fireImmediately === false ? 'next message' : 'this turn'})`;
+  }
   if (a.type === 'stop') return 'stop chain';
   if (a.type === 'reply') return 'fixed reply';
   return a.type;

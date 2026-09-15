@@ -196,6 +196,11 @@ function checkAddonInstance(addon, path, errors, knownFieldIds) {
               pushErr(errors, `${ap}.formula`, 'required expression when valueMode is "formula"');
             if (a.type === 'transition' && (typeof a.target !== 'string' || !a.target))
               pushErr(errors, `${ap}.target`, 'required crew id for transition');
+            // Same two knobs as the Transition Router (task #833) — both optional.
+            if (a.type === 'transition' && a.onMatch !== undefined && a.onMatch !== 'continue' && a.onMatch !== 'break')
+              pushErr(errors, `${ap}.onMatch`, 'must be "continue" or "break" (or omitted)');
+            if (a.type === 'transition' && a.fireImmediately !== undefined && typeof a.fireImmediately !== 'boolean')
+              pushErr(errors, `${ap}.fireImmediately`, 'must be true or false (or omitted)');
             if (a.type === 'reply' && (typeof a.text !== 'string' || !a.text.trim()))
               pushErr(errors, `${ap}.text`, 'required text for reply');
           });

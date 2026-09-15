@@ -938,9 +938,20 @@ export interface RuleAction {
    *  `formula`, kept for configs saved before it existed. */
   compute?: RuleComputeDef;
   /** transition: target crew id (must be an EXISTING crew on this
-   *  agent). Fires same turn unless `fireImmediately` is false. */
+   *  agent). */
   target?: ID;
+  /** transition: whether the new crew's chain answers in the SAME turn.
+   *  Absent = true. Same meaning as `TransitionRouterConfig.fireImmediately`. */
   fireImmediately?: boolean;
+  /** transition: what happens to the rest of THIS crew's chain — and to
+   *  the later rules in this addon — after the transition fires:
+   *  `'break'` skips them, `'continue'` lets them run. Same meaning as
+   *  `TransitionRouterConfig.onMatch` (task #833).
+   *  Absent = the legacy pairing: `'break'` when `fireImmediately` is on,
+   *  `'continue'` when it is off — so the origin and target Talkers don't
+   *  both answer (task #828). `'continue'` together with `fireImmediately`
+   *  runs BOTH crews' chains this turn, so two Talkers may answer. */
+  onMatch?: 'continue' | 'break';
   /** reply: fixed assistant text sent to the user verbatim. Pair with
    *  a `stop` action in the same rule so the Talker doesn't also
    *  answer (last assistant text wins otherwise). */

@@ -215,6 +215,16 @@
       "example": "Allowed values: {{enum_values}}"
     }
   ],
+  "notes": [
+    {
+      "token": "{{# NOTE }}",
+      "category": "note",
+      "trigger": "/",
+      "render": "Builder-only note, stripped before the prompt reaches the model (runtime and prompt preview), so it never changes behaviour. A space after # is required; the note may span lines but must not contain }} or other tokens. {{#name}} WITHOUT a space is a Rules-formula parameter, not a note.",
+      "example": "{{# keep the greeting short — tested on 12/9 }}",
+      "picker_label": "Note"
+    }
+  ],
   "idioms": [
     {
       "name": "Inline value in prose",

@@ -518,6 +518,19 @@ function resolveDcInline(rawName, { enums, fieldsForDc, fieldValueOf, onDcResolv
  * @param {object}   [args.brain] — needed by snippet filter evaluation
  * @returns {string} the assembled prompt
  */
+// `{{# note }}` — builder-only comments inside prompts, never sent to the
+// LLM (task #831). The space after `#` is required: `{{#name}}` without a
+// space is a parameter reference in rule formulas, never a comment. The
+// body may span lines but can't contain `}}`, so a comment never swallows
+// a real token that follows it. Whole-line comments take their newline.
+const COMMENT_LINE_RE = /^[ \t]*\{\{#\s(?:(?!\}\})[\s\S])*\}\}[ \t]*(?:\r?\n|$)/gm;
+const COMMENT_RE = /\{\{#\s(?:(?!\}\})[\s\S])*\}\}/g;
+
+function stripPromptComments(text) {
+  if (typeof text !== 'string' || !text.includes('{{#')) return text;
+  return text.replace(COMMENT_LINE_RE, '').replace(COMMENT_RE, '');
+}
+
 function assemblePrompt({
   instance,
   personas,
@@ -551,6 +564,9 @@ function assemblePrompt({
   // `config.prompt` (e.g. `@customer_age` → `{{field:customer_age}}`)
   // becomes visible to the passes below.
   template = template.split('{{prompt}}').join(cfg.prompt || '');
+  // Comments go before any token resolves, so a token inside a comment
+  // never runs (no DC/enum resolution events for commented-out text).
+  template = stripPromptComments(template);
 
   // Snippet pass FIRST — see resolveSnippetInline. Embedded tokens
   // inside snippet content resolve on the regular passes below.
@@ -560,6 +576,7 @@ function assemblePrompt({
     name => resolveSnippetInline(name, snippets, brain),
     /* inline */ true,
   );
+  template = stripPromptComments(template); // comments written inside snippet bodies
 
   // Named-persona tokens `{{persona:NAME}}` — resolve to that persona's
   // raw content (composable inline). Unknown name → left in place so the
@@ -783,7 +800,10 @@ function assemblePrompt({
     /* inline */ true,
   );
 
+  // Last sweep: comments inside inlined persona / enum / DC / tag bodies.
+  template = stripPromptComments(template);
+
   return template.replace(/\n{3,}/g, '\n\n').trim();
 }
 
-module.exports = { assemblePrompt };
+module.exports = { assemblePrompt, stripPromptComments };
