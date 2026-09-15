@@ -35,9 +35,15 @@ class SQLGeneratorService {
     console.log(`   Question: "${question}"`);
 
     try {
-      // Step 1: Get schema description (cached in zer4u DB)
+      // Step 1: Get schema description (cached in zer4u DB). schemaPool used
+      // to be passed as null here, which falls back to schema-descriptor's
+      // OWN default pool (the platform DB) — silently generating "0 tables
+      // found" for any schema whose cache hadn't already been warmed by the
+      // reload pipeline (data-reload.service.js passes the right pool at
+      // swap time). Every customer schema lives in the same zer4u_db
+      // database regardless of dataset, so the same pool is correct here too.
       const schemaDescription = options.schemaDescription ||
-        await schemaDescriptorService.getDescription(schemaName, false, null, getZer4uPool());
+        await schemaDescriptorService.getDescription(schemaName, false, getZer4uPool(), getZer4uPool());
 
       // Step 2: Fetch slow query anti-patterns (cached)
       const antiPatterns = await this._getAntiPatterns(schemaName);

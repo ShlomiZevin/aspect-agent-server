@@ -34,6 +34,16 @@
  *      The manifest refuses category questions rather than answering them from
  *      3% of the catalogue.
  *
+ * STOCK HISTORY (task #72, added 2026-09-14). Reut (the client's BI
+ * developer) added a StockHistory file to the Drive folder that snapshots
+ * inventory daily; her own words: "Right now it only has today's data, but
+ * it will accumulate the inventory every day." So on the FIRST load, the
+ * table holds exactly one day — do not treat that as evidence of a trend,
+ * and do not silently drop it as noise the way a one-row table normally
+ * would be. Confirmed 2026-09-14 against the real delivery (5 columns; the
+ * date column is `תאריך מלאי`, not the bare `תאריך` every other table uses —
+ * see column-aliases-superhist.js).
+ *
  * Files delivered but NOT loaded, by omission from FILE_TO_TABLE:
  *   Dim / Dim1 / Measure / Measures — QlikSense's own dashboard metadata (the
  *   field picker's sort order and a table of formula strings). They describe
@@ -41,6 +51,17 @@
  *   `$Measure` and `Measure Formula` in front of an LLM as if they were data.
  *   OrderLine_Last_7_Days_1 — a single column of order ids, a Qlik helper for a
  *   dashboard filter. The same rows are already in OrderLine.
+ *   Calander_Compare — a second calendar of "<field> השוואה" (comparison)
+ *   columns, a Qlik year-over-year helper. Not loaded for the same reason the
+ *   manifest refuses YoY questions outright: the delivery is 42 days, there
+ *   is no prior year to compare against yet.
+ *   link_product_category — item_id -> category_id, arrived alongside
+ *   StockHistory on 2026-09-14, UNRELATED to task #72. Not loaded yet: it may
+ *   be exactly the product-to-category mapping the manifest's roadmap note
+ *   asks for (the existing products.category_id is populated on only 3.3% of
+ *   products), but that needs checking against the categories table's 110
+ *   marketing-collection rows before trusting it as a real taxonomy — see
+ *   Kosta/Shlomi before wiring it in.
  */
 
 require('dotenv').config();
@@ -68,6 +89,9 @@ const FILE_TO_TABLE = {
   'Productsהסופר החברתי_CSV.csv': 'products',
   'Categoriesהסופר החברתי_CSV.csv': 'categories',
   'Calanderהסופר החברתי_CSV.csv': 'calendar',
+  // Task #72 — daily inventory snapshot, see the header comment. Confirmed
+  // against the real GCS delivery 2026-09-14.
+  'StockHistoryהסופר החברתי_CSV.csv': 'stock_history',
   // Deliberately NOT loaded (see header): Dim, Dim1, Measure, Measures,
   // OrderLine_Last_7_Days_1.
 };
@@ -103,7 +127,7 @@ async function buildSchemasFromHeaders(gcsFiles, emitLog) {
         const def = lookup.get(csvName);
         if (def && !claimed.has(def.dbName)) {
           claimed.add(def.dbName);
-          return { csvName, name: def.dbName, type: def.type };
+          return { csvName, name: def.dbName, type: def.type, format: def.format };
         }
         if (def) {
           emitLog('scanning', `${file.basename}: '${csvName}' also maps to ${def.dbName}, which is already taken — keeping the raw header`);

@@ -493,6 +493,78 @@ class DataReloadService {
     }
   }
 
+  /**
+   * Last full import->index cycle for every schema, in one query — for the
+   * Settings > Schedule reference tab (task: "show the last import+index
+   * duration so I can see whether the schedule gaps are enough").
+   *
+   * Pairs the latest completed IMPORT row (total_files IS NOT NULL) with the
+   * latest completed INDEX-ish row (total_files IS NULL, triggered_by
+   * matching the same pattern getIndexingStuck() already uses) that started
+   * at or after that import completed. If indexing hasn't caught up to the
+   * latest import yet, the join finds nothing for that schema — same
+   * "stuck" signal getIndexingStuck() would give, surfaced here as
+   * `indexCompletedAt: null` rather than a stale duration from an older
+   * cycle.
+   *
+   * @returns {Promise<Record<string, { importStartedAt, importCompletedAt, importStatus, totalRows, indexStartedAt, indexCompletedAt, indexStatus, durationMs }|null>>}
+   */
+  async getLastCycles() {
+    try {
+      const result = await this.db.query(`
+        WITH last_import AS (
+          SELECT DISTINCT ON (schema_name)
+            schema_name, started_at, completed_at, status, total_rows
+          FROM public.data_reload_runs
+          WHERE status IN ('completed', 'failed') AND total_files IS NOT NULL
+          ORDER BY schema_name, started_at DESC
+        ),
+        last_index AS (
+          SELECT DISTINCT ON (schema_name)
+            schema_name, started_at, completed_at, status
+          FROM public.data_reload_runs
+          WHERE status IN ('completed', 'failed')
+            AND total_files IS NULL
+            AND (triggered_by LIKE '%-index' OR triggered_by LIKE '%-full-index' OR triggered_by IN ('index', 'cron'))
+          ORDER BY schema_name, started_at DESC
+        )
+        SELECT
+          li.schema_name,
+          li.started_at   AS import_started_at,
+          li.completed_at AS import_completed_at,
+          li.status       AS import_status,
+          li.total_rows,
+          lx.started_at   AS index_started_at,
+          lx.completed_at AS index_completed_at,
+          lx.status       AS index_status
+        FROM last_import li
+        LEFT JOIN last_index lx
+          ON lx.schema_name = li.schema_name AND lx.started_at >= li.completed_at
+      `);
+
+      const bySchema = {};
+      for (const row of result.rows) {
+        const hasFullCycle = row.import_status === 'completed' && row.index_status === 'completed' && row.index_completed_at;
+        bySchema[row.schema_name] = {
+          importStartedAt: row.import_started_at,
+          importCompletedAt: row.import_completed_at,
+          importStatus: row.import_status,
+          totalRows: row.total_rows,
+          indexStartedAt: row.index_started_at || null,
+          indexCompletedAt: row.index_completed_at || null,
+          indexStatus: row.index_status || null,
+          durationMs: hasFullCycle
+            ? new Date(row.index_completed_at).getTime() - new Date(row.import_started_at).getTime()
+            : null,
+        };
+      }
+      return bySchema;
+    } catch (err) {
+      console.warn(`[DataReloadService] getLastCycles failed: ${err.message}`);
+      return {};
+    }
+  }
+
   /** Returns last N runs from DB for a schema. */
   async getHistory(schemaName, limit = 20) {
     const result = await this.db.query(

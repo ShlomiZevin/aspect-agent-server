@@ -130,6 +130,29 @@ const COLUMN_MAP = {
     { csvName: 'קטגוריה',            dbName: 'category_name',       type: 'TEXT'    },
   ],
 
+  // ── stock history (task #72) ───────────────────────────────────────────────
+  // Confirmed against the real file 2026-09-14 (5 columns, not the 3 first
+  // guessed). The date column is `תאריך מלאי` ("stock date"), not the bare
+  // `תאריך` every other table uses — do not merge the two. status_id and
+  // subtract_stock reuse the exact dbNames products already uses for the
+  // same concepts, so a query can join the two tables' columns directly.
+  //
+  // format: 'MDY' — the FIRST load failed with "date/time field value out
+  // of range: 2026-14-09": this file's date column is MM/DD/YYYY ("09/14/2026"
+  // for 2026-09-14), unlike every other superhist file (and every other
+  // client), which export DD/MM/YYYY. Every other row this session shared
+  // the same date, so this is not a one-row fluke — it only surfaced as an
+  // error because day 14 happens to exceed 12 and become an invalid month;
+  // a day <= 12 would have silently loaded the wrong date instead. See
+  // load-csv-to-db-copy.js's convertField for the format-aware parsing.
+  stock_history: [
+    { csvName: 'מזהה פריט',          dbName: 'item_id',             type: 'TEXT'    },
+    { csvName: 'מלאי',               dbName: 'stock_qty',           type: 'NUMERIC' },
+    { csvName: 'מזהה סטטוס מלאי',    dbName: 'stock_status_id',     type: 'TEXT'    },
+    { csvName: 'הפחת ממלאי',         dbName: 'subtract_stock',      type: 'TEXT'    },
+    { csvName: 'תאריך מלאי',         dbName: 'snapshot_date',       type: 'DATE', format: 'MDY' },
+  ],
+
   // ── calendar ────────────────────────────────────────────────────────────────
   // Covers all of 2026 while the orders cover 42 days. Joining to it without a
   // date filter invents 323 empty days; every trend must be driven by the
@@ -154,7 +177,11 @@ const COLUMN_MAP = {
 function buildColumnLookup(tableName) {
   const map = new Map();
   for (const col of COLUMN_MAP[tableName] || []) {
-    map.set(col.csvName, { type: col.type, dbName: col.dbName });
+    // format carries through only for the rare column whose source disagrees
+    // with the DD/MM/YYYY every other date column uses (see stock_history
+    // above) — undefined for everything else, which keeps the existing
+    // default in convertField().
+    map.set(col.csvName, { type: col.type, dbName: col.dbName, format: col.format });
   }
   return map;
 }
