@@ -108,7 +108,13 @@ Return ONLY JSON:
   const ask = async (extra) => {
     const response = await llmService.sendOneShot(system, transcriptOf(messages) + (extra || ''), {
       model: settings?.talkModel || 'claude-sonnet-5',
-      maxTokens: 900,
+      // 900 was too tight and truncated the JSON mid-value, which surfaced to
+      // the user as "it failed" on the turn right after a build (task #80,
+      // seen twice in the logs on 2026-09-16). A revision turn is the
+      // expensive one: the reply is longer, `state` is bilingual, and Hebrew
+      // runs about a token per character. Same lesson as the plan/spec/brief
+      // budgets — headroom is cheap, a truncated turn costs the whole round.
+      maxTokens: 2000,
       jsonOutput: true,
       context: 'otto_brainstorm',
       // Per-customer key (task #61 / provider-config.service.js) when one is
@@ -119,7 +125,19 @@ Return ONLY JSON:
     return extractJSON(response);
   };
 
-  let parsed = await ask();
+  // Unusable JSON gets exactly one corrective retry, the same shape the
+  // language check below uses. Without it a single malformed turn reached
+  // the user as a dead end mid-conversation, and the only way out was to
+  // close the builder and reopen the draft (task #80).
+  let parsed;
+  try {
+    parsed = await ask();
+  } catch (err) {
+    console.warn(`[otto] brainstorm returned unusable JSON (${err.message}) — retrying once`);
+    parsed = await ask('\n\n[CORRECTION: your previous response was not valid JSON. '
+      + 'Return ONLY the JSON object of the contract above, complete and parseable, '
+      + 'with no prose around it. Keep "reply" short so the object finishes.]');
+  }
 
   // ENFORCED, not requested: the first live test asked in English and got a
   // Hebrew reply despite the rule — the brief's Hebrew labels pull the

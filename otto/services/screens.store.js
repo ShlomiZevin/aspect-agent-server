@@ -13,7 +13,7 @@
 const crypto = require('crypto');
 const db = require('../../services/db.pg');
 const { customModules } = require('../../db/schema');
-const { eq, and, desc, ne, isNull } = require('drizzle-orm');
+const { eq, and, asc, desc, ne, isNull } = require('drizzle-orm');
 
 const MAX_CONVERSATION = 60; // turns kept on a draft — enough to reopen mid-thought
 
@@ -43,7 +43,11 @@ async function list(datasetId, { includeArchived = false } = {}) {
     .where(includeArchived
       ? eq(customModules.datasetId, datasetId)
       : and(eq(customModules.datasetId, datasetId), ne(customModules.status, 'archived')))
-    .orderBy(desc(customModules.updatedAt));
+    // OLDEST first, so the newest app ends up adjacent to the "+ New app"
+    // tile that follows the list on the shelf (task #81). Newest-first put
+    // it at the far end instead, which reads backwards in both directions
+    // but was noticed in Hebrew, where the shelf starts on the right.
+    .orderBy(asc(customModules.updatedAt));
   return rows.map(toSummary);
 }
 
