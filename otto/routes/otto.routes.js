@@ -1,35 +1,36 @@
 /**
- * Otto's HTTP surface — the screen builder.
+ * Otto's HTTP surface — v2, the Intelligence-integrated screen builder.
  *
- * NOTE ON `datasets/` AND `theme/`. These two folders were `otto/data/`, which
- * .gitignore's unanchored `data/` rule silently excluded at every depth — the
- * files were never committed, and a fresh clone crashed at boot on the require
- * below. Do not create a `data/` folder under a feature here.
+ * Every route is scoped by dataset and sits behind the Otto gate (module
+ * `otto` live for that dataset). The old v1 surface — /chat, /plan, /build,
+ * /build/stream, /data, /theme.css, /apps/* on the demo dataset with no
+ * auth — is gone with the generated-HTML architecture it served. See
+ * docs/features/otto.md and tasks/done/otto-intelligence-integration.md.
  *
- *   POST   /api/otto/chat            one brainstorm turn
- *   POST   /api/otto/plan            consolidate the conversation into a plan
- *   POST   /api/otto/build           build (or revise) the screen from an approved plan
- *   POST   /api/otto/build/stream    the same build, reporting progress as it writes
- *   GET    /api/otto/data            the demo dataset the built screen runs on
- *   GET    /api/otto/apps/:datasetId       saved screens, summaries only
- *   GET    /api/otto/apps/:datasetId/:id   one saved screen, with its HTML
- *   POST   /api/otto/apps/:datasetId       save (or replace) a screen
- *   DELETE /api/otto/apps/:datasetId/:id   delete one
- *
- * THE CONVERSATION IS NOT STREAMED, THE BUILD IS. Otto's turns are two to four
- * lines — a stream buys nothing there. The build is a minute of silence, and
- * silence is where a user decides the thing has hung. /build/stream reports
- * the phase Otto has actually reached, read off the HTML as it arrives; the
- * plain /build stays as the fallback for a client that cannot read a stream.
+ *   GET    /:datasetId/screens                 shelf payload (summaries)
+ *   POST   /:datasetId/screens                 create a draft
+ *   GET    /:datasetId/screens/:id             full record for the builder
+ *   PATCH  /:datasetId/screens/:id             title/icon/publish
+ *   DELETE /:datasetId/screens/:id             hard-delete a draft
+ *   POST   /:datasetId/screens/:id/chat        one brainstorm turn (persists transcript)
+ *   POST   /:datasetId/screens/:id/plan        draft / revise the structured plan
+ *   POST   /:datasetId/screens/:id/build       start the build job → {buildId}
+ *   GET    /:datasetId/screens/:id/build/latest    polled progress
+ *   GET    /:datasetId/builds/running          all running builds (the nav pill)
+ *   GET    /:datasetId/screens/:id/data        executed result sets (cached)
+ *   GET/PUT /:datasetId/store/:moduleId/:collection[/:docId]   the doc store
  */
+
 const express = require('express');
 
-const fs = require('fs');
-const path = require('path');
-
-const otto = require('../services/otto.service');
-const store = require('../services/otto-apps.store');
-const { demoData, SCHEMA } = require('../datasets/demo-dataset');
+const { requireOttoLive } = require('../services/gate.middleware');
+const screens = require('../services/screens.store');
+const brainstormService = require('../services/brainstorm.service');
+const planService = require('../services/plan.service');
+const buildJob = require('../services/build-job.service');
+const dataService = require('../services/data.service');
+const docStore = require('../services/doc-store.service');
+const { ICONS, isBilingual } = require('../services/spec.contract');
 
 const router = express.Router();
 
@@ -38,17 +39,20 @@ function handle(fn) {
     try {
       await fn(req, res);
     } catch (err) {
-      console.error(`[otto] ${req.method} ${req.originalUrl}:`, err);
-      res.status(500).json({ error: err.message || 'הבקשה נכשלה' });
+      const status = err.status || 500;
+      if (status >= 500) console.error(`[otto] ${req.method} ${req.originalUrl}:`, err);
+      res.status(status).json({ error: err.message || 'Request failed', detail: err.planErrors || err.specErrors || undefined });
     }
   };
 }
 
-/** Both conversational endpoints take the same transcript, so validate it once. */
-function readMessages(req) {
-  const messages = Array.isArray(req.body?.messages) ? req.body.messages : null;
+router.use('/:datasetId', requireOttoLive());
+
+/** Both conversational endpoints take the same transcript shape. */
+function readMessages(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : null;
   if (!messages || messages.length === 0) {
-    const err = new Error('חסרה שיחה');
+    const err = new Error('messages are required');
     err.status = 400;
     throw err;
   }
@@ -58,120 +62,214 @@ function readMessages(req) {
     .slice(-24); // enough context to stay coherent, short enough to stay cheap
 }
 
-router.post('/chat', handle(async (req, res) => {
-  // `currentPlan` is what turns this from "design a screen" into "change the
-  // screen you already have". The client sends it once a build exists.
-  res.json(await otto.brainstorm({ messages: readMessages(req), currentPlan: req.body?.currentPlan || null }));
-}));
-
-router.post('/plan', handle(async (req, res) => {
-  res.json({ plan: await otto.plan({ messages: readMessages(req), currentPlan: req.body?.currentPlan || null }) });
-}));
-
-router.post('/build', handle(async (req, res) => {
-  const { plan, previousHtml } = req.body || {};
-  if (!plan || !plan.title || !Array.isArray(plan.parts)) {
-    return res.status(400).json({ error: 'חסרה תוכנית מאושרת' });
+async function loadScreen(req) {
+  const screen = await screens.get(req.params.datasetId, req.params.id);
+  if (!screen) {
+    const err = new Error('Screen not found');
+    err.status = 404;
+    throw err;
   }
-  // The rows travel back WITH the screen. They used to come from a separate
-  // GET /data fired once on mount, which meant a single failed request left
-  // the preview permanently blank while the build itself succeeded — a silent
-  // failure with nothing on screen to explain it. The builder already has the
-  // data in hand; sending it is free and removes the dependency entirely.
-  const { html, data } = await otto.build({ plan, previousHtml: previousHtml || null });
-  res.json({ html, data, model: otto.BUILD_MODEL });
-}));
+  return screen;
+}
 
-/**
- * Progress as Server-Sent Events over POST — so the request can carry a plan
- * and a previous screen, which EventSource cannot do. Every event is one line
- * of JSON: {type:'progress'|'done'|'error', ...}.
- */
-router.post('/build/stream', handle(async (req, res) => {
-  const { plan, previousHtml } = req.body || {};
-  if (!plan || !plan.title || !Array.isArray(plan.parts)) {
-    return res.status(400).json({ error: 'חסרה תוכנית מאושרת' });
-  }
+// ── screens ──────────────────────────────────────────────────────────────
 
-  res.set({
-    'Content-Type': 'text/event-stream; charset=utf-8',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
-    // Cloud Run and nginx will otherwise sit on the response until it ends,
-    // which turns a stream back into the one long silent call it replaced.
-    'X-Accel-Buffering': 'no',
+router.get('/:datasetId/screens', handle(async (req, res) => {
+  res.json({
+    screens: await screens.list(req.params.datasetId),
+    starters: req.otto.brief.starters || [],
   });
-  res.flushHeaders?.();
+}));
 
-  const send = (event) => res.write(`data: ${JSON.stringify(event)}
+router.post('/:datasetId/screens', handle(async (req, res) => {
+  const { title, createdBy } = req.body || {};
+  const screen = await screens.create(req.params.datasetId, {
+    title: isBilingual(title) ? title : undefined,
+    createdBy: typeof createdBy === 'string' ? createdBy.slice(0, 80) : null,
+  });
+  res.json({ screen });
+}));
 
-`);
+router.get('/:datasetId/screens/:id', handle(async (req, res) => {
+  res.json({ screen: await loadScreen(req) });
+}));
 
-  // The client going away mid-build is normal (a reload, a closed tab). Stop
-  // writing rather than letting the generator run on into a dead socket.
-  //
-  // WATCH THE RESPONSE, NOT THE REQUEST. `req` emits 'close' as soon as its
-  // body has been read — which bodyParser already did before this handler ran —
-  // so a req-based guard is true from the first line and silently suppresses
-  // every write, leaving the client hanging on an empty 200 forever.
-  let aborted = false;
-  res.on('close', () => { aborted = true; });
+router.patch('/:datasetId/screens/:id', handle(async (req, res) => {
+  const screen = await loadScreen(req);
+  const body = req.body || {};
 
-  try {
-    for await (const event of otto.buildStream({ plan, previousHtml: previousHtml || null })) {
-      if (aborted) return;
-      send(event.type === 'done' ? { ...event, model: otto.BUILD_MODEL } : event);
-    }
-  } catch (err) {
-    console.error('[otto] build stream failed:', err);
-    if (!aborted) send({ type: 'error', error: err.message || 'הבנייה נכשלה' });
-  } finally {
-    if (!aborted) res.end();
+  // "Edit app": the ONE operation a published app accepts — it drops back
+  // to 'ready' (editable) while the publish snapshot stays for Cancel
+  // changes. Must run before the frozen guard below.
+  if (body.unpublish === true) {
+    const row = await screens.unpublish(req.params.datasetId, screen.id);
+    if (!row) { const e = new Error('Only a published app can be edited'); e.status = 409; throw e; }
+    return res.json({ screen: row });
   }
+
+  // "Cancel changes": restore the last published state and go live again.
+  if (body.revert === true) {
+    const row = await screens.revert(req.params.datasetId, screen.id);
+    if (!row) { const e = new Error('There is no published state to return to'); e.status = 409; throw e; }
+    require('../services/data.service').invalidate(req.params.datasetId, screen.id);
+    return res.json({ screen: row });
+  }
+
+  // Published screens are frozen (D4) — everything else refuses.
+  if (screen.status === 'active') {
+    const err = new Error('A published screen cannot be edited');
+    err.status = 409;
+    throw err;
+  }
+
+  if (body.publish === true) {
+    const published = await screens.publish(req.params.datasetId, screen.id);
+    if (!published) {
+      const err = new Error('Only a built screen (status ready) can be saved to Apps');
+      err.status = 409;
+      throw err;
+    }
+    return res.json({ screen: published });
+  }
+
+  const patch = {};
+  if (body.title !== undefined) {
+    if (!isBilingual(body.title)) { const e = new Error('title must carry en and he'); e.status = 400; throw e; }
+    patch.title = { en: String(body.title.en).slice(0, 60), he: String(body.title.he).slice(0, 60) };
+  }
+  if (body.icon !== undefined) {
+    if (!ICONS.includes(body.icon)) { const e = new Error('unknown icon'); e.status = 400; throw e; }
+    patch.icon = body.icon;
+  }
+  res.json({ screen: await screens.update(req.params.datasetId, screen.id, patch) });
 }));
 
-// The built screen runs on this. Served separately so the HTML the model wrote
-// stays free of a 4,000-row literal — it references DATA, the page injects it.
-router.get('/data', handle(async (_req, res) => {
-  res.json({ schema: SCHEMA, data: demoData() });
+router.delete('/:datasetId/screens/:id', handle(async (req, res) => {
+  const screen = await loadScreen(req);
+  if (screen.status === 'active') {
+    // Q4: published removal is super-admin tooling, not a client button.
+    const err = new Error('A published screen cannot be deleted from here');
+    err.status = 403;
+    throw err;
+  }
+  const ok = await screens.removeDraft(req.params.datasetId, screen.id);
+  res.json({ deleted: ok });
 }));
 
-/**
- * The stylesheet every generated app inherits.
- *
- * Read from disk per request rather than bundled into the page: it is 700
- * lines, it belongs to the design system rather than to React, and serving it
- * means an app saved today picks up a theme fix tomorrow without being rebuilt.
- * Cached for an hour — it changes about as often as the brand does.
- */
-const THEME_PATH = path.join(__dirname, '..', 'theme', 'app-theme.css');
-router.get('/theme.css', handle(async (_req, res) => {
-  res.type('text/css').set('Cache-Control', 'public, max-age=3600');
-  res.send(fs.readFileSync(THEME_PATH, 'utf8'));
+// ── the three calls ──────────────────────────────────────────────────────
+
+router.post('/:datasetId/screens/:id/chat', handle(async (req, res) => {
+  const screen = await loadScreen(req);
+  if (screen.status === 'active') { const e = new Error('A published screen cannot be edited'); e.status = 409; throw e; }
+  const messages = readMessages(req.body);
+
+  const result = await brainstormService.brainstorm({
+    messages,
+    currentPlan: screen.screenSpec ? screen.plan : null,
+    brief: req.otto.brief,
+    settings: req.otto.settings,
+    // The shell's EN/HE toggle, sent by the client — Otto converses in the
+    // interface language, like Data Chat and reports (owner, 2026-09-15).
+    language: ['en', 'he'].includes(req.body?.language) ? req.body.language : null,
+  });
+
+  // The transcript is part of the draft — a reopened draft continues
+  // mid-thought instead of starting over.
+  await screens.update(req.params.datasetId, screen.id, {
+    conversation: [...messages, { role: 'assistant', content: result.reply }],
+  });
+
+  res.json(result);
 }));
 
-// --- saved screens ----------------------------------------------------------
+router.post('/:datasetId/screens/:id/plan', handle(async (req, res) => {
+  const screen = await loadScreen(req);
+  if (screen.status === 'active') { const e = new Error('A published screen cannot be edited'); e.status = 409; throw e; }
+  const messages = readMessages(req.body);
 
-router.get('/apps/:datasetId', handle(async (req, res) => {
-  res.json({ apps: await store.list(req.params.datasetId) });
+  const plan = await planService.draftPlan({
+    messages,
+    currentPlan: screen.screenSpec ? screen.plan : null,
+    brief: req.otto.brief,
+    settings: req.otto.settings,
+  });
+
+  // The plan is stored on the draft immediately — it is the approval gate's
+  // artifact, and the title it carries becomes the draft's identity.
+  await screens.update(req.params.datasetId, screen.id, {
+    plan,
+    title: plan.title,
+    summary: plan.summary,
+    icon: plan.icon || screen.icon || 'grid',
+  });
+
+  res.json({ plan });
 }));
 
-router.get('/apps/:datasetId/:id', handle(async (req, res) => {
-  const app = await store.get(req.params.datasetId, req.params.id);
-  if (!app) return res.status(404).json({ error: 'המסך לא נמצא' });
-  res.json({ app });
+router.post('/:datasetId/screens/:id/build', handle(async (req, res) => {
+  const screen = await loadScreen(req);
+  if (screen.status === 'active') { const e = new Error('A published screen cannot be rebuilt'); e.status = 409; throw e; }
+  if (!screen.plan || !screen.plan.title) {
+    const err = new Error('The screen has no approved plan yet');
+    err.status = 400;
+    throw err;
+  }
+
+  const result = await buildJob.startBuild({
+    datasetId: req.params.datasetId,
+    screen,
+    brief: req.otto.brief,
+    settings: req.otto.settings,
+    pool: req.otto.pool,
+    schemaName: req.otto.schemaName,
+  });
+  if (result.error) return res.status(result.code || 500).json({ error: result.error });
+  res.json(result);
 }));
 
-router.post('/apps/:datasetId', handle(async (req, res) => {
-  const { id, title, summary, icon, plan, html, createdBy } = req.body || {};
-  if (!title || !html) return res.status(400).json({ error: 'חסרים שם המסך או תוכן' });
-  res.json({ app: await store.save(req.params.datasetId, { id, title, summary, icon, plan, html, createdBy }) });
+router.get('/:datasetId/screens/:id/build/latest', handle(async (req, res) => {
+  const run = await buildJob.latestBuild(req.params.datasetId, req.params.id);
+  res.json({ build: buildJob.describeProgress(run) });
 }));
 
-router.delete('/apps/:datasetId/:id', handle(async (req, res) => {
-  const ok = await store.remove(req.params.datasetId, req.params.id);
-  if (!ok) return res.status(404).json({ error: 'המסך לא נמצא' });
-  res.json({ deleted: true });
+router.get('/:datasetId/builds/running', handle(async (req, res) => {
+  const runs = await buildJob.runningBuilds(req.params.datasetId);
+  res.json({ builds: runs.map(r => buildJob.describeProgress(r)) });
+}));
+
+// ── screen data (the ONLY data path a rendered screen has) ───────────────
+
+router.get('/:datasetId/screens/:id/data', handle(async (req, res) => {
+  const screen = await loadScreen(req);
+  if (!screen.screenSpec) {
+    const err = new Error('The screen has not been built yet');
+    err.status = 409;
+    throw err;
+  }
+  res.json(await dataService.getScreenData(screen, req.otto.brief, {
+    pool: req.otto.pool,
+    schemaName: req.otto.schemaName,
+    datasetId: req.params.datasetId,
+  }));
+}));
+
+// ── the generic doc store (no v1 block writes here yet) ──────────────────
+
+router.get('/:datasetId/store/:moduleId/:collection', handle(async (req, res) => {
+  const { datasetId, moduleId, collection } = req.params;
+  res.json({ docs: await docStore.listDocs(datasetId, moduleId, collection) });
+}));
+
+router.get('/:datasetId/store/:moduleId/:collection/:docId', handle(async (req, res) => {
+  const { datasetId, moduleId, collection, docId } = req.params;
+  const doc = await docStore.getDoc(datasetId, moduleId, collection, docId);
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+  res.json({ doc });
+}));
+
+router.put('/:datasetId/store/:moduleId/:collection/:docId', handle(async (req, res) => {
+  const { datasetId, moduleId, collection, docId } = req.params;
+  res.json({ doc: await docStore.putDoc(datasetId, moduleId, collection, docId, req.body?.data) });
 }));
 
 module.exports = router;

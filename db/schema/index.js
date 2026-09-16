@@ -613,6 +613,55 @@ const moduleBulkOperations = pgTable('module_bulk_operations', {
   revertedAt: timestamp('reverted_at', { withTimezone: true }),
 });
 
+// Otto custom screens — client-built screens as a product surface. The plan
+// + spec are the durable source of truth (a screen can always be rebuilt
+// from them); rendered data is a cache and never stored. See
+// db/migrations/054_custom_screens.sql and docs/features/otto.md.
+const customModules = pgTable('custom_modules', {
+  id:           text('id').primaryKey(),          // 'cm-<random>'
+  datasetId:    text('dataset_id').notNull(),
+  title:        jsonb('title').notNull(),         // {en, he}
+  summary:      jsonb('summary'),                 // {en, he}
+  icon:         text('icon'),
+  plan:         jsonb('plan').notNull(),          // approved structured plan (SOURCE)
+  screenSpec:   jsonb('screen_spec'),             // validated block spec (ARTIFACT)
+  conversation: jsonb('conversation').default([]).notNull(),
+  // draft | ready | active | archived (CHECKed in SQL)
+  status:       text('status').default('draft').notNull(),
+  // The last PUBLISHED state {title, summary, icon, plan, screenSpec,
+  // conversation} — written at every publish, restored by Cancel changes.
+  publishedState: jsonb('published_state'),
+  createdBy:    text('created_by'),
+  createdAt:    timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt:    timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Build runs for one screen — polled by the builder page and the nav pill.
+// Same discipline as module_runs: stage strings, computed percentage, and a
+// partial unique index (in SQL) enforcing one running build per screen.
+const customModuleBuilds = pgTable('custom_module_builds', {
+  id:            bigserial('id', { mode: 'number' }).primaryKey(),
+  datasetId:     text('dataset_id').notNull(),
+  screenId:      text('screen_id').notNull(),
+  status:        text('status').default('running').notNull(), // running | succeeded | failed
+  progressStage: text('progress_stage'),
+  report:        jsonb('report'),
+  startedAt:     timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  finishedAt:    timestamp('finished_at', { withTimezone: true }),
+});
+
+// Generic document store for data users type INTO custom screens. Composite
+// PK in SQL; no serial id on purpose — the (dataset, module, collection, doc)
+// path IS the identity, and the server enforces the scope on every call.
+const customModuleData = pgTable('custom_module_data', {
+  datasetId:  text('dataset_id').notNull(),
+  moduleId:   text('module_id').notNull(),
+  collection: text('collection').notNull(),
+  docId:      text('doc_id').notNull(),
+  data:       jsonb('data').notNull(),
+  updatedAt:  timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 // V2 builder tables (the JSON-based plugin builder; coexists with
 // the legacy `agents` / `crewMembers` above which power v1 chats).
 const builderSchema = require('./builder');
@@ -676,6 +725,10 @@ module.exports = {
   replenishmentItemVerdicts,
   moduleChatProposals,
   moduleBulkOperations,
+  // Otto custom screens
+  customModules,
+  customModuleBuilds,
+  customModuleData,
   // V2 builder
   builderProjects:        builderSchema.builderProjects,
   builderWorkspaces:      builderSchema.builderWorkspaces,

@@ -109,13 +109,45 @@ async function listApps(datasetId, opts = {}) {
     // is going; never installable, because installing one would install nothing.
     planned: registry.PLANNED_APPS.map(a => ({ id: a.id, name: a.name, icon: a.icon, blurb: a.blurb })),
     researchedAt: stamp,
+    ...(await customSection(datasetId, live)),
   };
 }
 
-/** Does the nav show an Apps item for this dataset? */
+/**
+ * The custom-screens section of the shelf — Otto's contribution.
+ *
+ * `canCreate` (the "New screen — with OTTO" tile) means module `otto` is
+ * live; `custom` is this dataset's screens, drafts included (everyone in
+ * the client sees everyone's drafts — decision D5).
+ *
+ * SHAPE GUARANTEE: with Otto off AND zero screens, the keys are OMITTED
+ * entirely, so the payload is byte-identical to the pre-Otto shelf — the
+ * module framework's no-module guarantee extended to this feature, and
+ * asserted in scripts/test-otto-unit.js. Failures degrade to "no custom
+ * section", never to a broken shelf.
+ */
+async function customSection(datasetId, live) {
+  try {
+    const canCreate = (live || []).some(x => x.descriptor.id === 'otto');
+    let custom = [];
+    try {
+      custom = await require('../../otto/services/screens.store').list(datasetId);
+    } catch (err) {
+      console.warn(`[apps] custom screens for ${datasetId} unavailable: ${err.message}`);
+    }
+    if (!canCreate && custom.length === 0) return {};
+    return { canCreate, custom };
+  } catch (err) {
+    console.warn(`[apps] custom section for ${datasetId} failed: ${err.message}`);
+    return {};
+  }
+}
+
+/** Does the nav show an Apps item for this dataset? Live app-group modules,
+ *  the ability to create screens, or existing screens — any of them. */
 async function hasApps(datasetId) {
-  const { apps } = await listApps(datasetId);
-  return apps.length > 0;
+  const shelf = await listApps(datasetId);
+  return shelf.apps.length > 0 || shelf.canCreate === true || (shelf.custom?.length ?? 0) > 0;
 }
 
 module.exports = { listApps, hasApps };
