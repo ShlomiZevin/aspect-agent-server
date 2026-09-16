@@ -230,7 +230,7 @@ function looksTruncated(rawResponse) {
  * wait before either path starts.
  * @returns {Promise<boolean>}
  */
-async function classifyPrompt(prompt) {
+async function classifyPrompt(prompt, datasetId = null) {
   const systemPrompt = `You classify a business-intelligence request as either a SIMPLE lookup or a real INVESTIGATION.
 
 SIMPLE: a single fact or a straightforward list, answerable by one direct query with no real reasoning needed — e.g. "top 10 products", "revenue today", "how many stores do we have", "show me last month's inventory".
@@ -242,6 +242,7 @@ Respond with ONLY a JSON object: { "isSimpleQuery": true or false }`;
   try {
     const response = await llmService.sendOneShot(systemPrompt, `Request: "${prompt}"`, {
       model: MODEL, maxTokens: 64, jsonOutput: true, temperature: 0, context: 'insights_classify_prompt',
+      agentName: datasetId,
     });
     const parsed = parseJSON(response);
     return !!parsed.isSimpleQuery;
@@ -475,6 +476,7 @@ Pick the category that best matches what the investigation prompt is actually ab
     try {
       response = await llmService.sendOneShot(systemPrompt, `Investigation prompt: "${prompt}"`, {
         model: MODEL, maxTokens: 640, jsonOutput: true, temperature: 0, context: 'insights_investigate_plan',
+        agentName: datasetId,
       });
       const parsed = parseJSON(response);
       if (!parsed.dataQuestion) throw new Error('Plan step returned no dataQuestion');
@@ -645,6 +647,7 @@ Raw result rows (JSON, up to ${SAMPLE_LIMIT} — ILLUSTRATIVE SAMPLE ONLY, see a
     try {
       response = await llmService.sendOneShot(systemPrompt, userMessage, {
         model: MODEL, maxTokens: 6144, jsonOutput: true, temperature: 0, context: 'insights_investigate_synthesize',
+        agentName: datasetId,
       });
       const parsed = parseJSON(response);
       if (!parsed.headline) throw new Error('Synthesize step returned no headline');
@@ -670,7 +673,7 @@ Raw result rows (JSON, up to ${SAMPLE_LIMIT} — ILLUSTRATIVE SAMPLE ONLY, see a
  * duplicated everywhere the way a JOIN-bug artifact is.
  * @returns {Promise<{verified: boolean, issues: string[]}>}
  */
-async function verifyInsight({ config, queryResult, synthesized, digest }) {
+async function verifyInsight({ config, queryResult, synthesized, digest, datasetId = null }) {
   const { data, rowCount } = queryResult;
   const sampleRows = data.slice(0, SAMPLE_LIMIT);
 
@@ -716,6 +719,7 @@ chart: ${JSON.stringify(synthesized.chart)}`;
   try {
     response = await llmService.sendOneShot(systemPrompt, userMessage, {
       model: MODEL, maxTokens: 1024, jsonOutput: true, temperature: 0, context: 'insights_investigate_verify',
+      agentName: datasetId,
     });
     const parsed = parseJSON(response);
     return { verified: parsed.verified !== false, issues: Array.isArray(parsed.issues) ? parsed.issues.slice(0, 5).map(String) : [] };
@@ -1044,6 +1048,7 @@ Respond with ONLY a JSON object: { "prompt": "the new investigation request, one
   // to look the same.
   const response = await llmService.sendOneShot(systemPrompt, 'Propose the next investigation.', {
     model: MODEL, maxTokens: 256, jsonOutput: true, context: 'insights_investigate_propose',
+    agentName: datasetId,
   });
   const parsed = parseJSON(response);
   if (!parsed.prompt) throw new Error('Propose step returned no prompt');
@@ -1176,7 +1181,7 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   // immediately once named explicitly, the same way the QUERY step's SQL
   // retry already works.
   progress.set(jobId, 'verify');
-  let verification = await verifyInsight({ config, queryResult, synthesized, digest });
+  let verification = await verifyInsight({ config, queryResult, synthesized, digest, datasetId });
 
   // Up to TWO regeneration attempts, not one. Measured on the 2026-08-19
   // zolstock suite: 5 of 35 reports still failed the fact-check after a single
@@ -1195,7 +1200,7 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
     synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest, substitution, scopeAdded, verifierFeedback: verification.issues });
     synthesized = reconcileImpactValue(synthesized, digest);
     progress.set(jobId, 'verify');
-    verification = await verifyInsight({ config, queryResult, synthesized, digest });
+    verification = await verifyInsight({ config, queryResult, synthesized, digest, datasetId });
   }
   if (!verification.verified) {
     console.log(`   Verify still unsatisfied after ${MAX_SYNTH_RETRIES} rewrites — shipping downgraded: ${verification.issues.join('; ')}`);
@@ -1457,6 +1462,7 @@ How it was found: ${JSON.stringify(insight.reasoning)}`;
 
   const response = await llmService.sendOneShot(systemPrompt, userMessage, {
     model: MODEL, maxTokens: 1024, jsonOutput: true, temperature: 0, context: 'insights_action_plan',
+    agentName: datasetId,
   });
   const parsed = parseJSON(response);
   const plan = {
