@@ -17,7 +17,7 @@ const { renderBriefForPrompt } = require('./brief.service');
 const { LANGUAGE_RULE, extractJSON, transcriptOf } = require('./brainstorm.service');
 const { validatePlan, ICONS } = require('./spec.contract');
 
-async function draftPlan({ messages, currentPlan = null, brief, settings }) {
+async function draftPlan({ messages, currentPlan = null, brief, settings, agentName = null }) {
   const revising = currentPlan
     ? `\n\nThis is NOT a fresh plan. A screen already exists:\n  title: ${currentPlan.title?.en}\n  summary: ${currentPlan.summary?.en || ''}\nProduce a CHANGE plan: return the full plan of the screen AFTER the change, and fill "changes" with what actually changes, one line each. Keep the existing title unless the user asked to rename.`
     : '';
@@ -62,6 +62,7 @@ Return ONLY JSON:
       // Bilingual labels are token-expensive; 2000 truncated a real plan's
       // JSON mid-array (same failure mode as the knowledge pass).
       model, maxTokens: 5000, jsonOutput: true, context: 'otto_plan',
+      agentName,
     });
 
     let plan;

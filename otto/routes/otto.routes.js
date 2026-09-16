@@ -171,6 +171,7 @@ router.post('/:datasetId/screens/:id/chat', handle(async (req, res) => {
     // The shell's EN/HE toggle, sent by the client — Otto converses in the
     // interface language, like Data Chat and reports (owner, 2026-09-15).
     language: ['en', 'he'].includes(req.body?.language) ? req.body.language : null,
+    agentName: req.params.datasetId,
   });
 
   // The transcript is part of the draft — a reopened draft continues
@@ -192,6 +193,7 @@ router.post('/:datasetId/screens/:id/plan', handle(async (req, res) => {
     currentPlan: screen.screenSpec ? screen.plan : null,
     brief: req.otto.brief,
     settings: req.otto.settings,
+    agentName: req.params.datasetId,
   });
 
   // The plan is stored on the draft immediately — it is the approval gate's

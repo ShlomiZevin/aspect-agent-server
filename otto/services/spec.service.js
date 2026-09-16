@@ -42,7 +42,7 @@ function planForPrompt(plan) {
  *   list names; everything else stays, which is what "edit, don't redraw"
  *   means when the artifact is a spec instead of HTML.
  */
-async function buildSpec({ plan, brief, settings, previousSpec = null, probeFeedback = null }) {
+async function buildSpec({ plan, brief, settings, previousSpec = null, probeFeedback = null, agentName = null }) {
   const system = `You compose an operational screen for the Intelligence Center as a JSON screen spec. The user already approved the plan; build exactly what it says — nothing less, no additions nobody asked for.
 
 ${LANGUAGE_RULE}
@@ -112,6 +112,7 @@ Rules — all binding:
       maxTokens: 12000,
       jsonOutput: true,
       context: 'otto_spec',
+      agentName,
     });
 
     let spec;

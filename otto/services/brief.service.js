@@ -258,6 +258,9 @@ Return ONLY JSON:
     maxTokens: 16000,
     jsonOutput: true,
     context: 'otto_knowledge',
+    // Per-customer key when this dataset has one — the schema name IS the
+    // key scope (provider-config.service.js normalizes the same way).
+    agentName: auditForPrompt.schemaName,
   });
 
   let brief;

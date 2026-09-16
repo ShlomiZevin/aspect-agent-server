@@ -119,6 +119,7 @@ async function runPipeline(buildId, { datasetId, screen, brief, settings, pool, 
         settings,
         previousSpec: screen.screenSpec || null,
         probeFeedback,
+        agentName: datasetId,
       });
       emit(`round ${round}: spec composed (${Date.now() - started}ms, ${spec.blocks.length} blocks, ${spec.resultSets.length} result sets)`);
 
