@@ -1140,6 +1140,17 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
     // An unsatisfiable predicate and a genuine "none" both return zero rows.
     // Saying "not available in this dataset" for the first one is wrong: the
     // records exist, the filter just could not match them.
+    //
+    // This throw is a 422 — below insights.routes.js's handleError log
+    // threshold (status >= 500) — so every one of these was previously
+    // invisible: no server log, and the HTTP access log only carries the
+    // status code, not the POST body, so the actual question is unrecoverable
+    // after the fact. Log it here instead. (Shlomi reported "error on all
+    // agents" 2026-09-17; the only server-side trace of it turned out to be
+    // two bare 422s in the HTTP access log with no way to tell what was
+    // asked — this is the fix for THAT gap, not a change to the guard
+    // itself, which needs a reproducible case before it's touched.)
+    console.warn(`[insights] ${datasetId}: zero-row investigation — "${dataQuestion}" (${queryResult.emptyReason ? queryResult.emptyReason.message : 'no emptyReason'})`);
     const err = new Error(queryResult.emptyReason
       ? `${queryResult.emptyReason.message} (asked: "${dataQuestion}")`
       : `The data needed to answer this isn't available in this dataset — the query for "${dataQuestion}" returned no rows.`);
