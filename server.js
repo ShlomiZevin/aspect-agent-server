@@ -3912,6 +3912,24 @@ app.get('/api/admin/data-loader/:schema/data-info', async (req, res) => {
     const { schema } = req.params;
     const dataReloadService = req.app.get('dataReloadService');
     if (!dataReloadService?.reloaders[schema]) {
+      // Aspect has no reload pipeline — it's synthetic data seeded once by
+      // scripts/seed-aspect-synthetic.js, not a GCS import — so it never has
+      // a data_reload_runs row and this route always 404'd. The Intelligence
+      // header swallowed that as "n/a" for both dates (owner request,
+      // 2026-09-16: the demo should always read as freshly synced). Compute
+      // the range live from the real table instead of the reload log, and
+      // report the sync as NOW rather than a frozen date that would drift
+      // stale the same way a hardcoded one would.
+      if (schema === 'aspect') {
+        const { getPool } = require('./services/db.zer4u');
+        const dataThroughService = require('./services/data-through.service');
+        const range = await dataThroughService.resolveDataRange(getPool(), schema).catch(() => ({}));
+        return res.json({
+          lastRun: { completed_at: new Date().toISOString() },
+          firstDataDate: range.first || null,
+          lastDataDate: range.last || null,
+        });
+      }
       return res.status(404).json({ error: `Unknown schema: ${schema}` });
     }
     const info = await dataReloadService.getDataInfo(schema);

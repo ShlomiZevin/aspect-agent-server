@@ -1103,7 +1103,14 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   }
 
   const queryResult = engineResult || await getDataQueryService(datasetId).queryByQuestion(dataQuestion, entry.schemaName, {
-    llmAgentName: 'Aspect Intelligence',
+    // The DATASET, not a product label: this name is both the usage-log
+    // attribution and the per-customer API key scope (llm.claude.js
+    // _clientFor -> normalizeScope), and 'Aspect Intelligence' normalises to
+    // a scope no key is configured under, so every Insights query silently
+    // billed to the shared key instead of the client's own. The product is
+    // still distinguishable in the log through usageContext below.
+    llmAgentName: datasetId,
+    usageContext: 'insights_sql_generation',
     // Anchor relative windows ("last 4 weeks", "this quarter") to the date the
     // data really ends. Without it, any dataset whose export lags — thestock
     // was 106 days behind, newdeli 100 — returns zero rows for every recent
@@ -1133,6 +1140,17 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
     // An unsatisfiable predicate and a genuine "none" both return zero rows.
     // Saying "not available in this dataset" for the first one is wrong: the
     // records exist, the filter just could not match them.
+    //
+    // This throw is a 422 — below insights.routes.js's handleError log
+    // threshold (status >= 500) — so every one of these was previously
+    // invisible: no server log, and the HTTP access log only carries the
+    // status code, not the POST body, so the actual question is unrecoverable
+    // after the fact. Log it here instead. (Shlomi reported "error on all
+    // agents" 2026-09-17; the only server-side trace of it turned out to be
+    // two bare 422s in the HTTP access log with no way to tell what was
+    // asked — this is the fix for THAT gap, not a change to the guard
+    // itself, which needs a reproducible case before it's touched.)
+    console.warn(`[insights] ${datasetId}: zero-row investigation — "${dataQuestion}" (${queryResult.emptyReason ? queryResult.emptyReason.message : 'no emptyReason'})`);
     const err = new Error(queryResult.emptyReason
       ? `${queryResult.emptyReason.message} (asked: "${dataQuestion}")`
       : `The data needed to answer this isn't available in this dataset — the query for "${dataQuestion}" returned no rows.`);
