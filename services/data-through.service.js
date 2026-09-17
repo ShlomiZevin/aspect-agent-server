@@ -23,6 +23,11 @@ const KNOWN_FACT_TABLES = {
   zolstock: 'facts',
   newdeli: 'facts',
   zer4u: 'sales',
+  // The demo dataset (synthetic TechZone data, seeded not imported). Missing
+  // here it had no resolvable data range at all, so the Intelligence header
+  // showed "n/a" and every relative window anchored to CURRENT_DATE instead
+  // of the date the demo data actually ends.
+  aspect: 'sales',
   // tevanaot.sales is the raw key-only fact (no date column — the date is
   // inside warhs_cust_part_date_key). mv_sales is the resolved view that
   // carries transaction_date; point the data-through lookup at it.

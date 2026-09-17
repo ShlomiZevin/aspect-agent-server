@@ -255,6 +255,21 @@ const REGISTRY = {
       'Which stores have the weakest accessory attach rate',
       'Which product category has the steepest margin decline',
     ],
+    // Aspect is the internal demo agent, shown to Hebrew-speaking prospects as
+    // often as English ones — unlike every other dataset above (each a real
+    // client in one working language), it needs BOTH. Without this block the
+    // Home hero chips stayed in English under the Hebrew toggle while every
+    // other string on the page switched, which read as broken rather than as
+    // an untranslated corner (task, 2026-09-17).
+    i18n: {
+      he: {
+        examplePrompts: [
+          'מהם הסיכונים העיקריים לחודשים הקרובים',
+          'לאילו סניפים יש את שיעור הצמדת האביזרים הנמוך ביותר',
+          'לאיזו קטגוריית מוצרים יש את הירידה החדה ביותר ברווחיות',
+        ],
+      },
+    },
   },
 };
 
