@@ -63,9 +63,58 @@ const alfredTools = require('../../alfred/services/alfredTools');
 // express.json() skips a request whose body it has already read.
 router.use(express.json({ limit: '10mb' }));
 
-/** Version ids follow the same shape the Builder itself mints. */
+/** Ids follow the same shape the Builder itself mints. */
+function newId(prefix) {
+  return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
+}
 function newVersionId() {
-  return `ver_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
+  return newId('ver');
+}
+
+/**
+ * Fill in the keys the Builder's dirty check always emits.
+ *
+ * The client decides "unsaved changes" by comparing its working copy
+ * (`bodyOfAgent` in BuilderContext.tsx) against the saved version body.
+ * That function emits `personas`, `domains`, `parameters`, `enums`,
+ * `cortex` and `snippets` UNCONDITIONALLY, defaulting each to `[]`, and
+ * coerces `spec`/`persona` to `''`. A body written from outside that
+ * simply omits them is therefore not equal to the working copy the
+ * instant it loads, and the Builder announces "Agent has unsaved changes"
+ * on an agent nobody has touched. That is exactly what happened to the
+ * first real agent built through this door; pressing Save appeared to fix
+ * it, but only by rewriting the body with the complete key set.
+ *
+ * The keys guarded by the "empty == absent" trick over there — `tags`,
+ * `liveBrain`, `profiler`, `triggers` — must NOT be defaulted here: the
+ * client omits them when empty, so adding them would cause the very
+ * mismatch this prevents.
+ *
+ * Only ever adds absent keys. Never changes a value it was given.
+ */
+function normalizeAgentBody(body, agent = {}) {
+  return {
+    name:    agent.name || agent.slug || '',
+    slug:    agent.slug || '',
+    spec:    '',
+    persona: '',
+    fields:     [],
+    personas:   [],
+    domains:    [],
+    parameters: [],
+    enums:      [],
+    cortex:     [],
+    snippets:   [],
+    ...body,
+  };
+}
+
+/** The crew counterpart — mirrors `bodyOfCrew`, which emits all six. */
+function normalizeCrewBody(body) {
+  return {
+    name: '', description: '', spec: '', addons: [], fields: [],
+    ...body,
+  };
 }
 
 /**
@@ -253,11 +302,18 @@ you do can affect a real conversation.
 Post the **whole** body, not a patch, and change only what you meant to —
 they are reading the diff on screen.
 
-**A brand-new agent** is a different call, \`POST
-${origin}/api/builder/projects\`, and you should ask before making one: it
-is a bigger thing than an edit and declining to save does not undo it.
-Fetch \`${base}/code/builder/routes/projectsRoute.js\` for exactly what it
-wants.
+**A brand-new agent** — ask before making one, it is a bigger thing than
+an edit:
+
+\`\`\`
+POST ${base}/agents
+{ "name": "Card disputes", "body": { ...optional starting body... } }
+\`\`\`
+
+Name is all it needs; the slug, the ids and the first crew are made for
+you. Use THIS rather than the raw projects endpoint — it fills in the
+parts of a body the Builder expects, and an agent created without them
+opens showing "unsaved changes" before anyone has touched it.
 
 ## Things that are easy to get wrong
 
@@ -426,14 +482,18 @@ router.get('/addons', (_req, res) => {
  * which service function they call — the rules, the response and the
  * reason it is safe are identical.
  */
-async function saveAsNewVersion({ res, kind, id, body, description, saveFn, activateFn }) {
+async function saveAsNewVersion({ res, kind, id, body, description, normalize, saveFn, activateFn }) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return res.status(400).type('text/plain').send(
       'Send { "body": { ... } } — the whole edited body as an object, not a patch and not a string.',
     );
   }
   const versionId = newVersionId();
-  await saveFn({ versionId, body, description: description || 'Changed by an AI assistant' });
+  await saveFn({
+    versionId,
+    body: normalize(body),
+    description: description || 'Changed by an AI assistant',
+  });
 
   // Point ACTIVE at the new version, not just viewing.
   //
@@ -460,6 +520,75 @@ async function saveAsNewVersion({ res, kind, id, body, description, saveFn, acti
   ].join('\n'), 'text/plain');
 }
 
+/**
+ * Create a brand-new agent.
+ *
+ * Exists because the raw projects endpoint makes the caller invent seven
+ * ids and does no normalising — an agent created through it opens in the
+ * Builder already announcing "unsaved changes" (see normalizeAgentBody),
+ * which is what happened to the first agent anyone built through this
+ * door. Here the ids are minted and the bodies completed, so a new agent
+ * is clean the moment it is opened.
+ */
+router.post('/agents', async (req, res) => {
+  try {
+    const { name, slug, body, crew } = req.body || {};
+    const agentName = String(name || body?.name || '').trim();
+    if (!agentName) {
+      return res.status(400).type('text/plain').send(
+        'Send { "name": "..." } — at minimum a new agent needs a name.',
+      );
+    }
+    const agentSlug = String(slug || body?.slug || agentName)
+      .toLowerCase().trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60);
+    if (!agentSlug) {
+      return res.status(400).type('text/plain').send(
+        'That name has no letters or digits to make a slug from. Pass "slug" explicitly.',
+      );
+    }
+    if (await builderProjects.hydrateProject({ agentSlug })) {
+      return res.status(409).type('text/plain').send(
+        `An agent with slug "${agentSlug}" already exists. Choose a different name, or edit that one.`,
+      );
+    }
+
+    const ids = {
+      projectId:      newId('project'),
+      agentId:        newId('agent'),
+      agentVersionId: newVersionId(),
+      crewId:         newId('crew'),
+      crewVersionId:  newVersionId(),
+    };
+    await builderProjects.createProject({
+      ownerUserId: 'mcp',
+      projectName: agentName,
+      agentSlug,
+      ...ids,
+      // name/slug/defaultCrewId last: they are decided here, not by the
+      // caller, so they override anything that came in the body.
+      agentBody: normalizeAgentBody(
+        { ...body, name: agentName, slug: agentSlug, defaultCrewId: ids.crewId },
+        { name: agentName, slug: agentSlug },
+      ),
+      crewBody: normalizeCrewBody({ name: 'Main', ...crew }),
+    });
+
+    sendText(res, [
+      `Created "${agentName}" with slug ${agentSlug} and one crew (${ids.crewId}).`,
+      '',
+      'It is not live — nothing is published until someone deliberately publishes it.',
+      `Read it back at ${urls(req).base}/agents/${agentSlug}, and add fields, addons`,
+      'and crews with the update calls.',
+    ].join('\n'));
+  } catch (err) {
+    console.error('[builder-mcp] create agent failed:', err);
+    res.status(500).type('text/plain').send(`Could not create that agent: ${err.message}`);
+  }
+});
+
 router.post('/agents/:slug', async (req, res) => {
   try {
     const project = await builderProjects.hydrateProject({ agentSlug: req.params.slug });
@@ -475,6 +604,7 @@ router.post('/agents/:slug', async (req, res) => {
       id: agent.name || agent.slug,
       body: req.body?.body,
       description: req.body?.description,
+      normalize: b => normalizeAgentBody(b, agent),
       saveFn: args => builderProjects.saveAgentVersionAs({ agentId: agent.id, ...args }),
       activateFn: ({ versionId }) => builderProjects.setAgentActive({ agentId: agent.id, versionId }),
     });
@@ -504,6 +634,7 @@ router.post('/agents/:slug/crews/:crewId', async (req, res) => {
       id: crew.name || crew.id,
       body: req.body?.body,
       description: req.body?.description,
+      normalize: normalizeCrewBody,
       saveFn: args => builderProjects.saveCrewVersionAs({ crewId: crew.id, ...args }),
       activateFn: ({ versionId }) => builderProjects.setCrewActive({ crewId: crew.id, versionId }),
     });
