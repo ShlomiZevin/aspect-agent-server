@@ -156,6 +156,39 @@ const addonRuns = pgTable('addon_runs', {
   messageIdx:      index('addon_runs_message_idx').on(t.messageId),
 }));
 
+// alfred_apply_jobs — one row per Alfred Apply run. Both the polling
+// target (the POST returns immediately now) and the forensic log: `steps`
+// holds one entry per target with duration, tokens and stop_reason, which
+// is the only way to distinguish a clean finish from a cap-truncated one.
+const alfredApplyJobs = pgTable('alfred_apply_jobs', {
+  id:            varchar('id', { length: 64 }).primaryKey(),
+  chatId:        integer('chat_id').notNull(),
+  agentSlug:     varchar('agent_slug', { length: 100 }),
+  ownerUserId:   varchar('owner_user_id', { length: 64 }),
+  // running | done | failed | cancelled
+  status:        varchar('status', { length: 20 }).notNull(),
+  description:   text('description'),
+  reason:        text('reason'),
+  targets:       jsonb('targets').notNull(),
+  // Snapshot of what the user saw when they pressed Apply.
+  workingBodies: jsonb('working_bodies'),
+  steps:         jsonb('steps').notNull().default([]),
+  instanceId:    varchar('instance_id', { length: 64 }),
+  // Matches the old synchronous response body exactly.
+  result:        jsonb('result'),
+  error:         text('error'),
+  failedTarget:  jsonb('failed_target'),
+  startedAt:     timestamp('started_at').defaultNow().notNull(),
+  endedAt:       timestamp('ended_at'),
+  durationMs:    integer('duration_ms'),
+  createdAt:     timestamp('created_at').defaultNow().notNull(),
+  // Doubles as the heartbeat for stale detection.
+  updatedAt:     timestamp('updated_at').defaultNow().notNull(),
+}, t => ({
+  chatIdx:  index('alfred_apply_jobs_chat_idx').on(t.chatId),
+  staleIdx: index('alfred_apply_jobs_stale_idx').on(t.status, t.updatedAt),
+}));
+
 // Repo entries — shared library of reusable prompt strings (and, in
 // the future, whole addon configs). One table for both shapes so the
 // future addon-repo work doesn't need a schema migration; the `kind`
@@ -276,6 +309,7 @@ module.exports = {
   builderCrews,
   builderCrewVersions,
   addonRuns,
+  alfredApplyJobs,
   repoEntries,
   kbLinks,
   triggerEvents,

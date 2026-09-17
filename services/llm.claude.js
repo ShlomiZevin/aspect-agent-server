@@ -136,6 +136,18 @@ class ClaudeService {
       // Per-customer key routing (task #61) — see _clientFor. Every existing
       // caller that doesn't pass this keeps using the shared key.
       agentName,
+      /**
+       * Stream the request instead of buffering it. The response object and
+       * therefore this method's return shape are IDENTICAL either way — the
+       * stream is drained to a final message before anything is read.
+       *
+       * Why it matters: a non-streaming call with a large `maxTokens` dies
+       * with "Request timed out" well before the model finishes, because the
+       * whole reply must arrive within one HTTP response. Streaming removes
+       * that ceiling, which is the only reason the Apply patch cap sat at
+       * 21000. Callers generating big bodies should pass this.
+       */
+      stream = false,
     } = options;
 
     try {
@@ -220,7 +232,18 @@ class ClaudeService {
       const client = this._clientFor(agentName);
       const messagesApi = useFilesApi ? client.beta.messages : client.messages;
 
-      const response = await messagesApi.create(requestParams);
+      // `.stream().finalMessage()` yields the same Message object as
+      // `.create()`, so every extraction path below is untouched. Guarded
+      // because the beta (Files API) namespace is the one most likely to
+      // lack `.stream` on an older SDK — falling back is better than
+      // failing an apply over it.
+      const canStream = stream && typeof messagesApi.stream === 'function';
+      if (stream && !canStream) {
+        console.warn('⚠️ Claude OneShot: streaming requested but unavailable on this API surface; buffering instead');
+      }
+      const response = canStream
+        ? await messagesApi.stream(requestParams).finalMessage()
+        : await messagesApi.create(requestParams);
 
       const usage = response.usage ? {
         inputTokens: response.usage.input_tokens || 0,

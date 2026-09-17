@@ -12,10 +12,18 @@
  *   - readRun(runId)               — one run in full (assembled prompt + raw output).
  *   - changeLogText(...)           — history rows (one agent or all), with
  *                                    changed-section summaries.
+ *   - readPlatformFile(path)       — the platform's own source, within an
+ *                                    allowlist. The reference material in
+ *                                    Alfred's prompt is GENERATED from this
+ *                                    code and can lag behind it, so the
+ *                                    code is the only way to settle "does
+ *                                    this actually exist".
  */
 
 const { eq, and, desc } = require('drizzle-orm');
 const db = require('../../services/db.pg');
+const fs = require('fs');
+const path = require('path');
 const { conversations, messages, addonRuns } = require('../../db/schema');
 const builderProjects = require('../../builder/services/builderProjects');
 const { stripVersionBodies } = require('./alfredContext');
@@ -215,6 +223,72 @@ async function changeLogText({ agentId, limit = 20 }) {
   }).join('\n\n');
 }
 
+/**
+ * The platform source Alfred may read.
+ *
+ * Allowlisted by prefix rather than opened wide: these are the folders
+ * that explain how an agent BEHAVES — the assembler, the validator, the
+ * runtime, the plugins, the type definitions and the guides. Everything
+ * else (server routes, other products, hq/, anything holding a secret) is
+ * refused. `.env` never appears under these prefixes.
+ */
+const READABLE_PREFIXES = ['builder/', 'alfred/', 'docs/guides/', 'docs/features/'];
+const PLATFORM_ROOT = path.join(__dirname, '..', '..');
+/** A whole file is better than a guess, but a 500KB one is neither. */
+const MAX_FILE_CHARS = 120000;
+
+/**
+ * Read one platform file, or list a directory.
+ *
+ * Both in one tool on purpose: "show me promptAssembler.js" and "what is
+ * in builder/runtime" are the same question asked at different zoom
+ * levels, and making Alfred pick the right tool first is friction with no
+ * upside.
+ */
+function readPlatformFile(relPath) {
+  const rel = String(relPath || '').trim().replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!rel) return 'read_platform_file needs a path, e.g. "builder/runtime/promptAssembler.js".';
+
+  // Traversal and absolute paths are refused outright rather than
+  // normalised — there is no legitimate caller that needs either.
+  if (rel.includes('..') || path.isAbsolute(rel)) {
+    return `Refused "${rel}": paths must be relative and inside ${READABLE_PREFIXES.join(', ')}.`;
+  }
+  if (!READABLE_PREFIXES.some(p => rel.startsWith(p))) {
+    return `Refused "${rel}". You can read: ${READABLE_PREFIXES.join(', ')}. Everything else is out of bounds.`;
+  }
+
+  const abs = path.join(PLATFORM_ROOT, rel);
+  let stat;
+  try {
+    stat = fs.statSync(abs);
+  } catch {
+    return `No such file: ${rel}. Use a directory path to see what is there (e.g. "builder/runtime").`;
+  }
+
+  if (stat.isDirectory()) {
+    let entries;
+    try { entries = fs.readdirSync(abs, { withFileTypes: true }); }
+    catch (err) { return `Could not list ${rel}: ${err.message}`; }
+    const lines = entries
+      .map(e => (e.isDirectory() ? `${e.name}/` : e.name))
+      .sort();
+    return `## ${rel} — ${lines.length} entries\n\n${lines.join('\n')}`;
+  }
+
+  let text;
+  try { text = fs.readFileSync(abs, 'utf8'); }
+  catch (err) { return `Could not read ${rel}: ${err.message}`; }
+
+  let note = '';
+  if (text.length > MAX_FILE_CHARS) {
+    text = text.slice(0, MAX_FILE_CHARS);
+    note = `\n\n_(truncated at ${MAX_FILE_CHARS} characters — ask for a specific part if you need more)_`;
+  }
+  const ext = path.extname(rel).slice(1) || 'text';
+  return `## ${rel}\n\n\`\`\`${ext}\n${text.trim()}\n\`\`\`${note}`;
+}
+
 module.exports = {
   listAgents,
   readAgent,
@@ -222,4 +296,5 @@ module.exports = {
   readConversation,
   readRun,
   changeLogText,
+  readPlatformFile,
 };

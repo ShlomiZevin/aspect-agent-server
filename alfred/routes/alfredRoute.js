@@ -38,6 +38,7 @@ const {
   builderCrews,
   builderCrewVersions,
 } = require('../../db/schema');
+const applyJobs = require('../services/applyJobsStore');
 const alfredChats = require('../services/alfredChats');
 const alfredFiles = require('../services/alfredFiles');
 const stopRegistry = require('../../builder/runtime/stopRegistry');
@@ -199,7 +200,11 @@ router.post('/chats/:chatId/files', filesUpload.single('file'), async (req, res)
     const out = await alfredFiles.addFile({
       chatId: req.params.chatId,
       buffer: req.file.buffer,
-      filename: req.file.originalname,
+      // Busboy decodes the multipart filename as latin1, so a UTF-8 name
+      // (Hebrew, emoji) arrives mojibaked — "מסמך.docx" became "×□×¡×...".
+      // Re-reading those bytes as UTF-8 restores it; pure-ASCII names are
+      // unchanged by the round-trip.
+      filename: Buffer.from(req.file.originalname, 'latin1').toString('utf8'),
       mimeType: req.file.mimetype,
     });
     res.json(out);
@@ -445,6 +450,44 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
   const { chatId } = req.params;
   const { agentSlug, ownerUserId, description, reason, targets, workingBodies } = req.body || {};
 
+  if (!agentSlug)             return res.status(400).json({ error: 'Missing agentSlug' });
+  if (!ownerUserId)           return res.status(400).json({ error: 'Missing ownerUserId' });
+  if (!Array.isArray(targets) || targets.length === 0)
+    return res.status(400).json({ error: 'No targets to apply' });
+
+  let jobId;
+  try {
+    ({ id: jobId } = await applyJobs.createJob({
+      chatId, agentSlug, ownerUserId, description, reason, targets, workingBodies,
+    }));
+  } catch (err) {
+    console.error('[alfred] could not create apply job:', err);
+    return res.status(500).json({ error: err.message });
+  }
+
+  // Hand the id back immediately. Generation takes ~30s per target and a
+  // multi-target apply ran past 90s, which the browser reported as
+  // "Failed to fetch" - with no record that the work had in fact
+  // succeeded. The client polls the job row from here.
+  res.status(202).json({ jobId });
+
+  runApplyJob({ jobId, chatId, agentSlug, ownerUserId, description, reason, targets, workingBodies })
+    .catch(async (err) => {
+      console.error('[alfred] apply job crashed:', err);
+      try { await applyJobs.fail(jobId, { error: err.message }); } catch { /* nothing left to do */ }
+    });
+});
+
+/**
+ * The apply itself, run detached from the request. Every exit writes the
+ * outcome to the job row instead of to a response - the client is polling.
+ *
+ * `workingBodies` is the snapshot of what the user could see when they
+ * pressed Apply. It travels on the job deliberately: generation must run
+ * against that, not against whatever the screen holds by the time this
+ * finishes.
+ */
+async function runApplyJob({ jobId, chatId, agentSlug, ownerUserId, description, reason, targets, workingBodies }) {
   // Client-visible working copies — when present, generation bases on
   // what the user actually SEES (unsaved edits included, chained
   // applies stack). Absent entities fall back to the saved viewing
@@ -456,11 +499,6 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
       .filter(c => c && c.id && c.body)
       .map(c => [c.id, c.body]),
   );
-
-  if (!agentSlug)             return res.status(400).json({ error: 'Missing agentSlug' });
-  if (!ownerUserId)           return res.status(400).json({ error: 'Missing ownerUserId' });
-  if (!Array.isArray(targets) || targets.length === 0)
-    return res.status(400).json({ error: 'No targets to apply' });
 
   try {
     // Sort targets so agent runs before its crews. Crew patch generators
@@ -499,8 +537,15 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
     } catch { /* chat without pins */ }
 
     for (const target of orderedTargets) {
-      if (!target || !target.entity || !target.entityId)
-        return res.status(400).json({ error: 'Malformed target' });
+      // Between targets is the only safe place to stop: a half-written
+      // body is never handed back.
+      if (await applyJobs.isCancelled(jobId)) return;
+      await applyJobs.heartbeat(jobId);
+
+      if (!target || !target.entity || !target.entityId) {
+        await applyJobs.fail(jobId, { error: 'Malformed target', failedTarget: target });
+        return;
+      }
 
       let currentBody;
       let entityNameSnap;
@@ -524,7 +569,10 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
         }
         entityNameSnap = currentBody.name || target.entityName || target.entityId;
       } else {
-        return res.status(400).json({ error: `Unknown target entity "${target.entity}"` });
+        await applyJobs.fail(jobId, {
+          error: `Unknown target entity "${target.entity}"`, failedTarget: target,
+        });
+        return;
       }
 
       // For crew targets: pass the latest agent body as cross-reference.
@@ -547,6 +595,7 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
 
       // Generate new body.
       let newBody;
+      const stepStart = Date.now();
       try {
         const out = await patchGenerator.generatePatch({
           entity:       target.entity,
@@ -572,14 +621,31 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
             reasoning:  out.reasoning || '',
           });
           if (target.entity === 'agent' && !latestAgentBody) latestAgentBody = currentBody;
+          await applyJobs.appendStep(jobId, {
+            entity: target.entity, entityId: target.entityId, entityName: entityNameSnap,
+            phase: 'generate', status: 'no-change', durationMs: Date.now() - stepStart,
+          });
           continue;
         }
         newBody = out.newBody;
-      } catch (err) {
-        return res.status(422).json({
-          error: `Patch generator failed for ${target.entity} "${entityNameSnap}": ${err.message}`,
-          target,
+        await applyJobs.appendStep(jobId, {
+          entity: target.entity, entityId: target.entityId, entityName: entityNameSnap,
+          phase: 'generate', status: 'ok', durationMs: Date.now() - stepStart,
         });
+      } catch (err) {
+        // The message carries the truncation case verbatim ("hit the
+        // N-token output limit"), which is what distinguishes a cap
+        // truncation from an ordinary failure.
+        await applyJobs.appendStep(jobId, {
+          entity: target.entity, entityId: target.entityId, entityName: entityNameSnap,
+          phase: 'generate', status: 'error', durationMs: Date.now() - stepStart,
+          error: err.message,
+        });
+        await applyJobs.fail(jobId, {
+          error: `Patch generator failed for ${target.entity} "${entityNameSnap}": ${err.message}`,
+          failedTarget: target,
+        });
+        return;
       }
 
       // Validate. For crew bodies we use the latest agent body's fields
@@ -601,11 +667,16 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
       }
 
       if (!validation.ok) {
-        return res.status(422).json({
+        await applyJobs.appendStep(jobId, {
+          entity: target.entity, entityId: target.entityId, entityName: entityNameSnap,
+          phase: 'validate', status: 'error', errors: validation.errors,
+        });
+        await applyJobs.fail(jobId, {
           error: `Generated ${target.entity} body for "${entityNameSnap}" failed validation`,
           errors: validation.errors,
-          target,
+          failedTarget: target,
         });
+        return;
       }
 
       // If this was the agent target, propagate its post-patch body
@@ -647,7 +718,7 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
       // Marker is bookkeeping — never fail the apply over it.
       console.error('[alfred] apply-marker write failed:', err.message);
     }
-    res.json({
+    await applyJobs.finish(jobId, {
       ok: true,
       applyGroupId,
       generated: prepared.map(p => ({
@@ -664,6 +735,46 @@ router.post('/chats/:chatId/apply/generate', async (req, res) => {
     });
   } catch (err) {
     console.error('[alfred] apply/generate failed:', err);
+    await applyJobs.fail(jobId, { error: err.message });
+  }
+}
+
+/**
+ * GET /chats/:chatId/apply/jobs/:jobId - what the client polls.
+ *
+ * Deliberately returns the STATUS ONLY while the job runs: the generated
+ * bodies are hundreds of KB and there is no reason to ship them every
+ * couple of seconds. The full result comes back once, on completion.
+ */
+router.get('/chats/:chatId/apply/jobs/:jobId', async (req, res) => {
+  try {
+    const job = await applyJobs.getJob(req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'No such apply job' });
+
+    if (job.status === 'running') return res.json({ status: 'running' });
+    if (job.status === 'done')    return res.json({ status: 'done', result: job.result });
+
+    // failed | cancelled - per-field validation detail rides inside
+    // result when the generator produced one.
+    return res.json({
+      status: job.status,
+      error:  job.error || 'Apply failed',
+      errors: (job.result && job.result.errors) || undefined,
+    });
+  } catch (err) {
+    console.error('[alfred] apply job read failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** POST /chats/:chatId/apply/jobs/:jobId/cancel - the modal's Cancel. The
+ *  run stops at the next target boundary, never mid-body. */
+router.post('/chats/:chatId/apply/jobs/:jobId/cancel', async (req, res) => {
+  try {
+    const stopped = await applyJobs.cancel(req.params.jobId);
+    res.json({ ok: true, stopped });
+  } catch (err) {
+    console.error('[alfred] apply job cancel failed:', err);
     res.status(500).json({ error: err.message });
   }
 });

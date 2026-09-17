@@ -3,17 +3,17 @@
   "version": 2,
   "description": "Tokens the Builder V2 prompt assembler recognises inside an addon's `config.prompt`. Source of truth for: server promptAssembler.js, client MentionTextarea picker, Alfred (patchGenerator/bodyValidator/alfredRunner system prompts).",
   "trigger_prefixes": {
-    "@":  "memory (whole section, single domain, or single field)",
-    "!":  "thinking (whole section or single domain)",
-    "#":  "parameters (single static value)",
-    "^":  "persona (the agent persona block)",
-    "*":  "enum bible — aggregate-by-section across every value of an enum, OR live-value lookup for an enum-typed field",
-    "%":  "summary (whole section or single summarizer slot — written by offline-lane Summarizer addons)",
-    "+":  "snippet (agent-level reusable prompt content, optionally gated by an AddonFilter)",
-    "&":  "tags (fields grouped by tag — schema block, current values, or bare names)",
-    "~":  "kb retrieval (the named slot a KB Retriever addon wrote this turn)",
+    "@": "memory (whole section, single domain, or single field)",
+    "!": "thinking (whole section or single domain)",
+    "#": "parameters (single static value)",
+    "^": "persona (the agent persona block)",
+    "*": "enum bible — aggregate-by-section across every value of an enum, OR live-value lookup for an enum-typed field",
+    "%": "summary (whole section or single summarizer slot — written by offline-lane Summarizer addons)",
+    "+": "snippet (agent-level reusable prompt content, optionally gated by an AddonFilter)",
+    "&": "tags (fields grouped by tag — schema block, current values, or bare names)",
+    "~": "kb retrieval (the named slot a KB Retriever addon wrote this turn)",
     "{{": "unified picker — every placeholder from every category in one list. Use when you don't remember which sigil opens what.",
-    "/":  "alias for `{{` — same unified picker, single-keystroke trigger. Common pattern in command-bar UIs."
+    "/": "alias for `{{` — same unified picker, single-keystroke trigger. Common pattern in command-bar UIs."
   },
   "sections": [
     {
@@ -82,6 +82,14 @@
       "trigger": "@",
       "render": "The current memory value for a single field, inline. Bare value with no label or formatting. Empty string when the field has no value yet.",
       "example": "The customer is {{field:customer_age}} years old.",
+      "picker_group": "Memory fields"
+    },
+    {
+      "token": "{{fieldname:NAME}}",
+      "category": "value",
+      "trigger": "@",
+      "render": "The literal NAME of a field, inline — not its value. Use when the prompt needs to talk ABOUT a field rather than read it, so the wrong form ({{field:NAME}}, which substitutes the value) is not used by accident. Resolves against agent- and crew-scoped fields. An unknown name is left in place so the typo is visible.",
+      "example": "Ask the customer for their {{fieldname:passport_number}} before continuing.",
       "picker_group": "Memory fields"
     },
     {

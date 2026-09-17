@@ -27,11 +27,15 @@ const { logUsage } = require('../../services/usageLogger');
 
 const MODEL    = 'claude-sonnet-4-6';
 const PROCESS  = 'alfred-apply-patch';
-// Output cap. With item paths most applies use a few hundred tokens;
-// the cap only matters for a deliberate whole-section rewrite. 21000 is
-// just under the SDK's non-streaming ceiling. llm.claude surfaces a
-// clear "truncated" error if it's ever hit.
-const MAX_TOKENS = 21000;
+// Output cap. With item paths most applies use a few hundred tokens; the
+// cap only matters for a deliberate whole-section rewrite. It sat at 21000
+// purely because a NON-streaming call must return inside one HTTP response
+// — which is what killed the large applies with "Request timed out". The
+// call streams now, so transport no longer sets the ceiling and this is
+// sized for headroom on a big verbatim rewrite (a KB with a dozen sections
+// copied out of a document). llm.claude still raises a clear "truncated"
+// error if it is ever hit.
+const MAX_TOKENS = 32000;
 
 /**
  * The replaceable top-level sections per entity — mirrors the AgentBody /
@@ -742,6 +746,10 @@ async function generatePatch({
       maxTokens: MAX_TOKENS,
       tools: [SUBMIT_CHANGES_TOOL],
       toolChoice: { type: 'tool', name: 'submit_changes' },
+      // Stream it. Same request, same response object, same return shape —
+      // but the reply no longer has to arrive inside a single HTTP response,
+      // which is what made big applies time out. See MAX_TOKENS above.
+      stream: true,
       // Pinned PDFs as native document blocks (existing injection path).
       ...(attachments && attachments.anthropicFileIds && attachments.anthropicFileIds.length > 0
         ? { knowledgeBase: { anthropicFileIds: attachments.anthropicFileIds } }

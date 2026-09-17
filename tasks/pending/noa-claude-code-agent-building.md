@@ -5,8 +5,29 @@ conversations, edits a **draft file** on her machine, and lets her review
 and save it in the Builder. Replaces the "ask Alfred and hope" loop for
 big, complex agent work.
 
-**Status:** designed, not started. Skill and setup guide are written; the
-Builder work and the wizard are not.
+**Status:** BUILT, awaiting a real test. Not yet opened in a browser, and
+not deployed.
+
+In: the instructions file, the setup wizard and the drafts folder (🤖 / 📂
+in the Builder toolbar), and the platform bundle endpoint.
+
+**The git approach below was replaced during the build.** A repository
+cannot be granted per-path — whoever can clone it gets all of it, and
+sparse-checkout is a client-side convenience the user can switch off. So
+the Builder now serves a declared list of files (`GET
+/api/builder/ai-bundle`) and the wizard writes them into a folder the user
+picks, along with the instructions under the right filename for her tool
+and her builder id. That makes "only the Builder V2 parts" an actual
+boundary, and removes Git, a GitHub account and a clone step from a
+non-developer's setup. Verified: 87 files, 1.13MB, nothing outside
+`builder/` `alfred/` `docs/guides/`, no `services/`, no `hq/`.
+
+Staleness is self-maintaining: the version is a hash of the file contents,
+stamped into `.lybi/bundle.json` in her folder, so deploying new code makes
+every existing copy report itself out of date with no number to bump.
+
+Still outstanding, yours rather than code: buy whichever AI seats she
+needs. (GitHub access is no longer required.)
 
 ---
 

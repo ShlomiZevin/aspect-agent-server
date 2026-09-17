@@ -171,6 +171,32 @@ const TOOLS = [
       required: ['pluginId'],
     },
   },
+  {
+    name: 'read_platform_file',
+    description:
+      'Read the platform\'s OWN source code, or list a directory. Use this to settle ' +
+      'what actually exists rather than relying on the reference sections of your ' +
+      'system prompt — those are generated from this code and can lag behind it. ' +
+      'Reach for it whenever the user says a capability exists and you cannot find ' +
+      'it, or before telling anyone that something does not exist. ' +
+      'Useful starting points: `builder/runtime/promptAssembler.js` (every {{token}} ' +
+      'and how it resolves), `alfred/services/bodyValidator.js` (what makes a body ' +
+      'legal), `builder/runtime/formulaEval.js` (Rules formula syntax), ' +
+      '`builder/types/index.ts` (canonical shapes), `builder/promptPlaceholders.json`. ' +
+      'Readable roots: builder/, alfred/, docs/guides/, docs/features/.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description:
+            'Repo-relative path from the server root, e.g. ' +
+            '"builder/runtime/promptAssembler.js". A directory lists its contents.',
+        },
+      },
+      required: ['path'],
+    },
+  },
 ];
 
 async function runTool(name, input, ctx) {
@@ -202,6 +228,9 @@ async function runTool(name, input, ctx) {
     const runId = String(input?.runId || '').trim();
     if (!runId) return 'read_run requires a runId (from a read_conversation digest).';
     return alfredTools.readRun({ runId });
+  }
+  if (name === 'read_platform_file') {
+    return alfredTools.readPlatformFile(input?.path);
   }
   if (name === 'read_addon_code') {
     const pluginId = String(input?.pluginId || '').trim();

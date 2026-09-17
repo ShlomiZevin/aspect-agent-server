@@ -159,8 +159,9 @@ English and make the wording clearer; complete a sentence that is incomplete.
 Add nothing else — no implementation guidance, no suggested approach, no
 acceptance criteria, no file or table references he did not mention, no
 background he did not give. His words: *"don't dig. Stick to what I write, just
-phrase it more clearly and complete it, but don't add things."* Show him the
-English wording before opening it.
+phrase it more clearly and complete it, but don't add things."* Open it
+directly — no draft-for-approval round (his instruction, 2026-09-15) — and
+report what was opened.
 
 **Descriptions are HTML, not plain text.** The board renders `description`
 through a rich text editor, so `\n` line breaks collapse into one run-on

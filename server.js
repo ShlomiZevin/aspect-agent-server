@@ -125,6 +125,10 @@ app.use('/api/builder/repo', require('./builder/routes/repoRoute'));
 // Workspaces — named folders grouping agents on the home page.
 // Specific prefix so the catch-all projectsRoute below doesn't shadow it.
 app.use('/api/builder/workspaces', require('./builder/routes/workspacesRoute'));
+// The Builder V2 source itself, served to an AI assistant running on the
+// user's own machine. See builder/routes/aiBundleRoute.js for what is in
+// it and what is deliberately left out.
+app.use('/api/builder/ai-bundle', require('./builder/routes/aiBundleRoute'));
 // Builder doc CRUD (creating projects/agents/crews, saving versions,
 // setting active/viewing pointers). All under /api/builder/*.
 app.use('/api/builder', require('./builder/routes/projectsRoute'));
