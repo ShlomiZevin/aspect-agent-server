@@ -1103,7 +1103,14 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   }
 
   const queryResult = engineResult || await getDataQueryService(datasetId).queryByQuestion(dataQuestion, entry.schemaName, {
-    llmAgentName: 'Aspect Intelligence',
+    // The DATASET, not a product label: this name is both the usage-log
+    // attribution and the per-customer API key scope (llm.claude.js
+    // _clientFor -> normalizeScope), and 'Aspect Intelligence' normalises to
+    // a scope no key is configured under, so every Insights query silently
+    // billed to the shared key instead of the client's own. The product is
+    // still distinguishable in the log through usageContext below.
+    llmAgentName: datasetId,
+    usageContext: 'insights_sql_generation',
     // Anchor relative windows ("last 4 weeks", "this quarter") to the date the
     // data really ends. Without it, any dataset whose export lags — thestock
     // was 106 days behind, newdeli 100 — returns zero rows for every recent

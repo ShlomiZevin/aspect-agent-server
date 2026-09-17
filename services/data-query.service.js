@@ -63,6 +63,7 @@ class DataQueryService {
       timeout = QUERY_TIMEOUT_MS,
       agentName = customerSchema,
       llmAgentName,
+      usageContext,
       conversationId,
       userId,
     } = options;
@@ -124,6 +125,7 @@ class DataQueryService {
       try {
         const generated = await sqlGeneratorService.generateSQL(question, customerSchema, {
           agentName: llmAgentName || agentName,
+          usageContext,
           conversationId,
           userId,
           previousError: attempt > 1 ? prevError : undefined,

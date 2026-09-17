@@ -81,7 +81,10 @@ class SQLGeneratorService {
           // anti-pattern list changes as production traffic changes — but it
           // removes the dominant source of drift.)
           temperature: 0,
-          context: 'sql_generation',
+          // Callers that are not the chat path can label their own usage rows
+          // (Insights passes 'insights_sql_generation'), so per-customer key
+          // attribution and "which product asked" stay separable.
+          context: options.usageContext || 'sql_generation',
           agentName: options.agentName,
           conversationId: options.conversationId,
           userId: options.userId,
