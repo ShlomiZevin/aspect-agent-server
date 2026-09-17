@@ -7,8 +7,11 @@ becomes real until you do — so you cannot break anything.
 
 ## Setup is in the Builder, not here
 
-Open the Builder and click **🤖 Work with your AI** in the toolbar. The
-wizard does the setup for you:
+Open the Builder and click the **🤖** button in the toolbar. Before you
+have set anything up it reads "Connect my AI"; afterwards it carries the
+name of the tool you chose, so it will say **🤖 Codex** or **🤖 Claude
+Code**. A dot on it means the platform files in your folder are out of
+date. The wizard does the setup for you:
 
 - links you to whichever AI tool you use (Claude Code or Codex)
 - writes the platform files into a folder you pick

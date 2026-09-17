@@ -114,6 +114,24 @@ Re-pull only when:
 If the user saved in the Builder mid-conversation, pull again — otherwise
 you are editing a stale draft.
 
+### When there is no draft file
+
+**A missing `drafts/<slug>.json` is not a reason to stop.** Pull the agent
+from the API, write the file yourself, and get on with the work. Do not
+tell the user to go to the Builder to make the file appear — they are
+talking to you precisely so they do not have to, and an assistant that
+opens by sending them away looks broken.
+
+It does need one sentence of warning, because what you pulled is the last
+**saved** version, and they may have unsaved work open on screen:
+
+> I didn't find a local draft for this agent, so I pulled the saved
+> version from the server and started from that. If you have unsaved
+> changes open in the Builder, they are not in what I'm looking at — save
+> them there and tell me, and I'll pull again.
+
+Say that once, when you create the file. Not on every turn afterwards.
+
 **The draft file is not yours alone.** The Builder writes it too: every
 edit the user makes on screen is saved straight into
 `drafts/<agent-slug>.json`, within a second or two. So the file can change
@@ -162,10 +180,12 @@ a local draft rather than what is saved.
 
 ---
 
-## Reading from the API
+## The API — your tools
 
-Everything you need is a plain HTTP GET. There is no database password, no
-connection string, and nothing to install.
+This is the whole tool set: what each one gives you, and what to call to
+get it. Every one is a plain HTTP GET — the single exception is creating an
+agent, above. There is no database password, no connection string, and
+nothing to install.
 
 **Base URL** — the same server the Builder itself talks to:
 
@@ -178,75 +198,68 @@ return, and it lives in the user's browser. Theirs is in
 `.lybi/config.json` next to the drafts folder; if it is missing, ask them
 to open "Work with your AI" in the Builder toolbar, which writes it.
 
-Use `curl` and save what you need. Pretty-print with `jq` if it helps.
+### Agents
 
-### The agent itself
-
-```bash
-curl -s "$BASE/api/builder/projects?agentSlug=freeda&ownerUserId=$OWNER"
-```
-
-Returns the whole nested project in one call — the agent body **and** all
-its crews, already assembled. This is the thing you write into the draft
-file. (Server-side this is `hydrateProject()` in
-`aspect-agent-server/builder/services/builderProjects.js`, which is the
-definitive read logic if you ever need to know exactly what it assembles.)
-
-### Every agent
-
-```bash
-curl -s "$BASE/api/builder/projects/list?ownerUserId=$OWNER"
-```
+| What you want | Call | What comes back |
+|---|---|---|
+| **The agent you are working on** — its body and every crew, already assembled | `GET /api/builder/projects?agentSlug=<slug>&ownerUserId=<id>` | `{ id, name, spec, agents: [ { …agent, crews: [ … ] } ] }` — exactly what goes into the draft file's `doc` |
+| **Every agent on the platform** | `GET /api/builder/projects/list?ownerUserId=<id>` | `{ projects: [ { projectId, projectName, agentId, agentSlug, agentName, updatedAt, archivedAt } ] }` |
+| **A brand-new agent** — the one write you may make, and only after asking | `POST /api/builder/projects` | The new project. Body and rules are under "Creating things" above. |
 
 Reading other agents is encouraged. When the user asks for something that
 exists elsewhere ("like the one in account-opening"), go and read that
 agent and copy the real structure rather than inventing one.
 
+The pull is `hydrateProject()` in
+`aspect-agent-server/builder/services/builderProjects.js`, if you ever need
+to know exactly what it assembles.
+
+### Conversations and runs
+
+| What you want | Call | What comes back |
+|---|---|---|
+| **Find a conversation** | `GET /api/agents/<slug>/conversations?ownerUserId=<id>&source=live` | The 50 newest: `{ conversations: [ { id, name, createdAt, updatedAt, metadata } ] }`. `source=live` is real customer chats; anything else means tests run inside the Builder. |
+| **Read the transcript** | `GET /api/agents/<slug>/conversations/<convId>/messages` | `{ messages: [ { id, role, content, createdAt } ] }` |
+| **What each addon actually saw and produced** | `GET /api/agents/<slug>/messages/<messageId>/runs` | `{ runs: [ { pluginId, status, durationMs, runData, … } ] }`. `runData` holds the fully assembled prompt as the model received it, the raw output, the parsed output and the memory writes. |
+| **The conversation's memory** — fields by domain | `GET /api/agents/<slug>/conversations/<convId>/memory?ownerUserId=<id>` | `{ memory, thinking, summary, retrieval, panels }` |
+| **Live Brain panels**, and their runs | `GET /api/agents/<slug>/conversations/<convId>/live-brain?ownerUserId=<id>` · `…/live-brain/runs` | `{ panels, frame }`. Add `version=active\|viewing\|published` to read a different line. |
+| **Profiler output**, and its runs | `GET /api/agents/<slug>/conversations/<convId>/profiler?ownerUserId=<id>` · `…/profiler/runs` | `{ panels, frame, ask }` |
+| **Why an agent was changed, and by whom** | `GET /api/builder/alfred/agents/<agentId>/log` | `{ entries: [ … ] }` — the newest 100 |
+
+### Reading the answers
+
+- `400` means a query parameter is missing; `404` means no agent has that
+  slug. Recover from a `404` by matching the name the user said against
+  the agent list — slugs are stored, not derived, so never invent one.
+- `ownerUserId` is accepted and then ignored: every agent is visible to
+  every builder id. A wrong one never explains a failure.
+- An unknown slug on the conversation endpoints returns an empty list
+  rather than a `404`, so an empty result is not proof that nothing
+  happened — check the slug before reporting that there are no
+  conversations.
+- Empty `panels` from Live Brain or Profiler means the agent has none, or
+  the feature is switched off. That is an answer, not an error.
+
+If a call genuinely fails, say so and quote the status and the body. Never
+quietly fall back to asking the user to go and do your job in the Builder:
+making the call is yours, and giving up on it costs them the session.
+
 ---
 
 ## Debugging what an agent actually did
 
-When the user says "it didn't work", do not guess from the JSON. Go and
+When the user says "it didn't work", do not guess from the JSON — go and
 look at the run.
 
-**1. Find the conversation.** `source=live` for real customer chats,
-`builder-preview` for tests run inside the Builder:
-
-```bash
-curl -s "$BASE/api/agents/freeda/conversations?ownerUserId=$OWNER&source=builder-preview"
-```
-
-**2. Read the transcript:**
-
-```bash
-curl -s "$BASE/api/agents/freeda/conversations/<convId>/messages"
-```
-
-**3. Read what each addon actually saw and produced** — this is the one
-that answers the question. `runData` holds the fully assembled prompt
-exactly as the model received it, the raw output, the parsed output, and
-the memory writes:
-
-```bash
-curl -s "$BASE/api/agents/freeda/messages/<messageId>/runs"
-```
-
-Take the `messageId` of the assistant message that came out wrong. Start
-with any run whose `status` is `error`, then read the `runData` of the step
-that misbehaved.
+Find the conversation, take the `messageId` of the assistant message that
+came out wrong, and read its runs. Start with any run whose `status` is
+`error`, then read the `runData` of the step that misbehaved: it holds the
+prompt exactly as the model received it, which is the thing that actually
+answers the question.
 
 Most "the agent ignored my instruction" reports turn out to be a prompt
 that never contained the instruction, or a field that was never filled —
-both plainly visible here and nowhere else.
-
-**Also available when you need them:**
-
-| What | Endpoint |
-|---|---|
-| The conversation's memory (fields by domain) | `/api/agents/:slug/conversations/:convId/memory` |
-| Live Brain panels and their runs | `/api/agents/:slug/conversations/:convId/live-brain[/runs]` |
-| Profiler output and its runs | `/api/agents/:slug/conversations/:convId/profiler[/runs]` |
-| History of changes to an agent, and why | `/api/builder/alfred/agents/:agentId/log` |
+both plainly visible there and nowhere else.
 
 ---
 

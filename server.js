@@ -129,6 +129,13 @@ app.use('/api/builder/workspaces', require('./builder/routes/workspacesRoute'));
 // user's own machine. See builder/routes/aiBundleRoute.js for what is in
 // it and what is deliberately left out.
 app.use('/api/builder/ai-bundle', require('./builder/routes/aiBundleRoute'));
+// The front door for an AI that is not ours. One URL a person pastes into
+// any chat: it explains the platform in prose, serves our source by its
+// real repo path, and takes a changed agent back as a new version. No
+// install, no folder, no connector. Mounted OUTSIDE /api deliberately —
+// this URL is typed and pasted by people, so it stays short.
+// See builder/routes/mcpRoute.js.
+app.use('/builder/mcp', require('./builder/routes/mcpRoute'));
 // Builder doc CRUD (creating projects/agents/crews, saving versions,
 // setting active/viewing pointers). All under /api/builder/*.
 app.use('/api/builder', require('./builder/routes/projectsRoute'));
