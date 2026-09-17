@@ -22,6 +22,7 @@ const stub = require('./_stub/module');
 const replenishment = require('./replenishment/module');
 const taskboard = require('./taskboard/module');
 const googleAuth = require('./google-auth/module');
+const otto = require('./otto/module');
 const { PLANNED_APPS } = require('./_planned/apps');
 
 // The stub exists to test the framework, not to serve anyone. Keeping it out
@@ -34,6 +35,7 @@ const DESCRIPTORS = [
   replenishment,
   taskboard,
   googleAuth,
+  otto,
 ];
 
 /**

@@ -342,7 +342,7 @@ router.post('/:datasetId/classify-prompt', async (req, res) => {
   if (!prompt) return res.status(400).json({ error: 'A prompt is required' });
   try {
     await requireEnabled(req.params.datasetId);
-    const isSimpleQuery = await investigationService.classifyPrompt(prompt);
+    const isSimpleQuery = await investigationService.classifyPrompt(prompt, req.params.datasetId);
     res.json({ isSimpleQuery });
   } catch (err) {
     handleError(res, err, 'classify-prompt');

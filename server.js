@@ -164,8 +164,9 @@ app.use('/api/admin/intelligence', require('./insights/routes/insights-admin.rou
 app.use('/api/modules', require('./modules/routes/modules.routes'));
 
 // Otto — the screen builder. Talks to a non-developer, agrees a plan, then
-// writes an operational HTML screen for the Intelligence Center's Apps area.
-// See otto/services/otto.service.js for why it is three calls and not one agent.
+// composes a screen SPEC that our own components render on the client's real
+// data. Per-dataset, gated on the `otto` module being live (enabled per
+// client from the admin Modules tab). See docs/features/otto.md.
 app.use('/api/otto', require('./otto/routes/otto.routes'));
 
 // ─── Aspect Task Board ─────────────────────────────────────────────
