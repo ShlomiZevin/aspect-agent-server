@@ -153,7 +153,15 @@ function validateResultSet(rs, brief, errors) {
       if (!m?.id || !ID_RE.test(m.id)) errors.push(`${mw}: id must be a lowercase identifier`);
       if (!MEASURE_AGGS.includes(m?.agg)) errors.push(`${mw}: agg must be one of ${MEASURE_AGGS.join('/')}`);
       if (m?.agg !== 'count') {
-        if (!m?.field) errors.push(`${mw}: field is required for agg '${m?.agg}'`);
+        if (m?.field && m?.expr) errors.push(`${mw}: use either field or expr, not both`);
+        else if (m?.expr !== undefined) {
+          if (typeof m.expr !== 'string') errors.push(`${mw}: expr must be a string`);
+          // A measure expr runs PER ROW, before the aggregate — it may only
+          // reach this source's own raw fields, never groupBy/other measures
+          // (those exist only after aggregation, which is the same reason
+          // computed columns cannot see raw fields — see baseCols above).
+          else validateExprOver(m.expr, new Set(sourceFields.keys()), mw, errors);
+        } else if (!m?.field) errors.push(`${mw}: field or expr is required for agg '${m?.agg}'`);
         else checkFieldRef(m.field, 'measure field');
       }
       if (!isBilingual(m?.label)) errors.push(`${mw}: label must carry both en and he`);
