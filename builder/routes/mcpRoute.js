@@ -51,6 +51,8 @@
  */
 
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const router = express.Router();
 
 const builderProjects = require('../services/builderProjects');
@@ -86,7 +88,16 @@ function urls(req) {
   return { origin, base: `${origin}${req.baseUrl}` };
 }
 
-function sendText(res, body, type = 'text/markdown') {
+/**
+ * Everything textual goes out as `text/plain`.
+ *
+ * It is Markdown, and `text/markdown` is the honest label — but browser
+ * reader tools in chat clients refuse that content type outright. ChatGPT
+ * could reach this page and then declined to display it, which makes the
+ * whole idea fail at the first step for the exact audience it is for.
+ * Plain text renders the identical Markdown and nothing refuses it.
+ */
+function sendText(res, body, type = 'text/plain') {
   res.type(`${type}; charset=utf-8`).send(body);
 }
 
@@ -207,7 +218,7 @@ The code is the truth. Good places to start:
 | Question | Fetch |
 |---|---|
 | What shape is an agent or crew body? | \`${base}/code/builder/types/index.ts\` |
-| What addons exist and how is each configured? | \`${base}/code/builder/addons/\` |
+| **What addons exist and how is each configured?** | \`${base}/addons\` — all of them, one page |
 | What does an addon do at runtime? | \`${base}/code/builder/plugins/\` |
 | What \`{{...}}\` tokens can a prompt use? | \`${base}/code/builder/promptPlaceholders.json\` |
 | How is a prompt assembled and an agent run? | \`${base}/code/builder/runtime/\` |
@@ -370,6 +381,40 @@ router.get(/^\/code\/(.+)$/, (req, res) => {
 
 router.get('/code', (_req, res) => {
   sendText(res, alfredTools.readPlatformFile('builder/'));
+});
+
+/**
+ * Every addon descriptor, in full, in one response.
+ *
+ * The granular routes make an assistant list the directory and then fetch
+ * each file — eight round trips to answer the most predictable question
+ * in the whole system, and the one where guessing costs the most: a made
+ * up config key saves cleanly and then silently does nothing at runtime.
+ * ChatGPT hit exactly this, ran out of fetches and asked the person to
+ * paste the directory listing by hand. Same content, one fetch.
+ *
+ * Bundled because it is always wanted together and rarely changes. The
+ * long tail — a plugin's runtime, one guide, a transcript — stays
+ * granular, where bundling would only waste context.
+ */
+const ADDONS_DIR = path.join(__dirname, '..', 'addons');
+
+router.get('/addons', (_req, res) => {
+  let files;
+  try {
+    files = fs.readdirSync(ADDONS_DIR).filter(f => f.endsWith('.addon.json')).sort();
+  } catch (err) {
+    console.error('[builder-mcp] addons failed:', err);
+    return res.status(500).type('text/plain').send(`Could not read the addons: ${err.message}`);
+  }
+  sendText(res, [
+    '# Every addon, with its full configuration',
+    '',
+    `${files.length} addons, complete. Everything you need to configure any of`,
+    'them is on this page — you should never have to guess a key name.',
+    '',
+    ...files.map(f => alfredTools.readPlatformFile(`builder/addons/${f}`)),
+  ].join('\n\n'));
 });
 
 // ─── Writing ───────────────────────────────────────────────────────
