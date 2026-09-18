@@ -62,11 +62,37 @@ function readMessages(body) {
     .slice(-24); // enough context to stay coherent, short enough to stay cheap
 }
 
-async function loadScreen(req) {
+/** Who is asking — same anonymous per-browser id `createdBy` is stamped
+ *  with on create (services/userService, no real auth yet). Sent as a query
+ *  param so it is available on every verb, including DELETE. */
+function readViewerId(req) {
+  const v = req.query?.viewerId ?? req.body?.viewerId;
+  return typeof v === 'string' && v.trim() ? v.trim().slice(0, 80) : null;
+}
+
+/**
+ * Loads a screen and enforces per-creator scoping (task #92): a draft/ready
+ * screen a viewer did not create does not exist as far as they're concerned
+ * (404, not 403 — it must not even reveal it exists). A published app is
+ * visible to everyone but `forEdit` routes (chat/plan/build/rename/publish/
+ * unpublish/revert/delete) still require the creator.
+ */
+async function loadScreen(req, { forEdit = false } = {}) {
   const screen = await screens.get(req.params.datasetId, req.params.id);
   if (!screen) {
     const err = new Error('Screen not found');
     err.status = 404;
+    throw err;
+  }
+  const viewerId = readViewerId(req);
+  if (!screens.canView(screen, viewerId)) {
+    const err = new Error('Screen not found');
+    err.status = 404;
+    throw err;
+  }
+  if (forEdit && !screens.canEdit(screen, viewerId)) {
+    const err = new Error('Only the creator can edit this screen');
+    err.status = 403;
     throw err;
   }
   return screen;
@@ -76,7 +102,7 @@ async function loadScreen(req) {
 
 router.get('/:datasetId/screens', handle(async (req, res) => {
   res.json({
-    screens: await screens.list(req.params.datasetId),
+    screens: await screens.list(req.params.datasetId, { viewerId: readViewerId(req) }),
     starters: req.otto.brief.starters || [],
   });
 }));
@@ -95,7 +121,7 @@ router.get('/:datasetId/screens/:id', handle(async (req, res) => {
 }));
 
 router.patch('/:datasetId/screens/:id', handle(async (req, res) => {
-  const screen = await loadScreen(req);
+  const screen = await loadScreen(req, { forEdit: true });
   const body = req.body || {};
 
   // "Edit app": the ONE operation a published app accepts — it drops back
@@ -145,7 +171,7 @@ router.patch('/:datasetId/screens/:id', handle(async (req, res) => {
 }));
 
 router.delete('/:datasetId/screens/:id', handle(async (req, res) => {
-  const screen = await loadScreen(req);
+  const screen = await loadScreen(req, { forEdit: true });
   if (screen.status === 'active') {
     // Q4: published removal is super-admin tooling, not a client button.
     const err = new Error('A published screen cannot be deleted from here');
@@ -159,7 +185,7 @@ router.delete('/:datasetId/screens/:id', handle(async (req, res) => {
 // ── the three calls ──────────────────────────────────────────────────────
 
 router.post('/:datasetId/screens/:id/chat', handle(async (req, res) => {
-  const screen = await loadScreen(req);
+  const screen = await loadScreen(req, { forEdit: true });
   if (screen.status === 'active') { const e = new Error('A published screen cannot be edited'); e.status = 409; throw e; }
   const messages = readMessages(req.body);
 
@@ -184,7 +210,7 @@ router.post('/:datasetId/screens/:id/chat', handle(async (req, res) => {
 }));
 
 router.post('/:datasetId/screens/:id/plan', handle(async (req, res) => {
-  const screen = await loadScreen(req);
+  const screen = await loadScreen(req, { forEdit: true });
   if (screen.status === 'active') { const e = new Error('A published screen cannot be edited'); e.status = 409; throw e; }
   const messages = readMessages(req.body);
 
@@ -209,7 +235,7 @@ router.post('/:datasetId/screens/:id/plan', handle(async (req, res) => {
 }));
 
 router.post('/:datasetId/screens/:id/build', handle(async (req, res) => {
-  const screen = await loadScreen(req);
+  const screen = await loadScreen(req, { forEdit: true });
   if (screen.status === 'active') { const e = new Error('A published screen cannot be rebuilt'); e.status = 409; throw e; }
   if (!screen.plan || !screen.plan.title) {
     const err = new Error('The screen has no approved plan yet');
@@ -230,6 +256,7 @@ router.post('/:datasetId/screens/:id/build', handle(async (req, res) => {
 }));
 
 router.get('/:datasetId/screens/:id/build/latest', handle(async (req, res) => {
+  await loadScreen(req);
   const run = await buildJob.latestBuild(req.params.datasetId, req.params.id);
   res.json({ build: buildJob.describeProgress(run) });
 }));

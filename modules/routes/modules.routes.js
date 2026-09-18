@@ -206,7 +206,8 @@ router.use('/replenishment', require('../replenishment/routes/replenishment.rout
 router.get('/apps/:datasetId', async (req, res) => {
   try {
     const withHeadlines = req.query.headlines === '1' || req.query.headlines === 'true';
-    res.json(await appsService.listApps(req.params.datasetId, { withHeadlines }));
+    const viewerId = typeof req.query.viewerId === 'string' ? req.query.viewerId.trim().slice(0, 80) || null : null;
+    res.json(await appsService.listApps(req.params.datasetId, { withHeadlines, viewerId }));
   } catch (err) {
     console.error('[modules] apps error:', err.message);
     res.status(500).json({ error: err.message });

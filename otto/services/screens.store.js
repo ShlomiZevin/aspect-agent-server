@@ -13,7 +13,7 @@
 const crypto = require('crypto');
 const db = require('../../services/db.pg');
 const { customModules } = require('../../db/schema');
-const { eq, and, asc, desc, ne, isNull } = require('drizzle-orm');
+const { eq, and, or, asc, desc, ne, isNull, inArray } = require('drizzle-orm');
 
 const MAX_CONVERSATION = 60; // turns kept on a draft — enough to reopen mid-thought
 
@@ -36,13 +36,36 @@ function toSummary(row) {
   };
 }
 
-async function list(datasetId, { includeArchived = false } = {}) {
+/** Everyone can see a published (or once-published/archived) screen; a
+ *  draft/ready screen is visible only to whoever created it. A screen with
+ *  no createdBy predates this scoping (task #92) and stays visible to all,
+ *  so nothing existing becomes unreachable. */
+function canView(row, viewerId) {
+  if (row.status !== 'draft' && row.status !== 'ready') return true;
+  return !row.createdBy || row.createdBy === viewerId;
+}
+
+/** Only the creator may edit — chat, plan, build, rename, publish, unpublish,
+ *  revert or delete — regardless of the screen's current status. Same
+ *  no-createdBy carve-out as canView, for the same reason. */
+function canEdit(row, viewerId) {
+  return !row.createdBy || row.createdBy === viewerId;
+}
+
+async function list(datasetId, { includeArchived = false, viewerId = null } = {}) {
   const drizzle = db.getDrizzle();
+  const conditions = [eq(customModules.datasetId, datasetId)];
+  if (!includeArchived) conditions.push(ne(customModules.status, 'archived'));
+  // Draft/ready screens are private to their creator (task #92) — everyone
+  // still sees published apps and legacy ownerless rows.
+  conditions.push(or(
+    inArray(customModules.status, ['active', 'archived']),
+    isNull(customModules.createdBy),
+    ...(viewerId ? [eq(customModules.createdBy, viewerId)] : []),
+  ));
   const rows = await drizzle
     .select().from(customModules)
-    .where(includeArchived
-      ? eq(customModules.datasetId, datasetId)
-      : and(eq(customModules.datasetId, datasetId), ne(customModules.status, 'archived')))
+    .where(and(...conditions))
     // OLDEST first, so the newest app ends up adjacent to the "+ New app"
     // tile that follows the list on the shelf (task #81). Newest-first put
     // it at the far end instead, which reads backwards in both directions
@@ -198,4 +221,4 @@ async function removeDraft(datasetId, screenId) {
   return rows.length > 0;
 }
 
-module.exports = { list, get, create, update, storeSpec, publish, unpublish, revert, removeDraft, toSummary };
+module.exports = { list, get, create, update, storeSpec, publish, unpublish, revert, removeDraft, toSummary, canView, canEdit };
