@@ -152,6 +152,18 @@ If the user says "make sure you're aligned", they mean this.
 
 ---
 
+## 5b. Then the outside door
+
+Outside AI assistants learn the platform from `lybi.ai/builder/mcp`
+(`builder/routes/mcpRoute.js`). Much of what you just taught Alfred
+reaches it for free, because it serves Alfred's brief and the source —
+but new body sections, new things to read, and new things to do each
+need a step there too. Follow
+**`docs/guides/BUILDER_MCP_MAINTENANCE.md`** and run
+`node scripts/test-builder-mcp.js`.
+
+---
+
 ## 6. Report
 
 Update the fleet unit **alfred-sync** (see `c:/workspace/fleet/FLEET_PROTOCOL.md`)

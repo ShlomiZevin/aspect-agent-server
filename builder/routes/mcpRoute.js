@@ -37,10 +37,13 @@
  * exactly the failure we just fixed in Alfred, rebuilt one level down.
  *
  * The safety is structural instead, and stronger: a write creates a NEW
- * version and moves only `viewingVersionId`. It never touches `active`
- * (what runs) or `published` (what customers get). A bad body is visible
- * in the Builder and undone by switching version. Nothing an outside
- * assistant does can reach a customer.
+ * version and makes it active — the editable line the Builder opens. It
+ * never touches `published` (what customers get). A bad body is visible
+ * in the Builder and undone by switching back a version. Nothing an
+ * outside assistant does can reach a customer.
+ *
+ * Maintaining this file: docs/guides/BUILDER_MCP_MAINTENANCE.md, and run
+ * scripts/test-builder-mcp.js after any change.
  *
  * ── The allowlist ──────────────────────────────────────────────────
  *
