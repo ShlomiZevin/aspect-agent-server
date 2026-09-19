@@ -72,9 +72,9 @@ async function headlineFor(descriptor, datasetId) {
 
 /**
  * @param {string} datasetId
- * @param {{ withHeadlines?: boolean }} opts headlines cost a full compute, so
- *   the nav check — which only needs to know whether the shelf is empty — asks
- *   without them.
+ * @param {{ withHeadlines?: boolean, viewerId?: string|null }} opts headlines
+ *   cost a full compute, so the nav check — which only needs to know whether
+ *   the shelf is empty — asks without them. `viewerId` scopes drafts (§92).
  */
 async function listApps(datasetId, opts = {}) {
   let live = [];
@@ -109,7 +109,7 @@ async function listApps(datasetId, opts = {}) {
     // is going; never installable, because installing one would install nothing.
     planned: registry.PLANNED_APPS.map(a => ({ id: a.id, name: a.name, icon: a.icon, blurb: a.blurb })),
     researchedAt: stamp,
-    ...(await customSection(datasetId, live)),
+    ...(await customSection(datasetId, live, opts.viewerId || null)),
   };
 }
 
@@ -117,8 +117,9 @@ async function listApps(datasetId, opts = {}) {
  * The custom-screens section of the shelf — Otto's contribution.
  *
  * `canCreate` (the "New screen — with OTTO" tile) means module `otto` is
- * live; `custom` is this dataset's screens, drafts included (everyone in
- * the client sees everyone's drafts — decision D5).
+ * live; `custom` is this dataset's screens. Drafts/ready screens are scoped
+ * to their creator (task #92, supersedes decision D5) — `viewerId` decides
+ * whose; a screen with no creator on record (pre-#92) stays visible to all.
  *
  * SHAPE GUARANTEE: with Otto off AND zero screens, the keys are OMITTED
  * entirely, so the payload is byte-identical to the pre-Otto shelf — the
@@ -126,12 +127,12 @@ async function listApps(datasetId, opts = {}) {
  * asserted in scripts/test-otto-unit.js. Failures degrade to "no custom
  * section", never to a broken shelf.
  */
-async function customSection(datasetId, live) {
+async function customSection(datasetId, live, viewerId) {
   try {
     const canCreate = (live || []).some(x => x.descriptor.id === 'otto');
     let custom = [];
     try {
-      custom = await require('../../otto/services/screens.store').list(datasetId);
+      custom = await require('../../otto/services/screens.store').list(datasetId, { viewerId });
     } catch (err) {
       console.warn(`[apps] custom screens for ${datasetId} unavailable: ${err.message}`);
     }

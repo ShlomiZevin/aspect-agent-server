@@ -51,7 +51,7 @@ function compileResultSet(rs, brief, schemaName) {
       columns.push(g);
     }
     for (const m of rs.aggregate.measures) {
-      const inner = m.agg === 'count' ? '*' : rawCol(m.field);
+      const inner = m.agg === 'count' ? '*' : (m.expr ? toSQL(parseExpr(m.expr), rawCol) : rawCol(m.field));
       selectParts.push(`${m.agg.toUpperCase()}(${inner})::float8 AS ${q(m.id)}`);
       columns.push(m.id);
     }
@@ -68,7 +68,7 @@ function compileResultSet(rs, brief, schemaName) {
   const baseExpr = (fid) => {
     if (!rs.aggregate) return rawCol(fid);
     const m = rs.aggregate.measures.find(x => x.id === fid);
-    if (m) return `${m.agg.toUpperCase()}(${m.agg === 'count' ? '*' : rawCol(m.field)})::float8`;
+    if (m) return `${m.agg.toUpperCase()}(${m.agg === 'count' ? '*' : (m.expr ? toSQL(parseExpr(m.expr), rawCol) : rawCol(m.field))})::float8`;
     return rs.aggregate.groupBy.includes(fid) ? rawCol(fid) : null;
   };
   for (const c of rs.computed || []) {

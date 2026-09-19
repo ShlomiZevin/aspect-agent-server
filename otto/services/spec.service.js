@@ -81,7 +81,7 @@ THE SPEC FORMAT — return ONLY this JSON shape:
 
 Rules — all binding:
 1. Block kinds: ${BLOCK_KINDS.join(', ')}. Nothing else exists.
-2. A result set reads ONE source. For grouped data use "aggregate": { "groupBy": [...], "measures": [ { "id", "agg" (${MEASURE_AGGS.join('/')}), "field", "label", "format" } ] } INSTEAD of "select".
+2. A result set reads ONE source. For grouped data use "aggregate": { "groupBy": [...], "measures": [ { "id", "agg" (${MEASURE_AGGS.join('/')}), "field" OR "expr", "label", "format" } ] } INSTEAD of "select". A measure normally aggregates one raw field ("field"). When the number is a product of two raw fields of the SAME source (e.g. revenue = qty * unit_price, with no "revenue" field in the brief), give the measure an "expr" instead of a "field" — it runs per row, before the aggregate, over this source's raw field ids only. Never put that kind of expression in "computed": computed columns run AFTER the aggregate and cannot see raw fields that were not also selected as a groupBy or another measure.
 3. KPI aggs: ${KPI_AGGS.join(', ')}. Chart variants: ${CHART_VARIANTS.join(', ')}. A pie chart needs ONE series of non-negative values and at most 10 categories — give its result set an orderBy and a limit of 10 or less.
 4. Expressions ("expr", "where") are plain arithmetic and one comparison over column ids — no functions, no strings, no AND/OR.
 5. Every label carries BOTH "en" and "he" — the screen renders in either language.

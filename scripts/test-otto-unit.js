@@ -266,6 +266,43 @@ console.log('4. spec validation');
   });
   check('aggregate set + chart passes', validateSpec(agg, BRIEF).length === 0,
     validateSpec(agg, BRIEF).join('; '));
+
+  // Task #90: a measure that is the PRODUCT of two raw fields with no
+  // single brief field for it (e.g. revenue = qty * unit_price) has no
+  // legal shape without "expr" — the model retried a "computed" version
+  // of this exact case 3 times and failed every build.
+  const exprMeasure = clone(SPEC);
+  exprMeasure.resultSets.push({
+    id: 'by_supplier', source: 'stock',
+    aggregate: {
+      groupBy: ['supplier'],
+      measures: [{ id: 'value', agg: 'sum', expr: 'qty * safety', label: { en: 'Value', he: 'ערך' }, format: 'int' }],
+    },
+  });
+  check('measure with expr over raw fields passes', validateSpec(exprMeasure, BRIEF).length === 0,
+    validateSpec(exprMeasure, BRIEF).join('; '));
+
+  const badExprMeasure = clone(SPEC);
+  badExprMeasure.resultSets.push({
+    id: 'by_supplier', source: 'stock',
+    aggregate: {
+      groupBy: ['supplier'],
+      measures: [{ id: 'value', agg: 'sum', expr: 'qty * revenue', label: { en: 'Value', he: 'ערך' }, format: 'int' }],
+    },
+  });
+  check('measure expr referencing an unknown field is rejected',
+    validateSpec(badExprMeasure, BRIEF).some(e => e.includes('revenue')));
+
+  const bothFieldAndExpr = clone(SPEC);
+  bothFieldAndExpr.resultSets.push({
+    id: 'by_supplier', source: 'stock',
+    aggregate: {
+      groupBy: ['supplier'],
+      measures: [{ id: 'value', agg: 'sum', field: 'qty', expr: 'qty * safety', label: { en: 'Value', he: 'ערך' }, format: 'int' }],
+    },
+  });
+  check('measure with both field and expr rejected',
+    validateSpec(bothFieldAndExpr, BRIEF).some(e => e.includes('either field or expr')));
 }
 
 // ── 5 · compiler ─────────────────────────────────────────────────────────
@@ -304,6 +341,18 @@ console.log('5. compiler');
   const aggSql = compileResultSet(aggRs, BRIEF, 'testset').sql;
   check('aggregate emits GROUP BY', aggSql.includes('GROUP BY "supplier_name"'), aggSql);
   check('measure aliased', aggSql.includes('SUM("qty_on_hand")::float8 AS "total_qty"'), aggSql);
+
+  // Task #90: expr measure (product of two raw fields, pre-aggregate).
+  const exprAggRs = {
+    id: 'by_supplier', source: 'stock',
+    aggregate: {
+      groupBy: ['supplier'],
+      measures: [{ id: 'value', agg: 'sum', expr: 'qty * safety', label: { en: 'V', he: 'ו' } }],
+    },
+  };
+  const exprAggSql = compileResultSet(exprAggRs, BRIEF, 'testset').sql;
+  check('expr measure compiles the product inside the aggregate function',
+    exprAggSql.includes('SUM(("qty_on_hand" * "safety_stock"))::float8 AS "value"'), exprAggSql);
 
   const all = compileSpec(clone(SPEC), BRIEF, 'testset');
   check('compileSpec covers all sets and kpis',
