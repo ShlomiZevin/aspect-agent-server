@@ -16,6 +16,7 @@
  *   POST   /:datasetId/screens/:id/plan        draft / revise the structured plan
  *   POST   /:datasetId/screens/:id/build       start the build job → {buildId}
  *   GET    /:datasetId/screens/:id/build/latest    polled progress
+ *   GET    /:datasetId/screens/:id/cost        LLM cost of making this screen so far
  *   GET    /:datasetId/builds/running          all running builds (the nav pill)
  *   GET    /:datasetId/screens/:id/data        executed result sets (cached)
  *   GET/PUT /:datasetId/store/:moduleId/:collection[/:docId]   the doc store
@@ -28,6 +29,7 @@ const screens = require('../services/screens.store');
 const brainstormService = require('../services/brainstorm.service');
 const planService = require('../services/plan.service');
 const buildJob = require('../services/build-job.service');
+const costService = require('../services/cost.service');
 const dataService = require('../services/data.service');
 const docStore = require('../services/doc-store.service');
 const { ICONS, isBilingual } = require('../services/spec.contract');
@@ -198,6 +200,7 @@ router.post('/:datasetId/screens/:id/chat', handle(async (req, res) => {
     // interface language, like Data Chat and reports (owner, 2026-09-15).
     language: ['en', 'he'].includes(req.body?.language) ? req.body.language : null,
     agentName: req.params.datasetId,
+    usageKey: costService.usageKey(screen.id),
   });
 
   // The transcript is part of the draft — a reopened draft continues
@@ -220,6 +223,7 @@ router.post('/:datasetId/screens/:id/plan', handle(async (req, res) => {
     brief: req.otto.brief,
     settings: req.otto.settings,
     agentName: req.params.datasetId,
+    usageKey: costService.usageKey(screen.id),
   });
 
   // The plan is stored on the draft immediately — it is the approval gate's
@@ -259,6 +263,12 @@ router.get('/:datasetId/screens/:id/build/latest', handle(async (req, res) => {
   await loadScreen(req);
   const run = await buildJob.latestBuild(req.params.datasetId, req.params.id);
   res.json({ build: buildJob.describeProgress(run) });
+}));
+
+/** What this screen has cost to make so far — shown on top of the builder. */
+router.get('/:datasetId/screens/:id/cost', handle(async (req, res) => {
+  const screen = await loadScreen(req);
+  res.json({ cost: await costService.costFor(screen.id) });
 }));
 
 router.get('/:datasetId/builds/running', handle(async (req, res) => {

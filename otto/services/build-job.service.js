@@ -120,6 +120,7 @@ async function runPipeline(buildId, { datasetId, screen, brief, settings, pool, 
         previousSpec: screen.screenSpec || null,
         probeFeedback,
         agentName: datasetId,
+        usageKey: require('./cost.service').usageKey(screen.id),
       });
       emit(`round ${round}: spec composed (${Date.now() - started}ms, ${spec.blocks.length} blocks, ${spec.resultSets.length} result sets)`);
 
