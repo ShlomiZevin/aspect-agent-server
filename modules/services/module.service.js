@@ -213,6 +213,15 @@ async function describe(datasetId, descriptor, state) {
     initModel: state?.initModel || null,
     updatedBy: state?.updatedBy || null,
     updatedAt: state?.updatedAt || null,
+
+    // Only modules that declare a usage() carry this. A failing summary must
+    // not take the whole admin list down, so it degrades to null.
+    ...(descriptor.usage ? {
+      usage: await descriptor.usage(datasetId).catch(err => {
+        console.warn(`[modules] ${datasetId}/${descriptor.id}: usage summary failed: ${err.message}`);
+        return null;
+      }),
+    } : {}),
   };
 }
 
@@ -314,7 +323,16 @@ async function setEnabled(datasetId, moduleId, enabled, updatedBy) {
     patch.status = patch.enabled ? 'ready' : 'not_initialized';
   }
 
+  const wasEnabled = (await getState(datasetId, moduleId))?.enabled ?? false;
   await upsert(datasetId, moduleId, patch, updatedBy);
+
+  // Off -> on only, so re-saving an already-on switch does not fire it again.
+  // Not awaited: it can be minutes of work, and the admin's click must return.
+  if (patch.enabled && !wasEnabled && descriptor.onEnabled) {
+    Promise.resolve()
+      .then(() => descriptor.onEnabled(datasetId))
+      .catch(err => console.error(`[modules] ${datasetId}/${moduleId}: onEnabled failed: ${err.message}`));
+  }
   return getForDataset(datasetId, moduleId);
 }
 

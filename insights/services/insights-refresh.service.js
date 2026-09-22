@@ -17,11 +17,20 @@
  *
  * Each run REPLACES the previous set rather than appending, so suggestions stay
  * a small current set instead of growing without bound.
+ *
+ * OPT-IN PER DATASET (2026-09-22). A run re-investigates the whole prompt set
+ * on Claude whether or not anyone uses the product, so the scheduled run only
+ * happens where the `suggested-reports` module is live (modules/
+ * suggested-reports). Enabling the module triggers a forced run immediately; a
+ * forced call (that, the admin POST, a script) skips the module check.
  */
 
 const registry = require('../datasets/registry');
 const intelligenceConfigService = require('./intelligence-config.service');
 const store = require('./insights-store.service');
+const moduleService = require('../../modules/services/module.service');
+
+const MODULE_ID = 'suggested-reports';
 
 /** Matches BOOTSTRAP_USER_ID in investigation.service.js — the owner of shared suggestions. */
 const SYSTEM_USER = 'system';
@@ -49,6 +58,7 @@ async function ensureInsightsRefreshed({ log = console.log, force = false, onlyD
     if (!config.enabled) continue;
     if (onlyDataset && config.id !== onlyDataset) continue;
     if (running.has(config.id)) continue;
+    if (!force && !(await moduleService.isLive(config.id, MODULE_ID))) continue;
 
     const existing = await store.listByUser(config.id, SYSTEM_USER);
     // Already refreshed today? Nothing to do. `createdAt` is epoch ms on every
@@ -83,4 +93,9 @@ async function ensureInsightsRefreshed({ log = console.log, force = false, onlyD
   return done;
 }
 
-module.exports = { ensureInsightsRefreshed, SYSTEM_USER };
+/** Is a regeneration for this dataset running in THIS process right now? */
+function isRunning(datasetId) {
+  return running.has(datasetId);
+}
+
+module.exports = { ensureInsightsRefreshed, isRunning, SYSTEM_USER };
