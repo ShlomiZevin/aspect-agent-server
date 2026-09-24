@@ -56,19 +56,40 @@ const SCHEMA = 'superhist';
  * physical row order. The same defect, unnoticed, inflated hypertoy revenue by
  * 44.6% — a duplicated dimension row multiplies every fact it joins.
  */
+// catalogue_price (מחיר מוצר) was DROPPED from the export on 2026-09-23 and
+// must not be named here — an MV that references a missing column fails the
+// whole Phase 2, which is exactly how that night's reload broke.
 const ITEM_DIM = schema => `
   SELECT DISTINCT ON (item_id)
          item_id, item_name, sku, stock_qty,
-         catalogue_price, catalogue_subsidy, view_count, product_status
+         supplier_name, unit_cost,
+         catalogue_subsidy, view_count, product_status
     FROM ${schema}.products
    WHERE item_id IS NOT NULL
    ORDER BY item_id, updated_at DESC NULLS LAST`;
+
+/**
+ * Order totals, derived from the lines. The export dropped its own order-total
+ * column on 2026-09-23, so it is rebuilt here: every line of the order —
+ * products, shipping, and the NEGATIVE coupon and discount lines — which is
+ * what the member actually paid.
+ */
+const ORDER_TOTALS = schema => `
+  SELECT order_id, SUM(line_total) AS order_total
+    FROM ${schema}.order_lines
+   GROUP BY order_id`;
 
 /**
  * Product lines joined to their order and the item master.
  *
  * The date lives on the ORDER, not the line, so every time-based measure has to
  * come through this join — there is no date on the fact table itself.
+ *
+ * GROSS PROFIT follows the client's own Qlik formula exactly (Measures file,
+ * "Profit / רווח גולמי"): SUM(line_total - line_cost). Subsidy is NOT added —
+ * so on subsidised items it is routinely negative (27% of product lines sell
+ * below cost in the 2026-09-23 delivery). That is the client's definition;
+ * matching it is what lets our number reconcile with their dashboard.
  */
 const SALES = schema => `
   SELECT o.order_date,
@@ -79,9 +100,11 @@ const SALES = schema => `
          o.shipping_method,
          l.item_id,
          l.quantity,
-         l.line_total          AS revenue_inc_vat,
-         l.subsidy             AS subsidy,
-         i.item_name, i.sku
+         l.line_total                          AS revenue_inc_vat,
+         l.line_cost                           AS cost,
+         l.line_total - l.line_cost            AS gross_profit,
+         l.subsidy                             AS subsidy,
+         i.item_name, i.sku, i.supplier_name
     FROM ${schema}.order_lines l
     JOIN ${schema}.orders o ON o.order_id = l.order_id
     LEFT JOIN (${ITEM_DIM(schema)}) i ON i.item_id = l.item_id
@@ -99,27 +122,31 @@ function mvs(schema) {
         SELECT o.order_date,
                COUNT(DISTINCT o.order_id)                          AS order_count,
                COUNT(DISTINCT o.customer_id)                       AS customer_count,
-               SUM(o.order_total)                                  AS order_total_inc_vat,
-               COALESCE(SUM(p.product_revenue), 0)                 AS product_revenue_inc_vat,
-               COALESCE(SUM(p.subsidy), 0)                         AS subsidy,
-               COALESCE(SUM(p.units), 0)                           AS units,
-               COALESCE(SUM(s.shipping_total), 0)                  AS shipping_inc_vat
+               COALESCE(SUM(k.order_total), 0)                     AS order_total_inc_vat,
+               COALESCE(SUM(k.product_revenue), 0)                 AS product_revenue_inc_vat,
+               COALESCE(SUM(k.cost), 0)                            AS cost,
+               COALESCE(SUM(k.gross_profit), 0)                    AS gross_profit,
+               COALESCE(SUM(k.subsidy), 0)                         AS subsidy,
+               COALESCE(SUM(k.units), 0)                           AS units,
+               COALESCE(SUM(k.shipping_total), 0)                  AS shipping_inc_vat,
+               COALESCE(SUM(k.coupon_total), 0)                    AS coupons,
+               COALESCE(SUM(k.discount_total), 0)                  AS discounts,
+               COUNT(DISTINCT o.order_id) FILTER (WHERE k.coupon_total <> 0) AS orders_with_coupon
           FROM ${schema}.orders o
           LEFT JOIN (
             SELECT order_id,
-                   SUM(line_total) AS product_revenue,
-                   SUM(subsidy)    AS subsidy,
-                   SUM(quantity)   AS units
+                   SUM(line_total)                                          AS order_total,
+                   SUM(line_total) FILTER (WHERE line_kind = 'product')     AS product_revenue,
+                   SUM(line_cost)  FILTER (WHERE line_kind = 'product')     AS cost,
+                   SUM(line_total - line_cost) FILTER (WHERE line_kind = 'product') AS gross_profit,
+                   SUM(subsidy)    FILTER (WHERE line_kind = 'product')     AS subsidy,
+                   SUM(quantity)   FILTER (WHERE line_kind = 'product')     AS units,
+                   SUM(line_total) FILTER (WHERE line_kind = 'shipping')    AS shipping_total,
+                   SUM(line_total) FILTER (WHERE line_kind = 'coupon')      AS coupon_total,
+                   SUM(line_total) FILTER (WHERE line_kind = 'discount')    AS discount_total
               FROM ${schema}.order_lines
-             WHERE line_kind = 'product'
              GROUP BY order_id
-          ) p ON p.order_id = o.order_id
-          LEFT JOIN (
-            SELECT order_id, SUM(line_total) AS shipping_total
-              FROM ${schema}.order_lines
-             WHERE line_kind = 'shipping'
-             GROUP BY order_id
-          ) s ON s.order_id = o.order_id
+          ) k ON k.order_id = o.order_id
          WHERE o.order_date IS NOT NULL
          GROUP BY o.order_date`,
       indexes: [{ name: 'uq_mv_orders_daily', col: 'order_date', unique: true }],
@@ -135,9 +162,12 @@ function mvs(schema) {
                item_id,
                MAX(item_name)               AS item_name,
                MAX(sku)                     AS sku,
+               MAX(supplier_name)           AS supplier_name,
                COUNT(DISTINCT order_id)     AS order_count,
                SUM(quantity)                AS units,
                SUM(revenue_inc_vat)         AS revenue_inc_vat,
+               SUM(cost)                    AS cost,
+               SUM(gross_profit)            AS gross_profit,
                SUM(subsidy)                 AS subsidy
           FROM (${SALES(schema)}) s
          WHERE order_date IS NOT NULL AND item_id IS NOT NULL
@@ -164,6 +194,8 @@ function mvs(schema) {
                  COUNT(DISTINCT order_id)  AS order_count,
                  SUM(quantity)             AS units,
                  SUM(revenue_inc_vat)      AS revenue_inc_vat,
+                 SUM(cost)                 AS cost,
+                 SUM(gross_profit)         AS gross_profit,
                  SUM(subsidy)              AS subsidy,
                  MIN(order_date)           AS first_sold,
                  MAX(order_date)           AS last_sold
@@ -174,14 +206,17 @@ function mvs(schema) {
         SELECT COALESCE(i.item_id, sold.item_id)     AS item_id,
                i.item_name,
                i.sku,
+               i.supplier_name,
                i.stock_qty,
-               i.catalogue_price,
+               i.unit_cost,
                i.catalogue_subsidy,
                i.view_count,
                (i.item_id IS NOT NULL)               AS in_catalogue,
                COALESCE(sold.order_count, 0)         AS order_count,
                COALESCE(sold.units, 0)               AS units,
                COALESCE(sold.revenue_inc_vat, 0)     AS revenue_inc_vat,
+               COALESCE(sold.cost, 0)                AS cost,
+               COALESCE(sold.gross_profit, 0)        AS gross_profit,
                COALESCE(sold.subsidy, 0)             AS subsidy,
                sold.first_sold,
                sold.last_sold
@@ -198,13 +233,37 @@ function mvs(schema) {
       sql: `
         SELECT o.customer_id,
                COUNT(DISTINCT o.order_id)   AS order_count,
-               SUM(o.order_total)           AS spend_inc_vat,
+               SUM(t.order_total)           AS spend_inc_vat,
                MIN(o.order_date)            AS first_order,
                MAX(o.order_date)            AS last_order
           FROM ${schema}.orders o
+          LEFT JOIN (${ORDER_TOTALS(schema)}) t ON t.order_id = o.order_id
          WHERE o.customer_id IS NOT NULL
          GROUP BY o.customer_id`,
       indexes: [{ name: 'uq_mv_customers', col: 'customer_id', unique: true }],
+    },
+
+    // ── mv_sales_daily_supplier — day x supplier ─────────────────────────────
+    // Added 2026-09-23 with the supplier and cost columns. Supplier is filled
+    // on every item that has sold, so this covers 100% of product revenue; the
+    // '(unknown)' bucket exists for the day an unmapped item first sells, not
+    // because it is expected to be large.
+    {
+      name: 'mv_sales_daily_supplier',
+      sql: `
+        SELECT order_date,
+               COALESCE(NULLIF(supplier_name, ''), '(unknown)') AS supplier_name,
+               COUNT(DISTINCT order_id)     AS order_count,
+               COUNT(DISTINCT item_id)      AS item_count,
+               SUM(quantity)                AS units,
+               SUM(revenue_inc_vat)         AS revenue_inc_vat,
+               SUM(cost)                    AS cost,
+               SUM(gross_profit)            AS gross_profit,
+               SUM(subsidy)                 AS subsidy
+          FROM (${SALES(schema)}) s
+         WHERE order_date IS NOT NULL
+         GROUP BY order_date, COALESCE(NULLIF(supplier_name, ''), '(unknown)')`,
+      indexes: [{ name: 'uq_mv_sales_daily_supplier', col: 'order_date, supplier_name', unique: true }],
     },
 
     // ── mv_orders_by_status — day x status ───────────────────────────────────
@@ -215,14 +274,15 @@ function mvs(schema) {
     {
       name: 'mv_orders_by_status',
       sql: `
-        SELECT order_date,
-               COALESCE(order_status, '(none)')   AS order_status,
-               COALESCE(display_status, '(none)') AS display_status,
-               COUNT(*)                           AS order_count,
-               SUM(order_total)                   AS order_total_inc_vat
-          FROM ${schema}.orders
-         WHERE order_date IS NOT NULL
-         GROUP BY order_date, COALESCE(order_status, '(none)'), COALESCE(display_status, '(none)')`,
+        SELECT o.order_date,
+               COALESCE(o.order_status, '(none)')   AS order_status,
+               COALESCE(o.display_status, '(none)') AS display_status,
+               COUNT(*)                             AS order_count,
+               SUM(t.order_total)                   AS order_total_inc_vat
+          FROM ${schema}.orders o
+          LEFT JOIN (${ORDER_TOTALS(schema)}) t ON t.order_id = o.order_id
+         WHERE o.order_date IS NOT NULL
+         GROUP BY o.order_date, COALESCE(o.order_status, '(none)'), COALESCE(o.display_status, '(none)')`,
       indexes: [{
         name: 'uq_mv_orders_by_status',
         col: 'order_date, order_status, display_status',

@@ -34,6 +34,11 @@ const COLUMN_MAP = {
     { csvName: 'מזהה שורת הזמנה',    dbName: 'order_line_id',   type: 'TEXT'    },
     { csvName: 'מזהה פריט',          dbName: 'item_id',         type: 'TEXT'    },
     { csvName: 'כמות בהזמנה',        dbName: 'quantity',        type: 'NUMERIC' },
+    // Added by the client 2026-09-23. The cost of the WHOLE line, not per unit:
+    // a quantity-2 line of an item costing 176 carries 352. Filled on every
+    // product line, empty on every non-product line. The client's own Qlik
+    // defines gross profit as SUM(line_total - line_cost) — see the MVs.
+    { csvName: 'עלות בהזמנה',        dbName: 'line_cost',       type: 'NUMERIC' },
     { csvName: 'מחיר פריט',          dbName: 'unit_price',      type: 'NUMERIC' },
     // The union's contribution on this line, NOT a discount off the bill.
     { csvName: 'סבסוד בשורת הזמנה',  dbName: 'subsidy',         type: 'NUMERIC' },
@@ -42,6 +47,12 @@ const COLUMN_MAP = {
     { csvName: 'סך הכל הזמנה',       dbName: 'line_total',      type: 'NUMERIC' },
     { csvName: 'מס',                 dbName: 'tax',             type: 'NUMERIC' },
     { csvName: 'נקודות תגמול',       dbName: 'reward_points',   type: 'NUMERIC' },
+    // Added by the client 2026-09-23 — the source's own kind for a NON-product
+    // row, empty on every product line: shipping, product_shipping, coupon,
+    // bgfnttl (free-shipping benefit), cartdis (cart discount). Coupons and
+    // benefits are NEGATIVE line totals; before this column they were counted
+    // as "shipping". line_kind is derived from it — see create-superhist-indexes.js.
+    { csvName: 'cshev',              dbName: 'extra_kind',      type: 'TEXT'    },
   ],
 
   // ── orders ──────────────────────────────────────────────────────────────────
@@ -53,7 +64,9 @@ const COLUMN_MAP = {
     { csvName: 'שיטת משלוח',         dbName: 'shipping_method',     type: 'TEXT'    },
     { csvName: 'קוד משלוח',          dbName: 'shipping_code',       type: 'TEXT'    },
     { csvName: 'הערות',              dbName: 'notes',               type: 'TEXT'    },
-    // Line totals + shipping. Reconciles on 99.9% of orders.
+    // Line totals + shipping. Reconciles on 99.9% of orders. DROPPED from the
+    // export on 2026-09-23 — kept mapped only so an older file still loads; the
+    // MVs derive the order total from the lines and never read this column.
     { csvName: 'סכום הזמנה',         dbName: 'order_total',         type: 'NUMERIC' },
     // TWO status columns that disagree on 7,176 of 19,062 orders. Both are
     // kept under names that say which is which, because picking one silently
@@ -76,6 +89,18 @@ const COLUMN_MAP = {
     { csvName: 'מזהה פריט',          dbName: 'item_id',             type: 'TEXT'    },
     { csvName: 'מזהה מוצר',          dbName: 'product_id',          type: 'TEXT'    },
     { csvName: 'שם פריט',            dbName: 'item_name',           type: 'TEXT'    },
+    // Added by the client 2026-09-23. Filled on 3,272 of 17,486 catalogue rows
+    // (19%) — but on EVERY item that has ever sold (1,939 of 1,939), so a sales
+    // breakdown by supplier covers 100% of revenue. The empty rows are items
+    // that never sold.
+    { csvName: 'שם ספק',             dbName: 'supplier_name',       type: 'TEXT'    },
+    // Added 2026-09-23: current purchase cost per unit. Like catalogue_price it
+    // is TODAY's value — a past order's cost is order_lines.line_cost.
+    { csvName: 'עלות פריט',          dbName: 'unit_cost',           type: 'NUMERIC' },
+    // The export also carries a second, identical copy under a junk header
+    // (equal to עלות פריט on all 17,486 rows). Named so it cannot pass for a
+    // real measure; the rules tell the SQL generator to ignore it.
+    { csvName: 'עלות פריט hhhhh',    dbName: 'unit_cost_duplicate', type: 'NUMERIC' },
     { csvName: 'מקט',                dbName: 'sku',                 type: 'TEXT'    },
     { csvName: 'UPC',                dbName: 'upc',                 type: 'TEXT'    },
     { csvName: 'EAN',                dbName: 'ean',                 type: 'TEXT'    },

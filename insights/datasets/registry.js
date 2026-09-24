@@ -22,6 +22,10 @@ const tevanaot = require('../../services/db.tevanaot');
 const superhist = require('../../services/db.superhist');
 const aspect = require('../../services/db.aspect');
 
+// Exported so migration 056 writes the exact same text into the stored
+// admin override (intel_config_superhist), which otherwise wins over this.
+const SUPERHIST_DATA_MODEL = "an online grocery order model: orders joined to their order lines and a product catalogue, pre-aggregated into materialized views by day (mv_orders_daily), day x item (mv_sales_daily_item), day x supplier (mv_sales_daily_supplier) and lifetime per item (mv_sales_item). Common measures: product revenue (what members paid, VAT-inclusive), cost (recorded per order line), gross profit = revenue minus cost (the client's own definition — subsidy NOT added, so subsidised items often show NEGATIVE gross profit, which is real), margin %, order count, units, basket size, subsidy funded by the union, shipping charged, coupons and discounts redeemed (negative lines). Common dimensions: date (day/week/month), product, supplier (filled on every item that sold), member, payment method, shipping method, coupon code, order status. Purchase-cost changes over time come from line cost / quantity per item across periods. IMPORTANT: there is NO product category (the categories table holds marketing collections, not a taxonomy) and NO store/branch/cashier — the shop is online only. History starts in 2026, so no year-on-year. Subsidy is the union's contribution recorded alongside what the member paid and must never be subtracted from revenue.";
+
 const REGISTRY = {
   hypertoy: {
     id: 'hypertoy',
@@ -135,12 +139,16 @@ const REGISTRY = {
       gradientTo: '#38BDF8',
     },
     defaultBrandLabel: "The Social Supermarket, the Histadrut's members-only online grocery",
-    defaultDataModelDescription: "an online grocery order model: orders joined to their order lines and a product catalogue. Common measures: order revenue (what members paid, VAT-inclusive), order count, units, basket size, subsidy funded by the union, shipping charged. Common dimensions: date (day/week/month), product, member, payment method, shipping method, order status. IMPORTANT: there is NO product category (the field is populated on 3.3% of the catalogue and all on one id, and the categories table holds marketing collections, not a taxonomy), NO cost or margin (no cost column exists anywhere in the feed), and NO store/branch/cashier — the shop is online only. Subsidy is the union's contribution recorded alongside what the member paid and must never be subtracted from revenue.",
+    // Rewritten 2026-09-23 when the client added line cost, supplier and a
+    // coupon/discount row kind. NOTE: provider_config intel_config_superhist
+    // carries its own copy of this text — migration 056 updates it.
+    defaultDataModelDescription: SUPERHIST_DATA_MODEL,
     defaultBootstrapPrompts: [
       'How is order revenue trending week over week, and what is driving it',
       'Which products sell the most units, and which are sitting in stock unsold',
       'How many members order more than once, and how does their basket compare',
       'How much subsidy is the union funding, and on which products',
+      'Which suppliers and products drive gross profit, and which sell below cost',
     ],
     defaultExamplePrompts: [
       'Which products are quietly losing sales week over week',
@@ -167,6 +175,7 @@ const REGISTRY = {
           'אילו מוצרים נמכרים ביחידות הרבות ביותר, ואילו יושבים במלאי ללא מכירה',
           'כמה חברים מזמינים יותר מפעם אחת, וכיצד הסל שלהם משתווה לאחרים',
           'כמה סבסוד מממנת ההסתדרות, ועל אילו מוצרים',
+          'אילו ספקים ומוצרים מניעים את הרווח הגולמי, ואילו נמכרים מתחת לעלות',
         ],
       },
     },
@@ -310,4 +319,4 @@ function bootstrapPromptsFor(entry, configValue) {
   return (entry.reportLang && entry.i18n?.[entry.reportLang]?.bootstrapPrompts) || configValue || entry.defaultBootstrapPrompts;
 }
 
-module.exports = { get, all, normalizeLang, localeName, examplePromptsFor, bootstrapPromptsFor };
+module.exports = { get, all, normalizeLang, localeName, examplePromptsFor, bootstrapPromptsFor, SUPERHIST_DATA_MODEL };

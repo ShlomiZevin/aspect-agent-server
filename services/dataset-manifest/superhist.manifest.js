@@ -12,9 +12,9 @@
  *      holds marketing collections, not a taxonomy. Left unstated, an LLM will
  *      happily group by product name or brand id and call the result
  *      "categories" — a confident answer to a question the data cannot support.
- *   2. A margin answer. There is no cost column anywhere in the feed, and the
- *      tax column is 0.0000 on all 654,370 lines. Revenue exists; profit does
- *      not, not even approximately.
+ *   2. (Until 2026-09-23) a margin answer. The client then added a line cost
+ *      column, supplier and unit cost — cost, gross profit and supplier are
+ *      now exact, following the client's own Qlik formula.
  */
 
 module.exports = {
@@ -29,20 +29,23 @@ module.exports = {
   measures: {
     'revenue / sales': {
       fidelity: 'exact',
-      basis: 'order_lines.line_total on product lines — quantity x unit price, which is what the member was charged. Reconciles with orders.order_total (lines + shipping) on 19,045 of 19,062 orders',
+      basis: 'order_lines.line_total on product lines — quantity x unit price, which is what the member was charged. The order total is the sum of all its lines (products + shipping + negative coupons/discounts)',
     },
     'order count': { fidelity: 'exact', basis: 'distinct orders.order_id' },
     'units': { fidelity: 'exact', basis: 'sum of order_lines.quantity on product lines' },
     'subsidy': {
       fidelity: 'exact',
-      basis: "the Histadrut's contribution, recorded ALONGSIDE what the member paid and never deducted from it. Measured: subtracting it reconciles with the order total on 12 of 19,062 orders; leaving it alone reconciles on 19,045. Roughly 6.1% of order value in the first delivery",
+      basis: "the Histadrut's contribution, recorded ALONGSIDE what the member paid and never deducted from it",
     },
-    'shipping income': { fidelity: 'exact', basis: "order_lines.line_total on rows where line_kind = 'shipping' — one per order" },
+    'shipping income': { fidelity: 'exact', basis: "order_lines.line_total on rows where line_kind = 'shipping'" },
+    'coupons / discounts': { fidelity: 'exact', basis: "order_lines.line_total on rows where line_kind = 'coupon' or 'discount' — NEGATIVE amounts, reported as amounts redeemed" },
     'basket size': { fidelity: 'exact', basis: 'units or value divided by distinct orders' },
-    'member count': { fidelity: 'exact', basis: 'distinct orders.customer_id — 15,881 over 19,062 orders in the first delivery' },
-    'profit / margin': {
-      fidelity: 'absent',
-      basis: 'THERE IS NO COST SIDE. No cost, no COGS, no supplier price anywhere in the feed. Margin cannot be computed at any fidelity',
+    'member count': { fidelity: 'exact', basis: 'distinct orders.customer_id' },
+    // Added 2026-09-23 when the client delivered a line-level cost column.
+    'cost': { fidelity: 'exact', basis: 'order_lines.line_cost on product lines — the cost of the whole line (quantity x unit cost), as recorded by the client' },
+    'gross profit / margin': {
+      fidelity: 'exact',
+      basis: "SUM(line_total - line_cost) on product lines — the client's own Qlik formula, subsidy NOT added. Negative on many subsidised items (about a quarter of product lines sell below cost), which is real and must be reported as such",
     },
   },
 
@@ -50,11 +53,18 @@ module.exports = {
     'date': { status: 'available', detail: 'orders.order_date. Order lines carry NO date — every time-based measure joins the order' },
     'product / item': {
       status: 'available',
-      detail: 'products catalogue keyed on item_id; name, sku, current stock, current catalogue price. '
-        + 'catalogue_price is TODAY price and must never be used to value a past order. '
-        + 'MEASURED on the first load: 1,481 distinct items sold, of which 141 have NO row in the catalogue at all '
-        + '— those carry 8% of revenue (₪706,753 over 46,768 lines) and appear with no name. '
-        + 'mv_sales_item keeps them and flags them with in_catalogue = false',
+      detail: 'products catalogue keyed on item_id; name, sku, supplier, current stock, current unit cost. '
+        + 'unit_cost is TODAY value and must never be used to value a past order — order lines carry the recorded price and cost. '
+        + 'An item that sold but is missing from the catalogue appears with no name; '
+        + 'mv_sales_item keeps such items and flags them with in_catalogue = false',
+    },
+    'supplier': {
+      status: 'available',
+      detail: 'products.supplier_name — filled on every item that has sold (empty only on never-sold catalogue rows), so sales, cost and gross profit by supplier cover all product revenue. mv_sales_daily_supplier is the fast path',
+    },
+    'coupon / discount': {
+      status: 'available',
+      detail: "order_lines with line_kind 'coupon' (item_id holds the coupon name/code) or 'discount' (free-shipping benefit, cart discount); negative line_total",
     },
     'member / customer': { status: 'available', detail: 'orders.customer_id — an identifier only. No name, no city, no demographics' },
     'payment method': { status: 'available', detail: 'orders.payment_method / payment_method_code' },
@@ -68,11 +78,6 @@ module.exports = {
       status: 'absent',
       detail: 'products.category_id is populated on 547 of 16,537 products (3.3%) and every one points at a SINGLE id. The categories table holds 110 MARKETING COLLECTIONS ("חגיגת שבועות", "הסל שלנו"), not a product taxonomy. There is no way to group sales by product category',
       roadmap: 'client delivers the product-to-category mapping their own site uses for navigation',
-    },
-    'cost / margin': {
-      status: 'absent',
-      detail: 'no cost, COGS or supplier price column exists in any delivered file',
-      roadmap: 'client adds a cost column to the product export',
     },
     'store / branch / cashier': {
       status: 'absent',
@@ -101,18 +106,23 @@ module.exports = {
       detail: "order_lines.subsidy — the union's contribution, reported on its own and never subtracted from revenue" },
     { terms: ['קטגוריה', 'category', 'מחלקה'], resolution: 'unresolved',
       detail: 'there is no product taxonomy in this data — see the absent dimension. The categories table is marketing collections' },
-    { terms: ['רווח', 'profit', 'margin', 'מרווח'], resolution: 'unresolved',
-      detail: 'no cost side exists, so margin cannot be computed. Revenue is available' },
+    { terms: ['רווח גולמי', 'gross profit', 'profit', 'margin', 'רווח'], resolution: 'field',
+      detail: "SUM(order_lines.line_total - line_cost) on product lines — the client's own definition, subsidy not added" },
+    { terms: ['עלות', 'cost', 'עלות המכר'], resolution: 'field',
+      detail: 'order_lines.line_cost on product lines — cost of the whole line' },
+    { terms: ['ספק', 'supplier'], resolution: 'field', detail: 'products.supplier_name' },
+    { terms: ['קופון', 'coupon'], resolution: 'field', detail: "order_lines where line_kind = 'coupon' — negative amounts" },
   ],
 
   dataFacts: [
     { fact: 'The shop is online only — members of the Histadrut sign in with their ID number. There are no branches, tills or cashiers', appliesTo: 'any question assuming a shop floor' },
-    { fact: 'The order-line table concatenates product lines (634,556) and shipping lines (19,814) with no discriminator in the source; a generated line_kind column separates them at load', appliesTo: 'any item or unit count' },
+    { fact: 'The order-line table concatenates product lines with shipping, coupon and discount lines; a generated line_kind column separates them at load', appliesTo: 'any item or unit count' },
     { fact: 'Subsidy is the union\'s contribution recorded alongside the charge, not a discount deducted from it', appliesTo: 'any revenue or subsidy figure' },
-    { fact: 'The delivered history is short — the first delivery covers 42 days — so there is no year-on-year, no seasonality and no prior-year comparison', appliesTo: 'any comparison to last year or any seasonal claim' },
+    { fact: 'Gross profit follows the client\'s own formula (line total minus line cost, subsidy not added), so subsidised items often show negative gross profit — that is real, not a data error', appliesTo: 'any profit, margin or loss-making-items answer' },
+    { fact: 'The delivered history starts in 2026 — there is no prior year, so no year-on-year and no seasonality', appliesTo: 'any comparison to last year or any seasonal claim' },
     { fact: 'The final loaded month is PARTIAL. Comparing it with a full month shows a fall that is an artefact of the export, not the business', appliesTo: 'any month-over-month comparison touching the latest month' },
     { fact: 'The calendar table covers the whole year while orders cover weeks — it is a date dimension, never evidence that a date has orders', appliesTo: 'any trend or date-range claim' },
-    { fact: '141 of the 1,481 items sold are absent from the product catalogue and carry 8% of revenue. They have no name and no price on file — report them as unidentified items rather than dropping them or guessing', appliesTo: 'top-seller lists and any per-product total' },
+    { fact: 'An item that sold but is absent from the product catalogue has no name on file — report it as an unidentified item rather than dropping it or guessing', appliesTo: 'top-seller lists and any per-product total' },
     { fact: 'stock_history (task #72) is a NEW daily inventory snapshot that only started accumulating recently — it does not reach back before whenever the first file arrived, so it cannot answer "what was the stock on <an earlier date>" for dates before that', appliesTo: 'any historical or trend question about inventory levels' },
   ],
 
@@ -132,7 +142,7 @@ module.exports = {
     dateColumn: 'order_date',
     // mv_sales_item and mv_customers are lifetime grains with no date column,
     // so they are deliberately not listed.
-    views: ['mv_orders_daily', 'mv_sales_daily_item', 'mv_orders_by_status'],
+    views: ['mv_orders_daily', 'mv_sales_daily_item', 'mv_sales_daily_supplier', 'mv_orders_by_status'],
   },
 
   // When the question clearly asks for one of these and the generated SQL
@@ -168,21 +178,8 @@ module.exports = {
       roadmap: 'The client would need to deliver the product-to-category mapping their own storefront navigation uses.',
       alternatives: 'sales by individual product, by payment method, by shipping method, or by week',
     },
-    'cost / margin': {
-      triggers: [
-        /\b(profit|margin|gross\s+margin|markup|cogs|cost\s+of\s+goods)\b/i,
-        /\bwhat\s+.{0,20}\bcost\s+us\b/i,
-        // ה? on each noun: Hebrew takes the definite article as a prefix, so
-        // "שולי הרווח" is the ordinary way to ask this and a pattern written
-        // without it misses the phrasing people actually use. Same class of
-        // trap as the final-form letters.
-        /ה?רווח\s+ה?גולמי|שולי\s+ה?רווח|ה?מרווח|עלות\s+ה?מכר/,
-        /כמה\s+.{0,15}הרווחנו/,
-      ],
-      reason: 'This data holds no cost side — no cost price, no cost of goods and no supplier price appears in any delivered file — so profit and margin cannot be computed, not even approximately.',
-      roadmap: 'The client adds a cost column to the product export.',
-      alternatives: 'revenue, units, subsidy funded, and average basket value',
-    },
+    // 'cost / margin' refusal REMOVED 2026-09-23: the client now delivers a
+    // line-level cost column, so profit and margin are exact answers.
     'store / branch': {
       triggers: [
         /\b(sales|revenue|orders)\b.{0,30}\bby\s+(store|branch)\b/i,
