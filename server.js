@@ -38,6 +38,7 @@ const podcastService = require('./services/podcast.service');
 const transcriptionService = require('./services/transcription.service');
 const billingService = require('./services/billing.service');
 const providerConfigService = require('./services/provider-config.service');
+const partnerOrigins = require('./services/partner-origins.service');
 const profilerAgent = require('./crew/micro-agents/ProfilerAgent');
 const contextService = require('./services/context.service');
 const DataReloadService = require('./services/data-reload.service');
@@ -95,6 +96,11 @@ if (process.env.NODE_ENV === 'development') {
 
       if (!origin || ALLOWED_ORIGINS.includes(origin)) {
         callback(null, true);
+      } else if (partnerOrigins.has(origin)) {
+        // Design partners' own sites, registered through /builder/mcp/domains.
+        // Only ever reached for an origin the list above rejects, and only
+        // ever adds — see services/partner-origins.service.js.
+        callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));
       }
@@ -148,6 +154,7 @@ app.use('/api/builder', require('./builder/routes/projectsRoute'));
 // path today, but ordering it first keeps it that way if runtimeRoute
 // ever grows a wildcard. See docs/guides/BUILDER_V2_TRIGGERS.md.
 app.use('/api/agents', require('./builder/routes/triggersRoute'));
+app.use('/api/agents', require('./builder/routes/conversationExportRoute'));
 app.use('/api/agents', require('./builder/routes/runtimeRoute'));
 
 // ─── Aspect BI ─────────────────────────────────────────────────────

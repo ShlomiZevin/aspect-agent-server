@@ -993,14 +993,22 @@ async function duplicateProject({ projectId, newSlug, newName, workspaceId }) {
     crewActiveBody[c.id] = cv ? cv.body : {};
   }
 
-  // Remap any crew-id references inside an addon list (Transition Router target).
+  // Remap any crew-id references inside an addon list: the Transition
+  // Router target, and an agent-cortex addon's `excludedCrewIds` (#857).
+  // An unmapped exclusion would silently re-enable the addon in the
+  // copy's crews, since no new crew id would ever match it.
   const remapAddons = (addons) => {
     if (!Array.isArray(addons)) return addons;
     return addons.map(a => {
-      if (a && a.pluginId === 'transition-router' && a.config && crewIdMap[a.config.target]) {
-        return { ...a, config: { ...a.config, target: crewIdMap[a.config.target] } };
+      if (!a) return a;
+      let out = a;
+      if (a.pluginId === 'transition-router' && a.config && crewIdMap[a.config.target]) {
+        out = { ...out, config: { ...a.config, target: crewIdMap[a.config.target] } };
       }
-      return a;
+      if (Array.isArray(a.excludedCrewIds) && a.excludedCrewIds.length > 0) {
+        out = { ...out, excludedCrewIds: a.excludedCrewIds.map(id => crewIdMap[id]).filter(Boolean) };
+      }
+      return out;
     });
   };
 

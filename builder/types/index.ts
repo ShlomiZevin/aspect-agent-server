@@ -310,6 +310,22 @@ export interface AddonInstance<TConfig = unknown> {
    * migration. Ignored outside the Blocking (`main`) lane.
    */
   joinsPreviousStep?: boolean;
+  /**
+   * Crews this addon does NOT run in (task #857). Meaningful only for
+   * addons on the agent-level cortex (`AgentDoc.cortex`), which otherwise
+   * run before every crew's chain on every turn.
+   *
+   * Stored as an EXCLUSION list on purpose: absent / empty = runs in all
+   * crews, so every existing agent keeps its behaviour, and a crew added
+   * later is covered automatically — an include list would make a new
+   * crew silently miss the addon until someone remembered to tick it.
+   *
+   * At runtime an excluded addon is not executed; it emits
+   * `addon.skipped` with `filter.kind: 'crew'` so the run card says why.
+   * Ids that no longer match a crew are harmless (never equal the
+   * current crew) — no cleanup needed on crew delete.
+   */
+  excludedCrewIds?: ID[];
   /** Plugin-defined config blob. */
   config: TConfig;
   /** Universal reading knobs (history / persona / memory). */

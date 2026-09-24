@@ -401,6 +401,19 @@ const SYSTEM_PROMPT = [
   '  snapshot and cannot see each other\'s writes. Dependents go in a',
   '  later step.',
   '',
+  '# Crew scope of agent-cortex addons (`excludedCrewIds`)',
+  '- Only on addons in `agent.cortex[]`. NEVER put it on a crew addon',
+  '  (`crew.addons[]`) — those already run only in their own crew.',
+  '- It lists the crews the addon is switched OFF for. Absent = runs in',
+  '  every crew (the default). Never emit an empty array: to switch an',
+  '  addon back on everywhere, OMIT the key.',
+  '- Ids come ONLY from the "This agent\'s crews" list in the input —',
+  '  match the crew the change names by its name there. Never invent an',
+  '  id; if the named crew is not in the list, leave the key untouched.',
+  '- "Run only in crews A and B" = exclude every OTHER listed crew.',
+  '- Preserve an existing `excludedCrewIds` verbatim whenever the change',
+  '  is about something else on that addon.',
+  '',
   '# Parameters',
   '- A ParameterDef is `{ id, name, value, description? }` and `value` is',
   '  emitted as a JSON string (`"14"`). Type annotations that appear in a',
@@ -672,6 +685,9 @@ async function generatePatch({
   currentBody,
   whatToDo,
   agentBodyContext,
+  /** Agent targets only: `[{ id, name }]` of the agent's crews (#857) —
+   *  the only valid values for a cortex addon's `excludedCrewIds`. */
+  crewRoster = null,
   agentSlug,
   ownerUserId,
   conversationId,
@@ -700,6 +716,17 @@ async function generatePatch({
       '```json',
       JSON.stringify(agentBodyContext, null, 2),
       '```',
+    );
+  }
+
+  if (entity === 'agent') {
+    const roster = Array.isArray(crewRoster) ? crewRoster : [];
+    sections.push(
+      '',
+      '## This agent\'s crews (READ-ONLY — the only valid ids for a cortex addon\'s `excludedCrewIds`)',
+      roster.length > 0
+        ? roster.map(c => `- ${c.id} — ${c.name}`).join('\n')
+        : '(crew list unavailable — do not add or change `excludedCrewIds` in this change)',
     );
   }
 

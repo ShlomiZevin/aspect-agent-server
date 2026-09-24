@@ -51,6 +51,14 @@ const addonRunsStore = require('./addonRunsStore');
 const historyService = require('./historyService');
 const { evaluateConditions } = require('./conditionMatcher');
 
+/** `{}`, `[]`, or blank text — a value that says nothing. */
+function isEmptyValue(v) {
+  if (typeof v === 'string') return v.trim() === '';
+  if (Array.isArray(v)) return v.length === 0;
+  if (v && typeof v === 'object') return Object.keys(v).length === 0;
+  return false;
+}
+
 /**
  * Execute one addon. See module doc for ctx shape.
  *
@@ -116,6 +124,41 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
   // evaluation trail so the run card shows the author exactly why,
   // and persist an addon_runs row with status 'skipped' so the
   // historical view stays consistent.
+  // ── Crew scope (task #857) — checked before the filter. An agent- ──
+  // cortex addon can be switched off for specific crews. Handled here,
+  // not by dropping it from the chain in BuilderRunner, so both lanes
+  // (blocking + offline) get it from one place and the run card can say
+  // why the addon did not run — a silently missing card reads as broken.
+  const excludedCrews = Array.isArray(instance.excludedCrewIds) ? instance.excludedCrewIds : [];
+  const currentCrewId = runnable?.crew?.id;
+  if (currentCrewId && excludedCrews.includes(currentCrewId)) {
+    const skipPayload = {
+      instanceId:  instance.instanceId,
+      label:       meta.label,
+      modelLabel,
+      lane:        instance.lane,
+      filter:      { kind: 'crew', crewId: currentCrewId, crewName: crewLabel },
+      reason:      `Not in this crew — switched off for "${crewLabel}"`,
+      durationMs:  Date.now() - addonStart,
+    };
+    emit('addon.skipped', skipPayload);
+    try {
+      await addonRunsStore.insertRun({
+        conversationId,
+        messageId: assistantMessageId,
+        instance,
+        status: 'skipped',
+        startedAt: new Date(addonStart),
+        endedAt:   new Date(),
+        durationMs: skipPayload.durationMs,
+        runData:   skipPayload,
+      });
+    } catch (err) {
+      console.error('[addonRunner] skipped addon_run insert failed:', err.message);
+    }
+    return { result: null, didTransition: false, broke: false, skipped: true };
+  }
+
   const filter = instance.context?.filter;
   if (filter) {
     // ── Cap check FIRST ──────────────────────────────────────────
@@ -457,6 +500,15 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
       && typeof w.field === 'string' && w.value !== undefined && w.value !== null;
     if (!isPlainFieldWrite) { memoryWrites.push(w); continue; }
     const def = fieldDefByName.get(w.field);
+    // ── Empty-int noise (task #856): a model with nothing to extract ──
+    // sometimes writes `{}` (or [] / "") instead of leaving the key out,
+    // and it landed as the field's "value". For an int that can never be
+    // a real answer — not a number, and not a deliberate "decided empty"
+    // either — so it is dropped and the field stays unset. Int ONLY on
+    // purpose: in other types an empty value can be a meaningful answer.
+    // Silent (no rejectedWrites entry): it is noise, not a wrong answer;
+    // rawOutput on the run card still shows what the model returned.
+    if (def && def.type === 'int' && isEmptyValue(w.value)) continue;
     const en = def && def.type === 'enum' && def.enumType ? enumById.get(def.enumType) : null;
     const allowed = en && Array.isArray(en.values)
       ? en.values.map(v => v && v.value).filter(v => typeof v === 'string' && v)

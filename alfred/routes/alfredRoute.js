@@ -70,6 +70,27 @@ async function loadAgentViewingBody(agentId) {
   return { agent, version, body: version.body };
 }
 
+/**
+ * `[{ id, name }]` for every crew of an agent — handed to the patch
+ * generator on AGENT targets (#857), whose body carries no crews at all.
+ * Without it "switch this cortex addon off in the onboarding crew" would
+ * have to invent a crew id. Working-copy names win over the saved ones so
+ * a rename the user hasn't saved yet still resolves.
+ */
+async function crewRosterForAgent(agentId, workingCrews) {
+  const d = drizzle();
+  const rows = await d.select().from(builderCrews).where(eq(builderCrews.agentId, agentId));
+  const out = [];
+  for (const c of rows) {
+    let name = workingCrews?.get(c.id)?.name;
+    if (!name) {
+      try { name = (await loadCrewViewingBody(c.id)).body?.name; } catch { /* no version — id only */ }
+    }
+    out.push({ id: c.id, name: name || c.id });
+  }
+  return out;
+}
+
 async function loadCrewViewingBody(crewId) {
   const d = drizzle();
   const [crew] = await d.select().from(builderCrews)
@@ -593,6 +614,15 @@ async function runApplyJob({ jobId, chatId, agentSlug, ownerUserId, description,
         }
       }
 
+      // For agent targets: the crew list, so cortex `excludedCrewIds` can
+      // name real crews (#857). Best-effort — a failed lookup only means
+      // the generator is told to leave crew scope alone.
+      let crewRoster = null;
+      if (target.entity === 'agent') {
+        try { crewRoster = await crewRosterForAgent(target.entityId, workingCrews); }
+        catch (err) { console.warn('[alfred apply] crew roster lookup failed:', err.message); }
+      }
+
       // Generate new body.
       let newBody;
       const stepStart = Date.now();
@@ -604,6 +634,7 @@ async function runApplyJob({ jobId, chatId, agentSlug, ownerUserId, description,
           currentBody,
           whatToDo:     target.what_to_do || '',
           agentBodyContext,
+          crewRoster,
           agentSlug,
           ownerUserId,
           conversationId: Number(chatId),

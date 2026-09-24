@@ -40,12 +40,41 @@ people type and paste this URL.
 | `GET /agents/:slug/conversations` | Recent chats | `alfredTools.listConversations` |
 | `GET /agents/:slug/log` | Change history and reasons | `alfredTools.changeLogText` |
 | `GET /conversations/:id` | Transcript + per-turn addon digest | `alfredTools.readConversation` |
+| `GET /conversations/:id/export?include=messages\|outputs\|full` | The conversation as **JSON** for handing to another AI — messages, each reply's addon runs (outputs, field writes, transitions), `full` adds prompts. Byte-for-byte the Builder Chat "Export" button's file | `builder/services/conversationExport.js` (shared with `GET /api/agents/:slug/conversations/:convId/export`) |
 | `GET /runs/:id` | One addon run in full — assembled prompt, raw/parsed output | `alfredTools.readRun` |
 | `GET /addons` | **Every addon descriptor, in one page** | reads `builder/addons/*.addon.json` |
 | `GET /code/<path>` | Any allowlisted source file; directories list | `alfredTools.readPlatformFile` |
 | `POST /agents` | Create an agent (name is enough) | `builderProjects.createProject` |
 | `POST /agents/:slug` | Save an edited agent body | `saveAgentVersionAs` + `setAgentActive` |
 | `POST /agents/:slug/crews/:crewId` | Save an edited crew body | `saveCrewVersionAs` + `setCrewActive` |
+| `GET /people` | The LYBI board roster | `taskService.getAssignees` |
+| `GET /tasks` | Open tasks, filterable; `all=1` adds closed | `taskService.getTasks` (+ opener filter in the route) |
+| `GET /tasks/attention?name=` | "Needs my attention" | `commentsService.getTasksNeedingAttention` — the board's own definition |
+| `GET /tasks/:id` | One task + comment thread | `getTask` + `getComments` |
+| `POST /tasks` | Open a task (opener required; assignee Shlomi or the opener) | `taskService.createTask` |
+| `PATCH /tasks/:id` | Edit — opener only; title, description, priority, type, due date | `taskService.updateTask` |
+
+| `GET/POST/DELETE /domains` | List / add / remove a partner website allowed to call us from a browser. Needs `secret` = env `PARTNER_DOMAIN_SECRET`; unset → 503, feature off | `services/partner-origins.service.js` |
+
+**Partner domains and the chat API:** the entry page's "Building your own
+chat" section documents the EXISTING runtime chat calls
+(`/api/agents/:slug/conversations[/…/messages]`, SSE) — nothing new there.
+The only new piece is CORS: `server.js`'s production allowlist runs first
+and unchanged, and only an origin it rejects is checked against the
+partner list (one row in `provider_config`, key `partner_cors_origins`,
+refreshed per instance every 30s). That check can only add, never block,
+and never throws. Proof: `node scripts/test-partner-cors.js` — it runs the
+literal CORS block from `server.js` through the real `cors` package. Run it
+after ANY change to the CORS setup. If the hardcoded list or the stream
+events change, update the entry page section.
+
+**Task board rules:** the **LYBI** board only (`task.service`, platform
+DB) — never `/api/taskboard`, which is the IC board. Every name is
+resolved against the roster and stored in its exact spelling, because
+attention, notifications and the digest email all match on it. What an
+opener may edit is the `OPENER_EDITABLE` list in the route; status,
+assignee and release notes stay on the board, where they belong to the
+assignee and to Shlomi.
 
 **What it deliberately does NOT have:**
 
@@ -274,6 +303,10 @@ Exits `1` on any failure. What it covers:
   URLs built from forwarded headers, `/addons` completeness, the `/code`
   allowlist refusing `services/` and `..` traversal.
 - **Reads** — list, one agent, conversations, log, unknown-slug `404`.
+- **Conversation export** — read-only, on the newest real conversation with
+  addon runs: each `include` level has the right shape, the default is
+  `outputs`, and the door returns exactly what the Builder button's
+  function returns.
 - **Writes, on Claude's own test agent `zz-mcp-test`** (created if absent,
   kept afterwards) — a new version exists; **active moved**; published did
   not; the **working copy shows the edit**; the previous version is

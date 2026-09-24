@@ -221,6 +221,7 @@ to know exactly what it assembles.
 | **Find a conversation** | `GET /api/agents/<slug>/conversations?ownerUserId=<id>&source=live` | The 50 newest: `{ conversations: [ { id, name, createdAt, updatedAt, metadata } ] }`. `source=live` is real customer chats; anything else means tests run inside the Builder. |
 | **Read the transcript** | `GET /api/agents/<slug>/conversations/<convId>/messages` | `{ messages: [ { id, role, content, createdAt } ] }` |
 | **What each addon actually saw and produced** | `GET /api/agents/<slug>/messages/<messageId>/runs` | `{ runs: [ { pluginId, status, durationMs, runData, … } ] }`. `runData` holds the fully assembled prompt as the model received it, the raw output, the parsed output and the memory writes. |
+| **The whole conversation in one JSON** — messages with each reply's addon runs nested under it | `GET /api/agents/<slug>/conversations/<convId>/export?include=outputs` | `{ export: { format, include, agent, conversation, … }, messages: [ { role, text, at, crew, addonRuns: [ { label, pluginId, output, fieldWrites, rejectedWrites, transition } ] } ] }`. `include=messages` drops the runs; `include=full` adds each run's assembled `prompt`. The same file the Builder Chat's Export button downloads. |
 | **The conversation's memory** — fields by domain | `GET /api/agents/<slug>/conversations/<convId>/memory?ownerUserId=<id>` | `{ memory, thinking, summary, retrieval, panels }` |
 | **Live Brain panels**, and their runs | `GET /api/agents/<slug>/conversations/<convId>/live-brain?ownerUserId=<id>` · `…/live-brain/runs` | `{ panels, frame }`. Add `version=active\|viewing\|published` to read a different line. |
 | **Profiler output**, and its runs | `GET /api/agents/<slug>/conversations/<convId>/profiler?ownerUserId=<id>` · `…/profiler/runs` | `{ panels, frame, ask }` |
@@ -360,7 +361,7 @@ internal process notes, not how the product works.
 | "What does a finished agent look like?" | `BUILDER_V2_EXAMPLE_CARDLY.md`, or read a live agent |
 | "Why did it behave that way at runtime?" | the `/runs` endpoint above, then `builder/runtime/` |
 
-Two things that are easy to get wrong:
+Three things that are easy to get wrong:
 
 - A field's `type` is exactly one of `string`, `int`, `enum`, `boolean`.
   It is `int` — never `integer` or `number`. In the UI these read String,
@@ -368,6 +369,11 @@ Two things that are easy to get wrong:
 - Crews are separate entities, not nested inside the agent body. Adding a
   crew means adding an entry to `crews[]` in the draft, not a key inside
   `agent`.
+- An addon on the agent cortex (`agent.cortex[]`) runs in every crew unless
+  its `excludedCrewIds` lists the crews it is switched off for — on screen,
+  the "Runs in" ✓/✕ chips. Take the ids from `crews[]` in the draft (never
+  invent one), and omit the key to mean "all crews", never `[]`. Crew
+  addons never carry it.
 
 ---
 

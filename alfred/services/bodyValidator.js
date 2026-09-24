@@ -86,6 +86,18 @@ function checkFieldDef(field, path, errors, knownEnumIds) {
   }
 }
 
+/**
+ * #857 — crew scope of an agent-cortex addon. Shape only: whether the ids
+ * are real crews is the generator's job (it is handed the crew list), and
+ * a stale id is harmless at runtime (it never matches the current crew).
+ */
+function checkExcludedCrewIds(addon, path, errors) {
+  if (!isObject(addon) || !('excludedCrewIds' in addon) || addon.excludedCrewIds === undefined) return;
+  if (!Array.isArray(addon.excludedCrewIds)
+      || addon.excludedCrewIds.some(id => typeof id !== 'string' || !id))
+    pushErr(errors, `${path}.excludedCrewIds`, 'when present must be an array of crew id strings');
+}
+
 function checkAddonInstance(addon, path, errors, knownFieldIds) {
   if (!isObject(addon)) { pushErr(errors, path, 'must be an object'); return; }
   if (typeof addon.instanceId !== 'string' || !addon.instanceId)
@@ -99,6 +111,7 @@ function checkAddonInstance(addon, path, errors, knownFieldIds) {
   if ('joinsPreviousStep' in addon && addon.joinsPreviousStep !== undefined
       && typeof addon.joinsPreviousStep !== 'boolean')
     pushErr(errors, `${path}.joinsPreviousStep`, 'when present must be a boolean');
+  checkExcludedCrewIds(addon, path, errors);
   if (!isObject(addon.config))
     pushErr(errors, `${path}.config`, 'required object');
   if (!isObject(addon.context))
@@ -455,6 +468,13 @@ function validateAgentBody(body) {
         seenIds.add(f.id);
       }
     });
+  }
+
+  // Cortex addons are not run through checkAddonInstance (never were —
+  // turning that on now could reject agent bodies that apply fine today).
+  // Only the #857 crew-scope key is checked here.
+  if (Array.isArray(body.cortex)) {
+    body.cortex.forEach((a, i) => checkExcludedCrewIds(a, `cortex[${i}]`, errors));
   }
 
   if ('liveBrain' in body && body.liveBrain !== undefined)

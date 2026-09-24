@@ -156,6 +156,16 @@ async function removeIfPresent(slug) {
     return { status: r.status, text: await r.text() };
   };
   const hydrate = slug => bp.hydrateProject({ agentSlug: slug });
+  const patch = async (p, obj) => {
+    const r = await fetch(base + p, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(obj),
+    });
+    return { status: r.status, text: await r.text() };
+  };
+  const taskService = require('../services/task.service');
+  let testTaskId = null;
 
   try {
     // ── surface ──
@@ -205,6 +215,52 @@ async function removeIfPresent(slug) {
     check('conversations', (await get(`/agents/${TEST_SLUG}/conversations`)).status === 200);
     check('change log', (await get(`/agents/${TEST_SLUG}/log`)).status === 200);
     check('unknown agent → 404', (await get('/agents/definitely-not-real-xyz')).status === 404);
+
+    // ── conversation export (task #861) — read-only, on the newest real
+    // conversation that has addon runs, so every level has something to show.
+    section('conversation export');
+    check('entry page teaches the export', doc.text.includes(`${base}/conversations/<id>/export`));
+    const { sql } = require('drizzle-orm');
+    const pick = await db.getDrizzle().execute(sql`
+      select conversation_id from addon_runs
+      where message_id is not null and status = 'success'
+      order by started_at desc limit 1`);
+    const expId = (pick.rows || pick)[0]?.conversation_id;
+    if (!expId) {
+      check('a conversation with addon runs exists to test on', false);
+    } else {
+      const getJson = async p => {
+        const r = await get(p);
+        let body = null;
+        try { body = JSON.parse(r.text); } catch { /* checked by caller */ }
+        return { ...r, body };
+      };
+      const allRuns = b => (b?.messages || []).flatMap(m => m.addonRuns || []);
+      const def = await getJson(`/conversations/${expId}/export`);
+      check('default → 200 JSON', def.status === 200 && /json/.test(def.type), `status ${def.status}`);
+      check('default level is outputs', def.body?.export?.include === 'outputs');
+      check('header says what the format is', typeof def.body?.export?.format === 'string'
+        && def.body.export.conversation?.id === Number(expId) && !!def.body.export.agent?.slug);
+      check('runs nested under assistant messages, with outputs',
+        allRuns(def.body).some(r => 'output' in r)
+        && def.body.messages.every(m => !m.addonRuns || m.role === 'assistant'));
+      check('outputs level carries no prompts', allRuns(def.body).every(r => !('prompt' in r)));
+      const msgOnly = await getJson(`/conversations/${expId}/export?include=messages`);
+      check('messages level: same messages, no runs',
+        msgOnly.body?.messages?.length === def.body?.messages?.length
+        && msgOnly.body.messages.every(m => !m.addonRuns));
+      const full = await getJson(`/conversations/${expId}/export?include=full`);
+      check('full level adds prompts', allRuns(full.body).some(r => typeof r.prompt === 'string' && r.prompt.length > 0));
+      const direct = await require('../builder/services/conversationExport')
+        .exportConversation({ conversationId: expId, include: 'outputs' });
+      check('same function as the Builder button (identical runs)',
+        JSON.stringify(allRuns(direct)) === JSON.stringify(allRuns(def.body)));
+      check('unknown include falls back to outputs',
+        (await getJson(`/conversations/${expId}/export?include=bogus`)).body?.export?.include === 'outputs');
+    }
+    const missing = await get('/conversations/999999999/export');
+    check('unknown conversation → 404 that says where ids come from',
+      missing.status === 404 && missing.text.includes('/conversations'));
 
     // ── agent write ──
     section('agent write');
@@ -260,6 +316,71 @@ async function removeIfPresent(slug) {
     await removeIfPresent(BORN_CLEAN_SLUG);
     check('throwaway removed', !(await hydrate(BORN_CLEAN_SLUG)));
 
+    // ── task board ──
+    // Opened AS Claude and assigned TO Claude: the board only notifies
+    // (and emails) when assignee ≠ opener, so this reaches nobody.
+    // Deleted in `finally`.
+    section('task board');
+    const people = await get('/people');
+    check('roster lists Shlomi and Claude',
+      people.status === 200 && people.text.includes('- Shlomi') && people.text.includes('- Claude'));
+    check('task list', (await get('/tasks')).status === 200);
+    check('attention for a real name', (await get('/tasks/attention?name=Claude')).status === 200);
+    const nobody = await get('/tasks/attention?name=Nobody');
+    check('attention for an unknown name → 400 listing the roster',
+      nobody.status === 400 && nobody.text.includes('Shlomi'));
+
+    check('open: unknown opener → 400', (await post('/tasks', { opener: 'Nobody', title: 'x' })).status === 400);
+    check('open: no title → 400', (await post('/tasks', { opener: 'Claude' })).status === 400);
+    check('open: assignee not Shlomi/opener → 400',
+      (await post('/tasks', { opener: 'Claude', assignee: 'Kosta', title: 'x' })).status === 400);
+    check('open: bad type → 400',
+      (await post('/tasks', { opener: 'Claude', assignee: 'Claude', title: 'x', type: 'goal' })).status === 400);
+
+    const opened = await post('/tasks', {
+      opener: 'claude',            // lower-case on purpose: must resolve to the roster spelling
+      assignee: 'Claude',
+      title: 'ZZ battery task — safe to delete',
+      description: 'First paragraph.\n\nSecond paragraph.',
+      type: 'test',
+      priority: 'low',
+    });
+    check('open → 200', opened.status === 200, opened.text.slice(0, 80));
+    testTaskId = Number((opened.text.match(/#(\d+)/) || [])[1]) || null;
+    const stored = testTaskId ? await taskService.getTask(testTaskId) : null;
+    check('stored with the roster spelling of the opener', stored?.opener === 'Claude', stored?.opener);
+    check('starts in todo', stored?.status === 'todo');
+    check('description stored as board HTML',
+      stored?.description === '<p>First paragraph.</p><p>Second paragraph.</p>', stored?.description);
+    check('readable back', testTaskId && (await get(`/tasks/${testTaskId}`)).text.includes('Second paragraph.'));
+
+    if (testTaskId) {
+      check('edit by someone else → 403',
+        (await patch(`/tasks/${testTaskId}`, { name: 'Shlomi', priority: 'high' })).status === 403);
+      check('edit status → 400 (not the opener\'s to change)',
+        (await patch(`/tasks/${testTaskId}`, { name: 'Claude', status: 'done' })).status === 400);
+      const ed = await patch(`/tasks/${testTaskId}`, { name: 'Claude', priority: 'high' });
+      check('edit by the opener → 200', ed.status === 200, ed.text.slice(0, 80));
+      check('…and it stuck', (await taskService.getTask(testTaskId))?.priority === 'high');
+    }
+    check('unknown task → 404', (await get('/tasks/999999999')).status === 404);
+
+    // ── partner domains (guard only — the CORS effect itself is proven by
+    //    scripts/test-partner-cors.js) ──
+    section('partner domains');
+    const prevSecret = process.env.PARTNER_DOMAIN_SECRET;
+    delete process.env.PARTNER_DOMAIN_SECRET;
+    check('no secret configured → 503 (switched off)',
+      (await post('/domains', { origin: 'https://zz.example', secret: 'x' })).status === 503);
+    process.env.PARTNER_DOMAIN_SECRET = 'battery-secret-value';
+    check('wrong secret → 403',
+      (await post('/domains', { origin: 'https://zz.example', secret: 'nope' })).status === 403);
+    check('bad origin → 400',
+      (await post('/domains', { origin: 'https://zz.example/path', secret: 'battery-secret-value' })).status === 400);
+    check('entry page teaches the chat API', doc.text.includes('Building your own chat'));
+    if (prevSecret === undefined) delete process.env.PARTNER_DOMAIN_SECRET;
+    else process.env.PARTNER_DOMAIN_SECRET = prevSecret;
+
     // ── refusals ──
     section('refusals');
     check('string body → 400', (await post(`/agents/${TEST_SLUG}`, { body: 'nope' })).status === 400);
@@ -274,6 +395,7 @@ async function removeIfPresent(slug) {
     fails++;
   } finally {
     await removeIfPresent(BORN_CLEAN_SLUG).catch(() => {});
+    if (testTaskId) await taskService.deleteTask(testTaskId).catch(() => {});
     srv.close();
     console.log(`\n${fails === 0 ? 'ALL PASS' : `${fails} FAILED`}`);
     await db.close().catch(() => {});
