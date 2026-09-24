@@ -23,6 +23,7 @@ const replenishment = require('./replenishment/module');
 const taskboard = require('./taskboard/module');
 const googleAuth = require('./google-auth/module');
 const otto = require('./otto/module');
+const suggestedReports = require('./suggested-reports/module');
 const { PLANNED_APPS } = require('./_planned/apps');
 
 // The stub exists to test the framework, not to serve anyone. Keeping it out
@@ -36,6 +37,7 @@ const DESCRIPTORS = [
   taskboard,
   googleAuth,
   otto,
+  suggestedReports,
 ];
 
 /**
@@ -128,6 +130,14 @@ function validate(descriptor) {
   // a blank square with a label — worse than a boot failure nobody can miss.
   if (descriptor.group === 'apps' && !descriptor.icon) {
     throw new Error(`${where}: a module in the 'apps' group must name an icon`);
+  }
+  // Optional, any kind: onEnabled(datasetId) runs (not awaited) when an admin
+  // switches the module on; usage(datasetId) feeds the admin card a cost
+  // summary. A non-function would only surface on the first click.
+  for (const fn of ['onEnabled', 'usage']) {
+    if (descriptor[fn] !== undefined && typeof descriptor[fn] !== 'function') {
+      throw new Error(`${where}: ${fn} must be a function when declared`);
+    }
   }
 
   // Only a data module has data to bind. An app module declaring these would be

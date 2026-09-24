@@ -406,7 +406,7 @@ async function isReplenishmentLive(datasetId) {
   }
 }
 
-async function planQuestion(datasetId, config, prompt) {
+async function planQuestion(datasetId, config, prompt, userId = null) {
   const [dataThrough, dataFrom] = await Promise.all([
     getDataThroughDate(datasetId),
     getDataFromDate(datasetId),
@@ -476,7 +476,7 @@ Pick the category that best matches what the investigation prompt is actually ab
     try {
       response = await llmService.sendOneShot(systemPrompt, `Investigation prompt: "${prompt}"`, {
         model: MODEL, maxTokens: 640, jsonOutput: true, temperature: 0, context: 'insights_investigate_plan',
-        agentName: datasetId,
+        agentName: datasetId, userId,
       });
       const parsed = parseJSON(response);
       if (!parsed.dataQuestion) throw new Error('Plan step returned no dataQuestion');
@@ -515,7 +515,7 @@ Pick the category that best matches what the investigation prompt is actually ab
   throw lastErr;
 }
 
-async function synthesizeInsight({ datasetId, config, prompt, category, dataQuestion, queryResult, dataAnomaly, verifierFeedback, digest, substitution, scopeAdded }) {
+async function synthesizeInsight({ datasetId, config, prompt, category, dataQuestion, queryResult, dataAnomaly, verifierFeedback, digest, substitution, scopeAdded, userId = null }) {
   const { sql, explanation, data, rowCount } = queryResult;
   // Cap what we feed back — enough rows to see the shape/pattern, not the whole table.
   // These are ILLUSTRATIVE ONLY: every total/ranking/percentage must come from
@@ -647,7 +647,7 @@ Raw result rows (JSON, up to ${SAMPLE_LIMIT} — ILLUSTRATIVE SAMPLE ONLY, see a
     try {
       response = await llmService.sendOneShot(systemPrompt, userMessage, {
         model: MODEL, maxTokens: 6144, jsonOutput: true, temperature: 0, context: 'insights_investigate_synthesize',
-        agentName: datasetId,
+        agentName: datasetId, userId,
       });
       const parsed = parseJSON(response);
       if (!parsed.headline) throw new Error('Synthesize step returned no headline');
@@ -673,7 +673,7 @@ Raw result rows (JSON, up to ${SAMPLE_LIMIT} — ILLUSTRATIVE SAMPLE ONLY, see a
  * duplicated everywhere the way a JOIN-bug artifact is.
  * @returns {Promise<{verified: boolean, issues: string[]}>}
  */
-async function verifyInsight({ config, queryResult, synthesized, digest, datasetId = null }) {
+async function verifyInsight({ config, queryResult, synthesized, digest, datasetId = null, userId = null }) {
   const { data, rowCount } = queryResult;
   const sampleRows = data.slice(0, SAMPLE_LIMIT);
 
@@ -719,7 +719,7 @@ chart: ${JSON.stringify(synthesized.chart)}`;
   try {
     response = await llmService.sendOneShot(systemPrompt, userMessage, {
       model: MODEL, maxTokens: 1024, jsonOutput: true, temperature: 0, context: 'insights_investigate_verify',
-      agentName: datasetId,
+      agentName: datasetId, userId,
     });
     const parsed = parseJSON(response);
     return { verified: parsed.verified !== false, issues: Array.isArray(parsed.issues) ? parsed.issues.slice(0, 5).map(String) : [] };
@@ -1078,7 +1078,7 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   progress.start(jobId);
   const actualPrompt = prompt && prompt.trim() ? prompt.trim() : await proposeInvestigationPrompt(datasetId, userId, config);
 
-  const { category, dataQuestion, spec, substitution, scopeAdded } = await planQuestion(datasetId, config, actualPrompt);
+  const { category, dataQuestion, spec, substitution, scopeAdded } = await planQuestion(datasetId, config, actualPrompt, userId);
 
   progress.set(jobId, 'query', dataQuestion);
 
@@ -1111,6 +1111,9 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
     // still distinguishable in the log through usageContext below.
     llmAgentName: datasetId,
     usageContext: 'insights_sql_generation',
+    // Usage attribution: `system` marks the nightly Suggested-reports run, so
+    // its cost can be told apart from a user's own analyses.
+    userId,
     // Anchor relative windows ("last 4 weeks", "this quarter") to the date the
     // data really ends. Without it, any dataset whose export lags — thestock
     // was 106 days behind, newdeli 100 — returns zero rows for every recent
@@ -1188,7 +1191,7 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   }
 
   progress.set(jobId, 'synthesize');
-  let synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest, substitution, scopeAdded });
+  let synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest, substitution, scopeAdded, userId });
   synthesized = reconcileImpactValue(synthesized, digest);
 
   // Step 4, VERIFY: an independent LLM pass fact-checks step 3's own output
@@ -1199,7 +1202,7 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   // immediately once named explicitly, the same way the QUERY step's SQL
   // retry already works.
   progress.set(jobId, 'verify');
-  let verification = await verifyInsight({ config, queryResult, synthesized, digest, datasetId });
+  let verification = await verifyInsight({ config, queryResult, synthesized, digest, datasetId, userId });
 
   // Up to TWO regeneration attempts, not one. Measured on the 2026-08-19
   // zolstock suite: 5 of 35 reports still failed the fact-check after a single
@@ -1215,10 +1218,10 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
   for (let retry = 1; retry <= MAX_SYNTH_RETRIES && !verification.verified; retry++) {
     console.log(`   Verify rejected synthesis (attempt ${retry}/${MAX_SYNTH_RETRIES}), regenerating: ${verification.issues.join('; ')}`);
     progress.set(jobId, 'synthesize', `Rewriting after fact-check (${retry}/${MAX_SYNTH_RETRIES})`);
-    synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest, substitution, scopeAdded, verifierFeedback: verification.issues });
+    synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest, substitution, scopeAdded, verifierFeedback: verification.issues, userId });
     synthesized = reconcileImpactValue(synthesized, digest);
     progress.set(jobId, 'verify');
-    verification = await verifyInsight({ config, queryResult, synthesized, digest, datasetId });
+    verification = await verifyInsight({ config, queryResult, synthesized, digest, datasetId, userId });
   }
   if (!verification.verified) {
     console.log(`   Verify still unsatisfied after ${MAX_SYNTH_RETRIES} rewrites — shipping downgraded: ${verification.issues.join('; ')}`);

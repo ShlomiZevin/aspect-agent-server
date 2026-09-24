@@ -75,7 +75,7 @@ function replyLanguageOk(reply, language) {
  * One turn. `currentPlan` flips the footing from "design a screen" to
  * "change the screen you already have" — same composer, different contract.
  */
-async function brainstorm({ messages, currentPlan = null, brief, settings, language = null, agentName = null }) {
+async function brainstorm({ messages, currentPlan = null, brief, settings, language = null, agentName = null, usageKey = null }) {
   const existing = currentPlan
     ? `\n\nAn app already exists: "${currentPlan.title?.en}" — ${currentPlan.summary?.en || ''}.\nThe conversation is now about CHANGING that app. Understand exactly what the user wants to add, remove or change. Do not plan a new app from scratch.`
     : '';
@@ -121,6 +121,8 @@ Return ONLY JSON:
       // configured for this dataset — falls back to the shared key when
       // there isn't one, so this is additive for every other client.
       agentName,
+      // Ties the call to its screen, so the builder can show what it cost.
+      conversationId: usageKey,
     });
     return extractJSON(response);
   };

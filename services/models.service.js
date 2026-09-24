@@ -21,16 +21,19 @@
  *                 anywhere the model is identified to a user
  *     deprecated: optional boolean — hidden from new pickers but
  *                 still resolvable so old configs still run
+ *     price:      optional { in, out } — USD per 1M tokens at list
+ *                 price. Only set where the rate is known; costOf()
+ *                 returns null for the rest rather than guessing.
  *   }
  */
 
 const MODELS = [
   // ── Anthropic ──
-  { id: 'claude-opus-5',     providerId: 'anthropic', name: 'Claude Opus 5',     notes: 'Newest top reasoning — same price as 4.7' },
-  { id: 'claude-sonnet-5',   providerId: 'anthropic', name: 'Claude Sonnet 5',   notes: 'Newest balanced — same price as 4.6' },
-  { id: 'claude-opus-4-7',   providerId: 'anthropic', name: 'Claude Opus 4.7',   notes: 'Top reasoning — slow & expensive' },
-  { id: 'claude-sonnet-4-6', providerId: 'anthropic', name: 'Claude Sonnet 4.6', notes: 'Default for thinking — fast & sharp' },
-  { id: 'claude-haiku-4-5',  providerId: 'anthropic', name: 'Claude Haiku 4.5',  notes: 'Cheap & fast' },
+  { id: 'claude-opus-5',     providerId: 'anthropic', name: 'Claude Opus 5',     notes: 'Newest top reasoning — same price as 4.7', price: { in: 5, out: 25 } },
+  { id: 'claude-sonnet-5',   providerId: 'anthropic', name: 'Claude Sonnet 5',   notes: 'Newest balanced — same price as 4.6', price: { in: 3, out: 15 } },
+  { id: 'claude-opus-4-7',   providerId: 'anthropic', name: 'Claude Opus 4.7',   notes: 'Top reasoning — slow & expensive', price: { in: 5, out: 25 } },
+  { id: 'claude-sonnet-4-6', providerId: 'anthropic', name: 'Claude Sonnet 4.6', notes: 'Default for thinking — fast & sharp', price: { in: 3, out: 15 } },
+  { id: 'claude-haiku-4-5',  providerId: 'anthropic', name: 'Claude Haiku 4.5',  notes: 'Cheap & fast', price: { in: 1, out: 5 } },
 
   // ── OpenAI ──
   { id: 'gpt-5.6',       providerId: 'openai', name: 'GPT-5.6 Sol',   notes: 'Newest, recommended' },
@@ -105,10 +108,22 @@ function isKnownProvider(providerId) {
   return VALID_PROVIDERS.has(providerId);
 }
 
+/**
+ * List-price USD for a token count, or null when the model has no known rate.
+ * An estimate: llm_usage does not record prompt-cache hits, so a cached call
+ * costs less than this says.
+ */
+function costOf(modelId, inputTokens, outputTokens) {
+  const price = _byId.get(modelId)?.price;
+  if (!price) return null;
+  return ((inputTokens || 0) / 1e6) * price.in + ((outputTokens || 0) / 1e6) * price.out;
+}
+
 module.exports = {
   getModel,
   providerOf,
   tryProviderOf,
+  costOf,
   listForApi,
   isKnownProvider,
   PROVIDERS,
