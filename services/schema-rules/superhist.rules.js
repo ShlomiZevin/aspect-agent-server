@@ -79,9 +79,11 @@ filled on every product line.
 This is exactly the client's Qlik definition. Do NOT add subsidy to it. Many
 subsidised items sell below cost, so negative gross profit is real, not an error
 ("מוצרים שנמכרים בהפסד" = items whose gross profit is below zero).
-Purchase-cost change over time ("התייקרות מחירי קנייה") = \`line_cost / quantity\`
-per item compared across periods, from order lines — NOT products.unit_cost,
-which is only today's value.
+\`line_cost\` is quantity × TODAY's purchase cost, back-filled over all history
+(measured: equal on every product line). So gross profit is "at current cost",
+and a purchase-price change over time ("התייקרות מחירי קנייה") CANNOT be
+computed — every item's unit cost is constant across all dates. Never present
+a flat cost trend as "no price increases".
 
 ### RULE 3b — supplier
 \`products.supplier_name\` (שם ספק) is filled on every item that has ever sold,

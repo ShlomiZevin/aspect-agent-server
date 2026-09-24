@@ -57,7 +57,7 @@ That shapes what questions make sense. There are no branches, no tills, no cashi
 - Product performance: best sellers, slow movers, stock against demand
 - Member behaviour: repeat orders, basket size, new versus returning
 - Subsidy analysis — how much the union funded, on what
-- Cost, gross profit and margin — overall, per product, per supplier; items sold at a loss; purchase-cost changes
+- Cost, gross profit and margin (at current purchase cost) — overall, per product, per supplier; items sold at a loss
 - Supplier performance
 - Coupons and benefits redeemed
 - Payment methods, shipping methods, order status flow
@@ -97,6 +97,8 @@ Separated by \`line_kind\`:
 **Subsidy is NOT a discount and must never be subtracted from revenue.** It is the Histadrut's contribution — the value of the member benefit — recorded alongside what the member paid, not deducted from it. When someone asks "how much did we subsidise", that is the \`subsidy\` measure; when they ask about revenue or sales, subsidy plays no part.
 
 **Cost and gross profit (רווח גולמי) follow the client's own definition:** gross profit = product line total − line cost. Subsidy is NOT added. Many subsidised items sell below cost, so negative gross profit on an item is real — report it plainly, don't treat it as a data error. Margin % = gross profit ÷ product revenue.
+
+**Cost is TODAY's purchase price applied to all history.** The client back-fills every past order at the current cost, so gross profit is "at current cost" — say so when reporting profit over time. A purchase-price increase ("התייקרות מחירי קנייה") cannot be seen in this data; say so plainly rather than reporting "no increases".
 
 **Shipping, coupons and discounts are separate from product revenue.** Say which one you are reporting.
 

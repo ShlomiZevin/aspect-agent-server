@@ -38,14 +38,18 @@ module.exports = {
       basis: "the Histadrut's contribution, recorded ALONGSIDE what the member paid and never deducted from it",
     },
     'shipping income': { fidelity: 'exact', basis: "order_lines.line_total on rows where line_kind = 'shipping'" },
-    'coupons / discounts': { fidelity: 'exact', basis: "order_lines.line_total on rows where line_kind = 'coupon' or 'discount' — NEGATIVE amounts, reported as amounts redeemed" },
+    'coupons / discounts': { fidelity: 'exact', basis: "line_total where line_kind = 'coupon' / 'discount' — negative, report as amount redeemed" },
     'basket size': { fidelity: 'exact', basis: 'units or value divided by distinct orders' },
     'member count': { fidelity: 'exact', basis: 'distinct orders.customer_id' },
     // Added 2026-09-23 when the client delivered a line-level cost column.
-    'cost': { fidelity: 'exact', basis: 'order_lines.line_cost on product lines — the cost of the whole line (quantity x unit cost), as recorded by the client' },
+    // MEASURED 2026-09-24: line_cost = quantity x TODAY's products.unit_cost on
+    // all 3,177,675 product lines — the client back-fills history at the
+    // current purchase price. So it matches the client's Qlik exactly, but is
+    // not the cost that applied at the time of each order.
+    'cost': { fidelity: 'estimate', basis: 'order_lines.line_cost on product lines = quantity x the CURRENT purchase cost, applied to all history (not the cost at the time of the order)' },
     'gross profit / margin': {
-      fidelity: 'exact',
-      basis: "SUM(line_total - line_cost) on product lines — the client's own Qlik formula, subsidy NOT added. Negative on many subsidised items (about a quarter of product lines sell below cost), which is real and must be reported as such",
+      fidelity: 'estimate',
+      basis: "SUM(line_total - line_cost) on product lines — the client's own Qlik formula, subsidy NOT added, priced at CURRENT purchase cost. Negative on many subsidised items, which is real",
     },
   },
 
@@ -60,11 +64,11 @@ module.exports = {
     },
     'supplier': {
       status: 'available',
-      detail: 'products.supplier_name — filled on every item that has sold (empty only on never-sold catalogue rows), so sales, cost and gross profit by supplier cover all product revenue. mv_sales_daily_supplier is the fast path',
+      detail: 'products.supplier_name — filled on every item that has sold, so by-supplier totals cover all product revenue. Fast path: mv_sales_daily_supplier',
     },
     'coupon / discount': {
       status: 'available',
-      detail: "order_lines with line_kind 'coupon' (item_id holds the coupon name/code) or 'discount' (free-shipping benefit, cart discount); negative line_total",
+      detail: "line_kind 'coupon' (item_id = coupon code) or 'discount'; negative line_total",
     },
     'member / customer': { status: 'available', detail: 'orders.customer_id — an identifier only. No name, no city, no demographics' },
     'payment method': { status: 'available', detail: 'orders.payment_method / payment_method_code' },
@@ -118,7 +122,7 @@ module.exports = {
     { fact: 'The shop is online only — members of the Histadrut sign in with their ID number. There are no branches, tills or cashiers', appliesTo: 'any question assuming a shop floor' },
     { fact: 'The order-line table concatenates product lines with shipping, coupon and discount lines; a generated line_kind column separates them at load', appliesTo: 'any item or unit count' },
     { fact: 'Subsidy is the union\'s contribution recorded alongside the charge, not a discount deducted from it', appliesTo: 'any revenue or subsidy figure' },
-    { fact: 'Gross profit follows the client\'s own formula (line total minus line cost, subsidy not added), so subsidised items often show negative gross profit — that is real, not a data error', appliesTo: 'any profit, margin or loss-making-items answer' },
+    { fact: 'Cost is the CURRENT purchase price back-filled over all history, so gross profit is at today\'s cost and purchase-price changes are invisible. Subsidy is not added, so subsidised items often show negative gross profit — real, not an error', appliesTo: 'any cost, profit, margin or loss-making-items answer' },
     { fact: 'The delivered history starts in 2026 — there is no prior year, so no year-on-year and no seasonality', appliesTo: 'any comparison to last year or any seasonal claim' },
     { fact: 'The final loaded month is PARTIAL. Comparing it with a full month shows a fall that is an artefact of the export, not the business', appliesTo: 'any month-over-month comparison touching the latest month' },
     { fact: 'The calendar table covers the whole year while orders cover weeks — it is a date dimension, never evidence that a date has orders', appliesTo: 'any trend or date-range claim' },
@@ -179,7 +183,20 @@ module.exports = {
       alternatives: 'sales by individual product, by payment method, by shipping method, or by week',
     },
     // 'cost / margin' refusal REMOVED 2026-09-23: the client now delivers a
-    // line-level cost column, so profit and margin are exact answers.
+    // line-level cost column. But that cost is today's price back-filled over
+    // all history, so a purchase-price CHANGE is still unanswerable.
+    'purchase cost history': {
+      triggers: [
+        /התייקר/,
+        /עליי?ת\s+(ה)?מחירי?\s+(ה)?(קנייה|קניה|רכש)/,
+        /שינוי\s+(ב)?(ה)?מחירי?\s+(ה)?(קנייה|קניה|רכש)/,
+        /\b(purchase|buying|supplier)\s+(cost|price)s?\s+(increase|rise|rising|change|changes|trend|went\s+up)/i,
+        /\bcost\s+(increases?|inflation)\b/i,
+      ],
+      reason: 'The cost in this data is each product\'s CURRENT purchase price, applied to every past order — there is no record of what the purchase price was at earlier dates, so a price increase cannot be seen.',
+      roadmap: 'The client exports the purchase cost as it was at the time of each order (or a dated purchase-price history).',
+      alternatives: 'current unit cost per product, gross profit and margin at current cost, and products sold below cost',
+    },
     'store / branch': {
       triggers: [
         /\b(sales|revenue|orders)\b.{0,30}\bby\s+(store|branch)\b/i,
