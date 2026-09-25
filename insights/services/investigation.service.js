@@ -597,6 +597,8 @@ The top-level "chart" field is separate from "blocks" — it's always a small, s
 
 ARITHMETIC SELF-CHECK before finalizing "impactValue" (and any total figure in "headline"/"title"): if it represents a combined/aggregate total across several items (e.g. "N stores/families... ₪X total"), and you are ALSO listing those same individual items in a block (ranked_list/comparison), ₪X MUST equal the literal sum of the individual item values you put in that block — actually add them up, don't estimate. A frequent real mistake is citing a bigger, rounder headline total (e.g. including borderline/excluded items) while the block only lists the narrower set that supports it — pick ONE consistent set of items and make every figure describing it agree exactly.
 
+THE IMPACT FIGURE IS WRITTEN ONCE. State it only in "impactValue". Wherever "headline", "title", a "stat_callout" value or any other text restates that SAME figure, write the literal token {{impactValue}} in place of the number — code re-checks "impactValue" against the items you listed and then fills every {{impactValue}} with the verified figure, so your sentences can never disagree with it. Example headline: "5 products sell below cost, eroding {{impactValue}} of gross profit". Use the token ONLY for the impactValue figure itself; write every other number (counts, percentages, individual item values) as normal digits. The token is language-neutral — use it exactly as written in Hebrew text too.
+
 SOURCE OF NUMBERS — THIS OVERRIDES EVERYTHING ELSE ABOVE: the user message contains a block headed "AUTHORITATIVE AGGREGATES", computed in code over the COMPLETE result set. Those are the only trustworthy totals, per-entity values, rankings and percentages available to you. The raw result rows are a small, arbitrary sample of a much larger result and are there ONLY to show you the shape of the data — reading one raw row as an entity's total, or ranking entities by what you can see in the sample, produces catastrophically wrong findings (a real case: a campaign reported at ₪7,885 whose true total was ₪555,229, and a "top campaign" that was really 20th). Take every figure from the authoritative aggregates. If a number you want to state is not derivable from them, do not state it.`;
 
   const anomalyNote = dataAnomaly?.flagged
@@ -936,6 +938,46 @@ function reconcileImpactValue(synthesized, digest) {
   return { ...synthesized, impactValue: correctedImpactValue };
 }
 
+/**
+ * ONE FIGURE, ONE SOURCE. SYNTHESIZE writes the literal token
+ * `{{impactValue}}` wherever its prose restates the impact figure (headline,
+ * title, stat_callout...), and this fills every occurrence from the final
+ * `impactValue` field — AFTER reconcileImpactValue has corrected that field
+ * in code, and BEFORE verifyInsight reads the write-up.
+ *
+ * Why a token rather than splicing the corrected number into the prose:
+ * reconcileImpactValue only ever fixed the short impactValue field (splicing
+ * a number into a sentence is not reliable — see its doc comment), so the
+ * headline kept the model's own wrong total and the verifier rejected the
+ * write-up on every retry. Caught three times on 2026-09-24/25 (superhist
+ * "5 products erode ₪1.03M" against a true ₪933.8K; thestock twice). With a
+ * token the sentence never contains a number of its own to disagree with.
+ *
+ * A response that ignores the token and writes digits behaves exactly as
+ * before — nothing is lost. The walk covers every string in the object, so a
+ * token placed anywhere (a reasoning step, a scenarios description) can never
+ * reach the screen raw.
+ */
+const IMPACT_TOKEN = /\{\{\s*impactValue\s*\}\}/g;
+
+function bindImpactValue(synthesized) {
+  const value = typeof synthesized?.impactValue === 'string' ? synthesized.impactValue.trim() : '';
+  const fill = node => {
+    if (typeof node === 'string') return node.replace(IMPACT_TOKEN, value);
+    if (Array.isArray(node)) return node.map(fill);
+    if (node && typeof node === 'object') {
+      return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, k === 'impactValue' ? v : fill(v)]));
+    }
+    return node;
+  };
+  return fill(synthesized);
+}
+
+/** The arithmetic pass and the binding always run together, in this order. */
+function settleImpactFigure(synthesized, digest) {
+  return bindImpactValue(reconcileImpactValue(synthesized, digest));
+}
+
 // Distinct hues for a genuine multi-series chart (3+ series — e.g. several
 // product families' margin trends plotted together). The old logic gave
 // series[0] the real category color and EVERY other series the exact same
@@ -1192,7 +1234,7 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
 
   progress.set(jobId, 'synthesize');
   let synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest, substitution, scopeAdded, userId });
-  synthesized = reconcileImpactValue(synthesized, digest);
+  synthesized = settleImpactFigure(synthesized, digest);
 
   // Step 4, VERIFY: an independent LLM pass fact-checks step 3's own output
   // against the real rows (see verifyInsight() doc comment for why this is a
@@ -1219,7 +1261,7 @@ async function investigate(datasetId, userId, prompt, jobId = null) {
     console.log(`   Verify rejected synthesis (attempt ${retry}/${MAX_SYNTH_RETRIES}), regenerating: ${verification.issues.join('; ')}`);
     progress.set(jobId, 'synthesize', `Rewriting after fact-check (${retry}/${MAX_SYNTH_RETRIES})`);
     synthesized = await synthesizeInsight({ datasetId, config, prompt: actualPrompt, category, dataQuestion, queryResult, dataAnomaly, digest, substitution, scopeAdded, verifierFeedback: verification.issues, userId });
-    synthesized = reconcileImpactValue(synthesized, digest);
+    synthesized = settleImpactFigure(synthesized, digest);
     progress.set(jobId, 'verify');
     verification = await verifyInsight({ config, queryResult, synthesized, digest, datasetId, userId });
   }
@@ -1619,5 +1661,5 @@ module.exports = {
   // pure, DB/LLM-free logic directly as real regression tests (see the
   // 2026-08-07 bugs each of these was fixed for) — not part of the public
   // API surface any route calls into.
-  detectSuspiciousResult, looksLikeTimeSeries, reconcileImpactValue,
+  detectSuspiciousResult, looksLikeTimeSeries, reconcileImpactValue, bindImpactValue, settleImpactFigure,
 };

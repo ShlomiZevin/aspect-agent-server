@@ -236,6 +236,45 @@ check(
   { flagged: false, reason: null, columns: [] }
 );
 
+console.log('\nbindImpactValue / settleImpactFigure ────────────────────');
+
+// The real case (superhist, 2026-09-24): five loss-making products, headline
+// "5 products erode ₪1.03M" while the five listed losses sum to ₪933,849. The
+// field was corrected in code, the headline was not, and the verifier
+// rejected every retry. With the token the headline takes the corrected
+// field, so the two cannot disagree.
+const { bindImpactValue, settleImpactFigure } = require('../insights/services/investigation.service');
+const lossCase = () => ({
+  impactValue: '-₪1.03M',
+  headline: '5 products sell below cost, eroding {{impactValue}} of gross profit',
+  title: 'Five products erode {{impactValue}}',
+  blocks: [
+    { type: 'ranked_list', items: ['-₪306.2K', '-₪198.2K', '-₪196.9K', '-₪124.3K', '-₪108.2K'].map((v, i) => ({ label: `p${i}`, value: v, pct: 100 })) },
+    { type: 'stat_callout', value: '{{impactValue}}', label: 'gross profit', description: 'Across {{ impactValue }} of losses' },
+  ],
+  reasoning: [{ title: 'Sum', description: 'Summed to {{impactValue}}' }],
+});
+const settled = settleImpactFigure(lossCase(), null);
+check('arithmetic corrects the field first', settled.impactValue, '-₪933.8K');
+check('headline takes the corrected figure, not the model total',
+  settled.headline, '5 products sell below cost, eroding -₪933.8K of gross profit');
+check('title takes the same figure', settled.title, 'Five products erode -₪933.8K');
+check('stat_callout value is bound', settled.blocks[1].value, '-₪933.8K');
+check('whitespace inside the token is tolerated', settled.blocks[1].description, 'Across -₪933.8K of losses');
+check('a token in any nested string never reaches the screen raw',
+  JSON.stringify(settled).includes('{{'), false);
+check('ranked_list item values are left exactly as written',
+  settled.blocks[0].items.map(i => i.value), ['-₪306.2K', '-₪198.2K', '-₪196.9K', '-₪124.3K', '-₪108.2K']);
+
+check('a write-up without the token is returned unchanged',
+  bindImpactValue({ impactValue: '₪5K', headline: 'Revenue grew ₪5K' }),
+  { impactValue: '₪5K', headline: 'Revenue grew ₪5K' });
+check('Hebrew prose binds the same way',
+  bindImpactValue({ impactValue: '₪934K', headline: '5 מוצרים נמכרים מתחת לעלות, שחיקה של {{impactValue}}' }).headline,
+  '5 מוצרים נמכרים מתחת לעלות, שחיקה של ₪934K');
+check('a missing impactValue never leaves the raw token',
+  bindImpactValue({ headline: 'Total {{impactValue}}' }).headline, 'Total ');
+
 console.log('\nbuildResultDigest ──────────────────────────────────────');
 
 const { buildResultDigest, classifyColumns } = require('../insights/services/result-digest.service');
