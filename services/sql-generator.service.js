@@ -517,9 +517,9 @@ LIMIT 10
 
 **Materialized views (PRE-AGGREGATED — use these for top-N / revenue questions):**
 - \`mv_sales_daily\` — (transaction_date, line_count, total_qty, revenue_ex_vat, revenue_inc_vat, loyalty_count). ~1,800 rows. Use for "total revenue / sales by period / daily trend".
-- \`mv_sales_daily_sku\` — (transaction_date, sku, total_qty, revenue_ex_vat, revenue_inc_vat, line_count). ~5-10M rows. Use for "top selling products by period".
-- \`mv_sales_daily_store\` — (transaction_date, warehouse_code, total_qty, revenue_ex_vat, revenue_inc_vat, line_count). ~300K rows. Use for "top stores by period".
-- \`mv_sales_daily_cashier\` — (transaction_date, cashier, total_qty, revenue_ex_vat, revenue_inc_vat, line_count). ~900K rows. Use for "top cashiers by period".
+- \`mv_sales_daily_sku\` — (transaction_date, sku, total_qty, revenue_ex_vat, revenue_inc_vat, line_count, loyalty_count). ~5-10M rows. Use for "top selling products by period".
+- \`mv_sales_daily_store\` — (transaction_date, warehouse_code, total_qty, revenue_ex_vat, revenue_inc_vat, line_count, loyalty_count). ~300K rows. Use for "top stores by period".
+- \`mv_sales_daily_cashier\` — (transaction_date, cashier, total_qty, revenue_ex_vat, revenue_inc_vat, line_count, loyalty_count). ~900K rows. Use for "top cashiers by period".
 
 ### RULE 0 — Sales aggregations MUST use materialized views (CRITICAL)
 \`facts\` has 40M rows on a small DB tier. Aggregating it directly for "top products", "top stores", "top cashiers", "revenue this year/month" times out at 15s. ALWAYS use the relevant MV instead:
