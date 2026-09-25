@@ -66,11 +66,41 @@ const COLUMN_MAP = {
   // quantity. They are loaded rather than dropped so nothing vanishes
   // silently, but they cannot be attributed to an item, so item-level stock
   // questions must use the 433,424 rows that do carry a sku.
+  //
+  // ── 2026-09-25: FactT_ZolStock_CSV.csv REPLACES Fact_ZolStock_CSV.csv ──────
+  // The client renamed the fact file (the old one still sits in Drive, frozen
+  // at 2026-09-14, and is ignored by omission from FILE_TO_TABLE). Measured
+  // over the full FactT (31,036,279 rows, sales 2025-01-01 .. 2026-09-24):
+  //   - ONE item key on EVERY row kind: `מספר פריט` -> item_number, joining
+  //     items.item_number at 100% on all of them. The two-key system below
+  //     (`מקט`->sku, `מספר פריט Sales`->item_number_sales) is GONE from the
+  //     feed — its disappearance on 2026-09-06 is what froze the reload.
+  //   - Store inventory rows now ALL carry an item key (2,916,636).
+  //   - New row kinds: store sold-to-date, store purchased-to-date, in transit
+  //     to store (see record_type in create-zolstock-indexes.js).
+  //   - Seven "expected stock" / "in cartons" headers arrive EMPTY on all 31M
+  //     rows — the client's BI computes them and does not export the values.
+  //     Mapped anyway so the columns carry English names and their emptiness
+  //     is visible.
   facts: [
     { csvName: 'מספר לקוח פריוריטי',      dbName: 'priority_customer_number', type: 'TEXT'    },
+    { csvName: 'מספר פריט',               dbName: 'item_number',              type: 'TEXT'    },
+    // Legacy two-key system — kept only so an old Fact file still loads.
     { csvName: 'מקט',                     dbName: 'sku',                      type: 'TEXT'    },
     { csvName: 'מחסן',                    dbName: 'warehouse',                type: 'TEXT'    },
     { csvName: 'מלאי נוכחי במחסן',        dbName: 'warehouse_qty',            type: 'NUMERIC' },
+    { csvName: 'מלאי נוכחי במחסן כל האיתורים', dbName: 'warehouse_qty_all_locations', type: 'NUMERIC' },
+    { csvName: 'סהכ כמות קניה עד היום לחנות',  dbName: 'store_purchased_to_date',     type: 'NUMERIC' },
+    { csvName: 'סהכ כמות בדרך לחנות',          dbName: 'store_in_transit_qty',        type: 'NUMERIC' },
+    { csvName: 'סהכ נמכר עד היום בחנות',       dbName: 'store_sold_to_date',          type: 'NUMERIC' },
+    // Empty in every row of the 2026-09-24 delivery (see above).
+    { csvName: 'מלאי נוכחי במחסן בקרטונים',              dbName: 'warehouse_cartons',                 type: 'NUMERIC' },
+    { csvName: 'מלאי נוכחי במחסן בקרטונים כל האיתורים',  dbName: 'warehouse_cartons_all_locations',   type: 'NUMERIC' },
+    { csvName: 'מלאי צפוי במחסן',                        dbName: 'expected_warehouse_qty',            type: 'NUMERIC' },
+    { csvName: 'מלאי צפוי במחסן בקרטונים',               dbName: 'expected_warehouse_cartons',        type: 'NUMERIC' },
+    { csvName: 'מלאי צפוי בסניפים לפי פוזיטיב',          dbName: 'expected_store_qty_positive',       type: 'NUMERIC' },
+    { csvName: 'מלאי צפוי בסניפים',                      dbName: 'expected_store_qty',                type: 'NUMERIC' },
+    { csvName: 'מלאי צפוי בסניפים בקרטונים',             dbName: 'expected_store_cartons',            type: 'NUMERIC' },
     { csvName: 'תאריך',                   dbName: 'row_date',                 type: 'DATE'    },
     { csvName: 'הזמנת לקוח',              dbName: 'customer_order_id',        type: 'TEXT'    },
     { csvName: 'כמות הזמנת לקוח ממחסן',   dbName: 'customer_order_qty',       type: 'NUMERIC' },

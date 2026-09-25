@@ -34,7 +34,7 @@ module.exports = {
 
   dimensions: {
     'store': { status: 'available', detail: 'stores table with names; sales key on store_number' },
-    'item / product': { status: 'available', detail: 'items catalog (name, category, subcategory, family, supplier, safety_stock). Sales rows key on item_number_sales; replenishment rows key on sku — filtering a SALES view by sku silently returns zero rows' },
+    'item / product': { status: 'available', detail: 'items catalog (name, category, subcategory, family, supplier, safety_stock). Every fact row kind keys on item_number; sku is a catalogue attribute carried on the views' },
     'category (as labeled)': { status: 'available', detail: 'items.category/subcategory as delivered' },
     'category (vs client dashboard)': { status: 'unreliable', detail: 'the mapping the client\'s Qlik uses is NOT in the delivered files — measured divergence 2× to 29× per category; same labels, different item-to-category assignment', roadmap: 'client sends the mapping table/field feeding קטגוריה ראשית in Qlik' },
     'date': { status: 'available', detail: 'facts.row_date (sales/orders); inventory rows carry NULL dates' },
