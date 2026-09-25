@@ -23,7 +23,8 @@
  * same way — a fresh conversation replayed turn-by-turn — the mode is
  * analytical metadata.
  *
- * Usage: node scripts/build-customer-corpus.js
+ * Usage: node scripts/build-customer-corpus.js [--agent zolstock|hypertoy|thestock]
+ *   (default zolstock → customer-corpus.json; others → customer-corpus-<agent>.json)
  */
 
 require('dotenv').config();
@@ -31,25 +32,15 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../services/db.pg');
 
-const AGENT_ID = 22; // ZolStock
-const OUT_DIR = path.join(__dirname, '..', 'verification', 'representative-dataset');
-const OUT_FILE = path.join(OUT_DIR, 'customer-corpus.json');
+const { profileFromArgv } = require('./lib/replay-profiles');
 
-// Conversation 3187 (2026-08-20 18:29–18:31 IL, user anon_1787049528388_vnggm0set).
-// Text reconstructed from slow_queries data-fetch questions — the user's exact
-// wording is unrecoverable (the persistence bug this stage's Step 5 fixes).
-const GHOST_CONVERSATION = {
-  origConv: 3187,
-  user: 'anon_1787049528388_vnggm0set',
-  mode: 'conversational',
-  reconstructed: true,
-  turns: [
-    { mid: 'ghost-1', t: '2026-08-20 18:29', reconstructed: true,
-      text: '10 המוצרים המובילים בשנת 2026 לפי הכנסה, כולל כמות שנמכרה, הכנסה, רווח ושיעור רווח' },
-    { mid: 'ghost-2', t: '2026-08-20 18:30', reconstructed: true,
-      text: 'טופ 10 מוצרים בשנת 2026 לפי הכנסות, כולל רווח, שיעור רווח, כמות שנמכרה ושם הספק' },
-  ],
-};
+// `--agent <zolstock|hypertoy|thestock>`, ZolStock by default — see
+// scripts/lib/replay-profiles.js for what differs per agent.
+const PROFILE = profileFromArgv(process.argv);
+const AGENT_ID = PROFILE.agentId;
+const OUT_DIR = path.join(__dirname, '..', 'verification', 'representative-dataset');
+const OUT_FILE = path.join(OUT_DIR, PROFILE.corpusFile);
+const GHOST_CONVERSATION = PROFILE.ghostConversation;
 
 async function main() {
   await db.initialize();
@@ -86,28 +77,28 @@ async function main() {
   const conversations = [...byConv.values()].map(c => ({
     ...c, mode: c.turns.length > 1 ? 'conversational' : 'standalone',
   }));
-  conversations.push(GHOST_CONVERSATION);
+  if (GHOST_CONVERSATION) conversations.push(GHOST_CONVERSATION);
   conversations.sort((a, b) => String(a.turns[0].t).localeCompare(String(b.turns[0].t)));
 
   const totalTurns = conversations.reduce((n, c) => n + c.turns.length, 0);
   // The corpus GROWS as real customers ask new things (that is the point —
   // replaying transcripts catches what invented cases cannot). The floor
-  // assert guards against a broken extraction silently shrinking it: 74 was
-  // the frozen Stage-2/3 corpus (72 logged + 2 ghost, 2026-08-21).
-  if (totalTurns < 74) {
-    throw new Error(`Corpus shrank: expected >= 74 turns, got ${totalTurns} — extraction is broken, do not freeze.`);
+  // assert guards against a broken extraction silently shrinking it.
+  if (totalTurns < PROFILE.floor) {
+    throw new Error(`Corpus shrank: expected >= ${PROFILE.floor} turns, got ${totalTurns} — extraction is broken, do not freeze.`);
   }
 
   const meta = {
     builtAt: new Date().toISOString(),
     agentId: AGENT_ID,
-    agentName: 'ZolStock',
+    agentName: PROFILE.agentName,
     totalTurns,
     loggedTurns: rows.length,
-    reconstructedTurns: GHOST_CONVERSATION.turns.length,
+    reconstructedTurns: GHOST_CONVERSATION ? GHOST_CONVERSATION.turns.length : 0,
     conversations: conversations.length,
     users: [...new Set(conversations.map(c => c.user))].length,
-    source: "messages ⋈ conversations ⋈ users WHERE agent_id=22 AND role='user' AND external_id LIKE 'anon_%' — plus conversation 3187 reconstructed from slow_queries",
+    source: `messages ⋈ conversations ⋈ users WHERE agent_id=${AGENT_ID} AND role='user' AND external_id LIKE 'anon_%'`
+      + (GHOST_CONVERSATION ? ` — plus conversation ${GHOST_CONVERSATION.origConv} reconstructed from slow_queries` : ''),
   };
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
