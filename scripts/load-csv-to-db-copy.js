@@ -14,6 +14,7 @@ const { StringDecoder } = require('string_decoder');
 const fs = require('fs').promises;
 const path = require('path');
 const { from: copyFrom } = require('pg-copy-streams');
+const { visualToLogical } = require('./lib/visual-rtl');
 
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.json');
 
@@ -27,9 +28,17 @@ const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.
  * disagrees with the DD/MM/YYYY every client's export otherwise uses — e.g.
  * superhist's stock_history.snapshot_date, which arrives MM/DD/YYYY (see
  * column-aliases-superhist.js). Undefined means DD/MM/YYYY, same as before
- * this parameter existed.
+ * this parameter existed. On a TEXT column the only format is 'visual_rtl'
+ * (thestock's item descriptions — see column-aliases-thestock.js).
  */
 function convertField(raw, type, format) {
+  // TEXT is passed through untouched unless its column asks for a transform.
+  // 'visual_rtl': Hebrew exported in visual (reversed) order behind a
+  // left-to-right override — see scripts/lib/visual-rtl.js.
+  if (type === 'TEXT') {
+    return format === 'visual_rtl' ? visualToLogical(raw) : raw;
+  }
+
   const v = raw.trim();
   if (v === '') return '';
 
@@ -165,7 +174,8 @@ function serializeCSVLine(fields) {
 function createTypeConvertTransform(schema, dateCutoff = null) {
   const typedPositions = schema.columns
     .map((col, idx) => ({ idx, type: col.type, name: col.name, format: col.format }))
-    .filter(c => c.type !== 'TEXT');
+    // TEXT columns stream through untouched, unless one asks for a transform.
+    .filter(c => c.type !== 'TEXT' || c.format === 'visual_rtl');
 
   // Date filtering only applies to DATE-typed columns (zer4u: sales.sale_date).
   const datePositions = typedPositions.filter(c => c.type === 'DATE');

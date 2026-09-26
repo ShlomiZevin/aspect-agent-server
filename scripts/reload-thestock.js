@@ -56,7 +56,7 @@ async function buildSchemasFromHeaders(gcsFiles, emitLog) {
       const columns = headers.map(h => {
         const csvName = h.replace(/^﻿/, '').trim();
         const def = lookup.get(csvName);
-        return { csvName, name: def ? def.dbName : csvName, type: def ? def.type : 'TEXT' };
+        return { csvName, name: def ? def.dbName : csvName, type: def ? def.type : 'TEXT', format: def ? def.format : undefined };
       });
 
       schemas.push({ fileName: file.basename, filePath: file.name, fileSize: file.size, tableName, columns });

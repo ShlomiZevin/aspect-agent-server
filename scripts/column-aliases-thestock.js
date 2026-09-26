@@ -99,7 +99,10 @@ const COLUMN_MAP = {
     // and `"עלות תקן בש""ח"` arrives as `עלות תקן בשח`. Keys below match the parser's output.
     { csvName: 'PART',                              dbName: 'part',                        type: 'TEXT'    },
     { csvName: 'מקט',                                dbName: 'sku',                         type: 'TEXT'    },
-    { csvName: 'תאור פריט',                         dbName: 'item_description',            type: 'TEXT'    },
+    // Delivered in VISUAL order (reversed Hebrew behind a U+202D override) on
+    // all 61,183 rows of the May 2026 export; stored in logical order so SQL,
+    // the model and the chat read it as Hebrew. scripts/lib/visual-rtl.js.
+    { csvName: 'תאור פריט',                         dbName: 'item_description',            type: 'TEXT', format: 'visual_rtl' },
     { csvName: 'ברקוד',                              dbName: 'barcode',                     type: 'TEXT'    },
     { csvName: 'תאור משפחת מוצר',                   dbName: 'family_description',          type: 'TEXT'    },
     { csvName: 'משפחת מוצר',                        dbName: 'family_code',                 type: 'TEXT'    },
@@ -164,7 +167,9 @@ const COLUMN_MAP = {
 function buildColumnLookup(tableName) {
   const map = new Map();
   for (const col of COLUMN_MAP[tableName] || []) {
-    map.set(col.csvName, { type: col.type, dbName: col.dbName });
+    // format carries a per-column transform through to the loader — here only
+    // 'visual_rtl' on item_description (see above).
+    map.set(col.csvName, { type: col.type, dbName: col.dbName, format: col.format });
   }
   return map;
 }
