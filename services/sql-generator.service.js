@@ -384,6 +384,23 @@ If genuinely unsure which of the two the user means, prefer whichever produces a
 \`sales_target\`/\`loyalty_target\` rows (\`record_type = 'יעדים'\`) only vary by \`warehouse_code\` + time — there is no meaningful \`part\` on a target row. When comparing target vs actual, the FULL OUTER JOIN between the targets CTE and the actuals CTE must use ONLY \`(warehouse_code, month)\` (or whatever time grain) as in the "Sales targets vs actual" reference query below — NEVER add \`part\`/product/family to that join key, even if the question also asks for a product-family breakdown.
 If a question asks for BOTH a target-attainment comparison AND a product/family breakdown, do NOT force them into one join: compute revenue/profit by product-family from actuals alone (no target join), and compute target attainment separately at the store level only. Silently adding \`part\` to a target-actual join produces a mismatch where every "actual" resolves to 0 (targets have no matching part) — a false "0% attainment" result, not a real finding. If you see a target-vs-actual query returning 0 actual revenue for every single row, that is a strong signal of exactly this join bug — remove \`part\` from the join and recheck before trusting the result.
 
+### RULE 4.8 — Non-merchandise SKUs are NOT products — exclude them from every product ranking
+These sales lines are till mechanics, not goods:
+| sku | what it is |
+|---|---|
+| \`888\` | club enrollment (הצטרפות למועדון) — huge unit count at ~₪0 |
+| \`1020\` | internet order (הזמנת אינטרנט) — ₪0 lines |
+| \`7\` | order redemption (מימוש הזמנה) |
+| \`1234\` | shipping (משלוחים) |
+| \`1111\` | discount voucher (תו דיסקונט) — negative |
+| \`99887766\` | special discount (הנחה מיוחדת) — large NEGATIVE quantity and value |
+Any "top / best-selling / worst / fastest-moving products or items" query MUST add
+\`AND p.sku NOT IN ('888','1020','7','1234','1111','99887766')\` (via the products join) —
+otherwise club enrollment tops every ranking by units and the discount line tops or
+bottoms it by value. Do NOT exclude them from total revenue, store or period totals:
+shipping and discounts are real money on the receipt. They sit in family_code '0',
+but that family also holds real products (pools, Lego), so never exclude the family.
+
 ### RULE 5 — Profit / margin metrics
 - Profit fields are already calculated: \`profit_ex_vat\`, \`profit_inc_vat\`
 - Cost fields: \`cost_ex_vat\`, \`cost_inc_vat\`, \`COSTT\` (column name \`costt\`)
