@@ -236,6 +236,26 @@ check(
   { flagged: false, reason: null, columns: [] }
 );
 
+// The same excerpt, but the SQL already returned one row per entity, so the
+// digest never regrouped (2026-09-26, hypertoy "revenue by store": 28 stores,
+// correct ₪127.98M overwritten with ₪84.46M, the sum of the 10 listed).
+check(
+  'top-N excerpt of an ungrouped result is NOT summed into impactValue',
+  reconcileImpactValue(
+    rankedListInsight('₪127.98M', Array(10).fill('₪8.446M')),
+    { regrouped: false, rowCount: 28 }
+  ).impactValue,
+  '₪127.98M'
+);
+check(
+  'an ungrouped result that IS the whole population still reconciles',
+  reconcileImpactValue(
+    rankedListInsight('₪90M', Array(10).fill('₪8.446M')),
+    { regrouped: false, rowCount: 10 }
+  ).impactValue,
+  '₪84.46M'
+);
+
 console.log('\nbindImpactValue / settleImpactFigure ────────────────────');
 
 // The real case (superhist, 2026-09-24): five loss-making products, headline

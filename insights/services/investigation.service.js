@@ -892,7 +892,13 @@ function reconcileImpactValue(synthesized, digest) {
   // (28 campaigns) was overwritten with ₪3.72M, the sum of the 10 shown.
   // The digest knows the real entity count, so this is now decidable rather
   // than guessed at.
-  if (digest?.regrouped && digest.distinctGroups > itemBlock.items.length) return synthesized;
+  //
+  // The same holds when the SQL already returned one row per entity and the
+  // digest did not need to regroup: then the population is the ROW count.
+  // Missed until 2026-09-26 — "revenue by store" (28 stores) had its correct
+  // ₪127.98M impactValue overwritten with ₪84.46M, the sum of the 10 listed.
+  const population = digest?.regrouped ? digest.distinctGroups : digest?.rowCount;
+  if (population > itemBlock.items.length) return synthesized;
 
   const itemValues = itemBlock.items.map(it => parseNumberToken(it.value)).filter(Boolean).map(t => t.value);
   if (itemValues.length < 2) return synthesized;
