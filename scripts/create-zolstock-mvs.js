@@ -88,15 +88,22 @@ const ITEM_DIM = schema => `
 const SALES = schema => `
   SELECT f.row_date,
          f.store_number,
-         f.item_number_sales AS item_number,
+         f.item_number,
          f.qty_sold,
          f.qty_sold * i.consumer_price / ${VAT}                        AS revenue_list_ex_vat,
          f.qty_sold * (i.consumer_price / ${VAT} - i.cost_ex_vat)      AS profit_list_ex_vat,
          i.item_name, i.category, i.subcategory, i.item_family,
          i.supplier, i.manufacturer, i.sku
     FROM ${schema}.facts f
-    LEFT JOIN (${ITEM_DIM(schema)}) i ON i.item_number = f.item_number_sales
+    LEFT JOIN (${ITEM_DIM(schema)}) i ON i.item_number = f.item_number
    WHERE f.record_type = 'sales'`;
+
+/**
+ * Since FactT (2026-09-25) every fact row kind keys on item_number and joins
+ * the catalogue at 100%, so the stock and order views key on item_number too.
+ * `sku` is carried as a catalogue attribute, so a sku-worded question still
+ * filters these views directly.
+ */
 
 function mvs(schema) {
   return [
@@ -206,55 +213,54 @@ function mvs(schema) {
       indexes: [{ name: 'uq_mv_sales_monthly_category', col: 'month, category', unique: true }],
     },
 
-    // ── mv_store_inventory — item-level store stock (433,424 usable rows) ─────
-    // Deliberately restricted to rows that carry a sku. The other 2,549,776
-    // store-inventory rows have no item key and no date, so they cannot be
-    // attributed to a product; including them would inflate every stock figure
-    // with quantities nobody can trace. They remain in `facts` for audit.
+    // ── mv_store_inventory — store × item stock (~2.9M rows) ──────────────────
+    // Since FactT every store-inventory row carries an item key (before, 85%
+    // had none and were excluded).
     {
       name: 'mv_store_inventory',
       sql: `
         SELECT f.store_number,
                st.store_name,
-               f.sku,
-               MIN(i.item_number)           AS item_number,
+               f.item_number,
+               MIN(i.sku)                   AS sku,
                MIN(i.item_name)             AS item_name,
                MIN(i.category)              AS category,
+               MIN(i.supplier)              AS supplier,
                SUM(f.store_inventory_qty)   AS store_qty,
                MIN(i.safety_stock)          AS safety_stock
           FROM ${schema}.facts f
-          LEFT JOIN (SELECT DISTINCT ON (sku) sku, item_number, item_name, category, safety_stock
-                       FROM ${schema}.items WHERE sku IS NOT NULL
-                      ORDER BY sku, item_number) i ON i.sku = f.sku
+          LEFT JOIN (${ITEM_DIM(schema)}) i ON i.item_number = f.item_number
           LEFT JOIN ${schema}.stores st ON st.store_number = f.store_number
-         WHERE f.record_type = 'store_inventory' AND f.sku IS NOT NULL
-         GROUP BY f.store_number, st.store_name, f.sku`,
+         WHERE f.record_type = 'store_inventory' AND f.item_number IS NOT NULL
+         GROUP BY f.store_number, st.store_name, f.item_number`,
       indexes: [
-        { name: 'uq_mv_store_inventory', col: 'store_number, sku', unique: true },
-        { name: 'idx_mv_store_inventory_sku', col: 'sku' },
+        { name: 'uq_mv_store_inventory', col: 'store_number, item_number', unique: true },
+        { name: 'idx_mv_store_inventory_item', col: 'item_number' },
       ],
     },
 
-    // ── mv_warehouse_inventory — central stock per sku (~8.9k rows) ──────────
+    // ── mv_warehouse_inventory — central stock per item (~10k rows) ──────────
+    // warehouse_qty is the client's "current warehouse stock";
+    // warehouse_qty_all_locations (new in FactT) counts every bin location,
+    // including ones the main figure leaves out — they differ, keep both.
     {
       name: 'mv_warehouse_inventory',
       sql: `
-        SELECT f.sku,
-               MIN(i.item_number)           AS item_number,
+        SELECT f.item_number,
+               MIN(i.sku)                   AS sku,
                MIN(i.item_name)             AS item_name,
                MIN(i.category)              AS category,
+               MIN(i.supplier)              AS supplier,
                SUM(f.warehouse_qty)         AS warehouse_qty,
+               SUM(f.warehouse_qty_all_locations) AS warehouse_qty_all_locations,
                MIN(i.safety_stock)          AS safety_stock,
                MIN(i.consumer_price)        AS consumer_price,
                SUM(f.warehouse_qty * i.cost_ex_vat) AS stock_value_at_cost_ex_vat
           FROM ${schema}.facts f
-          LEFT JOIN (SELECT DISTINCT ON (sku) sku, item_number, item_name, category, safety_stock,
-                            consumer_price, cost_ex_vat
-                       FROM ${schema}.items WHERE sku IS NOT NULL
-                      ORDER BY sku, item_number) i ON i.sku = f.sku
-         WHERE f.record_type = 'warehouse_inventory'
-         GROUP BY f.sku`,
-      indexes: [{ name: 'uq_mv_warehouse_inventory', col: 'sku', unique: true }],
+          LEFT JOIN (${ITEM_DIM(schema)}) i ON i.item_number = f.item_number
+         WHERE f.record_type = 'warehouse_inventory' AND f.item_number IS NOT NULL
+         GROUP BY f.item_number`,
+      indexes: [{ name: 'uq_mv_warehouse_inventory', col: 'item_number', unique: true }],
     },
 
     // ── mv_open_orders — customer and purchase orders (~12k rows) ────────────
@@ -264,30 +270,34 @@ function mvs(schema) {
     {
       name: 'mv_open_orders',
       sql: `
-        SELECT 'customer'::text          AS order_kind,
-               f.customer_order_id       AS order_id,
-               f.row_date,
-               f.sku,
-               f.store_number,
-               f.priority_customer_number,
-               SUM(f.customer_order_qty) AS qty
-          FROM ${schema}.facts f
-         WHERE f.record_type = 'customer_order'
-         GROUP BY 1, 2, 3, 4, 5, 6
-        UNION ALL
-        SELECT 'purchase'::text,
-               f.purchase_order_id,
-               f.row_date,
-               f.sku,
-               NULL::text,
-               NULL::text,
-               SUM(f.purchase_order_qty)
-          FROM ${schema}.facts f
-         WHERE f.record_type = 'purchase_order'
-         GROUP BY 1, 2, 3, 4, 5, 6`,
+        SELECT o.*, i.sku, i.item_name, i.supplier
+          FROM (
+            SELECT 'customer'::text          AS order_kind,
+                   f.customer_order_id       AS order_id,
+                   f.row_date,
+                   f.item_number,
+                   f.store_number,
+                   f.priority_customer_number,
+                   SUM(f.customer_order_qty) AS qty
+              FROM ${schema}.facts f
+             WHERE f.record_type = 'customer_order'
+             GROUP BY 1, 2, 3, 4, 5, 6
+            UNION ALL
+            SELECT 'purchase'::text,
+                   f.purchase_order_id,
+                   f.row_date,
+                   f.item_number,
+                   NULL::text,
+                   NULL::text,
+                   SUM(f.purchase_order_qty)
+              FROM ${schema}.facts f
+             WHERE f.record_type = 'purchase_order'
+             GROUP BY 1, 2, 3, 4, 5, 6
+          ) o
+          LEFT JOIN (${ITEM_DIM(schema)}) i ON i.item_number = o.item_number`,
       indexes: [
-        { name: 'uq_mv_open_orders', col: 'order_kind, order_id, row_date, sku, store_number, priority_customer_number', unique: true },
-        { name: 'idx_mv_open_orders_sku', col: 'sku' },
+        { name: 'uq_mv_open_orders', col: 'order_kind, order_id, row_date, item_number, store_number, priority_customer_number', unique: true },
+        { name: 'idx_mv_open_orders_item', col: 'item_number' },
       ],
     },
   ];

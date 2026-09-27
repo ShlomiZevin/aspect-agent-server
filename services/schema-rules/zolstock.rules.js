@@ -28,20 +28,28 @@ function zolstockRules(schemaName) {
 ## zolstock-Specific Rules (CRITICAL — follow exactly)
 
 ### What this dataset is
-Zol Stock is a discount retail chain. \`${schemaName}.facts\` (29,910,277 rows)
-concatenates FIVE kinds of row in one table. The kind is given by the
-\`record_type\` column — a derived column added at load time:
+Zol Stock is a discount retail chain. \`${schemaName}.facts\` (~31M rows)
+concatenates several kinds of row in one table. The kind is given by the
+\`record_type\` column — a derived column added at load time. EVERY kind keys
+on \`item_number\` (joins \`items.item_number\` at 100%):
 
-| record_type | rows | what it holds |
-|---|---|---|
-| \`'sales'\` | 26,905,987 | row_date, store_number, item_number_sales, qty_sold |
-| \`'store_inventory'\` | 2,983,200 | store_number, store_inventory_qty (NO date) |
-| \`'warehouse_inventory'\` | 8,924 | sku, warehouse, warehouse_qty (NO date) |
-| \`'customer_order'\` | 11,488 | priority_customer_number, sku, row_date, customer_order_id, customer_order_qty |
-| \`'purchase_order'\` | 677 | sku, row_date, purchase_order_id, purchase_order_qty |
+| record_type | what it holds |
+|---|---|
+| \`'sales'\` | row_date, store_number, item_number, qty_sold |
+| \`'store_inventory'\` | store_number, item_number, store_inventory_qty (NO date) |
+| \`'store_sold_to_date'\` | store_number, item_number, store_sold_to_date (NO date) |
+| \`'store_purchased_to_date'\` | store_number, item_number, priority_customer_number, store_purchased_to_date (NO date) |
+| \`'store_in_transit'\` | store_number, item_number, store_in_transit_qty — goods on the way to a store (NO date) |
+| \`'warehouse_inventory'\` | item_number, warehouse, warehouse_qty, warehouse_qty_all_locations (NO date) |
+| \`'customer_order'\` | priority_customer_number, item_number, store_number, row_date, customer_order_id, customer_order_qty |
+| \`'purchase_order'\` | item_number, row_date, purchase_order_id, purchase_order_qty |
 
 **ALWAYS filter \`record_type\`.** A bare \`SELECT COUNT(*) FROM ${schemaName}.facts\`
-mixes all five and means nothing.
+mixes every kind and means nothing.
+
+The columns \`expected_warehouse_qty\`, \`expected_store_qty\`,
+\`expected_store_qty_positive\` and every \`*_cartons\` column on \`facts\` are
+EMPTY in this delivery — never read them as zero stock.
 
 ### THERE IS NO MONEY IN THE FACT DATA — read this before writing any revenue query
 The source file has no line total, no cost of sales, no discount and no campaign.
@@ -116,9 +124,9 @@ facts scan). A month of \`mv_sales_monthly_item\` is an acceptable proxy for
 | \`${schemaName}.mv_sales_monthly_item\` | month × item | ~1-2M | item questions WITH a period |
 | \`${schemaName}.mv_sales_item_total\` | item (lifetime) | ~139k | "top N items" with NO period |
 | \`${schemaName}.mv_sales_monthly_category\` | month × category | ~1k | category and margin questions |
-| \`${schemaName}.mv_store_inventory\` | store × sku | ~433k | stock on hand in stores |
-| \`${schemaName}.mv_warehouse_inventory\` | sku | ~8.9k | central warehouse stock and its value |
-| \`${schemaName}.mv_open_orders\` | order line | ~12k | open customer / purchase orders |
+| \`${schemaName}.mv_store_inventory\` | store × item | ~2.9M | stock on hand in stores |
+| \`${schemaName}.mv_warehouse_inventory\` | item | ~10k | central warehouse stock and its value |
+| \`${schemaName}.mv_open_orders\` | order line | ~8k | open customer / purchase orders |
 
 Each sales view carries \`total_qty\`, \`revenue_list_ex_vat\` and
 \`profit_list_ex_vat\`; the item and category views also carry \`item_name\`,
@@ -127,40 +135,35 @@ deduplicated — so a top-items query needs NO join to \`items\` at all.
 
 The non-sales views have their OWN column names — do not assume the item
 master's names carry over:
-- \`mv_warehouse_inventory\`: \`sku\`, \`item_number\`, \`item_name\`,
-  \`category\`, \`warehouse_qty\`, \`safety_stock\`, \`consumer_price\`,
-  \`stock_value_at_cost_ex_vat\` (the stock value is ALREADY computed — there is
-  no \`cost_ex_vat\` column on this view, so never multiply by one).
-- \`mv_store_inventory\`: \`store_number\`, \`store_name\`, \`sku\`,
-  \`item_number\`, \`item_name\`, \`category\`, \`store_qty\`, \`safety_stock\`.
+- \`mv_warehouse_inventory\`: \`item_number\`, \`sku\`, \`item_name\`,
+  \`category\`, \`supplier\`, \`warehouse_qty\`, \`warehouse_qty_all_locations\`,
+  \`safety_stock\`, \`consumer_price\`, \`stock_value_at_cost_ex_vat\` (the stock
+  value is ALREADY computed — there is no \`cost_ex_vat\` column on this view,
+  so never multiply by one). \`warehouse_qty\` is the client's "current
+  warehouse stock"; \`warehouse_qty_all_locations\` counts every bin location.
+- \`mv_store_inventory\`: \`store_number\`, \`store_name\`, \`item_number\`,
+  \`sku\`, \`item_name\`, \`category\`, \`supplier\`, \`store_qty\`, \`safety_stock\`.
 - \`mv_open_orders\`: \`order_kind\` ('customer' | 'purchase'), \`order_id\`,
-  \`row_date\`, \`sku\`, \`store_number\`, \`priority_customer_number\`, \`qty\`.
+  \`row_date\`, \`item_number\`, \`sku\`, \`item_name\`, \`supplier\`,
+  \`store_number\`, \`priority_customer_number\`, \`qty\`.
 
-99 of the 5,015 warehouse SKUs (113,556 units, 2.3%) have no matching item in
-the master, so \`item_name\`, \`category\` and \`stock_value_at_cost_ex_vat\`
-are NULL on those rows. Because Postgres sorts NULLs FIRST on DESC, a
-"top 10 by stock value" query returns those blank rows at the top unless you
-write \`ORDER BY stock_value_at_cost_ex_vat DESC NULLS LAST\`. Always do.
+A stock row whose item has no match in the master has NULL \`item_name\`,
+\`category\` and \`stock_value_at_cost_ex_vat\`. Because Postgres sorts NULLs
+FIRST on DESC, write \`ORDER BY stock_value_at_cost_ex_vat DESC NULLS LAST\`.
+Always do.
 
 **Do NOT aggregate \`facts\` directly for a question a view answers.** A
-\`GROUP BY item_number_sales\` over 26.9M rows takes minutes and will time out;
+\`GROUP BY item_number\` over 25M sales rows takes minutes and will time out;
 \`mv_sales_item_total\` answers the same question in milliseconds.
 
-### TWO ITEM KEYS — they are not interchangeable
-- \`facts.item_number_sales\` → \`items.item_number\`. This is the SALES key.
-  It joins at 99.9% and 139,089 distinct items have sales.
-- \`facts.sku\` → \`items.sku\`. This is the REPLENISHMENT key, used by
-  warehouse stock, purchase orders and customer orders. Only 14,649 of 298,555
-  items have a sku at all.
+### ONE ITEM KEY: item_number
+Every fact row kind — sales, store stock, warehouse stock, orders — keys on
+\`facts.item_number\` → \`items.item_number\`, and every view is keyed on
+\`item_number\`. \`sku\` (מק"ט) is a catalogue ATTRIBUTE, carried on the views;
+only some items have one.
 
-Joining sales rows on \`sku\` returns almost nothing. Joining inventory rows on
-\`item_number_sales\` returns nothing at all.
-
-**When the user names a SKU (e.g. \`AD-52-173\`, \`BH-34-240\`) and asks about
-SALES, you must bridge through \`items\` first.** The sales views are keyed on
-\`item_number\`, never on sku, so filtering them by sku directly returns zero
-rows — which reads to the user as "this product never sold" when it sold
-71,421 units:
+**When the user names a SKU (e.g. \`AD-52-173\`)**, filter the views by their
+\`sku\` column, or bridge through \`items\`:
 
 \`\`\`sql
 SELECT t.item_name, t.total_qty, t.revenue_list_ex_vat
@@ -189,7 +192,7 @@ views (\`mv_sales_monthly_item\`, \`mv_sales_item_total\`) carry:
 - \`manufacturer\` — the old \`items.supplier\` value, reversed Latin and all.
   Only use it if the question is explicitly about the manufacturer, and say
   the source text is reversed.
-- \`sku\` — the replenishment key, so a sku-based question can be answered
+- \`sku\` — the catalogue sku, so a sku-based question can be answered
   from these views without bridging through \`items\`.
 
 Earlier versions of these views carried the MANUFACTURER under the name
@@ -209,7 +212,7 @@ query happens to be written):
 JOIN (SELECT item_number, MAX(item_name) AS item_name, MAX(category) AS category,
              MAX(consumer_price) AS consumer_price, MAX(cost_ex_vat) AS cost_ex_vat
         FROM ${schemaName}.items GROUP BY item_number) i
-  ON i.item_number = f.item_number_sales
+  ON i.item_number = f.item_number
 \`\`\`
 
 ### stores joins directly — do NOT use SPLIT_PART
@@ -233,14 +236,13 @@ memory. Purchase-order rows carry dates AHEAD of the last sale, so anchor
 and \`holiday\` — Hebrew holiday names on 111 dates, which is genuinely useful
 for this retailer since trade is strongly holiday-driven.
 
-### Inventory has no dates, and most store rows have no item
-- \`store_inventory\` and \`warehouse_inventory\` rows have **NULL row_date**.
-  Never filter them by date and never try to trend them — there is no history,
-  only a current snapshot.
-- 2,549,776 of the 2,983,200 store-inventory rows (85%) carry **no item key**.
-  \`mv_store_inventory\` deliberately covers only the 433,424 rows that do.
-  For an item-level stock question, use the view. If asked for total stock
-  across the chain, say that item-level attribution covers only part of it.
+### Inventory has no dates
+- \`store_inventory\`, \`warehouse_inventory\`, \`store_sold_to_date\`,
+  \`store_purchased_to_date\` and \`store_in_transit\` rows have **NULL
+  row_date**. Never filter them by date and never try to trend them — there is
+  no history, only a current snapshot.
+- Every store-inventory row carries an item key, so \`mv_store_inventory\`
+  covers all store stock.
 
 ### Worked examples
 

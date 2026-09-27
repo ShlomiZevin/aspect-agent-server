@@ -22,7 +22,7 @@
  * question + generated SQL + data_table row counts).
  *
  * Usage:
- *   node scripts/run-customer-replay.js <tag> <outFile> [--limit N] [--conv ID]
+ *   node scripts/run-customer-replay.js <tag> <outFile> [--agent zolstock|hypertoy|thestock] [--limit N] [--conv ID]
  * e.g.
  *   node scripts/run-customer-replay.js baseline-pre-stage2 \
  *        verification/representative-dataset/21-08-2026-quality-baseline.json
@@ -33,8 +33,13 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../services/db.pg');
 
+const { profileFromArgv } = require('./lib/replay-profiles');
+
+// `--agent <zolstock|hypertoy|thestock>`, ZolStock by default — see
+// scripts/lib/replay-profiles.js.
+const PROFILE = profileFromArgv(process.argv);
 const DIR = path.join(__dirname, '..', 'verification', 'representative-dataset');
-const CORPUS = path.join(DIR, 'customer-corpus.json');
+const CORPUS = path.join(DIR, PROFILE.corpusFile);
 
 const tag = process.argv[2];
 const outFile = process.argv[3];
@@ -52,9 +57,7 @@ const progressFile = path.join(DIR, `${tag}.progress.jsonl`);
 /** Snapshot of the dataset the run executed against — comparisons between two
  *  runs are only valid when these match (frozen-data rule, plan §2.5). */
 async function dataState(pool) {
-  const { rows } = await pool.query(`
-    SELECT record_type, count(*)::bigint AS rows, max(row_date) AS max_date
-    FROM zolstock.facts GROUP BY record_type ORDER BY record_type`);
+  const { rows } = await pool.query(PROFILE.dataStateSql);
   return rows.map(r => ({ recordType: r.record_type, rows: String(r.rows), maxDate: r.max_date }));
 }
 
@@ -106,7 +109,7 @@ async function main() {
   }
 
   const stateBefore = await dataState(dataPool);
-  console.log(`▶ Replay '${tag}' — ${corpusMeta.totalTurns} turns · data through ${stateBefore.find(s => s.recordType === 'sales')?.maxDate}`);
+  console.log(`▶ Replay '${tag}' (${PROFILE.agentName}) — ${corpusMeta.totalTurns} turns · data through ${stateBefore.find(s => s.recordType === PROFILE.salesRecordType)?.maxDate}`);
 
   let ran = 0;
   for (const conv of conversations) {
@@ -129,7 +132,7 @@ async function main() {
         const res = await runChatTurn({
           message: turn.text,
           conversationId: replayConvId,
-          agentName: 'ZolStock',
+          agentName: PROFILE.agentName,
           userId: `replay-${tag}`,
         });
         rec.latencyMs = Date.now() - t0;
@@ -160,6 +163,7 @@ async function main() {
   const final = {
     meta: {
       tag,
+      agent: PROFILE.agentName,
       corpus: { builtAt: corpusMeta.builtAt, totalTurns: corpusMeta.totalTurns },
       startedAt: results[0]?.ranAt, finishedAt: new Date().toISOString(),
       turnsRecorded: results.length,

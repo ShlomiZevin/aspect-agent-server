@@ -322,6 +322,9 @@ Five layers, deliberately of different kinds — code where code is reliable, an
 │     most common real failure (headline total ≠ sum of listed items)    │
 │     for free, without spending the one regenerate retry on arithmetic  │
 │     that code can just do exactly.                                     │
+│     bindImpactValue then fills every {{impactValue}} token the prose   │
+│     used (headline/title/stat_callout…) from that corrected field, so  │
+│     the sentence has no number of its own to disagree with.            │
 ├────────────────────────────────────────────────────────────────────────┤
 │ L4  verifyInsight (INDEPENDENT LLM fact-check)                         │
 │     A separate call, not another instruction in the synthesis prompt — │
@@ -368,6 +371,7 @@ Without an anchor, the model dates its own output from its training era — it w
 | Same non-zero value on every row | same class of pipeline gap, just not zero | `all-same-value` branch (with benchmark-column exclusion) |
 | Headline total ≠ sum of listed items | model mental math | `reconcileImpactValue` (code arithmetic) |
 | `reconcileImpactValue` *introducing* an error | it summed a ranked_list that was context, not addends | bail out when impactValue matches a single listed item (±5%) |
+| Headline total still wrong after reconcile, verifier rejects every retry, report ships downgraded | reconcile corrects only the `impactValue` field; the headline/title repeat the model's own total, and splicing numbers into prose is unreliable | SYNTHESIZE writes `{{impactValue}}` in prose; `bindImpactValue` fills it from the corrected field before VERIFY (2026-09-25, seen on superhist + thestock) |
 | Insight shipped "verified" without being checked | verifier response hit its 512-token cap and was swallowed by the catch | raised to 1024; `looksTruncated()` makes the log line actionable |
 | Whole investigation killed by one bad JSON response | PLAN/SYNTHESIZE had no retry; SQL *generation* errors returned before using the existing attempt budget | 2 attempts each; generation errors now retry like execution errors |
 | Multi-month trend labelled "Leader: Jun" | `toTrackedMetric` classified any 1-series >2-point chart as a ranking | `looksLikeTimeSeries()` checks the actual category labels first |

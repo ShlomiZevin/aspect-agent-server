@@ -36,16 +36,27 @@ const SCHEMA = 'zolstock';
  * store_inventory before warehouse because a store-inventory row never has a
  * warehouse but the reverse test would misclassify nothing either way.
  */
+//
+// 2026-09-25 (FactT): one item key (`item_number`) on every kind, and three new
+// kinds, each identified by the one quantity column it carries. Approximate
+// counts (non-empty values per column):
+//   sales 24,954,368 · store_inventory 2,916,636 · store_sold_to_date 2,673,249
+//   store_purchased_to_date ~462k · warehouse_inventory 10,327
+//   customer_order 7,556 · store_in_transit ~9.5k · purchase_order 522
+// ~2k rows with a 1988 placeholder date and a zero order qty land in 'unknown'.
 const RECORD_TYPE_SQL = `
   ALTER TABLE %SCHEMA%.facts
     ADD COLUMN "record_type" TEXT
     GENERATED ALWAYS AS (
       CASE
-        WHEN "qty_sold" IS NOT NULL AND "item_number_sales" IS NOT NULL THEN 'sales'
+        WHEN "qty_sold" IS NOT NULL AND "item_number" IS NOT NULL       THEN 'sales'
         WHEN "store_inventory_qty" IS NOT NULL                          THEN 'store_inventory'
+        WHEN "store_sold_to_date" IS NOT NULL                           THEN 'store_sold_to_date'
         WHEN "warehouse" IS NOT NULL                                    THEN 'warehouse_inventory'
         WHEN "customer_order_id" IS NOT NULL                            THEN 'customer_order'
         WHEN "purchase_order_id" IS NOT NULL                            THEN 'purchase_order'
+        WHEN "store_purchased_to_date" IS NOT NULL                      THEN 'store_purchased_to_date'
+        WHEN "store_in_transit_qty" IS NOT NULL                         THEN 'store_in_transit'
         ELSE 'unknown'
       END
     ) STORED`;
@@ -57,10 +68,10 @@ const INDEXES = [
   { name: 'idx_facts_rt_date',        table: 'facts', col: '"record_type", "row_date"' },
   { name: 'idx_facts_row_date',       table: 'facts', col: '"row_date"' },
   { name: 'idx_facts_store_number',   table: 'facts', col: '"store_number"' },
-  // The sales item key — joins items.item_number at 99.9%.
-  { name: 'idx_facts_item_sales',     table: 'facts', col: '"item_number_sales"' },
-  // The replenishment item key — a DIFFERENT identifier system, joins items.sku.
-  { name: 'idx_facts_sku',            table: 'facts', col: '"sku"' },
+  // The single item key on every row kind since FactT — joins items.item_number
+  // at 100%. (The old idx_facts_item_sales / idx_facts_sku named columns the
+  // feed dropped on 2026-09-06, which failed every nightly Phase 2 since.)
+  { name: 'idx_facts_item_number',    table: 'facts', col: '"item_number"' },
 
   // ── items (303,508 rows) — carries the only prices in the dataset ──────────
   { name: 'idx_items_item_number',    table: 'items', col: '"item_number"' },

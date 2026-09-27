@@ -54,7 +54,8 @@ function mvs(schema) {
           SUM(qty_sold)      AS total_qty,
           SUM(sales_ex_vat)  AS revenue_ex_vat,
           SUM(sales_inc_vat) AS revenue_inc_vat,
-          COUNT(*)           AS line_count
+          COUNT(*)           AS line_count,
+          SUM(loyalty_count) AS loyalty_count
         FROM ${schema}.facts
         WHERE record_type = 'מכירות' AND sku IS NOT NULL AND sku <> ''
         GROUP BY transaction_date, sku
@@ -76,7 +77,8 @@ function mvs(schema) {
           SUM(qty_sold)      AS total_qty,
           SUM(sales_ex_vat)  AS revenue_ex_vat,
           SUM(sales_inc_vat) AS revenue_inc_vat,
-          COUNT(*)           AS line_count
+          COUNT(*)           AS line_count,
+          SUM(loyalty_count) AS loyalty_count
         FROM ${schema}.facts
         WHERE record_type = 'מכירות' AND warehouse_code IS NOT NULL AND warehouse_code <> ''
         GROUP BY transaction_date, warehouse_code
@@ -89,8 +91,11 @@ function mvs(schema) {
 
     // ── mv_sales_daily_cashier — daily × cashier (~900K rows) ────────────────
     // For "top cashiers by period". Same column shape as the other sales MVs
-    // (total_qty / revenue_ex_vat / revenue_inc_vat / line_count) so the LLM
-    // does not trip when generalizing patterns across MVs.
+    // (total_qty / revenue_ex_vat / revenue_inc_vat / line_count /
+    // loyalty_count) so the LLM does not trip when generalizing patterns
+    // across MVs. loyalty_count was on mv_sales_daily only until 2026-09-25,
+    // and "what drives loyalty signups" produced SQL reading it from the store
+    // view, failing and falling back to a 68s scan of facts.
     {
       name: 'mv_sales_daily_cashier',
       sql: `
@@ -100,7 +105,8 @@ function mvs(schema) {
           SUM(qty_sold)      AS total_qty,
           SUM(sales_ex_vat)  AS revenue_ex_vat,
           SUM(sales_inc_vat) AS revenue_inc_vat,
-          COUNT(*)           AS line_count
+          COUNT(*)           AS line_count,
+          SUM(loyalty_count) AS loyalty_count
         FROM ${schema}.facts
         WHERE record_type = 'מכירות' AND cashier IS NOT NULL AND cashier <> ''
         GROUP BY transaction_date, cashier

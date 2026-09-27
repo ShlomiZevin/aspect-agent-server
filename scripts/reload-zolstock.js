@@ -45,12 +45,16 @@ const { getGcsFolder } = require('../services/gcs-folder.service');
 const GCS_FOLDER_DEFAULT = 'zolstock/';
 
 const FILE_TO_TABLE = {
-  'Fact_ZolStock_CSV.csv': 'facts',            // singular — the only fact file now
+  // 2026-09-25: the client renamed the fact file to FactT. The old
+  // Fact_ZolStock_CSV.csv is still in their Drive (frozen at 2026-09-14) and
+  // therefore in GCS; it is ignored by omission here. Never map both — they
+  // would load into the same table.
+  'FactT_ZolStock_CSV.csv': 'facts',
   'Items_ZolStock_CSV.csv': 'items',
   'Stores_ZolStock_CSV.csv': 'stores',
   'Calander_ZolStock_CSV.csv': 'calendar',     // sic — source folder spells it this way
   // Deliberately NOT loaded (see header): Facts_ZolStock_CSV.csv (plural),
-  // Inventory_ZolStock_CSV.csv.
+  // Inventory_ZolStock_CSV.csv, Fact_ZolStock_CSV.csv (replaced by FactT).
 };
 
 function formatBytes(bytes) {
@@ -219,10 +223,11 @@ async function getZolStockDataInfo() {
     // Restricted to SALES rows: the same table also holds purchase orders,
     // whose dates run ahead of the last sale, so an unfiltered MAX() would
     // anchor "now" to a date the business has no sales for.
+    // Read from the daily view, not a 31M-row scan of facts; it is built from
+    // sales rows only, so it carries the same restriction.
     const result = await pool.query(
       `SELECT TO_CHAR(MAX("row_date"), 'YYYY-MM-DD') AS last_date
-         FROM zolstock.facts
-        WHERE "qty_sold" IS NOT NULL AND "item_number_sales" IS NOT NULL`
+         FROM zolstock.mv_sales_daily`
     );
     return result.rows[0]?.last_date || null;
   } catch {

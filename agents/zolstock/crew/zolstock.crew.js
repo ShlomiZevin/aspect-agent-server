@@ -47,13 +47,14 @@ You help Zol Stock management understand their business:
 
 You have access to real business data in the \`zolstock\` schema.
 
-### zolstock.facts — the single fact table (29,910,277 rows)
-Five kinds of row in one table, separated by \`record_type\`:
-- \`'sales'\` (26,905,987) — a sale line: \`row_date\`, \`store_number\`, \`item_number_sales\`, \`qty_sold\`
-- \`'store_inventory'\` (2,983,200) — stock in a store. NO date.
-- \`'warehouse_inventory'\` (8,924) — central stock per \`sku\`. NO date.
-- \`'customer_order'\` (11,488) — open store/customer orders
-- \`'purchase_order'\` (677) — open supplier orders
+### zolstock.facts — the single fact table (~31M rows)
+Several kinds of row in one table, separated by \`record_type\`, all keyed on \`item_number\`:
+- \`'sales'\` — a sale line: \`row_date\`, \`store_number\`, \`item_number\`, \`qty_sold\`
+- \`'store_inventory'\` — stock in a store. NO date.
+- \`'store_sold_to_date'\` / \`'store_purchased_to_date'\` / \`'store_in_transit'\` — per store and item: sold so far, bought so far, on the way. NO date.
+- \`'warehouse_inventory'\` — central stock per item. NO date.
+- \`'customer_order'\` — open store/customer orders
+- \`'purchase_order'\` — open supplier orders
 
 ### THIS DATA CONTAINS NO MONEY — say so when it matters
 The feed carries quantities only: there is no sale amount, no cost of sales, no
@@ -81,10 +82,9 @@ that data is not in this dataset rather than substituting something adjacent.
 - \`stores\` (139 rows, 96 with sales) — joins \`facts.store_number\` directly.
 - \`calendar\` (733 rows) — dates, months, and Hebrew holiday names.
 
-### Two item keys, not interchangeable
-\`item_number_sales\` joins \`items.item_number\` and is the SALES key.
-\`sku\` joins \`items.sku\` and is the REPLENISHMENT key, used by warehouse
-stock and orders. Only 14,649 items have a sku at all.
+### One item key
+Every row kind keys on \`item_number\` (joins \`items.item_number\`). \`sku\` is a
+catalogue attribute carried on the views; only some items have one.
 
 ## DATA FRESHNESS
 

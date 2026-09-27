@@ -42,6 +42,31 @@ const LINE_KIND_SQL = `
       END
     ) STORED`;
 
+/**
+ * From 2026-09-23 the source ships its own kind for non-product rows (`cshev`,
+ * loaded as `extra_kind`), and it shows the two-way split above was hiding
+ * money: of the 135,586 "shipping" rows, 14,041 are COUPONS (-₪604K) and 8,886
+ * are free-shipping BENEFITS / cart discounts (-₪134K) — negative amounts that
+ * were silently netting down "shipping income". When the column is present the
+ * kind is taken from it; the old rule stays as the fallback for an older file.
+ *
+ *   product   — a purchased item (unchanged)
+ *   shipping  — delivery charge (shipping, product_shipping)
+ *   coupon    — coupon redemption, negative
+ *   discount  — free-shipping benefit or cart discount, negative
+ */
+const LINE_KIND_WITH_EXTRA_SQL = `
+  ALTER TABLE %SCHEMA%.order_lines
+    ADD COLUMN "line_kind" TEXT
+    GENERATED ALWAYS AS (
+      CASE
+        WHEN "order_line_id" IS NOT NULL AND "order_line_id" <> '' THEN 'product'
+        WHEN "extra_kind" = 'coupon' THEN 'coupon'
+        WHEN "extra_kind" IN ('bgfnttl', 'cartdis') THEN 'discount'
+        ELSE 'shipping'
+      END
+    ) STORED`;
+
 const INDEXES = [
   // ── order_lines (654,370 rows, two row kinds) ──────────────────────────────
   // Composite first: almost every real query is "product lines of these
@@ -92,8 +117,14 @@ async function createIndexes(targetSchema, emitLog) {
     );
     if (rows.length === 0) {
       const t0 = Date.now();
-      log('Adding derived line_kind column to order_lines (one table rewrite)...');
-      await client.query(LINE_KIND_SQL.replace(/%SCHEMA%/g, schema));
+      const { rows: extra } = await client.query(
+        `SELECT 1 FROM information_schema.columns
+          WHERE table_schema = $1 AND table_name = 'order_lines' AND column_name = 'extra_kind'`,
+        [schema]
+      );
+      const sql = extra.length ? LINE_KIND_WITH_EXTRA_SQL : LINE_KIND_SQL;
+      log(`Adding derived line_kind column to order_lines (one table rewrite, ${extra.length ? 'from extra_kind' : 'legacy two-way'})...`);
+      await client.query(sql.replace(/%SCHEMA%/g, schema));
       log(`line_kind added in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     } else {
       log('line_kind already present — skipping.');
