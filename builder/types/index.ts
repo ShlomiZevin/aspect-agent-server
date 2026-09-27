@@ -1054,9 +1054,10 @@ export interface CrewDoc {
   versions: CrewVersion[];
   /**
    * The version the agent actually runs at runtime. Server-side
-   * persistence will read this as a column on the crew row. Only
-   * changes when the user clicks "Set as active" — never when they
-   * switch which version they're viewing/editing.
+   * persistence will read this as a column on the crew row. Moves on
+   * "Save as new version" (the new version becomes active AND viewing —
+   * task #873), on "Set as active" and on "Edit this version" — never
+   * when the user merely switches which version they're viewing.
    */
   activeVersionId: ID;
   /**
@@ -1606,7 +1607,8 @@ export interface AgentDoc {
   crews: CrewDoc[];
   /** Snapshot history of the agent body (persona, spec, name, …). */
   versions: AgentVersion[];
-  /** The version the runtime uses. Promoted explicitly via "Set as active". */
+  /** The version the runtime uses. Moves on "Save as new version" (new
+   *  version = active + viewing, task #873) or "Set as active". */
   activeVersionId: ID;
   /** The version currently loaded into the working copy. */
   viewingVersionId: ID;

@@ -262,6 +262,53 @@ async function removeIfPresent(slug) {
     check('unknown conversation → 404 that says where ids come from',
       missing.status === 404 && missing.text.includes('/conversations'));
 
+    // ── knowledge bases (task #868) — reads, and the add-only connect ──
+    section('knowledge bases');
+    check('entry page lists the KB reads', doc.text.includes('/kbs') && doc.text.includes('config.kbNamespaces'));
+    const kbsPage = await get('/kbs');
+    check('every KB', kbsPage.status === 200 && kbsPage.text.includes('Knowledge bases in the Pinecone index'));
+    check('hq is not offered as an agent KB', !/^- hq /m.test(kbsPage.text));
+    const firstKb = (kbsPage.text.match(/^- ([a-z0-9-]+) · \d+ chunks/m) || [])[1];
+    check('at least one KB to read', !!firstKb, kbsPage.text.slice(0, 200));
+    check("an agent's KBs", (await get(`/agents/${TEST_SLUG}/kbs`)).status === 200);
+    check('unknown agent → 404', (await get('/agents/zz-no-such-agent/kbs')).status === 404);
+    if (firstKb) {
+      const files = await get(`/kbs/${firstKb}/files`);
+      check('files in a KB', files.status === 200 && /file \d+/.test(files.text));
+      const fileId = (files.text.match(/file (\d+)/) || [])[1];
+      const text = await get(`/kbs/${firstKb}/files/${fileId}`);
+      check("a file's text, chunk by chunk", text.status === 200 && text.text.includes('--- chunk 0 ---'));
+    }
+    check('hq files refused', (await get('/kbs/hq/files')).status === 404);
+    check('unknown file → 404', (await get(`/kbs/${firstKb || 'x'}/files/999`)).status === 404);
+    const kbTestAgent = (await hydrate(TEST_SLUG)).agents[0];
+    const linkCount = async () => (await db.query(
+      'select count(*)::int n from kb_links where agent_id = $1', [kbTestAgent.id])).rows[0].n;
+    const before = await linkCount();
+    const bogus = await post(`/agents/${TEST_SLUG}/kbs`, { namespace: 'zz-no-such-kb' });
+    check('connect a KB that does not exist → refused, nothing changed',
+      bogus.status === 404 && (await linkCount()) === before, bogus.text.slice(0, 80));
+    check('connect hq → refused', (await post(`/agents/${TEST_SLUG}/kbs`, { namespace: 'hq' })).status === 404);
+    check('connect with no name → 400', (await post(`/agents/${TEST_SLUG}/kbs`, {})).status === 400);
+    if (firstKb) {
+      const c1 = await post(`/agents/${TEST_SLUG}/kbs`, { namespace: firstKb });
+      const c2 = await post(`/agents/${TEST_SLUG}/kbs`, { namespace: firstKb });
+      check('connect a real KB', c1.status === 200 && (await linkCount()) === before + 1, c1.text.slice(0, 80));
+      check('…again is a no-op', c2.status === 200 && c2.text.includes('already') && (await linkCount()) === before + 1);
+      // Leave the test agent as it was.
+      await db.query('delete from kb_links where agent_id = $1 and namespace = $2', [kbTestAgent.id, firstKb]);
+    }
+
+    // ── the Spec (task #870) ──
+    section('spec');
+    check('entry page offers the spec', doc.text.includes('/spec'));
+    await db.query("insert into builder_spec_files (agent_id, file_name, extracted_text) values ($1, 'zz-spec.md', 'zz spec file text')", [kbTestAgent.id]);
+    const specPage = await get(`/agents/${TEST_SLUG}/spec`);
+    await db.query("delete from builder_spec_files where agent_id = $1 and file_name = 'zz-spec.md'", [kbTestAgent.id]);
+    check('spec with attached file text', specPage.status === 200
+      && specPage.text.includes('## Project spec') && specPage.text.includes('zz spec file text'), specPage.text.slice(0, 120));
+    check('unknown agent spec → 404', (await get('/agents/zz-no-such-agent/spec')).status === 404);
+
     // ── agent write ──
     section('agent write');
     const a0 = (await hydrate(TEST_SLUG)).agents[0];

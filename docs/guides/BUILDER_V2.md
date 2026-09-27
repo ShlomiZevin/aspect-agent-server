@@ -1449,6 +1449,20 @@ creates a new version and switches viewing to it — never active.
 A new **⭐ Active** badge / **⭐ Set as active** button next to
 Save / Save As is the only path that mutates `activeVersionId`.
 
+**Superseded (2026-09, task #873).** "Save As never moves active" made
+every new version a two-step job per entity: reload opens ACTIVE, so an
+un-promoted save-as came back as the old version, and authors walked the
+sidebar crew by crew clicking Set as active. Now:
+- **Save** (primary) saves the WHOLE agent — the agent and every crew with
+  unsaved changes — each into its current version.
+- **Save as new version…** (menu, first item) creates a version on the
+  agent AND every crew under one name, and each becomes **active + viewing**
+  (the server moves both pointers in one transaction).
+- The single-entity variants ("Save only this crew", "Only this crew as
+  new version…") remain in the menu; their save-as also moves active.
+- Published is untouched. An entity never published runs its active
+  version for customers, so a new version reaches them — accepted.
+
 This mirrors how production agents work: editing happens on
 branches, "active" is a deliberate promotion. The server reads
 `activeVersionId` only.

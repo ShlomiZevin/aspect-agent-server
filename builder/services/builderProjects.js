@@ -442,8 +442,13 @@ async function saveAgentVersionAs({ agentId, versionId, body, description }) {
       description: description || null,
       body,
     });
+    // Task #873: a new version becomes BOTH the one being edited and the
+    // active one. Moving only viewing left every save-as pointing the
+    // Builder at vN while a reload (which opens ACTIVE) brought back the
+    // old one — so the author had to walk every crew clicking "Set as
+    // active". Same transaction, so the two pointers can't drift apart.
     await tx.update(builderAgents)
-      .set({ viewingVersionId: versionId, updatedAt: new Date() })
+      .set({ viewingVersionId: versionId, activeVersionId: versionId, updatedAt: new Date() })
       .where(eq(builderAgents.id, agentId));
   });
 }
@@ -568,8 +573,13 @@ async function saveCrewVersionAs({ crewId, versionId, body, description }) {
       description: description || null,
       body,
     });
+    // Task #873: a new version becomes BOTH the one being edited and the
+    // active one. Moving only viewing left every save-as pointing the
+    // Builder at vN while a reload (which opens ACTIVE) brought back the
+    // old one — so the author had to walk every crew clicking "Set as
+    // active". Same transaction, so the two pointers can't drift apart.
     await tx.update(builderCrews)
-      .set({ viewingVersionId: versionId, updatedAt: new Date() })
+      .set({ viewingVersionId: versionId, activeVersionId: versionId, updatedAt: new Date() })
       .where(eq(builderCrews.id, crewId));
   });
 }

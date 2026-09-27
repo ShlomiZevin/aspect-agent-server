@@ -197,6 +197,44 @@ const TOOLS = [
       required: ['path'],
     },
   },
+  {
+    name: 'list_knowledge_bases',
+    description:
+      'Knowledge bases (task #868). Default: THIS agent — the KBs connected to it, and each ' +
+      'KB Retriever addon with whether its KB is ok, not connected (shows MISSING in the ' +
+      'Builder) or does not exist. Pass allAgents: true for every KB on the platform with ' +
+      'chunk/file counts, which agents it is connected to and which retrievers search it. ' +
+      'Use it before advising on a KB Retriever, and whenever a retriever finds nothing.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        allAgents: { type: 'boolean', description: 'List every KB instead of this agent\'s.' },
+      },
+    },
+  },
+  {
+    name: 'list_kb_files',
+    description: 'The files in one knowledge base (by its name), with the file ids read_kb_file needs.',
+    input_schema: {
+      type: 'object',
+      properties: { namespace: { type: 'string', description: 'The KB name, e.g. "account-opening-kb".' } },
+      required: ['namespace'],
+    },
+  },
+  {
+    name: 'read_kb_file',
+    description:
+      'The actual text of one KB file, chunk by chunk in order — what a KB Retriever can find. ' +
+      'Neighbouring chunks overlap a little. Long files are cut off; say so if it matters.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        namespace: { type: 'string', description: 'The KB name.' },
+        fileId:    { type: 'string', description: 'A file id from list_kb_files.' },
+      },
+      required: ['namespace', 'fileId'],
+    },
+  },
 ];
 
 async function runTool(name, input, ctx) {
@@ -231,6 +269,23 @@ async function runTool(name, input, ctx) {
   }
   if (name === 'read_platform_file') {
     return alfredTools.readPlatformFile(input?.path);
+  }
+  if (name === 'list_knowledge_bases') {
+    return input?.allAgents === true
+      ? alfredTools.listKnowledgeBases()
+      : alfredTools.agentKnowledgeBases(ctx.agentSlug);
+  }
+  if (name === 'list_kb_files') {
+    const ns = String(input?.namespace || '').trim();
+    if (!ns) return 'list_kb_files requires a namespace (see list_knowledge_bases).';
+    return alfredTools.listKbFiles(ns);
+  }
+  if (name === 'read_kb_file') {
+    const ns = String(input?.namespace || '').trim();
+    const fileId = String(input?.fileId || '').trim();
+    if (!ns || !fileId) return 'read_kb_file requires a namespace and a fileId (see list_kb_files).';
+    // Capped for the chat context; the MCP door returns the whole file.
+    return alfredTools.readKbFile(ns, fileId, { maxChars: 40000 });
   }
   if (name === 'read_addon_code') {
     const pluginId = String(input?.pluginId || '').trim();

@@ -609,10 +609,25 @@ const STATIC_SYSTEM_PROMPT = [
   '- When a user describes an external spec at length, suggest attaching',
   '  the file instead — pinned beats paraphrased.',
   '',
+  '# Spec files (attached to the agent\'s 📖 Spec)',
+  'Files can also be attached to the agent\'s Spec window. Unlike a chat',
+  'pin they belong to the AGENT and stay across every chat; their text',
+  'appears in your project summary under "Spec files attached to …".',
+  'Treat them like the Spec itself: the person\'s statement of what the',
+  'agent should be, and the source of truth over your assumptions. They',
+  'are never sent to the running agent — to put knowledge IN the agent,',
+  'it goes in a prompt, a Targeted KB or a knowledge base.',
+  '',
   '# Knowledge bases (KB)',
-  '- KB management — creating knowledge bases, uploading and processing',
-  '  files — happens in the Admin app, outside this builder. You can\'t',
-  '  change it; send the user there.',
+  '- You can READ every knowledge base: list_knowledge_bases (this agent\'s,',
+  '  or all with allAgents), list_kb_files, read_kb_file for the actual',
+  '  text. A KB is "connected" when the Builder shows it for an agent (a',
+  '  KB Retriever naming an unconnected KB reads MISSING) and "searched"',
+  '  when a KB Retriever lists it in config.kbNamespaces — only the second',
+  '  makes the agent read it. When a retriever finds nothing, check both.',
+  '- Creating a KB, uploading files and connecting a KB to an agent happen',
+  '  in the Admin screen, outside this builder. You can\'t do those; send',
+  '  the user there.',
   '- HOW the agent reads a KB is fully in your scope: the KB Retriever',
   '  addon (which namespaces to search, trigger mode, query mode, topK,',
   '  where the result lands and its `{{kb:NAME}}` injection token).',
@@ -743,6 +758,23 @@ async function buildProjectSummary({ agentSlug, ownerUserId, workingBodies }) {
 
   const lines = [`Project: ${project.name || '(unnamed)'}`];
   if (project.spec) lines.push(`Project spec: ${project.spec}`);
+
+  // Files attached to the agent's Spec (#870) — the person's own source
+  // material for what the agent should be. Never reaches the agent.
+  try {
+    const { listSpecFiles, renderSpecFiles } = require('../../builder/services/specFiles');
+    for (const agent of project.agents || []) {
+      const files = await listSpecFiles(agent.id);
+      if (files.length === 0) continue;
+      lines.push(
+        '',
+        `## Spec files attached to "${agent.name || agent.slug}" (reference for building — the running agent never sees them)`,
+        renderSpecFiles(files, { maxCharsPerFile: 15000 }),
+      );
+    }
+  } catch (err) {
+    console.warn('[alfredContext] spec files unavailable:', err.message);
+  }
 
   for (const agent of project.agents || []) {
     const slim = stripVersionBodies(agent);

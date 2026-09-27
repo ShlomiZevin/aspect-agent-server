@@ -40,6 +40,8 @@ people type and paste this URL.
 | `GET /agents/:slug/conversations` | Recent chats | `alfredTools.listConversations` |
 | `GET /agents/:slug/log` | Change history and reasons | `alfredTools.changeLogText` |
 | `GET /conversations/:id` | Transcript + per-turn addon digest | `alfredTools.readConversation` |
+| `GET /kbs` · `GET /agents/:slug/kbs` · `GET /kbs/:name/files` · `GET /kbs/:name/files/:fileId` | Knowledge bases (task #868): every KB with connected agents + which KB Retrievers search it (and retrievers naming a KB that doesn't exist); one agent's KBs with per-retriever status; a KB's files; one file's chunk text. `hq` (Lybi HQ's own brain, same index) is never listed | `alfredTools.listKnowledgeBases` / `agentKnowledgeBases` / `listKbFiles` / `readKbFile` — also Alfred's `list_knowledge_bases` / `list_kb_files` / `read_kb_file` |
+| `POST /agents/:slug/kbs` `{ namespace }` | **Connect** an existing KB to an agent (a `kb_links` row). Add-only, idempotent; refuses a name that isn't a real KB in the active index (or `hq`) and changes nothing. Saves no version | inline in `mcpRoute.js`, `alfredTools.kbExists` |
 | `GET /conversations/:id/export?include=messages\|outputs\|full` | The conversation as **JSON** for handing to another AI — messages, each reply's addon runs (outputs, field writes, transitions), `full` adds prompts. Byte-for-byte the Builder Chat "Export" button's file | `builder/services/conversationExport.js` (shared with `GET /api/agents/:slug/conversations/:convId/export`) |
 | `GET /runs/:id` | One addon run in full — assembled prompt, raw/parsed output | `alfredTools.readRun` |
 | `GET /addons` | **Every addon descriptor, in one page** | reads `builder/addons/*.addon.json` |

@@ -238,6 +238,24 @@ const kbLinks = pgTable('kb_links', {
   nsIdx:     index('kb_links_ns_idx').on(t.indexName, t.namespace),
 }));
 
+// builder_spec_files — files attached to an agent's Spec (task #870,
+// migration 056). Keyed by agent, NOT versioned: an upload must not make
+// the agent "unsaved" or be copied into every version. The original is in
+// GCS (spec-files/); the extracted text sits here so Alfred and the AI door
+// can read it. Never sent to the running agent.
+const builderSpecFiles = pgTable('builder_spec_files', {
+  id:            serial('id').primaryKey(),
+  agentId:       varchar('agent_id', { length: 64 }).notNull(),
+  fileName:      varchar('file_name', { length: 500 }).notNull(),
+  mimeType:      varchar('mime_type', { length: 200 }),
+  fileSize:      integer('file_size'),
+  gcsPath:       text('gcs_path'),
+  extractedText: text('extracted_text'),
+  createdAt:     timestamp('created_at').defaultNow().notNull(),
+}, t => ({
+  agentIdx: index('builder_spec_files_agent_idx').on(t.agentId),
+}));
+
 // ─────────────────────────────────────────────────────────────────
 // Triggers (proactive) — migration 045.
 // See docs/guides/BUILDER_V2_TRIGGERS.md.
@@ -312,6 +330,7 @@ module.exports = {
   alfredApplyJobs,
   repoEntries,
   kbLinks,
+  builderSpecFiles,
   triggerEvents,
   triggerStatus,
 };

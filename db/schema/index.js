@@ -739,6 +739,7 @@ module.exports = {
   addonRuns:              builderSchema.addonRuns,
   repoEntries:            builderSchema.repoEntries,
   kbLinks:                builderSchema.kbLinks,
+  builderSpecFiles:       builderSchema.builderSpecFiles,
   // Triggers (proactive) — see docs/guides/BUILDER_V2_TRIGGERS.md
   triggerEvents:          builderSchema.triggerEvents,
   triggerStatus:          builderSchema.triggerStatus,

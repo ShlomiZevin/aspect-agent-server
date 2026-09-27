@@ -142,6 +142,8 @@ app.use('/api/builder/ai-bundle', require('./builder/routes/aiBundleRoute'));
 // this URL is typed and pasted by people, so it stays short.
 // See builder/routes/mcpRoute.js.
 app.use('/builder/mcp', require('./builder/routes/mcpRoute'));
+// The Spec — project spec text + files attached to an agent's Spec (#870).
+app.use('/api/builder', require('./builder/routes/specRoute'));
 // Builder doc CRUD (creating projects/agents/crews, saving versions,
 // setting active/viewing pointers). All under /api/builder/*.
 app.use('/api/builder', require('./builder/routes/projectsRoute'));

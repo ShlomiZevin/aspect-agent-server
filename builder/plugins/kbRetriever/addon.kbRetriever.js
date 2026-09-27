@@ -199,7 +199,9 @@ async function run(ctx) {
   }));
   steps.push({
     id: 'search', title: 'Search',
-    summary: `${results.length} chunk${results.length === 1 ? '' : 's'} from ${kbNamespaces.length} KB${kbNamespaces.length === 1 ? '' : 's'} in ${queryTimeMs}ms`,
+    // Seconds, like every other time on the run card (#874). The raw
+    // `queryTimeMs` stays in the output for anything that computes with it.
+    summary: `${results.length} chunk${results.length === 1 ? '' : 's'} from ${kbNamespaces.length} KB${kbNamespaces.length === 1 ? '' : 's'} in ${queryTimeMs < 100 ? '<0.1' : (queryTimeMs / 1000).toFixed(1)}s`,
     namespaces: kbNamespaces, topK, minScore,
   });
 

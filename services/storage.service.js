@@ -47,10 +47,12 @@ class StorageService {
    * @param {number} kbId - Knowledge base ID (for path organization)
    * @returns {Promise<string>} - GCS path (e.g. "kb-files/42/1234567890-report.pdf")
    */
-  async uploadFile(buffer, fileName, mimeType, kbId) {
+  async uploadFile(buffer, fileName, mimeType, kbId, prefix = 'kb-files') {
     const timestamp = Date.now();
     const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const path = `kb-files/${kbId}/${timestamp}-${safeName}`;
+    // `prefix` keeps other file kinds (e.g. spec-files/, task #870) out of
+    // the KB folder; every existing caller gets kb-files/ as before.
+    const path = `${prefix}/${kbId}/${timestamp}-${safeName}`;
 
     const file = this.getBucket().file(path);
     await file.save(buffer, {

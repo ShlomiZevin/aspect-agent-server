@@ -34,7 +34,9 @@ You do not deploy anything, restart anything, or change platform source.
 
    The exception is CREATING a brand-new agent, which cannot be done
    through a draft file because the file belongs to an agent that already
-   exists. See "Creating things" below.
+   exists. See "Creating things" below. The other write you may make is
+   CONNECTING an existing knowledge base to the agent — see "Knowledge
+   bases" under the API. It only adds, and it saves no version.
 
 2. **Edit the draft file in place, in small targeted edits.** Do not
    re-emit the whole agent JSON each turn. The user watches the Builder to
@@ -174,6 +176,16 @@ edit it in place, and leave the shape alone. In particular the crews of an
 agent live at `doc.agents[0].crews`, nested inside their agent, not in a
 list of their own.
 
+**Edit the working copy only — never the saved versions.** The prompts,
+addons and fields you change live directly on the agent and on each crew.
+Each also carries a `versions` array: those are snapshots of what is
+SAVED, and they often contain text identical to the working copy — so a
+find-and-replace across the file will hit them too. Leave `versions`,
+`activeVersionId`, `viewingVersionId` and `publishedVersionId` exactly as
+they are, and don't touch `_meta.baseline`. The Builder ignores any change
+there anyway; the user saves a new version themselves. (A new crew is the
+one exception — see "Creating things".)
+
 Keep `_meta` accurate — the Builder uses it to tell the user which version
 the draft came from, so they can see at a glance that they are looking at
 a local draft rather than what is saved.
@@ -205,6 +217,7 @@ to open "Work with your AI" in the Builder toolbar, which writes it.
 | **The agent you are working on** — its body and every crew, already assembled | `GET /api/builder/projects?agentSlug=<slug>&ownerUserId=<id>` | `{ id, name, spec, agents: [ { …agent, crews: [ … ] } ] }` — exactly what goes into the draft file's `doc` |
 | **Every agent on the platform** | `GET /api/builder/projects/list?ownerUserId=<id>` | `{ projects: [ { projectId, projectName, agentId, agentSlug, agentName, updatedAt, archivedAt } ] }` |
 | **A brand-new agent** — the one write you may make, and only after asking | `POST /api/builder/projects` | The new project. Body and rules are under "Creating things" above. |
+| **Its Spec, with attached files** — what the person wants the agent to be. Read it before designing anything | `GET /builder/mcp/agents/<slug>/spec` | Plain text: project, agent and crew specs, then the text of each file attached to the agent's Spec. The running agent never sees any of it. |
 
 Reading other agents is encouraged. When the user asks for something that
 exists elsewhere ("like the one in account-opening"), go and read that
@@ -227,8 +240,32 @@ to know exactly what it assembles.
 | **Profiler output**, and its runs | `GET /api/agents/<slug>/conversations/<convId>/profiler?ownerUserId=<id>` · `…/profiler/runs` | `{ panels, frame, ask }` |
 | **Why an agent was changed, and by whom** | `GET /api/builder/alfred/agents/<agentId>/log` | `{ entries: [ … ] }` — the newest 100 |
 
+### Knowledge bases
+
+A knowledge base (KB) is a named collection of document chunks. Two
+different things tie one to an agent, and it matters which you mean:
+**connected** — the Builder shows it for that agent (a KB Retriever naming
+an unconnected KB reads "MISSING" on screen); and **searched** — a KB
+Retriever addon lists it in `config.kbNamespaces`, which is what makes the
+agent actually read it. These live on the Builder's AI door, same server:
+
+| What you want | Call | What comes back |
+|---|---|---|
+| **Every KB** — chunks, files, which agents it is connected to, which KB Retrievers search it, and any retriever naming a KB that doesn't exist | `GET /builder/mcp/kbs` | Plain text |
+| **One agent's KBs** — connected ones, and each KB Retriever with whether its KB is ok, not connected, or missing | `GET /builder/mcp/agents/<slug>/kbs` | Plain text |
+| **The files in a KB** | `GET /builder/mcp/kbs/<name>/files` | Plain text, one line per file with its id |
+| **One file's text**, chunk by chunk (neighbouring chunks overlap a little) | `GET /builder/mcp/kbs/<name>/files/<fileId>` | Plain text |
+| **Connect** an existing KB to the agent — additive; a name that isn't a real KB is refused and nothing changes | `POST /builder/mcp/agents/<slug>/kbs` with `{ "namespace": "<name>" }` | A sentence saying what happened |
+
+To make the agent SEARCH a KB, add a KB Retriever addon to the crew (or
+the agent cortex) in the draft with the KB's name in `config.kbNamespaces`
+— copy an existing KB Retriever's shape. Creating a KB or uploading files
+is done in the admin screen; you can't, so say so if asked.
+
 ### Reading the answers
 
+- `Cannot GET …` means that endpoint does not exist — you guessed a URL.
+  Don't try variations; use the tables above.
 - `400` means a query parameter is missing; `404` means no agent has that
   slug. Recover from a `404` by matching the name the user said against
   the agent list — slugs are stored, not derived, so never invent one.

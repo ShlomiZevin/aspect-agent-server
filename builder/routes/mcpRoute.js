@@ -263,6 +263,11 @@ read the code before arguing.** You can read our actual source. Use it.
 | One addon run in full — assembled prompt, raw and parsed output | \`${base}/runs/<id>\` |
 | **A whole conversation as JSON, for analysis** — every message, and under each reply the addon runs of that turn with their outputs and field writes. \`include=messages\` for the text only, \`include=full\` to add every assembled prompt (large). Default \`outputs\` | \`${base}/conversations/<id>/export?include=outputs\` |
 | History of changes to an agent, and why | \`${base}/agents/<slug>/log\` |
+| **Its Spec** — project, agent and crew specs plus the text of every file attached to the agent's Spec. What the person wants the agent to be; read it before designing anything. Never seen by the running agent | \`${base}/agents/<slug>/spec\` |
+| **Every knowledge base** — chunks, files, which agents it is connected to and which KB Retrievers search it, plus any retriever naming a KB that doesn't exist | \`${base}/kbs\` |
+| One agent's knowledge bases — connected ones, and each KB Retriever with whether its KB is ok, not connected, or missing | \`${base}/agents/<slug>/kbs\` |
+| The files in a knowledge base | \`${base}/kbs/<name>/files\` |
+| One file's text, chunk by chunk | \`${base}/kbs/<name>/files/<fileId>\` |
 | **Our source code**, any path, directories list | \`${base}/code/<path>\` |
 
 ## Learning how the platform actually works
@@ -306,6 +311,24 @@ you do can affect a real conversation.
 
 Post the **whole** body, not a patch, and change only what you meant to —
 they are reading the diff on screen.
+
+**Giving an agent a knowledge base.** Two steps, and people mix them up:
+
+1. **Connect** it, so the Builder shows it for this agent:
+
+   \`\`\`
+   POST ${base}/agents/<slug>/kbs
+   { "namespace": "<kb name from ${base}/kbs>" }
+   \`\`\`
+
+   Only a KB that really exists can be connected — anything else is
+   refused and nothing changes. Connecting never removes anything.
+2. **Search** it: add a KB Retriever addon (see \`${base}/addons\`) to the
+   crew, or the agent cortex, with the KB's name in \`config.kbNamespaces\`,
+   and POST the body as above. Without this the agent never reads it.
+
+Creating a knowledge base or uploading files to one is done in the admin
+screen, not through this door — say so if they ask.
 
 **A brand-new agent** — ask before making one, it is a bigger thing than
 an edit:
@@ -783,6 +806,127 @@ router.post('/agents/:slug/crews/:crewId', async (req, res) => {
   } catch (err) {
     console.error('[builder-mcp] update crew failed:', err);
     res.status(500).type('text/plain').send(`Could not save: ${err.message}`);
+  }
+});
+
+/**
+ * The Spec (task #870): the project spec, the agent and crew specs, and
+ * the text of every file attached to the agent's Spec. Guidance for
+ * whoever builds the agent — the running agent never sees any of it.
+ */
+router.get('/agents/:slug/spec', async (req, res) => {
+  try {
+    const project = await builderProjects.hydrateProject({ agentSlug: req.params.slug });
+    const agent = project && project.agents[0];
+    if (!agent) {
+      return res.status(404).type('text/plain').send(`No agent with slug "${req.params.slug}". Fetch ../agents for the list.`);
+    }
+    const { listSpecFiles, renderSpecFiles } = require('../services/specFiles');
+    const files = await listSpecFiles(agent.id);
+    const crewSpecs = (agent.crews || []).filter(c => (c.spec || '').trim());
+    sendText(res, [
+      `Spec of "${agent.name || agent.slug}" — what it should be, for the people and assistants building it.`,
+      'The running agent never sees this.',
+      '',
+      '## Project spec', (project.spec || '').trim() || '(empty)',
+      '',
+      '## Agent spec', (agent.spec || '').trim() || '(empty)',
+      ...(crewSpecs.length ? ['', '## Crew specs', ...crewSpecs.map(c => `### ${c.name}\n${c.spec.trim()}`)] : []),
+      '',
+      `## Attached files (${files.length})`,
+      files.length ? renderSpecFiles(files) : '(none)',
+    ].join('\n'));
+  } catch (err) {
+    console.error('[builder-mcp] spec failed:', err);
+    res.status(500).type('text/plain').send(`Could not read the spec: ${err.message}`);
+  }
+});
+
+// ─── Knowledge bases (task #868) ───────────────────────────────────
+//
+// Reads are the same functions Alfred's KB tools call, so what the
+// assistant sees here and what Alfred sees can't disagree. The one write
+// — connecting a KB to an agent — is add-only and refuses anything that
+// isn't a real KB in the active index: an assistant must never be able to
+// wire an agent to a KB that doesn't exist (that is exactly how a
+// retriever ends up "MISSING" and silently finding nothing).
+
+router.get('/kbs', async (req, res) => {
+  try {
+    sendText(res, await alfredTools.listKnowledgeBases());
+  } catch (err) {
+    console.error('[builder-mcp] kbs failed:', err);
+    res.status(500).type('text/plain').send(`Could not list knowledge bases: ${err.message}`);
+  }
+});
+
+router.get('/agents/:slug/kbs', async (req, res) => {
+  try {
+    const out = await alfredTools.agentKnowledgeBases(req.params.slug);
+    if (out.startsWith('No agent with slug')) return res.status(404).type('text/plain').send(`${out} Fetch ../agents for the list.`);
+    sendText(res, out);
+  } catch (err) {
+    console.error('[builder-mcp] agent kbs failed:', err);
+    res.status(500).type('text/plain').send(`Could not read that agent's knowledge bases: ${err.message}`);
+  }
+});
+
+router.get('/kbs/:namespace/files', async (req, res) => {
+  try {
+    const out = await alfredTools.listKbFiles(req.params.namespace);
+    if (!out.startsWith('Files in KB')) return res.status(404).type('text/plain').send(`${out} Fetch ../kbs for the list.`);
+    sendText(res, out);
+  } catch (err) {
+    console.error('[builder-mcp] kb files failed:', err);
+    res.status(500).type('text/plain').send(`Could not list that KB's files: ${err.message}`);
+  }
+});
+
+router.get('/kbs/:namespace/files/:fileId', async (req, res) => {
+  try {
+    const out = await alfredTools.readKbFile(req.params.namespace, req.params.fileId);
+    if (!out.startsWith('"')) return res.status(404).type('text/plain').send(out);
+    sendText(res, out);
+  } catch (err) {
+    console.error('[builder-mcp] kb file failed:', err);
+    res.status(500).type('text/plain').send(`Could not read that file: ${err.message}`);
+  }
+});
+
+router.post('/agents/:slug/kbs', async (req, res) => {
+  try {
+    const namespace = String(req.body?.namespace || '').trim();
+    if (!namespace) {
+      return res.status(400).type('text/plain').send('Send { "namespace": "<kb name>" }. Fetch ../kbs for the names.');
+    }
+    const project = await builderProjects.hydrateProject({ agentSlug: req.params.slug });
+    const agent = project && project.agents[0];
+    if (!agent) {
+      return res.status(404).type('text/plain').send(`No agent with slug "${req.params.slug}". Fetch ../agents for the list.`);
+    }
+    if (!(await alfredTools.kbExists(namespace))) {
+      return res.status(404).type('text/plain').send(
+        `There is no knowledge base "${namespace}" to connect — nothing was changed. ` +
+        'Fetch ../kbs for the ones that exist. A KB is created by uploading files in the admin screen, not here.',
+      );
+    }
+    const { kbLinks } = require('../../db/schema');
+    const inserted = await require('../../services/db.pg').getDrizzle()
+      .insert(kbLinks)
+      .values({ indexName: alfredTools.KB_INDEX(), namespace, agentId: agent.id })
+      .onConflictDoNothing()
+      .returning({ id: kbLinks.id });
+    const name = agent.name || agent.slug;
+    sendText(res, [
+      inserted.length
+        ? `Connected "${namespace}" to ${name}. It now shows in the Builder for this agent.`
+        : `"${namespace}" was already connected to ${name} — nothing changed.`,
+      'Connecting only makes it visible. To make the agent actually search it, a KB Retriever addon must list it',
+      'in config.kbNamespaces — edit the crew (or the agent cortex) and POST it back as usual.',
+    ].join('\n'));
+  } catch (err) {
+    console.error('[builder-mcp] connect kb failed:', err);
+    res.status(500).type('text/plain').send(`Could not connect that knowledge base: ${err.message}`);
   }
 });
 
