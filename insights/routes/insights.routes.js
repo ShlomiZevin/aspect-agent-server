@@ -180,9 +180,24 @@ router.put('/:datasetId/quick-questions', async (req, res) => {
       err.status = 400;
       throw err;
     }
+    // `text`/`question` are the English base; `i18n.<lang>` holds a per-language
+    // version (Hebrew today) that the tile shows when the UI is in that
+    // language. A tile is a single string otherwise, so an English UI would
+    // show whatever language it was typed in.
     const clean = quickQuestions
       .filter(q => q && typeof q === 'object' && String(q.text || '').trim() && String(q.question || '').trim())
-      .map(q => ({ icon: String(q.icon || '').slice(0, 8), text: String(q.text).trim().slice(0, 60), question: String(q.question).trim().slice(0, 300) }));
+      .map(q => {
+        const out = { icon: String(q.icon || '').slice(0, 8), text: String(q.text).trim().slice(0, 60), question: String(q.question).trim().slice(0, 300) };
+        const i18n = {};
+        for (const [lang, v] of Object.entries(q.i18n && typeof q.i18n === 'object' ? q.i18n : {})) {
+          if (!/^[a-z]{2}$/.test(lang) || !v || typeof v !== 'object') continue;
+          const text = String(v.text || '').trim().slice(0, 60);
+          const question = String(v.question || '').trim().slice(0, 300);
+          if (text && question) i18n[lang] = { text, question };
+        }
+        if (Object.keys(i18n).length) out.i18n = i18n;
+        return out;
+      });
     const config = await intelligenceConfigService.setConfig(req.params.datasetId, { quickQuestions: clean });
     res.json({ quickQuestions: config.quickQuestions });
   } catch (err) {
