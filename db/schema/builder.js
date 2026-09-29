@@ -19,7 +19,7 @@
  * model rationale.
  */
 
-const { pgTable, text, varchar, jsonb, timestamp, integer, serial, uniqueIndex, index } = require('drizzle-orm/pg-core');
+const { pgTable, text, varchar, jsonb, timestamp, integer, serial, uniqueIndex, index, primaryKey } = require('drizzle-orm/pg-core');
 
 // Top-level project. Just metadata; no JSON body (project-level
 // fields are stable for now: name + spec).
@@ -251,9 +251,26 @@ const builderSpecFiles = pgTable('builder_spec_files', {
   fileSize:      integer('file_size'),
   gcsPath:       text('gcs_path'),
   extractedText: text('extracted_text'),
+  // What the file hangs off (migration 057, task #871): 'spec' = the
+  // agent's Spec; 'tkb' = a Targeted KB, whose enum id is `refId`.
+  scope:         varchar('scope', { length: 20 }).notNull().default('spec'),
+  refId:         varchar('ref_id', { length: 64 }),
   createdAt:     timestamp('created_at').defaultNow().notNull(),
 }, t => ({
   agentIdx: index('builder_spec_files_agent_idx').on(t.agentId),
+  scopeIdx: index('builder_spec_files_scope_idx').on(t.agentId, t.scope, t.refId),
+}));
+
+// builder_tkb_notes — free text on a Targeted KB for the people building
+// the agent (task #871, migration 057): a knowledge map, sources,
+// overlaps. Never sent to the running agent; outside the versioned body.
+const builderTkbNotes = pgTable('builder_tkb_notes', {
+  agentId:   varchar('agent_id', { length: 64 }).notNull(),
+  enumId:    varchar('enum_id', { length: 64 }).notNull(),
+  notes:     text('notes').notNull().default(''),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, t => ({
+  pk: primaryKey({ columns: [t.agentId, t.enumId] }),
 }));
 
 // ─────────────────────────────────────────────────────────────────
@@ -331,6 +348,7 @@ module.exports = {
   repoEntries,
   kbLinks,
   builderSpecFiles,
+  builderTkbNotes,
   triggerEvents,
   triggerStatus,
 };

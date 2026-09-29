@@ -217,7 +217,7 @@ to open "Work with your AI" in the Builder toolbar, which writes it.
 | **The agent you are working on** — its body and every crew, already assembled | `GET /api/builder/projects?agentSlug=<slug>&ownerUserId=<id>` | `{ id, name, spec, agents: [ { …agent, crews: [ … ] } ] }` — exactly what goes into the draft file's `doc` |
 | **Every agent on the platform** | `GET /api/builder/projects/list?ownerUserId=<id>` | `{ projects: [ { projectId, projectName, agentId, agentSlug, agentName, updatedAt, archivedAt } ] }` |
 | **A brand-new agent** — the one write you may make, and only after asking | `POST /api/builder/projects` | The new project. Body and rules are under "Creating things" above. |
-| **Its Spec, with attached files** — what the person wants the agent to be. Read it before designing anything | `GET /builder/mcp/agents/<slug>/spec` | Plain text: project, agent and crew specs, then the text of each file attached to the agent's Spec. The running agent never sees any of it. |
+| **Its Spec, with attached files** — what the person wants the agent to be. Read it before designing anything | `GET /builder/mcp/agents/<slug>/spec` | Plain text: project, agent and crew specs, the text of each file attached to the agent's Spec, then the notes and files on each Targeted KB (the author's knowledge map — sources, overlaps). The running agent never sees any of it. |
 
 Reading other agents is encouraged. When the user asks for something that
 exists elsewhere ("like the one in account-opening"), go and read that

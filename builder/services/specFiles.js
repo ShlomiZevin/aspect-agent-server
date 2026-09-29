@@ -1,17 +1,20 @@
 /**
- * Reading an agent's Spec files (task #870) — shared by Alfred's project
- * summary and the Builder's AI door, so the two can never disagree about
- * what the Spec says. Writes live in builder/routes/specRoute.js.
+ * Reading builder-only material (never sent to the running agent) —
+ * shared by Alfred's project summary and the Builder's AI door, so the
+ * two can never disagree:
+ *   - files attached to the agent's Spec (task #870)
+ *   - notes + files on each Targeted KB (task #871)
+ * Writes live in builder/routes/specRoute.js.
  */
 
-const { eq, asc } = require('drizzle-orm');
+const { eq, and, asc } = require('drizzle-orm');
 const db = require('../../services/db.pg');
-const { builderSpecFiles } = require('../../db/schema');
+const { builderSpecFiles, builderTkbNotes } = require('../../db/schema');
 
 async function listSpecFiles(agentId) {
   if (!agentId) return [];
   return db.getDrizzle().select().from(builderSpecFiles)
-    .where(eq(builderSpecFiles.agentId, agentId))
+    .where(and(eq(builderSpecFiles.agentId, agentId), eq(builderSpecFiles.scope, 'spec')))
     .orderBy(asc(builderSpecFiles.createdAt));
 }
 
@@ -32,4 +35,34 @@ function renderSpecFiles(files, { maxCharsPerFile = 0 } = {}) {
   }).join('\n\n');
 }
 
-module.exports = { listSpecFiles, renderSpecFiles };
+/**
+ * Notes + files of every Targeted KB of an agent that has any, as prose.
+ * `enums` (the agent body's) supplies names; a note on a KB that has since
+ * been deleted is skipped. '' when there is nothing.
+ */
+async function renderTkbNotes(agentId, enums, { maxCharsPerFile = 0, maxNoteChars = 0 } = {}) {
+  if (!agentId) return '';
+  const d = db.getDrizzle();
+  const notes = await d.select().from(builderTkbNotes).where(eq(builderTkbNotes.agentId, agentId));
+  const files = await d.select().from(builderSpecFiles)
+    .where(and(eq(builderSpecFiles.agentId, agentId), eq(builderSpecFiles.scope, 'tkb')))
+    .orderBy(asc(builderSpecFiles.createdAt));
+  const byId = new Map((Array.isArray(enums) ? enums : []).map(e => [e.id, e]));
+  const blocks = [];
+  for (const e of byId.values()) {
+    const note = (notes.find(n => n.enumId === e.id)?.notes || '').trim();
+    const mine = files.filter(f => f.refId === e.id);
+    if (!note && mine.length === 0) continue;
+    const noteText = maxNoteChars > 0 && note.length > maxNoteChars
+      ? `${note.slice(0, maxNoteChars)}\n…[cut — ${note.length - maxNoteChars} more characters]`
+      : note;
+    blocks.push([
+      `### Targeted KB "${e.name}"`,
+      ...(noteText ? [noteText] : []),
+      ...(mine.length ? [renderSpecFiles(mine, { maxCharsPerFile })] : []),
+    ].join('\n\n'));
+  }
+  return blocks.join('\n\n');
+}
+
+module.exports = { listSpecFiles, renderSpecFiles, renderTkbNotes };

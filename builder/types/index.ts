@@ -697,6 +697,15 @@ export interface EnumTypeDef {
    * the field renames — rename it on the Targeted KB page anytime.
    */
   ownedByFieldId?: ID;
+  /**
+   * Folder this Targeted KB is grouped under on the Targeted KB page
+   * (task #863) — one level only, free text, absent = no folder. Purely a
+   * builder-side grouping: the runtime ignores it, and it is NOT part of
+   * the name — tokens (`{{targetedkb:NAME}}`), URLs and renames all key on
+   * the flat, agent-unique `name`. Moving a KB between folders changes no
+   * prompt. Never set on a field-owned Choice list.
+   */
+  folder?: string;
   /** Section NAMES declared on this enum — the address space the
    *  `{{enum:NAME:SECTION}}` and `{{dc:field:SECTION}}` tokens
    *  resolve against. Shared across every value so the aggregate

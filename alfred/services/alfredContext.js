@@ -366,9 +366,9 @@ const STATIC_SYSTEM_PROMPT = [
   '  A Choice is JUST a value list: the field is `type: "enum"` +',
   '  `enumType`, bound to a minimal enum with `ownedByFieldId: <field.id>`,',
   '  `sections: []`, bare values — NO umbrella texts, NO sections, ever.',
-  '  On the Targeted KB screen it appears under the separate "Field lists',
-  '  (Choice)" group, values-only. In the field modal it\'s the "Choice"',
-  '  type with inline values.',
+  '  The Targeted KB screen has a "Targeted KB | Choices" switch at the top',
+  '  of its list; Choice lists are on the Choices side, values-only. In the',
+  '  field modal it\'s the "Choice" type with inline values.',
   '- **Yes → Targeted KB.** A real Targeted KB is an enum WITH per-value',
   '  knowledge — umbrella prompts, sections — consumed via the',
   '  `{{dc:FIELD}}` / `{{dc:FIELD:SECTION}}` / `{{enum:NAME:SECTION}}`',
@@ -378,8 +378,20 @@ const STATIC_SYSTEM_PROMPT = [
   '  `howToExtract`, or a full Targeted KB for a simple list.',
   '- ✨ Apply CAN create proper Choice fields (field + owned minimal enum',
   '  in one go) — never tell the user it\'s a UI-only path.',
-  '- A Choice can be upgraded later to a real Targeted KB by authoring',
-  '  sections on it — so when in doubt, start with Choice.',
+  '- When in doubt, start with Choice. If per-value guidance is needed',
+  '  later, build a real Targeted KB and bind the field to it — the screen',
+  '  does not add sections or umbrella texts to a field\'s own Choice list.',
+  '- Targeted KBs can be grouped into FOLDERS on the screen (one level;',
+  '  `folder` on the enum). Screen-only: never part of the name, so tokens',
+  '  and bindings don\'t change when a KB moves. Keep a KB\'s `folder` as it',
+  '  is when editing it; set or change it only when asked. Never on a',
+  '  Choice list.',
+  '- Each Targeted KB also has NOTES and FILES (the screen\'s "Notes & files"',
+  '  area) — the author\'s knowledge map: where each piece came from, what',
+  '  overlaps. NEVER sent to the running agent. They appear in your project',
+  '  summary under "Targeted KB notes"; use them to understand intent and to',
+  '  spot duplicated or conflicting content. You can\'t edit them — suggest',
+  '  wording and the person pastes it.',
   '- Scope: prefer AGENT-scoped choice fields unless the user explicitly',
   '  wants it crew-only. Enums always live on `agent.enums` either way.',
   '- Fields-panel chips: `choice · <name>` = the field OWNS the list;',
@@ -388,6 +400,19 @@ const STATIC_SYSTEM_PROMPT = [
   '  does NOT rename its owned list. Deleting the field — or switching',
   '  its type away from Choice — deletes the owned list, UNLESS another',
   '  field has since bound to the same enum.',
+  '',
+  '# Tokens inside Targeted KB values',
+  '- EVERY `{{…}}` token works inside a Targeted KB value (umbrella or',
+  '  section text), exactly as in a prompt — `{{dc:…}}`, `{{targetedkb:…}}`,',
+  '  `{{snippet:…}}`, `{{param:…}}`, `{{field:…}}`, notes. A value may pull',
+  '  in another value, up to 4 levels deep. A value that pulls in ITSELF',
+  '  is left as the raw token (never loops) — don\'t design one.',
+  '- `{{targetedkb:NAME=VALUE}}` / `{{targetedkb:NAME=VALUE:SECTION}}` =',
+  '  ONE specific value, always that one. Don\'t confuse it with',
+  '  `{{targetedkb:NAME:SECTION}}`, which is that section across EVERY value,',
+  '  or with `{{dc:FIELD}}`, which follows whatever value the field holds now.',
+  '- Text a KB Retriever brings in (`{{kb:…}}`) is never resolved — a `{{`',
+  '  inside a retrieved document stays literal, on purpose.',
   '',
   '# Builder notes inside prompts',
   'Any prompt can hold notes for the people building the agent:',
@@ -762,15 +787,25 @@ async function buildProjectSummary({ agentSlug, ownerUserId, workingBodies }) {
   // Files attached to the agent's Spec (#870) — the person's own source
   // material for what the agent should be. Never reaches the agent.
   try {
-    const { listSpecFiles, renderSpecFiles } = require('../../builder/services/specFiles');
+    const { listSpecFiles, renderSpecFiles, renderTkbNotes } = require('../../builder/services/specFiles');
     for (const agent of project.agents || []) {
       const files = await listSpecFiles(agent.id);
-      if (files.length === 0) continue;
-      lines.push(
-        '',
-        `## Spec files attached to "${agent.name || agent.slug}" (reference for building — the running agent never sees them)`,
-        renderSpecFiles(files, { maxCharsPerFile: 15000 }),
-      );
+      if (files.length > 0) {
+        lines.push(
+          '',
+          `## Spec files attached to "${agent.name || agent.slug}" (reference for building — the running agent never sees them)`,
+          renderSpecFiles(files, { maxCharsPerFile: 15000 }),
+        );
+      }
+      // Targeted KB notes + files (#871) — the author's knowledge map.
+      const tkb = await renderTkbNotes(agent.id, agent.enums, { maxCharsPerFile: 8000, maxNoteChars: 6000 });
+      if (tkb) {
+        lines.push(
+          '',
+          `## Targeted KB notes of "${agent.name || agent.slug}" (the author's own map — never sent to the running agent)`,
+          tkb,
+        );
+      }
     }
   } catch (err) {
     console.warn('[alfredContext] spec files unavailable:', err.message);

@@ -263,7 +263,7 @@ read the code before arguing.** You can read our actual source. Use it.
 | One addon run in full — assembled prompt, raw and parsed output | \`${base}/runs/<id>\` |
 | **A whole conversation as JSON, for analysis** — every message, and under each reply the addon runs of that turn with their outputs and field writes. \`include=messages\` for the text only, \`include=full\` to add every assembled prompt (large). Default \`outputs\` | \`${base}/conversations/<id>/export?include=outputs\` |
 | History of changes to an agent, and why | \`${base}/agents/<slug>/log\` |
-| **Its Spec** — project, agent and crew specs plus the text of every file attached to the agent's Spec. What the person wants the agent to be; read it before designing anything. Never seen by the running agent | \`${base}/agents/<slug>/spec\` |
+| **Its Spec** — project, agent and crew specs, the text of every file attached to the agent's Spec, and the notes & files on each Targeted KB (the author's knowledge map). What the person wants the agent to be; read it before designing anything. Never seen by the running agent | \`${base}/agents/<slug>/spec\` |
 | **Every knowledge base** — chunks, files, which agents it is connected to and which KB Retrievers search it, plus any retriever naming a KB that doesn't exist | \`${base}/kbs\` |
 | One agent's knowledge bases — connected ones, and each KB Retriever with whether its KB is ok, not connected, or missing | \`${base}/agents/<slug>/kbs\` |
 | The files in a knowledge base | \`${base}/kbs/<name>/files\` |
@@ -821,8 +821,9 @@ router.get('/agents/:slug/spec', async (req, res) => {
     if (!agent) {
       return res.status(404).type('text/plain').send(`No agent with slug "${req.params.slug}". Fetch ../agents for the list.`);
     }
-    const { listSpecFiles, renderSpecFiles } = require('../services/specFiles');
+    const { listSpecFiles, renderSpecFiles, renderTkbNotes } = require('../services/specFiles');
     const files = await listSpecFiles(agent.id);
+    const tkbNotes = await renderTkbNotes(agent.id, agent.enums);
     const crewSpecs = (agent.crews || []).filter(c => (c.spec || '').trim());
     sendText(res, [
       `Spec of "${agent.name || agent.slug}" — what it should be, for the people and assistants building it.`,
@@ -835,6 +836,9 @@ router.get('/agents/:slug/spec', async (req, res) => {
       '',
       `## Attached files (${files.length})`,
       files.length ? renderSpecFiles(files) : '(none)',
+      '',
+      '## Targeted KB notes & files — the author\'s knowledge map (sources, overlaps)',
+      tkbNotes || '(none)',
     ].join('\n'));
   } catch (err) {
     console.error('[builder-mcp] spec failed:', err);

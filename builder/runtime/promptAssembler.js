@@ -1,10 +1,11 @@
 /**
  * Builder V2 — promptAssembler.
  *
- * SOURCE OF TRUTH for prompt assembly. MUST produce the **same
- * output string** as the client's
- * `aspect-react-client/src/builder/components/PromptTemplateModal/buildPromptPreview.ts`
- * given the same inputs. Drift = silent prompt divergence.
+ * SOURCE OF TRUTH for prompt assembly. The Builder's prompt preview
+ * (`aspect-react-client/src/builder/components/PromptPreview/previewSegments.ts`)
+ * mirrors its BEHAVIOUR — which tokens resolve, nesting, the self-
+ * reference stop, disabled values — as a tree rather than a string, with
+ * live-memory tokens shown as chips. Change one, change the other.
  *
  * Vocabulary lives in `aspect-agent-server/builder/promptPlaceholders.json`
  * — the same file Alfred reads. Tokens:
@@ -496,6 +497,55 @@ function resolveDcInline(rawName, { enums, fieldsForDc, fieldValueOf, onDcResolv
   return text;
 }
 
+// `{{# note }}` — builder-only comments inside prompts, never sent to the
+// LLM (task #831). The space after `#` is required: `{{#name}}` without a
+// space is a parameter reference in rule formulas, never a comment. The
+// body may span lines but can't contain `}}`, so a comment never swallows
+// a real token that follows it. Whole-line comments take their newline.
+const COMMENT_LINE_RE = /^[ \t]*\{\{#\s(?:(?!\}\})[\s\S])*\}\}[ \t]*(?:\r?\n|$)/gm;
+const COMMENT_RE = /\{\{#\s(?:(?!\}\})[\s\S])*\}\}/g;
+
+function stripPromptComments(text) {
+  if (typeof text !== 'string' || !text.includes('{{#')) return text;
+  return text.replace(COMMENT_LINE_RE, '').replace(COMMENT_RE, '');
+}
+
+/**
+ * How deep inserted content is itself resolved (task #867). A Targeted KB
+ * value can pull in another value, which can pull in a snippet… four
+ * levels is far past any sane authoring and still stops a runaway.
+ */
+const MAX_NEST_DEPTH = 4;
+
+/**
+ * `{{targetedkb:NAME=VALUE}}` / `{{targetedkb:NAME=VALUE:SECTION}}` (and the
+ * `enum:` spelling) — ONE specific value, statically (task #867). The
+ * colon forms can't do this: `NAME:SECTION` already means "that section
+ * across every value". Bare content, like `{{dc:…}}`.
+ *
+ * Returns null (token stays literal, so a typo is visible) for an unknown
+ * KB or value; '' for a disabled value or an empty body.
+ */
+function resolveEnumValue(enumName, valueName, sectionPart, { enums, onEnumResolved }) {
+  const enumDef = findEnumByName(enums, enumName);
+  if (!enumDef || !Array.isArray(enumDef.values)) return null;
+  const v = enumDef.values.find(x => x && String(x.value) === valueName);
+  if (!v) return null;
+  let text = '';
+  if (v.enabled !== false) {
+    const raw = sectionPart ? (v.sectionTexts || {})[sectionPart] : v.umbrellaText;
+    text = typeof raw === 'string' ? raw.trim() : '';
+  }
+  if (onEnumResolved) {
+    onEnumResolved({ enumName, section: sectionPart ? `${valueName}:${sectionPart}` : valueName, count: text ? 1 : 0, text });
+  }
+  return text;
+}
+
+// Value names may contain spaces, so this form gets its own pattern
+// rather than the generic `[^}\s]+` one.
+const ENUM_VALUE_RE = /\{\{(?:enum|targetedkb):([^:=}\s]+)=([^:}]+?)(?::([^:}\s]+))?\}\}/g;
+
 /**
  * Assemble the prompt for an addon instance.
  *
@@ -518,19 +568,6 @@ function resolveDcInline(rawName, { enums, fieldsForDc, fieldValueOf, onDcResolv
  * @param {object}   [args.brain] — needed by snippet filter evaluation
  * @returns {string} the assembled prompt
  */
-// `{{# note }}` — builder-only comments inside prompts, never sent to the
-// LLM (task #831). The space after `#` is required: `{{#name}}` without a
-// space is a parameter reference in rule formulas, never a comment. The
-// body may span lines but can't contain `}}`, so a comment never swallows
-// a real token that follows it. Whole-line comments take their newline.
-const COMMENT_LINE_RE = /^[ \t]*\{\{#\s(?:(?!\}\})[\s\S])*\}\}[ \t]*(?:\r?\n|$)/gm;
-const COMMENT_RE = /\{\{#\s(?:(?!\}\})[\s\S])*\}\}/g;
-
-function stripPromptComments(text) {
-  if (typeof text !== 'string' || !text.includes('{{#')) return text;
-  return text.replace(COMMENT_LINE_RE, '').replace(COMMENT_RE, '');
-}
-
 function assemblePrompt({
   instance,
   personas,
@@ -553,64 +590,109 @@ function assemblePrompt({
   let template = instance.promptTemplate || '';
   const cfg = instance.config || {};
   const fields = Array.isArray(extractorFields) ? extractorFields : [];
-  const enumsList = Array.isArray(enums) ? enums : [];
 
-  const isExtractor = fields.length > 0 || /\{\{fields_(schema|current)\}\}/.test(template);
-
-  const memoryReader   = memoryValuesByDomain   || (() => ({}));
-  const thinkingReader = thinkingValuesByDomain || (() => ({}));
+  const ctx = {
+    pluginId:       instance.pluginId,
+    personas,
+    memoryReader:   memoryValuesByDomain   || (() => ({})),
+    thinkingReader: thinkingValuesByDomain || (() => ({})),
+    memoryDomainList,
+    thinkingDomainList,
+    retrievalValueOf,
+    fieldValueOf,
+    fields,
+    // Decided on the addon's OWN template, before anything is inserted.
+    isExtractor:    fields.length > 0 || /\{\{fields_(schema|current)\}\}/.test(template),
+    parameters,
+    enumsList:      Array.isArray(enums) ? enums : [],
+    fieldsForDc:    fieldsForDc || [],
+    onEnumResolved,
+    onDcResolved,
+    summaries,
+    snippets,
+    brain,
+    kbSlots:        [],   // retrieved KB text, restored after every pass
+  };
 
   // {{prompt}} expands first so any token the user authored inside
   // `config.prompt` (e.g. `@customer_age` → `{{field:customer_age}}`)
-  // becomes visible to the passes below.
+  // becomes visible to the passes below. Top level only — a value that
+  // contains {{prompt}} does not re-insert the addon's prompt.
   template = template.split('{{prompt}}').join(cfg.prompt || '');
+  template = resolveTokens(template, ctx, 0, []);
+  template = template.replace(/\u0000KB(\d+)\u0000/g, (_, i) => ctx.kbSlots[Number(i)]);
+
+  return template.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * Every token pass, in order, over one piece of text.
+ *
+ * Task #867: text INSERTED by a snippet, persona, Targeted KB (`enum:` /
+ * `targetedkb:`) or `dc:` token is run through this same function before
+ * it lands (`nest` below), so every syntax works inside inserted content —
+ * a value pulling in another value included. It used to be one
+ * `String.replace` per prefix, and replace never rescans what it just
+ * inserted: a token inside a value resolved only if its pass happened to
+ * run later, so `{{dc:…}}` / `{{targetedkb:…}}` inside a value stayed raw.
+ *
+ * Guards: depth (MAX_NEST_DEPTH), and a token already being expanded
+ * higher up the chain is left as written instead of looping. Retrieved KB
+ * text (`{{kb:…}}`) is NEVER re-resolved — it is document content.
+ */
+function resolveTokens(template, c, depth, stack) {
+  // `guard` runs a resolver unless its token is already being expanded
+  // higher up the chain — then the token stays exactly as written (null =
+  // leave literal). `nest` then resolves whatever the resolver inserted.
+  const guard = (key, resolve) => (stack.includes(key) ? null : nest(key, resolve()));
+  const nest = (key, body) => {
+    if (typeof body !== 'string' || !body.includes('{{')) return body;
+    if (depth >= MAX_NEST_DEPTH) return body;
+    return resolveTokens(body, c, depth + 1, [...stack, key]);
+  };
+  const { fields, enumsList, fieldsForDc, fieldValueOf } = c;
+
   // Comments go before any token resolves, so a token inside a comment
   // never runs (no DC/enum resolution events for commented-out text).
   template = stripPromptComments(template);
 
-  // Snippet pass FIRST — see resolveSnippetInline. Embedded tokens
-  // inside snippet content resolve on the regular passes below.
+  // Snippet pass FIRST — see resolveSnippetInline.
   template = substituteParameterised(
     template,
     'snippet',
-    name => resolveSnippetInline(name, snippets, brain),
+    name => guard(`snippet:${name}`, () => resolveSnippetInline(name, c.snippets, c.brain)),
     /* inline */ true,
   );
   template = stripPromptComments(template); // comments written inside snippet bodies
 
   // Named-persona tokens `{{persona:NAME}}` — resolve to that persona's
   // raw content (composable inline). Unknown name → left in place so the
-  // author sees the typo. Done before the flat pass so a bare
-  // `{{persona}}` isn't mistaken for `{{persona:...}}` and vice-versa
-  // (they're disjoint, but keeping persona resolution together reads
-  // clearly).
+  // author sees the typo.
   template = substituteParameterised(
     template,
     'persona',
     name => {
-      const p = findPersonaByName(personas, name);
+      const p = findPersonaByName(c.personas, name);
       if (!p) return null;
-      return (p.content || '').trim();
+      return guard(`persona:${name}`, () => (p.content || '').trim());
     },
     /* inline */ true,
   );
 
   // Flat whole-section tokens.
   template = substitute(template, {
-    persona:        buildPersonaBlock(applicablePersonas(personas, instance.pluginId)),
-    memory:         buildMemoryBlock(memoryDomainList   || (() => []), memoryReader),
-    thinking:       buildThinkingBlock(thinkingDomainList || (() => []), thinkingReader),
-    summary:        buildSummaryBlock(summaries),
-    fields_schema:  isExtractor ? buildFieldsSchemaBlock(fields, enumsList) : '',
-    fields_current: isExtractor ? buildFieldsCurrentBlock(fields, fieldValueOf) : '',
+    persona:        nest('persona', buildPersonaBlock(applicablePersonas(c.personas, c.pluginId))),
+    memory:         buildMemoryBlock(c.memoryDomainList   || (() => []), c.memoryReader),
+    thinking:       buildThinkingBlock(c.thinkingDomainList || (() => []), c.thinkingReader),
+    summary:        buildSummaryBlock(c.summaries),
+    fields_schema:  c.isExtractor ? buildFieldsSchemaBlock(fields, enumsList) : '',
+    fields_current: c.isExtractor ? buildFieldsCurrentBlock(fields, fieldValueOf) : '',
   });
 
   // Single-field inline tokens — `{{this_field}}` and `{{enum_values}}`
   // are tied to the FIRST extractor field (Field Reasoner constrains to
-  // one; multi-field extractors still resolve to their first). The enum
-  // values list is now resolved through the bible — same as
-  // buildFieldsSchemaBlock.
-  const thisField = isExtractor && fields.length > 0 ? fields[0] : null;
+  // one; multi-field extractors still resolve to their first).
+  const thisField = c.isExtractor && fields.length > 0 ? fields[0] : null;
   const thisFieldName  = thisField ? thisField.name : '';
   let enumValuesText = '';
   if (thisField && thisField.type === 'enum') {
@@ -627,11 +709,8 @@ function assemblePrompt({
   template = template.split('{{enum_values}}').join(enumValuesText);
 
   // Multi-field inline counterpart — comma-separated list of wired
-  // field NAMES. Use in Reasoner / Interviewer prompts that drive more
-  // than one field per call, e.g. "Return JSON with one key per of
-  // {{these_fields}}". Resolves to '' when there are no wired fields,
-  // matching {{this_field}}'s no-field behaviour.
-  const theseFieldsText = isExtractor
+  // field NAMES.
+  const theseFieldsText = c.isExtractor
     ? fields.map(f => f && f.name).filter(Boolean).join(', ')
     : '';
   template = template.split('{{these_fields}}').join(theseFieldsText);
@@ -640,19 +719,19 @@ function assemblePrompt({
   template = substituteParameterised(
     template,
     'memory',
-    name => buildSingleDomainBlock(name, memoryReader),
+    name => buildSingleDomainBlock(name, c.memoryReader),
     /* inline */ false,
   );
   template = substituteParameterised(
     template,
     'thinking',
-    name => buildSingleDomainBlock(name, thinkingReader),
+    name => buildSingleDomainBlock(name, c.thinkingReader),
     /* inline */ false,
   );
   template = substituteParameterised(
     template,
     'summary',
-    name => resolveSummaryInline(name, summaries),
+    name => resolveSummaryInline(name, c.summaries),
     /* inline */ true,
   );
   template = substituteParameterised(
@@ -661,17 +740,13 @@ function assemblePrompt({
     name => resolveFieldInline(name, fieldValueOf),
     /* inline */ true,
   );
-  // {{fieldname:NAME}} — literal field NAME (not value). Useful when
-  // the author wants to mention the field's name in prose without
-  // using the wrong `{{field:…}}` form (which substitutes the value).
-  // Resolves through the same `fieldsForDc` pool the DC tokens use,
-  // so it covers agent + crew-scoped fields. Unknown names stay
-  // literal (token survives in the prompt) so typos surface loudly.
+  // {{fieldname:NAME}} — literal field NAME (not value). Unknown names
+  // stay literal (token survives in the prompt) so typos surface loudly.
   template = substituteParameterised(
     template,
     'fieldname',
     name => {
-      const field = (fieldsForDc || []).find(f => f && f.name === name);
+      const field = fieldsForDc.find(f => f && f.name === name);
       return field ? field.name : null;
     },
     /* inline */ true,
@@ -679,99 +754,97 @@ function assemblePrompt({
   template = substituteParameterised(
     template,
     'param',
-    name => resolveParamInline(name, parameters),
+    name => resolveParamInline(name, c.parameters),
     /* inline */ true,
   );
 
+  // One specific Targeted KB value — `{{targetedkb:NAME=VALUE[:SECTION]}}`.
+  // Before the aggregate passes, whose patterns would otherwise read the
+  // `=` form as a name.
+  template = template.replace(ENUM_VALUE_RE, (match, enumName, valueName, section) => {
+    const out = guard(`tkb:${enumName}=${valueName.trim()}:${section || ''}`, () => resolveEnumValue(
+      enumName, valueName.trim(), section || null, { enums: enumsList, onEnumResolved: c.onEnumResolved },
+    ));
+    return out === null || out === undefined ? match : out;
+  });
+
   // Enum aggregate — static, no field lookup.
-  //
-  // Two substitution modes share the same `enum:` prefix:
   //   • {{enum:NAME:values}} — inline values list (slots into prose).
   //   • {{enum:NAME[:SECTION]}} — headed block (`## NAME[ — SECTION]`).
-  //
-  // We run the inline `:values` pass first so the block pass below
-  // can treat any remaining `{{enum:…}}` tokens as block.
-  //
-  // `targetedkb:` is a forward-looking alias — the UI is migrating
-  // toward calling these Targeted KBs. Both prefixes route to the
-  // same resolvers so existing prompts keep working AND new prompts
-  // can use the new vocabulary.
+  // `targetedkb:` is the same resolver under the name the UI uses.
   template = template.replace(/\{\{(?:enum|targetedkb):([^:}\s]+):values\}\}/g, (match, name) => {
-    const out = resolveEnumAggregate(`${name}:values`, { enums: enumsList, onEnumResolved });
+    const out = resolveEnumAggregate(`${name}:values`, { enums: enumsList, onEnumResolved: c.onEnumResolved });
     return out === null || out === undefined ? match : out;
   });
   template = substituteParameterised(
     template,
     'enum',
-    name => resolveEnumAggregate(name, { enums: enumsList, onEnumResolved }),
+    name => guard(`tkb:${name}`, () => resolveEnumAggregate(name, { enums: enumsList, onEnumResolved: c.onEnumResolved })),
     /* inline */ false,
   );
   template = substituteParameterised(
     template,
     'targetedkb',
-    name => resolveEnumAggregate(name, { enums: enumsList, onEnumResolved }),
+    name => guard(`tkb:${name}`, () => resolveEnumAggregate(name, { enums: enumsList, onEnumResolved: c.onEnumResolved })),
     /* inline */ false,
   );
 
-  // DC live-value lookup — follows field.enumType → enum → matched
-  // value. Bare content (the matched value's umbrella / section body),
-  // so author wraps with their own preamble.
+  // DC live-value lookup — follows field.enumType → enum → matched value.
   template = substituteParameterised(
     template,
     'dc',
-    name => resolveDcInline(name, {
+    name => guard(`dc:${name}`, () => resolveDcInline(name, {
       enums:        enumsList,
-      fieldsForDc:  fieldsForDc || [],
+      fieldsForDc,
       fieldValueOf,
-      onDcResolved,
-    }),
+      onDcResolved: c.onDcResolved,
+    })),
     /* inline */ false,
   );
 
-  // Tag aggregate — `{{tag:NAME[:values|:names]}}` walks the agent +
-  // crew field pool, filters by tag membership, and renders one of
-  // three shapes. Inline variants (`:values`, `:names`) run first so
-  // the bare block pass below doesn't try to consume their suffixes.
+  // Tag aggregate — `{{tag:NAME[:values|:names]}}`. Inline variants run
+  // first so the bare block pass below doesn't consume their suffixes.
   template = template.replace(/\{\{tag:([^:}\s]+):values\}\}/g, (match, name) => {
-    const out = resolveTagToken(`${name}:values`, { fieldsForDc: fieldsForDc || [], fieldValueOf });
+    const out = resolveTagToken(`${name}:values`, { fieldsForDc, fieldValueOf });
     return out === null || out === undefined ? match : out;
   });
   template = template.replace(/\{\{tag:([^:}\s]+):names\}\}/g, (match, name) => {
-    const out = resolveTagToken(`${name}:names`, { fieldsForDc: fieldsForDc || [], fieldValueOf });
+    const out = resolveTagToken(`${name}:names`, { fieldsForDc, fieldValueOf });
     return out === null || out === undefined ? match : out;
   });
   template = substituteParameterised(
     template,
     'tag',
-    name => resolveTagToken(name, { fieldsForDc: fieldsForDc || [], fieldValueOf }),
+    name => resolveTagToken(name, { fieldsForDc, fieldValueOf }),
     /* inline */ false,
   );
 
-  // KB Retriever injection — `{{kb-retrieve:NAME}}` renders the slot a
-  // KB Retriever wrote upstream this turn (chunks, or its configured
-  // empty-sentinel). Never blank: a missing/empty slot falls back to a
-  // generic sentinel so prompts like "answer only from {{kb-retrieve:x}}"
-  // stay coherent. See docs/guides/KB_V2_RETRIEVER.md.
-  const retrievalReader = retrievalValueOf || (() => undefined);
+  // KB Retriever injection — `{{kb:NAME}}` renders the slot a KB Retriever
+  // wrote upstream this turn. Never blank.
+  //
+  // Retrieved text is DOCUMENT content: a `{{` inside a document must never
+  // run. It is held aside as an opaque placeholder and put back only by
+  // assemblePrompt at the very end, so no pass — here or in an outer
+  // nested call — can see it. (The second pass below used to turn
+  // `{{param:…}}` inside retrieved chunks into values.)
+  const retrievalReader = c.retrievalValueOf || (() => undefined);
   template = substituteParameterised(
     template,
     'kb',
     name => {
       const v = retrievalReader(name);
-      return (v && String(v).trim())
+      const text = (v && String(v).trim())
         ? String(v)
         : 'No relevant information was found in the knowledge base.';
+      c.kbSlots.push(text);
+      return `\u0000KB${c.kbSlots.length - 1}\u0000`;
     },
     /* inline */ true,
   );
 
-  // ── Second pass for inline tokens that may have been INLINED by
-  //    block resolvers above. Concrete case: an enum value's
-  //    umbrellaText / sectionTexts body containing `{{field:foo}}` —
-  //    the first inline pass ran BEFORE enum resolution, so the
-  //    field token sat unresolved inside the body. Now that the body
-  //    is part of `template`, run the inline resolvers again to
-  //    catch it. ──────────────────────────────────────────────────
+  // Second pass for inline tokens INLINED above by a resolver that does
+  // not nest (tag bodies, field-schema text). Nested bodies arrive fully
+  // resolved already, so for them this is a no-op.
   template = substituteParameterised(
     template,
     'field',
@@ -782,7 +855,7 @@ function assemblePrompt({
     template,
     'fieldname',
     name => {
-      const field = (fieldsForDc || []).find(f => f && f.name === name);
+      const field = fieldsForDc.find(f => f && f.name === name);
       return field ? field.name : null;
     },
     /* inline */ true,
@@ -790,20 +863,18 @@ function assemblePrompt({
   template = substituteParameterised(
     template,
     'param',
-    name => resolveParamInline(name, parameters),
+    name => resolveParamInline(name, c.parameters),
     /* inline */ true,
   );
   template = substituteParameterised(
     template,
     'summary',
-    name => resolveSummaryInline(name, summaries),
+    name => resolveSummaryInline(name, c.summaries),
     /* inline */ true,
   );
 
-  // Last sweep: comments inside inlined persona / enum / DC / tag bodies.
-  template = stripPromptComments(template);
-
-  return template.replace(/\n{3,}/g, '\n\n').trim();
+  // Last sweep: comments inside inlined bodies.
+  return stripPromptComments(template);
 }
 
 module.exports = { assemblePrompt, stripPromptComments };

@@ -740,6 +740,7 @@ module.exports = {
   repoEntries:            builderSchema.repoEntries,
   kbLinks:                builderSchema.kbLinks,
   builderSpecFiles:       builderSchema.builderSpecFiles,
+  builderTkbNotes:        builderSchema.builderTkbNotes,
   // Triggers (proactive) — see docs/guides/BUILDER_V2_TRIGGERS.md
   triggerEvents:          builderSchema.triggerEvents,
   triggerStatus:          builderSchema.triggerStatus,

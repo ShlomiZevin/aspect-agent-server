@@ -125,6 +125,22 @@
       "picker_group": "Enum"
     },
     {
+      "token": "{{targetedkb:NAME=VALUE}}",
+      "category": "value",
+      "trigger": "*",
+      "render": "ONE specific value of a Targeted KB, statically: that value's umbrella text, bare (no header). Always this value, whatever memory holds — the static counterpart of {{dc:FIELD}}. VALUE may contain spaces. A disabled value renders empty; an unknown KB or value stays as a literal token so the typo shows. `{{enum:NAME=VALUE}}` is the same. Note: `{{targetedkb:NAME:SECTION}}` (colon) is different — that is one section across EVERY value.",
+      "example": "{{targetedkb:products_portfolio=basic account}}",
+      "picker_group": "Enum"
+    },
+    {
+      "token": "{{targetedkb:NAME=VALUE:SECTION}}",
+      "category": "value",
+      "trigger": "*",
+      "render": "One SECTION of one specific value of a Targeted KB, bare. Same rules as {{targetedkb:NAME=VALUE}}.",
+      "example": "{{targetedkb:products_portfolio=basic account:account_portfolio}}",
+      "picker_group": "Enum"
+    },
+    {
       "token": "{{dc:FIELD}}",
       "category": "value",
       "trigger": "*",
