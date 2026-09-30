@@ -127,6 +127,7 @@ router.post('/projects/:projectId/duplicate', async (req, res) => {
  *     { name, slug }        → rename (display name + URL slug)
  *     { workspaceId|null }  → move into a workspace / to top level
  *     { archived: bool }    → archive / restore
+ *     { delisted: bool }    → leave off / put back on the home page
  *   Applied in that order. Returns { ok, slug? } (new slug on rename).
  */
 router.patch('/agents/:agentId', async (req, res) => {
@@ -148,6 +149,9 @@ router.patch('/agents/:agentId', async (req, res) => {
     if (typeof body.archived === 'boolean') {
       await projects.setAgentArchived({ agentId, archived: body.archived });
     }
+    if (typeof body.delisted === 'boolean') {
+      await projects.setAgentDelisted({ agentId, delisted: body.delisted });
+    }
 
     res.json(result);
   } catch (err) {
@@ -157,6 +161,20 @@ router.patch('/agents/:agentId', async (req, res) => {
       : 500;
     if (status === 500) console.error('[builder] PATCH agent failed:', err);
     res.status(status).json({ error: err.message, code: err.code });
+  }
+});
+
+/**
+ * GET /api/builder/agents/:agentId/listing
+ *   { delisted: bool } — whether the agent is left off the home page.
+ *   The builder shows a "Delisted" chip (with a way to list it again).
+ */
+router.get('/agents/:agentId/listing', async (req, res) => {
+  try {
+    res.json({ delisted: await projects.isAgentDelisted(req.params.agentId) });
+  } catch (err) {
+    console.error('[builder] GET agent listing failed:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 

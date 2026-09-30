@@ -28,6 +28,7 @@ const {
   builderCrews,
   builderCrewVersions,
   kbLinks,
+  providerConfig,
 } = require('../../db/schema');
 
 function drizzle() {
@@ -256,7 +257,10 @@ async function listProjects({ ownerUserId: _ownerUserId } = {}) {
     )
     .orderBy(desc(builderAgents.updatedAt));
 
-  return rows.map(r => ({
+  // Delisted agents (see setAgentDelisted) never appear on the home
+  // page. They still exist and open by their URL.
+  const delisted = new Set(await getDelistedAgentIds());
+  return rows.filter(r => !delisted.has(r.agentId)).map(r => ({
     projectId:   r.projectId,
     projectName: r.projectName,
     agentId:     r.agentId,
@@ -354,6 +358,39 @@ async function setAgentArchived({ agentId, archived }) {
   await drizzle().update(builderAgents)
     .set({ archivedAt: archived ? new Date() : null, updatedAt: new Date() })
     .where(eq(builderAgents.id, agentId));
+}
+
+// ─── Delisted agents ───────────────────────────────────────────────
+// "Delisted" = the agent exists and works, but is left off the builder
+// home page, so it's reached only by its URL. Not access control — just
+// not listed. Stored as one id list in the generic provider_config
+// key/value table, so no schema change.
+
+const DELISTED_AGENTS_KEY = 'builder:delisted_agents';
+
+async function getDelistedAgentIds() {
+  const [row] = await drizzle().select().from(providerConfig)
+    .where(eq(providerConfig.key, DELISTED_AGENTS_KEY)).limit(1);
+  try {
+    const ids = JSON.parse(row?.value || '[]');
+    return Array.isArray(ids) ? ids.filter(x => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+async function isAgentDelisted(agentId) {
+  return (await getDelistedAgentIds()).includes(agentId);
+}
+
+/** Delist (delisted=true) or list again (delisted=false). */
+async function setAgentDelisted({ agentId, delisted }) {
+  const ids = new Set(await getDelistedAgentIds());
+  if (delisted) ids.add(agentId); else ids.delete(agentId);
+  const value = JSON.stringify([...ids]);
+  await drizzle().insert(providerConfig)
+    .values({ key: DELISTED_AGENTS_KEY, value })
+    .onConflictDoUpdate({ target: providerConfig.key, set: { value, updatedAt: new Date() } });
 }
 
 // ─── Bootstrap a new project ──────────────────────────────────────
@@ -1104,6 +1141,8 @@ async function duplicateProject({ projectId, newSlug, newName, workspaceId }) {
 module.exports = {
   hydrateProject,
   listProjects,
+  isAgentDelisted,
+  setAgentDelisted,
   createProject,
   duplicateProject,
   renameAgent,
