@@ -44,6 +44,7 @@ Documentation of existing features in the system. Each file describes what a fea
 
 - **modules.md** — **Aspect Modules**: the generic per-client module framework. Two switches (`enabled` + `status`), the init pipeline (audit → LLM binding → build → verify, ≤5 rounds), the nightly build hook, notifications, and the guarantee that a dataset with no module is byte-identical to before. Read this before adding a module or touching `modules/`.
 - **otto.md** — **Otto**, client-built custom screens: chat → structured plan → approved build. The model emits a validated screen SPEC (never HTML, never SQL); the server compiles and probe-verifies; the client's block catalog renders natively. Per-client via the `otto` module; the dataset brief is its binding. Read before touching `otto/`.
+- **ai-builder.md** — **Build with your own AI** (task #96): the `/intelligence/:slug/mcp/:token` door a client's own Claude Code / Codex reads to build apps on Otto's engine. Per-client signed links, never publishes. Read before touching `otto/routes/mcp.routes.js`.
 - **replenishment.md** — **Smart Replenishment**, module #1: what to order, how much, when. The engine and its eight named edge cases, the three surfaces (client page, chat tool, Intelligence report), the settings resolution chain, and the data limitations every surface must carry.
 
 ### `docs/product/`

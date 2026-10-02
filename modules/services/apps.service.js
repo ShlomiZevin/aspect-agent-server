@@ -137,7 +137,11 @@ async function customSection(datasetId, live, viewerId) {
       console.warn(`[apps] custom screens for ${datasetId} unavailable: ${err.message}`);
     }
     if (!canCreate && custom.length === 0) return {};
-    return { canCreate, custom };
+    // "Build with your own AI" (task #96) needs Otto's brief, so it can only
+    // be on where Otto is. The key is added only when true, so every shelf
+    // without the module keeps its exact pre-#96 shape.
+    const aiBuilder = canCreate && (live || []).some(x => x.descriptor.id === 'ai-builder');
+    return { canCreate, custom, ...(aiBuilder ? { aiBuilder: true } : {}) };
   } catch (err) {
     console.warn(`[apps] custom section for ${datasetId} failed: ${err.message}`);
     return {};
