@@ -23,18 +23,25 @@
  * - it never runs a model — the client's tool does the thinking;
  * - it never accepts SQL or code — only a screen spec, validated, executed
  *   under Otto's caps and verified by Otto's probes before it is stored;
- * - it never PUBLISHES and never DELETES. Saved apps are drafts on the
- *   person's own shelf; making one visible to the organisation is the "Save
- *   to Apps" button, pressed by a human. Same rule as LYBI's door.
+ * - it grants the person NOTHING they cannot already do in Otto's UI.
+ *   Publish, unpublish ("Edit") and delete exist with exactly the builder's
+ *   rules (screens.store + otto.routes): creator only; delete only a draft
+ *   that was never published (a published app's removal stays super-admin).
+ *   The guide tells the AI to get the person's explicit yes before publish
+ *   or delete — those are the two that reach other people or cannot be undone.
  *
- *   GET  /                 the guide (entry page) — includes the command list
- *   GET  /setup            slash-command files for Claude Code / Codex
- *   GET  /schema           the client's data: sources, fields, caveats
- *   GET  /apps             apps this person can see
- *   GET  /apps/:id         one app, with its full spec (examples to copy)
- *   POST /check            dry run: validate + query + verify, saves nothing
- *   POST /apps             save a new app (draft on the person's shelf)
- *   POST /apps/:id         change an app that is not published
+ *   GET    /                    the guide (entry page) — includes the command list
+ *   GET    /setup               slash-command files for Claude Code / Codex
+ *   GET    /schema              the client's data: sources, fields, caveats
+ *   GET    /apps                apps this person can see
+ *   GET    /apps/:id            one app, with its full spec (examples to copy)
+ *   POST   /check               dry run: validate + query + verify, saves nothing
+ *   POST   /apps                save a new app (draft on the person's shelf)
+ *   POST   /apps/:id            change an app that is not published
+ *   POST   /apps/:id/publish    "Save to Apps" — visible to the organisation
+ *   POST   /apps/:id/unpublish  "Edit" — a published app back to an editable draft
+ *   DELETE /apps/:id            delete a never-published draft
+ *   POST   /apps/:id/delete     same, for tools that cannot send DELETE
  */
 
 const express = require('express');
@@ -169,6 +176,9 @@ after \`setup\`; anywhere else, treat the words as the same requests):
 | create <description> | Build a new app — follow "The workflow" below. |
 | update <id> <change> | Change an existing app — same workflow, POST to ${base}/apps/<id>. |
 | check <id> | GET the app, POST its spec to ${base}/check, report the numbers and any failed probe. |
+| publish <id> | Confirm with the person, then publish — see "Publishing, changing, deleting". |
+| unpublish <id> | Explain what it means, then take a published app back to an editable draft. |
+| delete <id> | Confirm with the person, then delete a never-published draft. |
 | setup | GET ${base}/setup and follow it (installs the slash commands). |
 
 ## The workflow
@@ -189,16 +199,26 @@ after \`setup\`; anywhere else, treat the words as the same requests):
    \`{"title": {"en": "...", "he": "..."}, "summary": {"en": "...", "he": "..."}, "icon": "<one of ${ICONS.join('/')}>", "spec": {...}}\`.
    The server runs the same check again and refuses anything that fails.
 7. **Hand over:** give the person the \`openUrl\` from the answer. The app is a
-   DRAFT on their own shelf, visible only to them. To make it visible to their
-   whole organisation they open it and press **Save to Apps** — you cannot do
-   that for them, and should not try.
+   DRAFT on their own shelf, visible only to them until it is published.
 
-To change an app: GET it, edit its spec (change only what was asked), check,
-then POST \`${base}/apps/<id>\` with \`{"spec": {...}}\` (title/summary/icon optional).
-A published app is frozen: the person must press **Edit** on it first.
+## Publishing, changing, deleting
 
-There is no delete. If the person wants a draft gone, tell them to delete it
-in the Intelligence Center.
+- **Publish** (= "Save to Apps"): makes the app visible to EVERYONE in the
+  person's organisation. Only when they explicitly ask, and confirm first:
+  "Publish '<title>' for everyone in your organisation?" Then
+  POST \`${base}/apps/<id>/publish\`. Only a saved (built) draft publishes.
+- **Change:** GET the app, edit its spec (change only what was asked), check,
+  then POST \`${base}/apps/<id>\` with \`{"spec": {...}}\` (title/summary/icon optional).
+  A published app is frozen: first POST \`${base}/apps/<id>/unpublish\` — it goes
+  back to an editable draft, disappears from colleagues until published again,
+  and the person can still restore the published version from the app page.
+  Say that to the person before you do it.
+- **Delete:** only a draft that was never published, and only after the person
+  confirms ("Delete '<title>'? This cannot be undone."). Then
+  DELETE \`${base}/apps/<id>\` — or POST \`${base}/apps/<id>/delete\` if your tool
+  cannot send DELETE. A published app cannot be deleted from here; tell the
+  person to ask their Aspect contact.
+- You can only change, publish or delete apps this person created.
 
 ## The spec format
 
@@ -295,6 +315,9 @@ const COMMANDS = [
   ['create', 'Build a new app: /ic-create <what you want to see>', 'create $ARGUMENTS'],
   ['update', 'Change an app: /ic-update <app id> <the change>', 'update $ARGUMENTS'],
   ['check', 'Re-check an app\'s numbers: /ic-check <app id>', 'check $ARGUMENTS'],
+  ['publish', 'Share an app with your organisation: /ic-publish <app id>', 'publish $ARGUMENTS'],
+  ['unpublish', 'Take a published app back to an editable draft: /ic-unpublish <app id>', 'unpublish $ARGUMENTS'],
+  ['delete', 'Delete a draft: /ic-delete <app id>', 'delete $ARGUMENTS'],
 ];
 
 router.get('/:slug/mcp/:token/setup', (req, res) => {
@@ -443,5 +466,34 @@ router.post('/:slug/mcp/:token/apps/:id', handle(async (req, res) => {
     ...(check ? { kpis: check.kpis } : {}),
   });
 }));
+
+// ── lifecycle — the builder's own buttons, same rules ───────────────────────
+
+router.post('/:slug/mcp/:token/apps/:id/publish', handle(async (req, res) => {
+  const screen = await mcp.publish(req.door.ctx, req.door.viewerId, req.params.id);
+  res.json({
+    published: true,
+    id: screen.id,
+    openUrl: appUrl(req.params.slug, screen.id),
+    next: 'It is now on the Apps shelf of everyone in the organisation.',
+  });
+}));
+
+router.post('/:slug/mcp/:token/apps/:id/unpublish', handle(async (req, res) => {
+  const screen = await mcp.unpublish(req.door.ctx, req.door.viewerId, req.params.id);
+  res.json({
+    published: false,
+    id: screen.id,
+    status: 'draft',
+    openUrl: appUrl(req.params.slug, screen.id),
+    next: 'It is an editable draft again and off colleagues\' shelves. Change it, then publish again — or the person can restore the published version from the app page.',
+  });
+}));
+
+const removeHandler = handle(async (req, res) => {
+  res.json(await mcp.remove(req.door.ctx, req.door.viewerId, req.params.id));
+});
+router.delete('/:slug/mcp/:token/apps/:id', removeHandler);
+router.post('/:slug/mcp/:token/apps/:id/delete', removeHandler);
 
 module.exports = router;

@@ -20,7 +20,8 @@ server**: a text page that teaches the tool, plus plain HTTP endpoints.
    editing it with Otto.
 
 Optional: say `setup` and the tool installs `/ic-help`, `/ic-schema`,
-`/ic-list`, `/ic-show`, `/ic-create`, `/ic-update`, `/ic-check` as real
+`/ic-list`, `/ic-show`, `/ic-create`, `/ic-update`, `/ic-check`,
+`/ic-publish`, `/ic-unpublish`, `/ic-delete` as real
 slash commands (Claude Code: `.claude/commands/`, Codex: `~/.codex/prompts/`).
 The `ic-` prefix avoids Claude Code's own commands, which intercept bare `/list`.
 
@@ -38,8 +39,11 @@ The `ic-` prefix avoids Claude Code's own commands, which intercept bare `/list`
    The per-client secret is the `ai-builder` module's binding, created on the
    first link request. The viewer id is Otto's anonymous per-browser id, so
    saved drafts belong to the person who copied the link (task #92 scoping).
-3. **Never publishes, never deletes.** Making an app visible to the
-   organisation stays a human click. Published apps are frozen to the door.
+3. **Full CRUD, but no new powers.** Create, read, update, publish (= Save to
+   Apps), unpublish (= Edit) and delete exist with exactly the builder's rules:
+   creator only; delete only a draft that was never published (a published
+   app's removal stays super-admin). The guide tells the AI to get the
+   person's explicit yes before publish or delete.
 
 ## Switching it on for a client
 
@@ -78,6 +82,9 @@ tile in `AppsPage.tsx`, `ottoService.aiLink`, `aiBuilder.*` translations.
 | POST | `/check` `{spec}` | validate + query + probes, saves nothing; errors name the exact field |
 | POST | `/apps` `{title, summary?, icon?, spec}` | save a new draft (re-checked; 422 if it fails) |
 | POST | `/apps/:id` `{spec?, title?, summary?, icon?}` | change an unpublished app (creator only) |
+| POST | `/apps/:id/publish` | Save to Apps — visible to the organisation (creator only, built drafts) |
+| POST | `/apps/:id/unpublish` | Edit — published app back to an editable draft, snapshot kept |
+| DELETE | `/apps/:id` (or POST `/apps/:id/delete`) | delete a never-published draft (creator only) |
 
 ## Keeping it in step with Otto
 

@@ -179,15 +179,24 @@ async function create(ctx, viewerId, body) {
   return { screen: stored, check: verified, planStored: planErrors.length === 0 };
 }
 
-async function update(ctx, viewerId, screenId, body) {
+/**
+ * Load a screen for a write — Otto's routes' rules (loadScreen forEdit):
+ * a screen you cannot see does not exist (404, never revealing it), and only
+ * its creator may change, publish or delete it.
+ */
+async function loadOwn(ctx, viewerId, screenId) {
   const screen = await screens.get(ctx.datasetId, screenId);
-  // Same rule as Otto's routes: a screen you cannot see does not exist.
   if (!screen || !screens.canView(screen, viewerId)) {
     throw httpError(404, `there is no app '${screenId}' you can see — list them with GET apps`);
   }
-  if (!screens.canEdit(screen, viewerId)) throw httpError(403, 'only the person who created this app can change it');
+  if (!screens.canEdit(screen, viewerId)) throw httpError(403, 'only the person who created this app can change, publish or delete it');
+  return screen;
+}
+
+async function update(ctx, viewerId, screenId, body) {
+  const screen = await loadOwn(ctx, viewerId, screenId);
   if (screen.status === 'active') {
-    throw httpError(409, 'this app is published, and published apps are frozen. Ask the person to press Edit on it in the Intelligence Center first, then send the change again');
+    throw httpError(409, 'this app is published, and published apps are frozen. POST apps/<id>/unpublish first (tell the person: it leaves their colleagues\' shelf until published again), then send the change');
   }
 
   const meta = readMeta(body, { required: false });
@@ -212,4 +221,33 @@ async function update(ctx, viewerId, screenId, body) {
   return { screen: row, check: verified };
 }
 
-module.exports = { check, create, update, derivePlan, labelOf };
+/** "Save to Apps" — same store call as the builder's button. */
+async function publish(ctx, viewerId, screenId) {
+  const screen = await loadOwn(ctx, viewerId, screenId);
+  if (screen.status === 'active') return screen;
+  const row = await screens.publish(ctx.datasetId, screen.id);
+  if (!row) throw httpError(409, 'only a saved app with a built screen can be published — save a spec to it first');
+  return row;
+}
+
+/** "Edit" on a published app — back to an editable draft, snapshot kept. */
+async function unpublish(ctx, viewerId, screenId) {
+  const screen = await loadOwn(ctx, viewerId, screenId);
+  if (screen.status !== 'active') return screen;
+  const row = await screens.unpublish(ctx.datasetId, screen.id);
+  if (!row) throw httpError(409, 'this app could not be taken back to a draft — it is no longer published');
+  return row;
+}
+
+/** Delete — never-published drafts only, exactly the builder's rule. */
+async function remove(ctx, viewerId, screenId) {
+  const screen = await loadOwn(ctx, viewerId, screenId);
+  if (screen.status === 'active' || screen.publishedState) {
+    throw httpError(403, 'an app that has ever been published cannot be deleted from here — the person can ask their Aspect contact to remove it');
+  }
+  const ok = await screens.removeDraft(ctx.datasetId, screen.id);
+  if (!ok) throw httpError(409, 'the draft could not be deleted — it may have been published or deleted meanwhile; list the apps again');
+  return { deleted: true, id: screen.id };
+}
+
+module.exports = { check, create, update, publish, unpublish, remove, derivePlan, labelOf };
