@@ -94,6 +94,11 @@ const appUrl = (slug, id) => `${APP_ORIGIN}/${slug}/intelligence/apps/${id}`;
 
 // ── the gate ────────────────────────────────────────────────────────────────
 
+// A link pasted without its key — Express's own "Cannot GET" HTML would leave
+// the assistant guessing.
+router.all('/:slug/mcp', (req, res) => sendText(res,
+  'This link is missing its personal key. Copy the full link from Intelligence Center > Apps > "Your own AI".', 401));
+
 router.use('/:slug/mcp/:token', async (req, res, next) => {
   try {
     if (await openDoor(req, res)) next();
@@ -171,7 +176,7 @@ after \`setup\`; anywhere else, treat the words as the same requests):
 |---|---|
 | help | Explain in two or three sentences what you can build, then suggest three ideas that fit the data in /schema. |
 | schema | GET ${base}/schema and summarise it for the person in plain words: what data exists, what is missing, the caveats. |
-| list | GET ${base}/apps and show a short table: title, status, link. |
+| list | GET ${base}/apps and show a short table: title, status, whether it is theirs (\`mine\`), link. |
 | show <id> | GET ${base}/apps/<id> and describe the app: what it shows, from which data. |
 | create <description> | Build a new app — follow "The workflow" below. |
 | update <id> <change> | Change an existing app — same workflow, POST to ${base}/apps/<id>. |
@@ -191,13 +196,22 @@ after \`setup\`; anywhere else, treat the words as the same requests):
    GET one with \`/apps/<id>\` — its "spec" is a working spec for this exact data.
 4. **Compose the spec** (format below).
 5. **Dry-run it:** POST \`${base}/check\` with body \`{"spec": {...}}\`.
+   The answer is HTTP 200 with \`ok\` true or false (a 4xx means the request
+   itself was malformed — its \`error\` says how).
    - \`ok: false\` → read \`errors\`; each one names the exact field to fix.
      Fix exactly those and check again. Do not guess at unrelated changes.
+   - \`warnings\` (even when ok) → the screen would show something other than
+     it seems to (a card wider than its table, a chart cut at 30 points).
+     Fix the spec, or tell the person exactly what the card or chart covers.
    - \`ok: true\` → look at \`sample\` and \`kpis\`: are the numbers plausible?
      Tell the person what the screen will show, with one or two real figures.
-6. **Save it:** POST \`${base}/apps\` with
+     Numbers come back raw (617554195.15): round them and add the currency or
+     unit when you quote them — the screen formats them itself.
+6. **Store it as a draft:** POST \`${base}/apps\` with
    \`{"title": {"en": "...", "he": "..."}, "summary": {"en": "...", "he": "..."}, "icon": "<one of ${ICONS.join('/')}>", "spec": {...}}\`.
-   The server runs the same check again and refuses anything that fails.
+   The server runs the same check again and refuses anything that fails
+   (HTTP 422, the errors in \`detail\`). When the person says "save it", this is
+   what they mean — a draft. Publishing is a separate, explicit step.
 7. **Hand over:** give the person the \`openUrl\` from the answer. The app is a
    DRAFT on their own shelf, visible only to them until it is published.
 
@@ -208,7 +222,9 @@ after \`setup\`; anywhere else, treat the words as the same requests):
   "Publish '<title>' for everyone in your organisation?" Then
   POST \`${base}/apps/<id>/publish\`. Only a saved (built) draft publishes.
 - **Change:** GET the app, edit its spec (change only what was asked), check,
-  then POST \`${base}/apps/<id>\` with \`{"spec": {...}}\` (title/summary/icon optional).
+  then POST \`${base}/apps/<id>\` with \`{"spec": {...}}\`. Send an updated
+  \`summary\` too whenever the change alters what the screen shows (title and
+  icon are optional).
   A published app is frozen: first POST \`${base}/apps/<id>/unpublish\` — it goes
   back to an editable draft, disappears from colleagues until published again,
   and the person can still restore the published version from the app page.
@@ -218,7 +234,8 @@ after \`setup\`; anywhere else, treat the words as the same requests):
   DELETE \`${base}/apps/<id>\` — or POST \`${base}/apps/<id>/delete\` if your tool
   cannot send DELETE. A published app cannot be deleted from here; tell the
   person to ask their Aspect contact.
-- You can only change, publish or delete apps this person created.
+- You can only change, publish or delete apps this person created — \`mine: true\`
+  in the list. Other people's published apps are there to read and learn from.
 
 ## The spec format
 
@@ -240,7 +257,11 @@ after \`setup\`; anywhere else, treat the words as the same requests):
       "source": "<source id>",
       "aggregate": {
         "groupBy": ["<field id>"],
-        "measures": [ { "id": "revenue", "agg": "sum", "expr": "qty * unit_price", "label": {"en": "Revenue", "he": "הכנסות"}, "format": "money" } ]
+        "measures": [
+          { "id": "revenue", "agg": "sum", "expr": "qty * unit_price", "label": {"en": "Revenue", "he": "הכנסות"}, "format": "money" },
+          { "id": "units", "agg": "sum", "field": "qty", "label": {"en": "Units", "he": "יחידות"}, "format": "int" },
+          { "id": "lines", "agg": "count", "label": {"en": "Rows", "he": "שורות"}, "format": "int" }
+        ]
       },
       "orderBy": { "field": "revenue", "dir": "desc" },
       "limit": 10
@@ -267,31 +288,61 @@ after \`setup\`; anywhere else, treat the words as the same requests):
    data OR "aggregate" (groupBy + measures) for grouped data — never both.
 3. Measure aggs: ${MEASURE_AGGS.join(', ')}. A measure aggregates one raw "field", or an
    "expr" over raw fields of the same source (e.g. qty * unit_price) — the expr
-   runs per row, before the aggregate.
+   runs per row, before the aggregate. "count" takes no field and counts ROWS
+   (not distinct values) — check in /schema what one row of the source is.
 4. "computed" columns run AFTER select/aggregate and can only use columns the
    result set already produces (selected fields, groupBy fields, measure ids).
 5. Expressions ("expr", "where") are plain arithmetic plus at most one
-   comparison over column ids — no functions, no strings, no AND/OR.
-6. KPI aggs: ${KPI_AGGS.join(', ')}. sum/avg/min/max need a "field"; countWhere needs
-   a "where". A kpiCards block holds 1-6 cards. Tones: ${TONES.join(', ')}.
-7. Charts: variant ${CHART_VARIANTS.join(' / ')}; "category" is a column, "series" are numeric
-   columns. A pie takes ONE non-negative series and at most 10 categories —
-   give its result set an orderBy and a limit of 10 or less.
+   comparison over column ids — no functions, no strings, no AND/OR, no
+   dates. So:
+   - "the last 30 days" = aggregate by the date field, orderBy that date
+     desc, limit 30 — good for a TABLE or a LINE chart (it is drawn oldest to
+     newest). There is no date filter, so two things follow:
+     * a KPI card on that result set does NOT cover those 30 days — cards
+       ignore "limit" (rule 6). A "total for the last 30 days" card cannot be
+       built; leave it out and tell the person, or label it as all-time.
+     * every OTHER result set on the screen covers all history. Say so
+       ("the store pie is for all time, not the last 30 days").
+   - two conditions at once are not possible: keep the one that matters most
+     and tell the person the screen shows that one.
+   - filtering on a text value (one store, one category) is the person's job
+     on the screen: give them a filterBar on that column.
+   - a filterBar narrows ONLY the dataTable (and its export) on the same result
+     set. KPI cards and charts never follow it — say so when it matters ("the
+     chart always shows all categories").
+6. KPI aggs: ${KPI_AGGS.join(', ')}. A card reads the result set in its block's "from":
+   sum/avg/min/max take a "field" that is a COLUMN OF THAT RESULT SET (a selected
+   field, a groupBy field, a measure id or a computed id); count counts its rows;
+   countWhere needs a "where" over its columns. A card IGNORES the result set's
+   "limit": it covers every row the "where" keeps (up to ${MAX_LIMIT}), not the rows
+   a table shows. /check returns a \`warnings\` entry whenever that differs —
+   read it and act on it. A kpiCards block holds 1-6 cards. Tones: ${TONES.join(', ')}.
+7. Charts: variant ${CHART_VARIANTS.join(' / ')}; "category" is a column, "series" are NUMERIC
+   columns (measures, computed columns or number fields — never text). A pie
+   takes ONE non-negative series and at most 10 slices: its result set needs
+   an orderBy and a limit of 10 or less. Both are checked. A "top 5" pie shows
+   each slice's share OF THOSE FIVE, not of the total — title it that way
+   ("Top 5 stores — share among them") or use a bar chart. Any chart draws at
+   most 30 points.
 8. Formats: ${FORMATS.join(', ')}. Action types: ${ACTION_TYPES.join(', ')} ("stub" = a button that
    shows a notice; it does nothing yet).
 9. limit: 1-${MAX_LIMIT}. A source marked [heavy] in /schema is big — aggregate or filter it.
 10. Every label is {"en": "...", "he": "..."} — BOTH, always. Write real Hebrew.
 11. ids are lowercase identifiers (a-z, 0-9, _), unique in their scope.
-12. Never invent a field, a number or a caveat. If /schema lists a caveat that
-    the screen touches, open the screen with a noteLine block quoting it.
+12. Never invent a field, a number or a caveat. Open the screen with a noteLine
+    carrying every caveat whose subject the screen shows (revenue on screen →
+    the revenue caveats; categories → the category caveats). When unsure,
+    include it: a missing caveat misleads, an extra one costs a line.
 13. Order blocks as the person will read them: noteLine, kpiCards, filterBar,
-    dataTable/chart, actionsBar.
+    then the dataTable(s) and chart(s) in the order that tells the story, then
+    actionsBar.
 
 ## How the check verifies
 
 Every result set must return rows; no numeric column may be entirely empty;
-every KPI is computed twice (SQL over the full set and again over the rows
-the table shows) and must agree. A failed probe means the screen would show
+every KPI is computed twice (in SQL, and again over the delivered rows) and
+the two must agree — when a result set hits its limit the second computation
+is skipped and the SQL value stands. A failed probe means the screen would show
 a wrong or empty number — fix the spec, never work around the probe.
 
 ## Talking to the person
@@ -355,9 +406,10 @@ follow the guide.
 
 ## Important
 
-These files contain the person's personal link. If the folder is a git
-repository, add .claude/commands/ic-*.md to .gitignore so the link is never
-committed or shared.
+These files contain the person's personal link in plain text — tell them so,
+in one sentence, after creating them: do not send, share or upload this
+folder. If the folder is a git repository, also add .claude/commands/ic-*.md
+to .gitignore so the link is never committed.
 `);
 });
 
@@ -404,6 +456,10 @@ router.get('/:slug/mcp/:token/apps', handle(async (req, res) => {
       // Plain words: the person sees "draft" / "published", never our enum.
       status: s.status === 'active' ? 'published' : 'draft',
       built: s.hasSpec,
+      // Same test the writes apply (screens.canEdit) — what this person may
+      // change, publish or delete. Without it the assistant had to GET each
+      // app to find out (first door test, 2026-10-03).
+      mine: screens.canEdit(s, req.door.viewerId),
       openUrl: appUrl(slug, s.id),
     })),
   });
@@ -453,6 +509,7 @@ router.post('/:slug/mcp/:token/apps', handle(async (req, res) => {
     openUrl: appUrl(req.params.slug, screen.id),
     next: 'Give the person openUrl. It is a draft only they can see; they press "Save to Apps" there to share it with their organisation.',
     kpis: check.kpis,
+    ...(check.warnings?.length ? { warnings: check.warnings } : {}),
   });
 }));
 
@@ -464,6 +521,8 @@ router.post('/:slug/mcp/:token/apps/:id', handle(async (req, res) => {
     status: screen.status === 'active' ? 'published' : 'draft',
     openUrl: appUrl(req.params.slug, screen.id),
     ...(check ? { kpis: check.kpis } : {}),
+    ...(check?.warnings?.length ? { warnings: check.warnings } : {}),
+    ...(req.body?.spec && !req.body?.summary ? { reminder: 'The summary was not changed — if this change alters what the screen shows, send an updated "summary" too.' } : {}),
   });
 }));
 
@@ -496,4 +555,32 @@ const removeHandler = handle(async (req, res) => {
 router.delete('/:slug/mcp/:token/apps/:id', removeHandler);
 router.post('/:slug/mcp/:token/apps/:id/delete', removeHandler);
 
+// Anything else behind a valid key: a wrong path or a wrong verb. Answer with
+// the map, not Express's HTML — an assistant handed "Cannot GET" guesses.
+router.all('/:slug/mcp/:token/{*rest}', (req, res) => {
+  res.status(404).json({
+    error: `There is no ${req.method} ${req.path.replace(/^\/[^/]+\/mcp\/[^/]+/, '') || '/'} here. `
+      + 'Reads are GET: /, /setup, /schema, /apps, /apps/<id>. Writes are POST: /check, /apps, /apps/<id>, '
+      + '/apps/<id>/publish, /apps/<id>/unpublish, /apps/<id>/delete (or DELETE /apps/<id>). The guide at the link itself explains each.',
+  });
+});
+
+/**
+ * Errors thrown before the router runs — above all a JSON body that does not
+ * parse (body-parser, app-wide). Mounted by server.js right after the router,
+ * so it only ever sees /intelligence requests.
+ */
+function errorHandler(err, req, res, next) {
+  if (res.headersSent) return next(err);
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: `the request body is not valid JSON (${err.message}). Send {"spec": {...}} as JSON with content-type: application/json — write it to a file and send the file if quoting gets in the way.` });
+  }
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'the request body is too large. A screen spec is a few kilobytes — send only {"spec": {...}} and the title fields.' });
+  }
+  console.error('[ai-builder] unhandled:', err);
+  res.status(500).json({ error: 'Something broke on our side. Try again; if it repeats, tell the person.' });
+}
+
 module.exports = router;
+module.exports.errorHandler = errorHandler;

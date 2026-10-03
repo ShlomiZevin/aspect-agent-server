@@ -93,9 +93,46 @@ function derivePlan(spec, brief, { title, summary, icon }) {
  * the outside AI iterates on. Never throws for a bad spec: the errors ARE the
  * answer, worded so the next attempt can fix exactly them.
  */
+/**
+ * Chart rules the door enforces on top of Otto's contract.
+ *
+ * Otto's build prompt TELLS its model these (a pie takes one series and at
+ * most 10 slices) and Otto's plan step keeps them in line; the contract itself
+ * does not check them. An outside AI has no plan step, and in the first door
+ * tests a 40-slice pie and a chart whose "series" was a text column both
+ * passed and would have rendered as an unreadable pie and an empty chart.
+ * Checked here, not in spec.contract.js, so Otto's engine is untouched.
+ */
+function doorChecks(spec, brief) {
+  const errors = [];
+  const rsById = Object.fromEntries((spec.resultSets || []).map(r => [r.id, r]));
+  (spec.blocks || []).forEach((b, i) => {
+    if (b?.kind !== 'chart') return;
+    const rs = rsById[b.from];
+    if (!rs) return;
+    const numeric = new Set([
+      ...(rs.computed || []).map(c => c.id),
+      ...(rs.aggregate?.measures || []).map(m => m.id),
+      ...(brief.fields || []).filter(f => f.sourceId === rs.source && f.type === 'number').map(f => f.id),
+    ]);
+    for (const s of b.series || []) {
+      if (!numeric.has(s)) errors.push(`blocks[${i}]: series '${s}' is not a numeric column — a chart plots numbers; use a measure, a computed column or a number field`);
+    }
+    if (b.variant === 'pie') {
+      if ((b.series || []).length !== 1) errors.push(`blocks[${i}]: a pie takes exactly ONE series`);
+      if (!rs.orderBy || !Number.isInteger(rs.limit) || rs.limit > 10) {
+        errors.push(`blocks[${i}]: a pie shows at most 10 slices — give result set '${rs.id}' an orderBy (usually the measure, desc) and a limit of 10 or less, or use a bar chart`);
+      }
+    }
+  });
+  return errors;
+}
+
 async function check(spec, brief, ctx) {
   const errors = validateSpec(spec, brief);
   if (errors.length) return { ok: false, stage: 'validation', errors };
+  const doorErrors = doorChecks(spec, brief);
+  if (doorErrors.length) return { ok: false, stage: 'validation', errors: doorErrors };
 
   let payload;
   try {
@@ -118,10 +155,39 @@ async function check(spec, brief, ctx) {
     ok: verification.passed,
     stage: verification.passed ? 'passed' : 'verification',
     errors: verification.probes.filter(p => !p.passed).map(p => `${p.probe}: ${p.detail}`),
+    warnings: scopeWarnings(spec, payload),
     probes: verification.probes,
     kpis: payload.kpis,
     sample,
   };
+}
+
+/**
+ * What the screen will show that differs from what it seems to show.
+ *
+ * Otto's KPI cards are computed over every row the result set's `where`
+ * keeps — its `limit` only trims the table (compiler.service.js, by design:
+ * "totals over everything"). So a card on a result set that hit its limit
+ * does NOT cover the rows on screen. In the second door test an outside AI
+ * built "the last 30 days" as orderBy date desc + limit 30 and got a
+ * "total revenue" card for all 639 days, with /check green — the probe that
+ * would compare skips truncated sets. Not an error (a top-10 table with a
+ * grand-total card is legitimate), so it is a warning the AI must relay.
+ */
+function scopeWarnings(spec, payload) {
+  const warnings = [];
+  for (const b of spec.blocks || []) {
+    const set = payload.resultSets[b.from];
+    if (!set) continue;
+    if (b.kind === 'kpiCards' && set.truncated) {
+      warnings.push(`kpiCards on '${b.from}': the cards cover ALL rows of '${b.from}' that its "where" keeps — NOT only the ${set.rows.length} rows its limit returns. `
+        + 'If the limit picks a window ("last 30 days", "top 10"), these cards do not follow it: drop them, or label them as all-time totals and tell the person.');
+    }
+    if (b.kind === 'chart' && b.variant !== 'pie' && set.rows.length > 30) {
+      warnings.push(`chart on '${b.from}': ${set.rows.length} rows but a chart draws only the first 30 — order and limit the result set to the 30 that matter.`);
+    }
+  }
+  return warnings;
 }
 
 function readMeta(body, { required }) {
@@ -247,7 +313,7 @@ async function remove(ctx, viewerId, screenId) {
   }
   const ok = await screens.removeDraft(ctx.datasetId, screen.id);
   if (!ok) throw httpError(409, 'the draft could not be deleted — it may have been published or deleted meanwhile; list the apps again');
-  return { deleted: true, id: screen.id };
+  return { deleted: true, id: screen.id, title: screen.title };
 }
 
 module.exports = { check, create, update, publish, unpublish, remove, derivePlan, labelOf };

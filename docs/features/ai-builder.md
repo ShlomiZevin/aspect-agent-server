@@ -86,6 +86,39 @@ tile in `AppsPage.tsx`, `ottoService.aiLink`, `aiBuilder.*` translations.
 | POST | `/apps/:id/unpublish` | Edit — published app back to an editable draft, snapshot kept |
 | DELETE | `/apps/:id` (or POST `/apps/:id/delete`) | delete a never-published draft (creator only) |
 
+## What the door adds on top of Otto's contract
+
+- **Chart checks** (`mcp.service.doorChecks`): a chart's series must be
+  numeric; a pie takes one series and needs an orderBy and limit <= 10. Otto's
+  plan step keeps its own model in line; an outside AI has no plan step, and a
+  40-slice pie and a text-column series both passed the contract in testing.
+  Kept out of `spec.contract.js` so Otto's engine stays untouched.
+- **Errors are always sentences, never Express HTML**: a link without its
+  key, an unknown path or verb (answered with the endpoint map), and a body
+  that is not JSON (`errorHandler`, mounted in `server.js` after the router).
+- **`mine`** on every listed app — the same `screens.canEdit` the writes use.
+- **Scope warnings** (`mcp.service.scopeWarnings`): a KPI card on a result set
+  that hit its limit covers more rows than the screen shows; a chart over 30
+  rows is cut. Warnings, not errors — a top-10 table with a grand total is
+  legitimate — returned by `/check` and by every save.
+
+## Test log
+
+- 2026-10-03: two runs of an outside agent that had never seen the code,
+  given only the paste-in prompt. Round 1 (English): create, list, update,
+  delete — every build passed `/check` first time. Its 11 notes on the guide
+  were folded in (draft vs publish wording, plain-field measures, KPI fields
+  are result-set columns, count = rows, filterBar scope, raw numbers,
+  caveat choice, block order, `mine`, failure responses).
+  Round 2 (Hebrew, setup, line + pie, impossible request, delete): found that
+  KPI cards ignore a result set's `limit` (Otto's compiler, by design), so a
+  "last 30 days" total card showed all 639 days with `/check` green. Door now
+  returns `warnings` for cards on truncated sets and charts over 30 points;
+  the guide says a "last N days" card cannot be built. Also: line charts on a
+  date axis now draw oldest to newest (ScreenRenderer, client), update reminds
+  to refresh the summary, delete echoes the title. Impossible request (new
+  customers, no customer data) was refused honestly with alternatives.
+
 ## Keeping it in step with Otto
 
 The entry page restates the spec format and rules that Otto's build prompt

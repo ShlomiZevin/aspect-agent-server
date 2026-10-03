@@ -190,6 +190,7 @@ app.use('/api/otto', require('./otto/routes/otto.routes'));
 // people paste this URL; per-client signed token, gated on module
 // `ai-builder`. See docs/features/ai-builder.md.
 app.use('/intelligence', require('./otto/routes/mcp.routes'));
+app.use('/intelligence', require('./otto/routes/mcp.routes').errorHandler);
 
 // ─── Aspect Task Board ─────────────────────────────────────────────
 // Our own task board, in its OWN database (`aspect_tasks_db`), not the platform
