@@ -6,8 +6,12 @@
  * how to build Intelligence Center apps on that client's data. Modelled on
  * LYBI's builder/routes/mcpRoute.js — read docs/guides/BUILDER_MCP_MAINTENANCE.md
  * for why it looks the way it does (text/plain prose, URLs from the request,
- * errors as sentences). Like that door it is NOT an MCP server: MCP is a
- * protocol, and a tool handed a URL fetches.
+ * errors as sentences). Unlike that door, the SAME URL is also a real MCP
+ * server (Streamable HTTP, stateless): a GET returns the guide for tools that
+ * fetch (Claude Code, Codex), a JSON-RPC POST serves the MCP tools for chats
+ * that connect (Claude.ai, ChatGPT, Claude Desktop, Cursor). Business people
+ * use the latter, and those chats cannot POST to a plain URL. Both doors call
+ * one set of operations (`ops` below) and share one guide (`entryDoc`).
  *
  * Unlike that door it is authenticated and isolated, because what is behind
  * it is a client's real business data:
@@ -51,6 +55,9 @@ const moduleService = require('../../modules/services/module.service');
 const tokens = require('../services/mcp-token.service');
 const mcp = require('../services/mcp.service');
 const screens = require('../services/screens.store');
+const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
+const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
+const { z } = require('zod');
 const {
   BLOCK_KINDS, KPI_AGGS, MEASURE_AGGS, CHART_VARIANTS, ICONS, FORMATS, TONES, ACTION_TYPES, MAX_LIMIT,
 } = require('../services/spec.contract');
@@ -138,19 +145,47 @@ async function openDoor(req, res) {
 
 // ── the guide ───────────────────────────────────────────────────────────────
 
-function entryDoc(req) {
+/**
+ * How the guide names each operation. One text serves two doors — the HTTP
+ * page (Claude Code, Codex: they fetch and POST) and the MCP server (Claude.ai,
+ * ChatGPT, Desktop, Cursor: they call tools) — so the rules, the format and
+ * the traps are written once and cannot drift between them.
+ */
+function opNames(base, mcp) {
+  if (mcp) {
+    const t = n => `the \`${n}\` tool`;
+    return {
+      schema: t('get_schema'), apps: t('list_apps'), app: t('get_app'), check: t('check_app'),
+      create: t('create_app'), update: t('update_app'), publish: t('publish_app'),
+      unpublish: t('unpublish_app'), remove: t('delete_app'),
+    };
+  }
+  return {
+    schema: `GET \`${base}/schema\``,
+    apps: `GET \`${base}/apps\``,
+    app: `GET \`${base}/apps/<id>\``,
+    check: `POST \`${base}/check\` with body \`{"spec": {...}}\``,
+    create: `POST \`${base}/apps\``,
+    update: `POST \`${base}/apps/<id>\``,
+    publish: `POST \`${base}/apps/<id>/publish\``,
+    unpublish: `POST \`${base}/apps/<id>/unpublish\``,
+    remove: `DELETE \`${base}/apps/<id>\` (or POST \`${base}/apps/<id>/delete\` if your tool cannot send DELETE)`,
+  };
+}
+
+function entryDoc(req, { mcp = false } = {}) {
   const { base } = urls(req);
   const { slug } = req.params;
   const brief = req.door.ctx.brief;
   const name = datasetRegistry.get(slug)?.defaultMeta?.name || slug;
   const sourceList = (brief.sources || []).map(s => `${s.id} (${s.label.en})`).join(', ');
+  const o = opNames(base, mcp);
 
   return `# Aspect Intelligence Center — build apps for ${name}
 
 You are an AI assistant helping a person at "${slug}" build an APP for their
 Intelligence Center: an operational screen (KPI cards, a filterable table,
-charts, export) over their own live business data. This page teaches you
-everything. Read it whole before doing anything.
+charts, export) over their own live business data. ${mcp ? 'These instructions teach\nyou everything; the tools do the rest.' : 'This page teaches you\neverything. Read it whole before doing anything.'}
 
 This link is personal. It works only for "${slug}" and acts as the person who
 copied it. Do not paste it anywhere public.
@@ -165,39 +200,41 @@ verifies the numbers, and the Intelligence Center renders the blocks natively
 right sources and fields, shape them, and lay out the blocks.
 
 Data sources for this account: ${sourceList || '(none)'}.
-Get the full field list from \`${base}/schema\` before composing anything.
-
+Get the full field list with ${o.schema} before composing anything.
+${mcp ? '' : `
+(Using Claude.ai, ChatGPT, Claude Desktop or Cursor? This same link is also an
+MCP server — add it as a custom connector, no authentication, and the tools
+below appear natively. Plain web chats cannot send the POST requests this
+page uses, so a connector is the way to build from them.)
+`}
 ## Commands
 
-The person may type these (in Claude Code they become real slash commands
-after \`setup\`; anywhere else, treat the words as the same requests):
+The person may type these${mcp ? '' : ' (in Claude Code they become real slash commands\nafter `setup`; anywhere else, treat the words as the same requests)'}:
 
 | Command | What you do |
 |---|---|
-| help | Explain in two or three sentences what you can build, then suggest three ideas that fit the data in /schema. |
-| schema | GET ${base}/schema and summarise it for the person in plain words: what data exists, what is missing, the caveats. |
-| list | GET ${base}/apps and show a short table: title, status, whether it is theirs (\`mine\`), link. |
-| show <id> | GET ${base}/apps/<id> and describe the app: what it shows, from which data. |
+| help | Explain in two or three sentences what you can build, then suggest three ideas that fit the data. |
+| schema | ${o.schema}, then summarise it in plain words: what data exists, what is missing, the caveats. |
+| list | ${o.apps}, then show a short table: title, status, whether it is theirs (\`mine\`), link. |
+| show <id> | ${o.app}, then describe the app: what it shows, from which data. |
 | create <description> | Build a new app — follow "The workflow" below. |
-| update <id> <change> | Change an existing app — same workflow, POST to ${base}/apps/<id>. |
-| check <id> | GET the app, POST its spec to ${base}/check, report the numbers and any failed probe. |
+| update <id> <change> | Change an existing app — same workflow, saved with ${o.update}. |
+| check <id> | ${o.app}, run its spec through ${o.check}, report the numbers and any failed probe. |
 | publish <id> | Confirm with the person, then publish — see "Publishing, changing, deleting". |
 | unpublish <id> | Explain what it means, then take a published app back to an editable draft. |
 | delete <id> | Confirm with the person, then delete a never-published draft. |
-| setup | GET ${base}/setup and follow it (installs the slash commands). |
-
+${mcp ? '' : `| setup | GET ${base}/setup and follow it (installs the slash commands). |\n`}
 ## The workflow
 
 1. **Understand the request.** Ask at most one or two short questions if it is
    genuinely ambiguous (which period? which stores?). Otherwise proceed.
-2. **Read the data.** GET \`${base}/schema\`. Use ONLY the source ids and field
-   ids listed there, each field with its own source.
-3. **Look at an example** if the account has apps: GET \`${base}/apps\`, then
-   GET one with \`/apps/<id>\` — its "spec" is a working spec for this exact data.
+2. **Read the data** with ${o.schema}. Use ONLY the source ids and field ids
+   listed there, each field with its own source.
+3. **Look at an example** if the account has apps: ${o.apps}, then ${o.app} on
+   one — its "spec" is a working spec for this exact data.
 4. **Compose the spec** (format below).
-5. **Dry-run it:** POST \`${base}/check\` with body \`{"spec": {...}}\`.
-   The answer is HTTP 200 with \`ok\` true or false (a 4xx means the request
-   itself was malformed — its \`error\` says how).
+5. **Dry-run it** with ${o.check}.
+   ${mcp ? 'The result carries `ok` true or false.' : 'The answer is HTTP 200 with `ok` true or false (a 4xx means the request\n   itself was malformed — its `error` says how).'}
    - \`ok: false\` → read \`errors\`; each one names the exact field to fix.
      Fix exactly those and check again. Do not guess at unrelated changes.
    - \`warnings\` (even when ok) → the screen would show something other than
@@ -207,11 +244,11 @@ after \`setup\`; anywhere else, treat the words as the same requests):
      Tell the person what the screen will show, with one or two real figures.
      Numbers come back raw (617554195.15): round them and add the currency or
      unit when you quote them — the screen formats them itself.
-6. **Store it as a draft:** POST \`${base}/apps\` with
+6. **Store it as a draft** with ${o.create}:
    \`{"title": {"en": "...", "he": "..."}, "summary": {"en": "...", "he": "..."}, "icon": "<one of ${ICONS.join('/')}>", "spec": {...}}\`.
    The server runs the same check again and refuses anything that fails
-   (HTTP 422, the errors in \`detail\`). When the person says "save it", this is
-   what they mean — a draft. Publishing is a separate, explicit step.
+   (${mcp ? 'an error result' : 'HTTP 422'}, the errors in \`detail\`). When the person says "save it", this
+   is what they mean — a draft. Publishing is a separate, explicit step.
 7. **Hand over:** give the person the \`openUrl\` from the answer. The app is a
    DRAFT on their own shelf, visible only to them until it is published.
 
@@ -220,20 +257,19 @@ after \`setup\`; anywhere else, treat the words as the same requests):
 - **Publish** (= "Save to Apps"): makes the app visible to EVERYONE in the
   person's organisation. Only when they explicitly ask, and confirm first:
   "Publish '<title>' for everyone in your organisation?" Then
-  POST \`${base}/apps/<id>/publish\`. Only a saved (built) draft publishes.
-- **Change:** GET the app, edit its spec (change only what was asked), check,
-  then POST \`${base}/apps/<id>\` with \`{"spec": {...}}\`. Send an updated
+  ${o.publish}. Only a saved (built) draft publishes.
+- **Change:** ${o.app}, edit its spec (change only what was asked), check,
+  then ${o.update} with the new spec. Send an updated
   \`summary\` too whenever the change alters what the screen shows (title and
   icon are optional).
-  A published app is frozen: first POST \`${base}/apps/<id>/unpublish\` — it goes
+  A published app is frozen: first ${o.unpublish} — it goes
   back to an editable draft, disappears from colleagues until published again,
   and the person can still restore the published version from the app page.
   Say that to the person before you do it.
 - **Delete:** only a draft that was never published, and only after the person
-  confirms ("Delete '<title>'? This cannot be undone."). Then
-  DELETE \`${base}/apps/<id>\` — or POST \`${base}/apps/<id>/delete\` if your tool
-  cannot send DELETE. A published app cannot be deleted from here; tell the
-  person to ask their Aspect contact.
+  confirms ("Delete '<title>'? This cannot be undone."). Then ${o.remove}.
+  A published app cannot be deleted from here; tell the person to ask their
+  Aspect contact.
 - You can only change, publish or delete apps this person created — \`mine: true\`
   in the list. Other people's published apps are there to read and learn from.
 
@@ -245,7 +281,7 @@ after \`setup\`; anywhere else, treat the words as the same requests):
   "resultSets": [
     {
       "id": "rows",
-      "source": "<source id from /schema>",
+      "source": "<source id from the schema>",
       "select": ["<field ids of that source>"],
       "computed": [ { "id": "shortfall", "label": {"en": "Shortfall", "he": "חוסר"}, "expr": "safety_stock - qty_on_hand", "format": "int" } ],
       "where": "shortfall > 0",
@@ -268,7 +304,7 @@ after \`setup\`; anywhere else, treat the words as the same requests):
     }
   ],
   "blocks": [
-    { "kind": "noteLine", "caveatIds": ["<caveat ids from /schema>"] },
+    { "kind": "noteLine", "caveatIds": ["<caveat ids from the schema>"] },
     { "kind": "kpiCards", "from": "rows", "cards": [
         { "id": "below", "label": {"en": "Below safety stock", "he": "מתחת למלאי ביטחון"}, "sub": {"en": "items", "he": "פריטים"},
           "agg": "countWhere", "where": "shortfall > 0", "format": "int", "tone": "alarm" } ] },
@@ -289,7 +325,7 @@ after \`setup\`; anywhere else, treat the words as the same requests):
 3. Measure aggs: ${MEASURE_AGGS.join(', ')}. A measure aggregates one raw "field", or an
    "expr" over raw fields of the same source (e.g. qty * unit_price) — the expr
    runs per row, before the aggregate. "count" takes no field and counts ROWS
-   (not distinct values) — check in /schema what one row of the source is.
+   (not distinct values) — check in the schema what one row of the source is.
 4. "computed" columns run AFTER select/aggregate and can only use columns the
    result set already produces (selected fields, groupBy fields, measure ids).
 5. Expressions ("expr", "where") are plain arithmetic plus at most one
@@ -315,7 +351,7 @@ after \`setup\`; anywhere else, treat the words as the same requests):
    field, a groupBy field, a measure id or a computed id); count counts its rows;
    countWhere needs a "where" over its columns. A card IGNORES the result set's
    "limit": it covers every row the "where" keeps (up to ${MAX_LIMIT}), not the rows
-   a table shows. /check returns a \`warnings\` entry whenever that differs —
+   a table shows. The check returns a \`warnings\` entry whenever that differs —
    read it and act on it. A kpiCards block holds 1-6 cards. Tones: ${TONES.join(', ')}.
 7. Charts: variant ${CHART_VARIANTS.join(' / ')}; "category" is a column, "series" are NUMERIC
    columns (measures, computed columns or number fields — never text). A pie
@@ -326,7 +362,7 @@ after \`setup\`; anywhere else, treat the words as the same requests):
    most 30 points.
 8. Formats: ${FORMATS.join(', ')}. Action types: ${ACTION_TYPES.join(', ')} ("stub" = a button that
    shows a notice; it does nothing yet).
-9. limit: 1-${MAX_LIMIT}. A source marked [heavy] in /schema is big — aggregate or filter it.
+9. limit: 1-${MAX_LIMIT}. A source marked [heavy] in the schema is big — aggregate or filter it.
 10. Every label is {"en": "...", "he": "..."} — BOTH, always. Write real Hebrew.
 11. ids are lowercase identifiers (a-z, 0-9, _), unique in their scope.
 12. Never invent a field, a number or a caveat. Open the screen with a noteLine
@@ -353,7 +389,16 @@ the spec unless they ask.
 `;
 }
 
-router.get('/:slug/mcp/:token', (req, res) => sendText(res, entryDoc(req)));
+router.get('/:slug/mcp/:token', (req, res) => {
+  // An MCP client may GET the endpoint asking for a server-sent event stream.
+  // This server is stateless and never pushes, so it answers 405 — the spec's
+  // way of saying "no stream here" — while a fetch of the page still gets it.
+  const accept = String(req.headers.accept || '');
+  if (accept.includes('text/event-stream') && !/text\/(plain|html)|\*\/\*/.test(accept)) {
+    return res.status(405).set('Allow', 'GET, POST').end();
+  }
+  sendText(res, entryDoc(req));
+});
 router.get('/:slug/mcp/:token/help', (req, res) => sendText(res, entryDoc(req)));
 
 // ── slash-command setup ─────────────────────────────────────────────────────
@@ -413,147 +458,323 @@ to .gitignore so the link is never committed.
 `);
 });
 
-// ── reading ─────────────────────────────────────────────────────────────────
+// ── the operations — one implementation behind both doors ──────────────────
+//
+// The HTTP routes below and the MCP tools further down call these, so a
+// person's AI gets the same answer whether it fetched a URL or called a tool.
+
+const NEXT_DRAFT = 'Give the person openUrl. It is a draft only they can see; they press "Save to Apps" there (or ask you to publish) to share it with their organisation.';
+
+function notFound(id) {
+  return Object.assign(new Error(`There is no app '${id}' you can see — list_apps / GET apps lists the ones you can.`), { status: 404 });
+}
+
+function badSpec() {
+  return Object.assign(new Error('send the screen spec as {"spec": {...}} — the format is in the guide'), { status: 400 });
+}
+
+const ops = {
+  schemaText(slug, brief) {
+    const lines = [`# Data for ${slug}`, '',
+      'Every source below is one table you can read. Use the ids exactly as written,',
+      'each field only with its own source. Labels are what the person calls it.', ''];
+    for (const s of brief.sources || []) {
+      lines.push(`## source: ${s.id} — ${s.label.en} / ${s.label.he}${s.heavy ? '  [heavy: aggregate or filter it]' : ''}`);
+      if (s.description?.en) lines.push(s.description.en);
+      for (const f of (brief.fields || []).filter(x => x.sourceId === s.id)) {
+        lines.push(`- ${f.id}  (${f.type}${f.format ? `, ${f.format}` : ''})  "${f.label.en}" / "${f.label.he}"${f.description?.en ? ` — ${f.description.en}` : ''}`);
+      }
+      lines.push('');
+    }
+    if (brief.caveats?.length) {
+      lines.push('## caveats — quote these in a noteLine block on any screen they touch');
+      for (const c of brief.caveats) lines.push(`- [${c.id}] ${c.text?.en || ''}`);
+      lines.push('');
+    }
+    if (brief.starters?.length) {
+      lines.push('## ideas that fit this data');
+      for (const s of brief.starters) lines.push(`- ${s.text?.en || ''}`);
+    }
+    return lines.join('\n');
+  },
+
+  async listApps(door, slug) {
+    const list = await screens.list(slug, { viewerId: door.viewerId });
+    return {
+      apps: list.map(s => ({
+        id: s.id,
+        title: s.title,
+        summary: s.summary,
+        icon: s.icon,
+        // Plain words: the person sees "draft" / "published", never our enum.
+        status: s.status === 'active' ? 'published' : 'draft',
+        built: s.hasSpec,
+        // Same test the writes apply (screens.canEdit) — what this person may
+        // change, publish or delete. Without it the assistant had to GET each
+        // app to find out (first door test, 2026-10-03).
+        mine: screens.canEdit(s, door.viewerId),
+        openUrl: appUrl(slug, s.id),
+      })),
+    };
+  },
+
+  async getApp(door, slug, id) {
+    const screen = await screens.get(slug, id);
+    if (!screen || !screens.canView(screen, door.viewerId)) throw notFound(id);
+    return {
+      app: {
+        id: screen.id,
+        title: screen.title,
+        summary: screen.summary,
+        icon: screen.icon,
+        status: screen.status === 'active' ? 'published' : 'draft',
+        mine: screens.canEdit(screen, door.viewerId),
+        editable: screen.status !== 'active' && screens.canEdit(screen, door.viewerId),
+        openUrl: appUrl(slug, screen.id),
+        spec: screen.screenSpec,
+      },
+    };
+  },
+
+  async check(door, body) {
+    if (!body?.spec || typeof body.spec !== 'object') throw badSpec();
+    return mcp.check(body.spec, door.ctx.brief, door.ctx);
+  },
+
+  async createApp(door, slug, body) {
+    if (!body?.spec || typeof body.spec !== 'object') throw badSpec();
+    const { screen, check } = await mcp.create(door.ctx, door.viewerId, body);
+    return {
+      saved: true,
+      id: screen.id,
+      status: 'draft',
+      openUrl: appUrl(slug, screen.id),
+      next: NEXT_DRAFT,
+      kpis: check.kpis,
+      ...(check.warnings?.length ? { warnings: check.warnings } : {}),
+    };
+  },
+
+  async updateApp(door, slug, id, body) {
+    const { screen, check } = await mcp.update(door.ctx, door.viewerId, id, body || {});
+    return {
+      saved: true,
+      id: screen.id,
+      status: screen.status === 'active' ? 'published' : 'draft',
+      openUrl: appUrl(slug, screen.id),
+      ...(check ? { kpis: check.kpis } : {}),
+      ...(check?.warnings?.length ? { warnings: check.warnings } : {}),
+      ...(body?.spec && !body?.summary ? { reminder: 'The summary was not changed — if this change alters what the screen shows, send an updated "summary" too.' } : {}),
+    };
+  },
+
+  async publishApp(door, slug, id) {
+    const screen = await mcp.publish(door.ctx, door.viewerId, id);
+    return { published: true, id: screen.id, openUrl: appUrl(slug, screen.id), next: 'It is now on the Apps shelf of everyone in the organisation.' };
+  },
+
+  async unpublishApp(door, slug, id) {
+    const screen = await mcp.unpublish(door.ctx, door.viewerId, id);
+    return {
+      published: false,
+      id: screen.id,
+      status: 'draft',
+      openUrl: appUrl(slug, screen.id),
+      next: 'It is an editable draft again and off colleagues\' shelves. Change it, then publish again — or the person can restore the published version from the app page.',
+    };
+  },
+
+  async deleteApp(door, slug, id) {
+    return mcp.remove(door.ctx, door.viewerId, id);
+  },
+};
+
+// ── the HTTP door (Claude Code, Codex: fetch + POST) ────────────────────────
 
 router.get('/:slug/mcp/:token/schema', (req, res) => {
   const { brief } = req.door.ctx;
   if (req.query.format === 'json') {
     return res.json({ sources: brief.sources, fields: brief.fields, caveats: brief.caveats || [], starters: brief.starters || [] });
   }
-  const lines = [`# Data for ${req.params.slug}`, '',
-    'Every source below is one table you can read. Use the ids exactly as written,',
-    'each field only with its own source. Labels are what the person calls it.', ''];
-  for (const s of brief.sources || []) {
-    lines.push(`## source: ${s.id} — ${s.label.en} / ${s.label.he}${s.heavy ? '  [heavy: aggregate or filter it]' : ''}`);
-    if (s.description?.en) lines.push(s.description.en);
-    for (const f of (brief.fields || []).filter(x => x.sourceId === s.id)) {
-      lines.push(`- ${f.id}  (${f.type}${f.format ? `, ${f.format}` : ''})  "${f.label.en}" / "${f.label.he}"${f.description?.en ? ` — ${f.description.en}` : ''}`);
-    }
-    lines.push('');
-  }
-  if (brief.caveats?.length) {
-    lines.push('## caveats — quote these in a noteLine block on any screen they touch');
-    for (const c of brief.caveats) lines.push(`- [${c.id}] ${c.text?.en || ''}`);
-    lines.push('');
-  }
-  if (brief.starters?.length) {
-    lines.push('## ideas that fit this data');
-    for (const s of brief.starters) lines.push(`- ${s.text?.en || ''}`);
-  }
-  lines.push('', 'Same data as JSON: add ?format=json to this URL.');
-  sendText(res, lines.join('\n'));
+  sendText(res, `${ops.schemaText(req.params.slug, brief)}\n\nSame data as JSON: add ?format=json to this URL.`);
 });
 
 router.get('/:slug/mcp/:token/apps', handle(async (req, res) => {
-  const { slug } = req.params;
-  const list = await screens.list(slug, { viewerId: req.door.viewerId });
-  res.json({
-    apps: list.map(s => ({
-      id: s.id,
-      title: s.title,
-      summary: s.summary,
-      icon: s.icon,
-      // Plain words: the person sees "draft" / "published", never our enum.
-      status: s.status === 'active' ? 'published' : 'draft',
-      built: s.hasSpec,
-      // Same test the writes apply (screens.canEdit) — what this person may
-      // change, publish or delete. Without it the assistant had to GET each
-      // app to find out (first door test, 2026-10-03).
-      mine: screens.canEdit(s, req.door.viewerId),
-      openUrl: appUrl(slug, s.id),
-    })),
-  });
+  res.json(await ops.listApps(req.door, req.params.slug));
 }));
 
 router.get('/:slug/mcp/:token/apps/:id', handle(async (req, res) => {
-  const { slug, id } = req.params;
-  const screen = await screens.get(slug, id);
-  if (!screen || !screens.canView(screen, req.door.viewerId)) {
-    return res.status(404).json({ error: `There is no app '${id}' you can see. GET apps lists the ones you can.` });
-  }
-  res.json({
-    app: {
-      id: screen.id,
-      title: screen.title,
-      summary: screen.summary,
-      icon: screen.icon,
-      status: screen.status === 'active' ? 'published' : 'draft',
-      editable: screen.status !== 'active' && screens.canEdit(screen, req.door.viewerId),
-      openUrl: appUrl(slug, screen.id),
-      spec: screen.screenSpec,
-    },
-  });
+  res.json(await ops.getApp(req.door, req.params.slug, req.params.id));
 }));
 
-// ── checking and saving ─────────────────────────────────────────────────────
-
-function readSpec(req) {
-  const spec = req.body?.spec;
-  if (!spec || typeof spec !== 'object') {
-    throw Object.assign(new Error('send the screen spec as {"spec": {...}} — the format is on the guide page'), { status: 400 });
-  }
-  return spec;
-}
-
 router.post('/:slug/mcp/:token/check', handle(async (req, res) => {
-  res.json(await mcp.check(readSpec(req), req.door.ctx.brief, req.door.ctx));
+  res.json(await ops.check(req.door, req.body));
 }));
 
 router.post('/:slug/mcp/:token/apps', handle(async (req, res) => {
-  readSpec(req);
-  const { screen, check } = await mcp.create(req.door.ctx, req.door.viewerId, req.body);
-  res.status(201).json({
-    saved: true,
-    id: screen.id,
-    status: 'draft',
-    openUrl: appUrl(req.params.slug, screen.id),
-    next: 'Give the person openUrl. It is a draft only they can see; they press "Save to Apps" there to share it with their organisation.',
-    kpis: check.kpis,
-    ...(check.warnings?.length ? { warnings: check.warnings } : {}),
-  });
+  res.status(201).json(await ops.createApp(req.door, req.params.slug, req.body));
 }));
 
 router.post('/:slug/mcp/:token/apps/:id', handle(async (req, res) => {
-  const { screen, check } = await mcp.update(req.door.ctx, req.door.viewerId, req.params.id, req.body || {});
-  res.json({
-    saved: true,
-    id: screen.id,
-    status: screen.status === 'active' ? 'published' : 'draft',
-    openUrl: appUrl(req.params.slug, screen.id),
-    ...(check ? { kpis: check.kpis } : {}),
-    ...(check?.warnings?.length ? { warnings: check.warnings } : {}),
-    ...(req.body?.spec && !req.body?.summary ? { reminder: 'The summary was not changed — if this change alters what the screen shows, send an updated "summary" too.' } : {}),
-  });
+  res.json(await ops.updateApp(req.door, req.params.slug, req.params.id, req.body));
 }));
 
-// ── lifecycle — the builder's own buttons, same rules ───────────────────────
-
 router.post('/:slug/mcp/:token/apps/:id/publish', handle(async (req, res) => {
-  const screen = await mcp.publish(req.door.ctx, req.door.viewerId, req.params.id);
-  res.json({
-    published: true,
-    id: screen.id,
-    openUrl: appUrl(req.params.slug, screen.id),
-    next: 'It is now on the Apps shelf of everyone in the organisation.',
-  });
+  res.json(await ops.publishApp(req.door, req.params.slug, req.params.id));
 }));
 
 router.post('/:slug/mcp/:token/apps/:id/unpublish', handle(async (req, res) => {
-  const screen = await mcp.unpublish(req.door.ctx, req.door.viewerId, req.params.id);
-  res.json({
-    published: false,
-    id: screen.id,
-    status: 'draft',
-    openUrl: appUrl(req.params.slug, screen.id),
-    next: 'It is an editable draft again and off colleagues\' shelves. Change it, then publish again — or the person can restore the published version from the app page.',
-  });
+  res.json(await ops.unpublishApp(req.door, req.params.slug, req.params.id));
 }));
 
 const removeHandler = handle(async (req, res) => {
-  res.json(await mcp.remove(req.door.ctx, req.door.viewerId, req.params.id));
+  res.json(await ops.deleteApp(req.door, req.params.slug, req.params.id));
 });
 router.delete('/:slug/mcp/:token/apps/:id', removeHandler);
 router.post('/:slug/mcp/:token/apps/:id/delete', removeHandler);
+
+// ── the MCP door (Claude.ai, ChatGPT, Claude Desktop, Cursor: tools) ────────
+//
+// Same URL as the guide page. A POST of a JSON-RPC message is the MCP
+// Streamable HTTP transport, stateless: a fresh server per request, nothing
+// held between calls, so it scales with Cloud Run like any other route and
+// the per-request gate (token, live modules) still decides everything.
+// Business people live in ChatGPT and Claude.ai, not Claude Code, and those
+// chats cannot POST to a URL — a connector is how they can build at all.
+
+const ANY_SPEC = z.object({}).passthrough()
+  .describe('The screen spec — the JSON object described in the instructions (specVersion, resultSets, blocks).');
+const BILINGUAL = z.object({ en: z.string(), he: z.string() });
+const APP_ID = z.string().describe('The app id, e.g. cm-1a2b3c4d5e6f7a8b (from list_apps).');
+
+function buildMcpServer(req) {
+  const door = req.door;
+  const { slug } = req.params;
+  const name = datasetRegistry.get(slug)?.defaultMeta?.name || slug;
+  const server = new McpServer(
+    { name: `aspect-intelligence-${slug}`, title: `${name} — Intelligence Center apps`, version: '1.0.0' },
+    { instructions: entryDoc(req, { mcp: true }) },
+  );
+
+  const asResult = (value) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] });
+  // Tool errors go back as results, not protocol errors: the model must read
+  // the sentence and act on it, exactly like a 4xx body over HTTP.
+  const run = (fn) => async (args) => {
+    try {
+      return asResult(await fn(args || {}));
+    } catch (err) {
+      const status = err.status || 500;
+      if (status >= 500) console.error(`[ai-builder] mcp ${slug}:`, err);
+      return {
+        isError: true,
+        ...asResult({ error: status >= 500 ? 'Something broke on our side. Try again; if it repeats, tell the person.' : err.message, ...(err.detail ? { detail: err.detail } : {}) }),
+      };
+    }
+  };
+  const RO = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
+  const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+
+  server.registerTool('get_guide', {
+    title: 'How to build apps here',
+    description: 'The full guide: how an app works, the workflow, the spec format and every rule. Read it before building if you have not seen the server instructions.',
+    annotations: RO,
+  }, run(() => entryDoc(req, { mcp: true })));
+
+  server.registerTool('get_schema', {
+    title: 'The company data',
+    description: 'Every data source you can build on, with its fields (ids, types, labels in English and Hebrew), the caveats screens must state, and ideas that fit the data. Call this before composing any spec.',
+    annotations: RO,
+  }, run(() => ops.schemaText(slug, door.ctx.brief)));
+
+  server.registerTool('list_apps', {
+    title: 'List apps',
+    description: 'The apps this person can see: their own drafts and the organisation\'s published apps. `mine: true` = they may change, publish or delete it.',
+    annotations: RO,
+  }, run(() => ops.listApps(door, slug)));
+
+  server.registerTool('get_app', {
+    title: 'Open an app',
+    description: 'One app with its full spec — also the best example of a working spec for this data.',
+    inputSchema: { id: APP_ID },
+    annotations: RO,
+  }, run(({ id }) => ops.getApp(door, slug, id)));
+
+  server.registerTool('check_app', {
+    title: 'Check a spec (dry run)',
+    description: 'Validate a spec, run its queries on the live data and verify the numbers. Saves nothing. Returns ok, errors naming the exact field to fix, warnings, KPI values and sample rows.',
+    inputSchema: { spec: ANY_SPEC },
+    annotations: RO,
+  }, run(({ spec }) => ops.check(door, { spec })));
+
+  server.registerTool('create_app', {
+    title: 'Save a new app (draft)',
+    description: 'Store a checked spec as a new DRAFT app, visible only to this person. Re-checks it and refuses anything that fails. Returns openUrl to give the person.',
+    inputSchema: {
+      title: BILINGUAL.describe('App name in English and Hebrew, at most 60 characters each.'),
+      summary: BILINGUAL.optional().describe('One sentence on what the screen shows, in English and Hebrew.'),
+      icon: z.enum(ICONS).optional(),
+      spec: ANY_SPEC,
+    },
+    annotations: WRITE,
+  }, run(args => ops.createApp(door, slug, args)));
+
+  server.registerTool('update_app', {
+    title: 'Change an app',
+    description: 'Replace the spec and/or title, summary, icon of one of this person\'s unpublished apps. A new spec is re-checked first. A published app must be unpublished first.',
+    inputSchema: {
+      id: APP_ID,
+      spec: ANY_SPEC.optional(),
+      title: BILINGUAL.optional(),
+      summary: BILINGUAL.optional(),
+      icon: z.enum(ICONS).optional(),
+    },
+    annotations: { ...WRITE, idempotentHint: true },
+  }, run(({ id, ...body }) => ops.updateApp(door, slug, id, body)));
+
+  server.registerTool('publish_app', {
+    title: 'Publish to everyone (Save to Apps)',
+    description: 'Make one of this person\'s built drafts visible to EVERYONE in the organisation. Only after the person explicitly confirms.',
+    inputSchema: { id: APP_ID },
+    annotations: { ...WRITE, idempotentHint: true },
+  }, run(({ id }) => ops.publishApp(door, slug, id)));
+
+  server.registerTool('unpublish_app', {
+    title: 'Take back to draft (Edit)',
+    description: 'Turn one of this person\'s published apps back into an editable draft. It leaves colleagues\' shelves until published again; the published version stays restorable. Tell the person before doing it.',
+    inputSchema: { id: APP_ID },
+    annotations: { ...WRITE, idempotentHint: true },
+  }, run(({ id }) => ops.unpublishApp(door, slug, id)));
+
+  server.registerTool('delete_app', {
+    title: 'Delete a draft',
+    description: 'Permanently delete one of this person\'s drafts that was never published. Cannot be undone — only after the person explicitly confirms.',
+    inputSchema: { id: APP_ID },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, run(({ id }) => ops.deleteApp(door, slug, id)));
+
+  return server;
+}
+
+router.post('/:slug/mcp/:token', async (req, res) => {
+  const server = buildMcpServer(req);
+  // Stateless: no session id, plain JSON answers (no SSE stream to hold open).
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  res.on('close', () => { transport.close().catch(() => {}); server.close().catch(() => {}); });
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error('[ai-builder] mcp transport:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
+    }
+  }
+});
+
+// A stateless server keeps no session to stream or end.
+router.delete('/:slug/mcp/:token', (req, res) => {
+  res.status(405).set('Allow', 'GET, POST').json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed: this MCP server is stateless.' }, id: null });
+});
 
 // Anything else behind a valid key: a wrong path or a wrong verb. Answer with
 // the map, not Express's HTML — an assistant handed "Cannot GET" guesses.

@@ -253,7 +253,7 @@ async function create(ctx, viewerId, body) {
 async function loadOwn(ctx, viewerId, screenId) {
   const screen = await screens.get(ctx.datasetId, screenId);
   if (!screen || !screens.canView(screen, viewerId)) {
-    throw httpError(404, `there is no app '${screenId}' you can see — list them with GET apps`);
+    throw httpError(404, `there is no app '${screenId}' you can see — list them with list_apps (or GET apps)`);
   }
   if (!screens.canEdit(screen, viewerId)) throw httpError(403, 'only the person who created this app can change, publish or delete it');
   return screen;
@@ -262,7 +262,7 @@ async function loadOwn(ctx, viewerId, screenId) {
 async function update(ctx, viewerId, screenId, body) {
   const screen = await loadOwn(ctx, viewerId, screenId);
   if (screen.status === 'active') {
-    throw httpError(409, 'this app is published, and published apps are frozen. POST apps/<id>/unpublish first (tell the person: it leaves their colleagues\' shelf until published again), then send the change');
+    throw httpError(409, 'this app is published, and published apps are frozen. Unpublish it first (unpublish_app, or POST apps/<id>/unpublish) and tell the person it leaves their colleagues\' shelf until published again — then send the change');
   }
 
   const meta = readMeta(body, { required: false });

@@ -1,23 +1,41 @@
 # Build with your own AI — the Intelligence Center door (task #96)
 
-A client's people build Intelligence Center apps with **their own** AI
-coding tool (Claude Code, Codex, any chat that can fetch a URL) instead of
+A client's people build Intelligence Center apps with **their own** AI —
+ChatGPT, Claude.ai, Claude Desktop, Cursor, Claude Code, Codex — instead of
 with Otto. Same result as Otto — a draft app on the Apps shelf — but the
 thinking runs on the client's AI account, so it costs us nothing.
 
 Modelled on LYBI's `/builder/mcp` (`docs/guides/BUILDER_MCP_MAINTENANCE.md`
-— read it; most rules there apply here). Like that door it is **not an MCP
-server**: a text page that teaches the tool, plus plain HTTP endpoints.
+— read it; most rules there apply here). One personal URL is two doors:
+
+- **a real MCP server** (Streamable HTTP, stateless, official SDK): a JSON-RPC
+  POST to the URL serves 10 tools. This is the door for business people —
+  ChatGPT and Claude.ai cannot POST to a plain URL, but they can add it as a
+  custom connector (no authentication; the key is in the URL).
+- **a text guide + REST endpoints**: a GET of the URL returns the guide, for
+  tools that fetch and POST themselves (Claude Code, Codex).
+
+Both call one set of operations (`ops` in `mcp.routes.js`) and share one
+guide (`entryDoc(req, {mcp})` names tools or URLs, everything else is shared).
 
 ## How a person uses it
 
-1. Intelligence Center → Apps → **Your own AI** tile → copy the prompt.
-2. Paste it into Claude Code / Codex: *"Read <link> and help me build an app"*.
-3. Ask for a screen. The tool reads the data description, writes a spec,
+1. Intelligence Center → Apps → **Your own AI** tile. Two tabs:
+   - **ChatGPT / Claude**: copy the link, add it as a custom connector
+     (Claude: Settings > Connectors; ChatGPT: Apps & Connectors, developer
+     mode), turn it on in a chat.
+   - **Claude Code / Codex**: copy the prompt *"Read <link> and help me build
+     an app"* and paste it.
+2. Ask for a screen. The AI reads the data description, writes a spec,
    dry-runs it until the numbers check out, saves it.
-4. The app appears on **their** shelf as a draft. They open it and press
-   **Save to Apps** to share it with the organisation. They can also keep
-   editing it with Otto.
+3. The app appears on **their** shelf as a draft. They open it and press
+   **Save to Apps** (or ask the AI to publish) to share it with the
+   organisation. They can also keep editing it with Otto.
+
+MCP tools: `get_guide`, `get_schema`, `list_apps`, `get_app`, `check_app`,
+`create_app`, `update_app`, `publish_app`, `unpublish_app`, `delete_app`
+(read-only / destructive annotations set, so clients confirm the right ones).
+The guide is also sent as the server's `instructions` on initialize.
 
 Optional: say `setup` and the tool installs `/ic-help`, `/ic-schema`,
 `/ic-list`, `/ic-show`, `/ic-create`, `/ic-update`, `/ic-check`,
@@ -118,6 +136,12 @@ tile in `AppsPage.tsx`, `ottoService.aiLink`, `aiBuilder.*` translations.
   date axis now draw oldest to newest (ScreenRenderer, client), update reminds
   to refresh the summary, delete echoes the title. Impossible request (new
   customers, no customer data) was refused honestly with alternatives.
+
+  MCP door (same day): official SDK client against the local server — 16/16:
+  initialize with instructions, 10 tools with annotations, read/check/create/
+  update/delete round trip, failing spec refused as an `isError` result,
+  someone else's app refused, SSE GET probe answered 405, plain GET still
+  returns the guide.
 
 ## Keeping it in step with Otto
 
