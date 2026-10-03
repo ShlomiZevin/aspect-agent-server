@@ -142,6 +142,13 @@ tile in `AppsPage.tsx`, `ottoService.aiLink`, `aiBuilder.*` translations.
   update/delete round trip, failing spec refused as an `isError` result,
   someone else's app refused, SSE GET probe answered 405, plain GET still
   returns the guide.
+  Prod (rev 00594): the same SDK battery 16/16, then a real Claude model
+  (Messages API, `mcp-client-2025-11-20`, our URL as a remote MCP server —
+  the Claude.ai connector path) given only "build me revenue by category
+  with a top-10 bar chart, a table and a total KPI": get_guide → get_schema →
+  check_app (passed first try) → create_app, then list_apps and delete_app on
+  request. It relayed the filter scope and the revenue caveat unprompted.
+  Not yet tried: a human adding the link in ChatGPT / Claude.ai settings.
 
 ## Keeping it in step with Otto
 
