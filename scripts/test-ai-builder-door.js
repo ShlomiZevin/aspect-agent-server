@@ -20,6 +20,10 @@
 
 const BASE = (process.argv[2] || 'http://localhost:3000').replace(/\/$/, '');
 const DATASET = process.argv[3] || 'zolstock';
+// Where the door itself is reached. Defaults to BASE; pass the public site to
+// test the real path clients use (Firebase Hosting proxying to Cloud Run):
+//   node scripts/test-ai-builder-door.js https://<cloud-run-host> zolstock https://aspect-agents.web.app
+const DOOR = (process.argv[4] || BASE).replace(/\/$/, '');
 const VIEWER = 'zz-door-test-a';
 const OTHER = 'zz-door-test-b';
 
@@ -35,8 +39,11 @@ async function link(viewerId) {
   const r = await fetch(`${BASE}/api/otto/${DATASET}/ai-link?viewerId=${viewerId}`);
   const j = await r.json();
   if (!j.url) throw new Error(`no link for ${viewerId}: ${JSON.stringify(j)} — is module ai-builder live for ${DATASET}?`);
-  // Talk to the server under test even when the link names another host.
-  return j.url.replace(/^https?:\/\/[^/]+/, BASE);
+  if (process.argv[4] && !j.url.startsWith(DOOR)) {
+    console.log(`FAIL  link is not on the public site: ${j.url.replace(/mcp\/.*/, 'mcp/<token>')}`);
+    failures++;
+  }
+  return j.url.replace(/^https?:\/\/[^/]+/, DOOR);
 }
 const post = (url, body) => fetch(url, { method: 'POST', headers: J, body: JSON.stringify(body) });
 
@@ -89,7 +96,7 @@ async function httpDoor() {
   ok(r.status === 404, `unknown client -> ${r.status}`);
   r = await fetch(B.slice(0, -3) + 'xyz');
   ok(r.status === 401, `forged token -> ${r.status}`);
-  r = await fetch(`${BASE}/intelligence/${DATASET}/mcp`);
+  r = await fetch(`${DOOR}/intelligence/${DATASET}/mcp`);
   ok(r.status === 401, `link without its key -> ${r.status}`);
 
   // errors are sentences
