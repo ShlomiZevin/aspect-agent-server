@@ -306,18 +306,11 @@ router.get('/:datasetId/ai-link', handle(async (req, res) => {
   if (!await tokens.doorOpen(req.params.datasetId)) {
     const e = new Error('Building with your own AI is not enabled for this account'); e.status = 403; throw e;
   }
-  const first = h => String(req.headers[h] || '').split(',')[0].trim();
-  const origin = `${first('x-forwarded-proto') || req.protocol}://${first('x-forwarded-host') || req.get('host')}`;
   const token = await tokens.issue(req.params.datasetId, viewerId);
-  const path = `/intelligence/${encodeURIComponent(req.params.datasetId)}/mcp/${token}`;
-  // The short link lives on the site the person is on — firebase.json 302s
-  // /intelligence/:slug/mcp/** to this server, like lybi.ai/builder/mcp. Only
-  // for our own Firebase sites (they all share that firebase.json), and only
-  // for tools that GET the guide: a 302 turns an MCP POST into a GET, so a
-  // connector must be given the direct `url`.
-  const site = String(req.headers.origin || '');
-  const shortUrl = /^https:\/\/[a-z0-9-]+\.(web\.app|firebaseapp\.com)$/.test(site) ? `${site}${path}` : null;
-  res.json({ url: `${origin}${path}`, shortUrl });
+  // On the public site, never the backend: Hosting proxies the door to this
+  // service (same rule as the URLs inside the guide — mcp.routes publicOrigin).
+  const { publicOrigin } = require('./mcp.routes');
+  res.json({ url: `${publicOrigin(req)}/intelligence/${encodeURIComponent(req.params.datasetId)}/mcp/${token}` });
 }));
 
 // ── the generic doc store (no v1 block writes here yet) ──────────────────

@@ -34,11 +34,21 @@ Browser chats (ChatGPT, Claude.ai) can only READ a pasted link, so building
 there needs the DIRECT link added once as a custom connector — behind one
 quiet line in the dialog, not in the main flow.
 
-**Short link:** the prompt uses `https://<our firebase site>/intelligence/<slug>/mcp/<token>`,
-which `firebase.json` 302s to the server (same pattern as `lybi.ai/builder/mcp`;
-a Cloud Run rewrite would break the lybi-prod/freeda deploys that share the
-file). A 302 turns a POST into a GET, so MCP connectors get the direct server
-URL (`ai-link` returns both `url` and `shortUrl`).
+**The link never shows the backend** (owner rule, 2026-10-03). It is
+`https://aspect-agents.web.app/intelligence/<slug>/mcp/<token>`, and Firebase
+Hosting PROXIES that path to Cloud Run — a `run` rewrite, not a 302: a
+redirect would expose the backend and turn an MCP POST into a GET. One link
+serves the paste-in prompt and MCP connectors alike.
+- The rewrite is NOT in `firebase.json` (shared with the lybi-prod and
+  freeda deploys, whose projects have no such service and would reject it).
+  `deploy:aspect` runs `scripts/firebase-aspect-config.cjs`, which writes a
+  gitignored `firebase.aspect.json` = firebase.json + this rewrite, and
+  deploys with `--config firebase.aspect.json`. Plain `npm run deploy` does
+  not carry it — always `deploy:aspect` for this site.
+- The server builds every URL it hands out (the link, every URL in the
+  guide) from `publicOrigin(req)` = `CLIENT_APP_ORIGIN` (default
+  aspect-agents.web.app), whatever host the request came in on; only a
+  localhost server keeps its own origin, for local testing and the battery.
 
 MCP tools (13): `get_guide`, `get_schema`, `get_full_schema`, `list_apps`,
 `get_app`, `check_app`, `create_app`, `update_app`, `publish_app`,

@@ -72,11 +72,20 @@ const APP_ORIGIN = process.env.CLIENT_APP_ORIGIN || 'https://aspect-agents.web.a
 
 // ── plumbing (same contract as the LYBI door) ───────────────────────────────
 
+/**
+ * The door's public address — never the backend's. Clients reach the door
+ * at APP_ORIGIN, which Firebase Hosting proxies to this service (client repo,
+ * scripts/firebase-aspect-config.cjs), so every URL the guide hands out is on
+ * that domain however the request arrived. Only a local dev server keeps its
+ * own origin, so the battery and local testing still talk to themselves.
+ */
+function publicOrigin(req) {
+  const host = String(req.get('host') || '');
+  return /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host) ? `${req.protocol}://${host}` : APP_ORIGIN;
+}
+
 function urls(req) {
-  const first = h => String(req.headers[h] || '').split(',')[0].trim();
-  const proto = first('x-forwarded-proto') || req.protocol;
-  const host = first('x-forwarded-host') || req.get('host');
-  const origin = `${proto}://${host}`;
+  const origin = publicOrigin(req);
   return { origin, base: `${origin}/intelligence/${req.params.slug}/mcp/${req.params.token}` };
 }
 
@@ -899,3 +908,4 @@ function errorHandler(err, req, res, next) {
 
 module.exports = router;
 module.exports.errorHandler = errorHandler;
+module.exports.publicOrigin = publicOrigin;
