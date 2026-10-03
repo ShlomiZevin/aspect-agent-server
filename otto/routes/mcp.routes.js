@@ -42,6 +42,9 @@
  *   POST   /check               dry run: validate + query + verify, saves nothing
  *   POST   /apps                save a new app (draft on the person's shelf)
  *   POST   /apps/:id            change an app that is not published
+ *   GET    /schema/full         EVERY table/column, open ones mapped — reference only
+ *   GET    /apps/:id/versions   the app's history (every door save is a version)
+ *   POST   /apps/:id/restore    undo: an old version saved as the newest
  *   POST   /apps/:id/publish    "Save to Apps" — visible to the organisation
  *   POST   /apps/:id/unpublish  "Edit" — a published app back to an editable draft
  *   DELETE /apps/:id            delete a never-published draft
@@ -158,6 +161,7 @@ function opNames(base, mcp) {
       schema: t('get_schema'), apps: t('list_apps'), app: t('get_app'), check: t('check_app'),
       create: t('create_app'), update: t('update_app'), publish: t('publish_app'),
       unpublish: t('unpublish_app'), remove: t('delete_app'),
+      versions: t('list_versions'), restore: t('restore_version'), full: t('get_full_schema'),
     };
   }
   return {
@@ -170,6 +174,9 @@ function opNames(base, mcp) {
     publish: `POST \`${base}/apps/<id>/publish\``,
     unpublish: `POST \`${base}/apps/<id>/unpublish\``,
     remove: `DELETE \`${base}/apps/<id>\` (or POST \`${base}/apps/<id>/delete\` if your tool cannot send DELETE)`,
+    versions: `GET \`${base}/apps/<id>/versions\``,
+    restore: `POST \`${base}/apps/<id>/restore\` with \`{"version": <n>}\``,
+    full: `GET \`${base}/schema/full\``,
   };
 }
 
@@ -223,6 +230,9 @@ The person may type these${mcp ? '' : ' (in Claude Code they become real slash c
 | publish <id> | Confirm with the person, then publish — see "Publishing, changing, deleting". |
 | unpublish <id> | Explain what it means, then take a published app back to an editable draft. |
 | delete <id> | Confirm with the person, then delete a never-published draft. |
+| history <id> | ${o.versions}, then list the versions in plain words: when, what changed. |
+| undo <id> [version] | Restore the previous version (or the one named) with ${o.restore}, then say what the screen shows now. |
+| database | ${o.full}, then explain what data exists beyond what screens can use today. |
 ${mcp ? '' : `| setup | GET ${base}/setup and follow it (installs the slash commands). |\n`}
 ## The workflow
 
@@ -272,6 +282,25 @@ ${mcp ? '' : `| setup | GET ${base}/setup and follow it (installs the slash comm
   Aspect contact.
 - You can only change, publish or delete apps this person created — \`mine: true\`
   in the list. Other people's published apps are there to read and learn from.
+
+## History and undo
+
+Every save you make becomes a numbered version — create, every change, every
+restore. Send a short \`note\` with each save ("Added a category filter") so
+the history reads well. ${o.versions} shows the history; ${o.restore} brings
+an earlier version back as the newest one (nothing is ever lost, so an undo
+can itself be undone). If the person says "that was better before", "undo",
+or "go back", this is the tool. The first time you change an app that you did
+not create through this link, its previous state is kept as a version first.
+
+## The whole database
+
+${o.schema} is what screens can be built from — a curated, checked part of
+the data. ${o.full} lists EVERY table and column in the company's database,
+marking which are open for screens. Use it only to answer "do we have X?":
+if X exists but is not open, say so plainly ("the data exists but is not
+available for screens yet — ask your Aspect contact to open it"). Never put a
+table or column that is not in ${o.schema} into a spec; the check refuses it.
 
 ## The spec format
 
@@ -414,6 +443,9 @@ const COMMANDS = [
   ['publish', 'Share an app with your organisation: /ic-publish <app id>', 'publish $ARGUMENTS'],
   ['unpublish', 'Take a published app back to an editable draft: /ic-unpublish <app id>', 'unpublish $ARGUMENTS'],
   ['delete', 'Delete a draft: /ic-delete <app id>', 'delete $ARGUMENTS'],
+  ['history', 'What changed in an app: /ic-history <app id>', 'history $ARGUMENTS'],
+  ['undo', 'Go back to an earlier version: /ic-undo <app id> [version]', 'undo $ARGUMENTS'],
+  ['database', 'Everything in our database, not only what screens use', 'database'],
 ];
 
 router.get('/:slug/mcp/:token/setup', (req, res) => {
@@ -543,10 +575,11 @@ const ops = {
 
   async createApp(door, slug, body) {
     if (!body?.spec || typeof body.spec !== 'object') throw badSpec();
-    const { screen, check } = await mcp.create(door.ctx, door.viewerId, body);
+    const { screen, check, version } = await mcp.create(door.ctx, door.viewerId, body);
     return {
       saved: true,
       id: screen.id,
+      version,
       status: 'draft',
       openUrl: appUrl(slug, screen.id),
       next: NEXT_DRAFT,
@@ -556,10 +589,11 @@ const ops = {
   },
 
   async updateApp(door, slug, id, body) {
-    const { screen, check } = await mcp.update(door.ctx, door.viewerId, id, body || {});
+    const { screen, check, version } = await mcp.update(door.ctx, door.viewerId, id, body || {});
     return {
       saved: true,
       id: screen.id,
+      version,
       status: screen.status === 'active' ? 'published' : 'draft',
       openUrl: appUrl(slug, screen.id),
       ...(check ? { kpis: check.kpis } : {}),
@@ -586,6 +620,30 @@ const ops = {
 
   async deleteApp(door, slug, id) {
     return mcp.remove(door.ctx, door.viewerId, id);
+  },
+
+  async fullSchema(door) {
+    return mcp.fullSchema(door.ctx);
+  },
+
+  async listVersions(door, slug, id) {
+    return mcp.listVersions(door.ctx, door.viewerId, id);
+  },
+
+  async restoreVersion(door, slug, id, version) {
+    if (!Number.isInteger(Number(version))) {
+      throw Object.assign(new Error('send the version number to restore, e.g. {"version": 2} — list_versions shows them'), { status: 400 });
+    }
+    const { screen, check, version: newVersion } = await mcp.restoreVersion(door.ctx, door.viewerId, id, Number(version));
+    return {
+      restored: Number(version),
+      version: newVersion,
+      id: screen.id,
+      status: screen.status === 'active' ? 'published' : 'draft',
+      openUrl: appUrl(slug, screen.id),
+      ...(check ? { kpis: check.kpis } : {}),
+      ...(check?.warnings?.length ? { warnings: check.warnings } : {}),
+    };
   },
 };
 
@@ -623,6 +681,18 @@ router.post('/:slug/mcp/:token/apps/:id/publish', handle(async (req, res) => {
   res.json(await ops.publishApp(req.door, req.params.slug, req.params.id));
 }));
 
+router.get('/:slug/mcp/:token/schema/full', handle(async (req, res) => {
+  res.json(await ops.fullSchema(req.door));
+}));
+
+router.get('/:slug/mcp/:token/apps/:id/versions', handle(async (req, res) => {
+  res.json(await ops.listVersions(req.door, req.params.slug, req.params.id));
+}));
+
+router.post('/:slug/mcp/:token/apps/:id/restore', handle(async (req, res) => {
+  res.json(await ops.restoreVersion(req.door, req.params.slug, req.params.id, req.body?.version));
+}));
+
 router.post('/:slug/mcp/:token/apps/:id/unpublish', handle(async (req, res) => {
   res.json(await ops.unpublishApp(req.door, req.params.slug, req.params.id));
 }));
@@ -646,6 +716,8 @@ const ANY_SPEC = z.object({}).passthrough()
   .describe('The screen spec — the JSON object described in the instructions (specVersion, resultSets, blocks).');
 const BILINGUAL = z.object({ en: z.string(), he: z.string() });
 const APP_ID = z.string().describe('The app id, e.g. cm-1a2b3c4d5e6f7a8b (from list_apps).');
+const NOTE = z.string().max(200).optional()
+  .describe('One short line on what this save changed, e.g. "Added a category filter". Shown in the app\'s history.');
 
 function buildMcpServer(req) {
   const door = req.door;
@@ -714,19 +786,21 @@ function buildMcpServer(req) {
       summary: BILINGUAL.optional().describe('One sentence on what the screen shows, in English and Hebrew.'),
       icon: z.enum(ICONS).optional(),
       spec: ANY_SPEC,
+      note: NOTE,
     },
     annotations: WRITE,
   }, run(args => ops.createApp(door, slug, args)));
 
   server.registerTool('update_app', {
     title: 'Change an app',
-    description: 'Replace the spec and/or title, summary, icon of one of this person\'s unpublished apps. A new spec is re-checked first. A published app must be unpublished first.',
+    description: 'Replace the spec and/or title, summary, icon of one of this person\'s unpublished apps. A new spec is re-checked first. A published app must be unpublished first. Every change becomes a new version — restore_version undoes it.',
     inputSchema: {
       id: APP_ID,
       spec: ANY_SPEC.optional(),
       title: BILINGUAL.optional(),
       summary: BILINGUAL.optional(),
       icon: z.enum(ICONS).optional(),
+      note: NOTE,
     },
     annotations: { ...WRITE, idempotentHint: true },
   }, run(({ id, ...body }) => ops.updateApp(door, slug, id, body)));
@@ -751,6 +825,26 @@ function buildMcpServer(req) {
     inputSchema: { id: APP_ID },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, run(({ id }) => ops.deleteApp(door, slug, id)));
+
+  server.registerTool('list_versions', {
+    title: 'History of an app',
+    description: 'Every saved version of one app — number, time, who saved it and what changed. Use it to answer "what did we change" and to pick a version to restore.',
+    inputSchema: { id: APP_ID },
+    annotations: RO,
+  }, run(({ id }) => ops.listVersions(door, slug, id)));
+
+  server.registerTool('restore_version', {
+    title: 'Undo — restore a version',
+    description: 'Bring back an earlier version of one of this person\'s unpublished apps. It is re-checked on today\'s data and saved as the newest version, so nothing is lost.',
+    inputSchema: { id: APP_ID, version: z.number().int().positive().describe('The version number from list_versions.') },
+    annotations: { ...WRITE, idempotentHint: true },
+  }, run(({ id, version }) => ops.restoreVersion(door, slug, id, version)));
+
+  server.registerTool('get_full_schema', {
+    title: 'The whole database (reference)',
+    description: 'Every table and column in this company\'s database, marking which are open for screens (with their get_schema ids). Reference only — build from get_schema. Use it to tell the person what exists but is not available for screens yet.',
+    annotations: RO,
+  }, run(() => ops.fullSchema(door)));
 
   return server;
 }
@@ -781,8 +875,8 @@ router.delete('/:slug/mcp/:token', (req, res) => {
 router.all('/:slug/mcp/:token/{*rest}', (req, res) => {
   res.status(404).json({
     error: `There is no ${req.method} ${req.path.replace(/^\/[^/]+\/mcp\/[^/]+/, '') || '/'} here. `
-      + 'Reads are GET: /, /setup, /schema, /apps, /apps/<id>. Writes are POST: /check, /apps, /apps/<id>, '
-      + '/apps/<id>/publish, /apps/<id>/unpublish, /apps/<id>/delete (or DELETE /apps/<id>). The guide at the link itself explains each.',
+      + 'Reads are GET: /, /setup, /schema, /schema/full, /apps, /apps/<id>, /apps/<id>/versions. Writes are POST: /check, /apps, /apps/<id>, '
+      + '/apps/<id>/restore, /apps/<id>/publish, /apps/<id>/unpublish, /apps/<id>/delete (or DELETE /apps/<id>). The guide at the link itself explains each.',
   });
 });
 

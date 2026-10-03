@@ -79,4 +79,18 @@ async function putDoc(datasetId, moduleId, collection, docId, data) {
   return { docId: row.docId, data: row.data, updatedAt: row.updatedAt };
 }
 
-module.exports = { getDoc, listDocs, putDoc };
+/** Drop a whole collection — e.g. a deleted app's version history. */
+async function deleteCollection(datasetId, moduleId, collection) {
+  assertSegment('collection', collection);
+  const drizzle = db.getDrizzle();
+  const rows = await drizzle.delete(customModuleData)
+    .where(and(
+      eq(customModuleData.datasetId, datasetId),
+      eq(customModuleData.moduleId, moduleId),
+      eq(customModuleData.collection, collection),
+    ))
+    .returning({ docId: customModuleData.docId });
+  return rows.length;
+}
+
+module.exports = { getDoc, listDocs, putDoc, deleteCollection };

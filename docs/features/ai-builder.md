@@ -20,28 +20,38 @@ guide (`entryDoc(req, {mcp})` names tools or URLs, everything else is shared).
 
 ## How a person uses it
 
-1. Intelligence Center → Apps → **Your own AI** tile. Two tabs:
-   - **ChatGPT / Claude**: copy the link, add it as a custom connector
-     (Claude: Settings > Connectors; ChatGPT: Apps & Connectors, developer
-     mode), turn it on in a chat.
-   - **Claude Code / Codex**: copy the prompt *"Read <link> and help me build
-     an app"* and paste it.
-2. Ask for a screen. The AI reads the data description, writes a spec,
-   dry-runs it until the numbers check out, saves it.
+1. Intelligence Center → Apps → **Your own AI** tile → **Copy**. That copies
+   *"Read <short link> and help me build an app…"*.
+2. Paste it into Claude Code / Codex / Cursor and ask for a screen. The AI
+   reads the guide and the data, writes a spec, dry-runs it until the numbers
+   check out, saves it. Nothing to set up (owner decision, 2026-10-03: "copy,
+   paste, work").
 3. The app appears on **their** shelf as a draft. They open it and press
    **Save to Apps** (or ask the AI to publish) to share it with the
    organisation. They can also keep editing it with Otto.
 
-MCP tools: `get_guide`, `get_schema`, `list_apps`, `get_app`, `check_app`,
-`create_app`, `update_app`, `publish_app`, `unpublish_app`, `delete_app`
-(read-only / destructive annotations set, so clients confirm the right ones).
-The guide is also sent as the server's `instructions` on initialize.
+Browser chats (ChatGPT, Claude.ai) can only READ a pasted link, so building
+there needs the DIRECT link added once as a custom connector — behind one
+quiet line in the dialog, not in the main flow.
+
+**Short link:** the prompt uses `https://<our firebase site>/intelligence/<slug>/mcp/<token>`,
+which `firebase.json` 302s to the server (same pattern as `lybi.ai/builder/mcp`;
+a Cloud Run rewrite would break the lybi-prod/freeda deploys that share the
+file). A 302 turns a POST into a GET, so MCP connectors get the direct server
+URL (`ai-link` returns both `url` and `shortUrl`).
+
+MCP tools (13): `get_guide`, `get_schema`, `get_full_schema`, `list_apps`,
+`get_app`, `check_app`, `create_app`, `update_app`, `publish_app`,
+`unpublish_app`, `delete_app`, `list_versions`, `restore_version` (read-only
+/ destructive annotations set, so clients confirm the right ones). The guide
+is also sent as the server's `instructions` on initialize.
 
 Optional: say `setup` and the tool installs `/ic-help`, `/ic-schema`,
 `/ic-list`, `/ic-show`, `/ic-create`, `/ic-update`, `/ic-check`,
-`/ic-publish`, `/ic-unpublish`, `/ic-delete` as real
-slash commands (Claude Code: `.claude/commands/`, Codex: `~/.codex/prompts/`).
-The `ic-` prefix avoids Claude Code's own commands, which intercept bare `/list`.
+`/ic-publish`, `/ic-unpublish`, `/ic-delete`, `/ic-history`, `/ic-undo`,
+`/ic-database` as real slash commands (Claude Code: `.claude/commands/`,
+Codex: `~/.codex/prompts/`). The `ic-` prefix avoids Claude Code's own
+commands, which intercept bare `/list`.
 
 ## The three decisions everything rests on
 
@@ -81,7 +91,10 @@ or clear its binding (rotates the secret on the next link request).
 | `otto/routes/mcp.routes.js` | THE door: gate, entry page (`entryDoc`), setup, schema, apps, check, save |
 | `otto/services/mcp.service.js` | dry-run check, create/update through Otto's pipeline, `derivePlan` |
 | `otto/services/mcp-token.service.js` | per-client secret, issue/verify, `doorOpen` |
-| `otto/routes/otto.routes.js` | `GET /api/otto/:datasetId/ai-link?viewerId=` — mints the personal link |
+| `otto/routes/otto.routes.js` | `GET /api/otto/:datasetId/ai-link?viewerId=` — mints the personal link (`url` + `shortUrl`) |
+| `otto/services/doc-store.service.js` | version history storage (`deleteCollection` added for app deletes) |
+| `scripts/test-ai-builder-door.js` | the battery (see Verify) |
+| client `firebase.json` | the 302 behind the short link |
 | `modules/services/apps.service.js` | `aiBuilder: true` on the shelf when both modules are live |
 | `server.js` | `app.use('/intelligence', …)` |
 
@@ -103,6 +116,27 @@ tile in `AppsPage.tsx`, `ottoService.aiLink`, `aiBuilder.*` translations.
 | POST | `/apps/:id/publish` | Save to Apps — visible to the organisation (creator only, built drafts) |
 | POST | `/apps/:id/unpublish` | Edit — published app back to an editable draft, snapshot kept |
 | DELETE | `/apps/:id` (or POST `/apps/:id/delete`) | delete a never-published draft (creator only) |
+| GET | `/schema/full` | every table/column, open ones mapped to source/field ids — reference only |
+| GET | `/apps/:id/versions` | the app's history: version, time, by, note; `currentMatchesLatest` |
+| POST | `/apps/:id/restore` `{version}` | undo — re-checks the old spec and saves it as the newest version |
+
+## Versions and the whole database
+
+- **Versions** (`mcp.service` recordVersion/listVersions/restoreVersion): every
+  door save — create, update, restore — is a numbered version in Otto's doc
+  store (`custom_module_data`, module `ai-builder`, collection
+  `versions.<appId>`; no migration). Saves take an optional `note` ("Added a
+  category filter"). The first door change to an app the door did not make
+  keeps its previous state as a `before-ai` version. Restore never rewrites
+  history, so an undo can be undone. Deleting an app deletes its history.
+  Edits made in Otto's own builder are not versions — they show as
+  `currentMatchesLatest: false`.
+- **The whole database** (`mcp.service.fullSchema`): Otto's own catalog audit
+  (all relations incl. matviews, columns, approx rows, the dataset manifest
+  prose), with the brief mapped on top — `open`, `source`, per-column `field`.
+  Cached 10 min. Reference only: the spec validator still accepts nothing
+  outside the brief. It lets the AI answer "the data exists but is not open
+  for screens yet" instead of "there is no such data".
 
 ## What the door adds on top of Otto's contract
 
@@ -160,13 +194,19 @@ kind or a rule, update `entryDoc()` too.**
 
 ## Verify
 
-Local server + Cloud SQL Proxy, module enabled for the dataset:
-link issued → entry/schema/setup → apps (others' drafts hidden) → token on
-another slug 403/401, forged token 401 → check valid spec passes, broken
-spec returns field-level errors → save refuses a failing spec (422) → save
-creates a `ready` draft owned by the viewer, with a derived plan → other
-viewers 404 → update works, someone else's published app refused. Delete the
-test draft afterwards (Otto's DELETE with the test viewer id).
+```bash
+node scripts/test-ai-builder-door.js                         # local server, zolstock
+node scripts/test-ai-builder-door.js https://aspect-agent-server-1018338671074.europe-west1.run.app zolstock
+```
 
-The real test is a real session: paste the link into Claude Code and ask
-for a screen.
+46 checks over both doors: guide, schema and full schema, isolation and auth,
+errors as sentences, check (valid, invalid, pie > 10, KPI-scope warning),
+create/read/update/versions/restore/delete, other-viewer refusals, and the
+MCP initialize/instructions/13 tools/annotations round trip. Works on any
+dataset with both modules live (its spec is built from that dataset's brief).
+Self-cleaning (viewers `zz-door-test-*`, every app and its history deleted);
+never publishes. Exits 1 on any failure. Run it after ANY change to `otto/`
+services the door wraps, or to the door itself.
+
+The real test is still a real session: paste the prompt into Claude Code and
+ask for a screen.

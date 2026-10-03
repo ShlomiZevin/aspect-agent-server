@@ -16,6 +16,8 @@ const { validateSpec, validatePlan, isBilingual, ICONS } = require('./spec.contr
 const dataService = require('./data.service');
 const probesService = require('./probes.service');
 const screens = require('./screens.store');
+const docStore = require('./doc-store.service');
+const briefService = require('./brief.service');
 
 const SAMPLE_ROWS = 5;
 
@@ -223,6 +225,128 @@ async function checkOrThrow(spec, brief, ctx) {
 const FROM_OUTSIDE = 'This app was built outside the Intelligence Center, with your own AI tool. '
   + 'You can keep changing it here by talking to Otto, or go on in your own tool.';
 
+// ── versions — every door write is undoable ────────────────────────────────
+//
+// LYBI's door versions every save; an outside AI that makes a screen worse
+// must not cost the person the one that worked. Stored in Otto's generic doc
+// store (dataset-scoped, no migration): module 'ai-builder', one collection
+// per app, one doc per version. Versions record what the DOOR saved; an edit
+// made in Otto's own builder afterwards shows up as `currentMatchesLatest:
+// false` rather than as a version.
+
+const VERSIONS_MODULE = 'ai-builder';
+const versionsOf = screenId => `versions.${screenId}`;
+const versionDocId = n => `v${String(n).padStart(4, '0')}`;
+
+function snapshotOf(row) {
+  return { title: row.title, summary: row.summary || null, icon: row.icon || 'grid', spec: row.screenSpec || null };
+}
+
+async function readVersions(datasetId, screenId) {
+  const docs = await docStore.listDocs(datasetId, VERSIONS_MODULE, versionsOf(screenId));
+  return docs.map(d => d.data).filter(v => Number.isInteger(v?.n)).sort((a, b) => a.n - b.n);
+}
+
+async function recordVersion(datasetId, row, { by, note }) {
+  const existing = await readVersions(datasetId, row.id);
+  const n = (existing.at(-1)?.n || 0) + 1;
+  const doc = { n, at: new Date().toISOString(), by, note: note ? String(note).slice(0, 200) : null, ...snapshotOf(row) };
+  try {
+    await docStore.putDoc(datasetId, VERSIONS_MODULE, versionsOf(row.id), versionDocId(n), doc);
+  } catch (err) {
+    // A version that cannot be written (oversized spec) must not fail the
+    // save the person asked for — it costs the undo for this one step only.
+    console.warn(`[ai-builder] version ${n} of ${row.id} not stored: ${err.message}`);
+  }
+  return n;
+}
+
+/** Before the first door change to an app the door did not make (Otto built
+ *  it, or it predates versions), keep what it was — so "undo" has a target. */
+async function ensureBaseline(datasetId, screen) {
+  const existing = await readVersions(datasetId, screen.id);
+  if (existing.length === 0 && screen.screenSpec) {
+    await recordVersion(datasetId, screen, { by: 'before-ai', note: 'The app as it was before the first change from an AI tool' });
+  }
+}
+
+async function listVersions(ctx, viewerId, screenId) {
+  const screen = await screens.get(ctx.datasetId, screenId);
+  if (!screen || !screens.canView(screen, viewerId)) {
+    throw httpError(404, `there is no app '${screenId}' you can see — list them with list_apps (or GET apps)`);
+  }
+  const versions = await readVersions(ctx.datasetId, screen.id);
+  const latest = versions.at(-1);
+  return {
+    id: screen.id,
+    versions: versions.map(v => ({ version: v.n, at: v.at, by: v.by, note: v.note, title: v.title })),
+    currentMatchesLatest: latest ? JSON.stringify(latest.spec) === JSON.stringify(screen.screenSpec) : null,
+  };
+}
+
+/** Undo = re-save an old version as the newest one (history is never rewritten). */
+async function restoreVersion(ctx, viewerId, screenId, version) {
+  const screen = await loadOwn(ctx, viewerId, screenId);
+  const versions = await readVersions(ctx.datasetId, screen.id);
+  const v = versions.find(x => x.n === Number(version));
+  if (!v) {
+    throw httpError(404, `app '${screenId}' has no version ${version} — its versions are: ${versions.map(x => x.n).join(', ') || 'none yet'}`);
+  }
+  if (!v.spec) throw httpError(409, `version ${v.n} has no screen to restore`);
+  return update(ctx, viewerId, screen.id, {
+    spec: v.spec, title: v.title, summary: v.summary || undefined, icon: v.icon,
+    note: `Restored version ${v.n}`,
+  });
+}
+
+// ── the full database structure — reference only ───────────────────────────
+
+const FULL_SCHEMA_TTL_MS = 10 * 60 * 1000;
+const fullSchemaCache = new Map();
+
+/**
+ * Every table and column in the client's schema, with Otto's brief mapped on
+ * top: which relations and columns are OPEN for screens (and under which
+ * source/field id). The brief stays the only thing a spec may use — this is
+ * so the AI can tell the person what exists and what is not open yet, instead
+ * of "there is no such data". Read through Otto's own audit (pg_attribute, so
+ * materialized views are included) and cached briefly: it scans the catalog.
+ */
+async function fullSchema(ctx) {
+  const hit = fullSchemaCache.get(ctx.datasetId);
+  if (hit && Date.now() - hit.at < FULL_SCHEMA_TTL_MS) return hit.value;
+
+  const audit = await briefService.audit({ pool: ctx.pool, schemaName: ctx.schemaName, datasetId: ctx.datasetId });
+  const sourceByRelation = new Map((ctx.brief.sources || []).map(s => [s.relation, s]));
+  const fieldByColumn = new Map((ctx.brief.fields || []).map(f => {
+    const src = (ctx.brief.sources || []).find(s => s.id === f.sourceId);
+    return [`${src?.relation}.${f.column}`, f];
+  }));
+
+  const value = {
+    note: 'Reference only. Screens can use ONLY the sources and fields in get_schema; relations marked open=false exist in the database but are not available for screens yet — tell the person, and suggest asking their Aspect contact to open them.',
+    about: audit.manifestProse || null,
+    relations: audit.relations.map(r => {
+      const src = sourceByRelation.get(r.name);
+      return {
+        name: r.name,
+        kind: r.kind,
+        approxRows: r.rows,
+        open: Boolean(src),
+        ...(src ? { source: src.id } : {}),
+        columns: r.columns.map(c => {
+          const f = fieldByColumn.get(`${r.name}.${c.name}`);
+          return { name: c.name, type: c.type, ...(f ? { field: f.id } : {}) };
+        }),
+        ...(r.columnsTruncated ? { columnsTruncated: true } : {}),
+      };
+    }),
+    ...(audit.relationsTruncated ? { relationsTruncated: true } : {}),
+  };
+  fullSchemaCache.set(ctx.datasetId, { at: Date.now(), value });
+  return value;
+}
+
 async function create(ctx, viewerId, body) {
   const meta = readMeta(body, { required: true });
   const verified = await checkOrThrow(body.spec, ctx.brief, ctx);
@@ -242,7 +366,8 @@ async function create(ctx, viewerId, body) {
   await screens.update(ctx.datasetId, row.id, { summary: meta.summary, icon: meta.icon });
   const stored = await screens.storeSpec(ctx.datasetId, row.id, body.spec);
   dataService.invalidate(ctx.datasetId, row.id);
-  return { screen: stored, check: verified, planStored: planErrors.length === 0 };
+  const version = await recordVersion(ctx.datasetId, stored, { by: 'ai', note: body.note || 'Created' });
+  return { screen: stored, check: verified, planStored: planErrors.length === 0, version };
 }
 
 /**
@@ -270,6 +395,8 @@ async function update(ctx, viewerId, screenId, body) {
   if (!spec) throw httpError(400, 'this app has no spec yet — send one in "spec"');
   const verified = body.spec !== undefined ? await checkOrThrow(spec, ctx.brief, ctx) : null;
 
+  await ensureBaseline(ctx.datasetId, screen);
+
   const merged = {
     title: meta.title || screen.title,
     summary: meta.summary || screen.summary || meta.title || screen.title,
@@ -284,7 +411,8 @@ async function update(ctx, viewerId, screenId, body) {
     row = await screens.storeSpec(ctx.datasetId, screen.id, spec);
     dataService.invalidate(ctx.datasetId, screen.id);
   }
-  return { screen: row, check: verified };
+  const version = await recordVersion(ctx.datasetId, row, { by: 'ai', note: body.note || null });
+  return { screen: row, check: verified, version };
 }
 
 /** "Save to Apps" — same store call as the builder's button. */
@@ -313,7 +441,14 @@ async function remove(ctx, viewerId, screenId) {
   }
   const ok = await screens.removeDraft(ctx.datasetId, screen.id);
   if (!ok) throw httpError(409, 'the draft could not be deleted — it may have been published or deleted meanwhile; list the apps again');
+  // The app is gone; its history would only be orphaned rows.
+  await docStore.deleteCollection(ctx.datasetId, VERSIONS_MODULE, versionsOf(screen.id)).catch(err =>
+    console.warn(`[ai-builder] versions of ${screen.id} not removed: ${err.message}`));
   return { deleted: true, id: screen.id, title: screen.title };
 }
 
-module.exports = { check, create, update, publish, unpublish, remove, derivePlan, labelOf };
+module.exports = {
+  check, create, update, publish, unpublish, remove,
+  listVersions, restoreVersion, fullSchema,
+  derivePlan, labelOf,
+};
