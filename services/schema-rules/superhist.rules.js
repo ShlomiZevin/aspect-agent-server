@@ -70,6 +70,14 @@ recorded alongside the charge, NOT deducted from it.
 - "revenue" / "sales" / "מכירות" → \`SUM(line_total)\` on product lines
 - "subsidy" / "סבסוד" → \`SUM(subsidy)\`, its own measure, never mixed in
 
+NOT A SALE: orders whose \`display_status\` is 'לא הושלם' (not completed),
+'זוכה' (fully credited), 'בוטל' (cancelled) or 'Reversed' are excluded from
+every sales measure — revenue, cost, gross profit, units, order count, member
+count. The materialized views already exclude them. A query on the raw tables
+must add \`COALESCE(o.display_status, '') NOT IN ('לא הושלם', 'זוכה', 'בוטל', 'Reversed')\`.
+Only a question ABOUT those statuses (cancellations, unfinished orders) reads
+them, from \`orders\` or \`mv_orders_by_status\`.
+
 ### RULE 3a — cost and gross profit (the client's own formula)
 \`order_lines.line_cost\` is the cost of the WHOLE line (quantity × unit cost),
 filled on every product line.
@@ -157,11 +165,13 @@ describe it as one.
   products with stock_qty > 0. Return turnover (times per year), days of stock
   (365 / turnover), the COGS, the stock value and the date range, and state
   the formula in one line. Stock value is today's snapshot, not an average.
-- **Cancellations and credits** ("ביטולי עסקה", "זיכויים"): partial credits are
-  orders with \`display_status = 'זוכה חלקית'\` — give their count and order
-  value, by month when a period is not given. This export has NO cancelled
-  status and NO credited amount: say so plainly in the answer, never present
-  the partial-credit count as "all cancellations".
+- **Cancellations and credits** ("ביטולי עסקה", "זיכויים"): one row per
+  status from \`orders\` by \`display_status\` — 'זוכה חלקית' (partially
+  credited), 'זוכה' (fully credited), 'בוטל' (cancelled), 'Reversed' — with
+  order count and order value (sum of the order's lines), by month when a
+  period is not given. A status with no orders is reported as zero, not
+  skipped. Order value is NOT the credited amount; say so, never present it as
+  money refunded. Never present the partial-credit count as "all cancellations".
 
 ### RULE 7b — subsidy is SIGNED. Never report only the net.
 \`order_lines.subsidy\` is positive on some product lines and NEGATIVE on most
