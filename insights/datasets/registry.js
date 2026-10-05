@@ -114,6 +114,9 @@ const REGISTRY = {
       gradientTo: '#6366F1',
     },
     defaultBrandLabel: 'The Stock, a discount retail chain',
+    // Hebrew shell name: Chrome's auto-translate rendered "The Stock" as
+    // "המניה" (a share) for the client (2026-10-05). Prompts stay as configured.
+    i18n: { he: { name: 'הסטוק' } },
     defaultDataModelDescription: 'a large facts table mixing sales/inventory/targets/purchase-order rows by record type, pre-aggregated into daily materialized views by SKU, store, and cashier for fast BI queries, joined to products, warehouses, and customers. Common measures: revenue (ex/inc VAT), quantity sold, transaction count, loyalty signups, inventory balance/value. Common dimensions: store/warehouse, product/SKU, cashier, date (day/week/month/quarter), customer.',
     defaultBootstrapPrompts: [
       'Which stores are furthest behind their sales target this quarter, and why',
