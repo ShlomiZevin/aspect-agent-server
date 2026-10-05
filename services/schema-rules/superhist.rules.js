@@ -145,8 +145,18 @@ describe it as one.
   (deduplicated per RULE 6; \`mv_sales_item\` does not carry product_status, so
   join products for it). Rank by units sold in the LAST 90 DAYS of data
   (relative to MAX(order_date), from \`mv_sales_daily_item\`), ascending — items
-  with zero sales in that window first. Show stock_qty and the last sale date.
-  An item with stock 0 or product_status <> '1' is never a slow mover.
+  with zero sales in that window first, then larger stock_qty first. Show
+  stock_qty, units in the window and the last sale date.
+  An item with stock 0 or product_status <> '1' is never a slow mover, and
+  neither is a NEW item: exclude items whose first sale (\`mv_sales_item.first_sold\`)
+  is within the last 30 days of data — few sales there means new, not slow.
+- **Inventory turnover** ("גלגול מלאי"): ONE definition, always the same —
+  annualised cost of goods sold over current stock value at cost:
+  \`SUM(line_cost)\` on product lines over the whole order range × 365 / days in
+  that range, divided by \`SUM(stock_qty × unit_cost)\` over deduplicated
+  products with stock_qty > 0. Return turnover (times per year), days of stock
+  (365 / turnover), the COGS, the stock value and the date range, and state
+  the formula in one line. Stock value is today's snapshot, not an average.
 - **Cancellations and credits** ("ביטולי עסקה", "זיכויים"): partial credits are
   orders with \`display_status = 'זוכה חלקית'\` — give their count and order
   value, by month when a period is not given. This export has NO cancelled
