@@ -172,6 +172,17 @@ describe it as one.
   period is not given. A status with no orders is reported as zero, not
   skipped. Order value is NOT the credited amount; say so, never present it as
   money refunded. Never present the partial-credit count as "all cancellations".
+- **Credited amounts and reasons** ("סכום זיכוי", "סיבת זיכוי", "כמה זיכינו"):
+  \`${schemaName}.credits\` — one row per credited product line: order_id,
+  product_name, quantity, credit_reason, credited_at, credit_amount,
+  order_status. quantity, credit_amount and credited_at are stored as TEXT:
+  use \`NULLIF(regexp_replace(credit_amount, '[^0-9.-]', '', 'g'), '')::numeric\`
+  and \`credited_at::timestamp\`. Group by credit_reason for "why", by
+  \`date_trunc('month', credited_at::timestamp)\` for trends. The file covers
+  only the dates it covers — state its MIN/MAX credited_at in the answer and
+  never extrapolate to months it does not reach. Cancellation and credit
+  questions answer with BOTH the status counts above AND the credited amount
+  from this table.
 
 ### RULE 7b — subsidy is SIGNED. Never report only the net.
 \`order_lines.subsidy\` is positive on some product lines and NEGATIVE on most

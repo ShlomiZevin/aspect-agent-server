@@ -32,6 +32,10 @@ const KNOWN_FACT_TABLES = {
   // inside warhs_cust_part_date_key). mv_sales is the resolved view that
   // carries transaction_date; point the data-through lookup at it.
   tevanaot: 'mv_sales',
+  // superhist's fact table (order_lines) has no date — the date lives on the
+  // order. Without this entry the data loader and the chat header showed no
+  // "data from" date at all.
+  superhist: 'orders',
 };
 
 /** Date column candidates, most specific first. */
