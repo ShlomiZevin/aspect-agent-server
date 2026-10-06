@@ -92,6 +92,9 @@ const FILE_TO_TABLE = {
   // Task #72 — daily inventory snapshot, see the header comment. Confirmed
   // against the real GCS delivery 2026-09-14.
   'StockHistoryהסופר החברתי_CSV.csv': 'stock_history',
+  // Task #97 — credited product lines, added by the client 2026-10-05 after
+  // the CEO asked for cancellations and credits. See column-aliases-superhist.js.
+  'Canceldהסופר החברתי_CSV.csv': 'credits',
   // Deliberately NOT loaded (see header): Dim, Dim1, Measure, Measures,
   // OrderLine_Last_7_Days_1.
 };

@@ -292,6 +292,27 @@ router.get('/:datasetId/screens/:id/data', handle(async (req, res) => {
   }));
 }));
 
+// ── "build with your own AI" (task #96) ──────────────────────────────────
+
+/**
+ * The personal link the Apps shelf hands out — the door itself lives in
+ * otto/routes/mcp.routes.js. The token is bound to this dataset AND to the
+ * viewer, so what the person's AI saves lands as THEIR draft.
+ */
+router.get('/:datasetId/ai-link', handle(async (req, res) => {
+  const tokens = require('../services/mcp-token.service');
+  const viewerId = readViewerId(req);
+  if (!viewerId) { const e = new Error('viewerId is required'); e.status = 400; throw e; }
+  if (!await tokens.doorOpen(req.params.datasetId)) {
+    const e = new Error('Building with your own AI is not enabled for this account'); e.status = 403; throw e;
+  }
+  const token = await tokens.issue(req.params.datasetId, viewerId);
+  // On the public site, never the backend: Hosting proxies the door to this
+  // service (same rule as the URLs inside the guide — mcp.routes publicOrigin).
+  const { publicOrigin } = require('./mcp.routes');
+  res.json({ url: `${publicOrigin(req)}/intelligence/${encodeURIComponent(req.params.datasetId)}/mcp/${token}` });
+}));
+
 // ── the generic doc store (no v1 block writes here yet) ──────────────────
 
 router.get('/:datasetId/store/:moduleId/:collection', handle(async (req, res) => {

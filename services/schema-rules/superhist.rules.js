@@ -70,6 +70,14 @@ recorded alongside the charge, NOT deducted from it.
 - "revenue" / "sales" / "מכירות" → \`SUM(line_total)\` on product lines
 - "subsidy" / "סבסוד" → \`SUM(subsidy)\`, its own measure, never mixed in
 
+NOT A SALE: orders whose \`display_status\` is 'לא הושלם' (not completed),
+'זוכה' (fully credited), 'בוטל' (cancelled) or 'Reversed' are excluded from
+every sales measure — revenue, cost, gross profit, units, order count, member
+count. The materialized views already exclude them. A query on the raw tables
+must add \`COALESCE(o.display_status, '') NOT IN ('לא הושלם', 'זוכה', 'בוטל', 'Reversed')\`.
+Only a question ABOUT those statuses (cancellations, unfinished orders) reads
+them, from \`orders\` or \`mv_orders_by_status\`.
+
 ### RULE 3a — cost and gross profit (the client's own formula)
 \`order_lines.line_cost\` is the cost of the WHOLE line (quantity × unit cost),
 filled on every product line.
@@ -119,10 +127,72 @@ revenue by 44.6%.
 
 ### RULE 7 — two status columns, and they disagree
 \`order_status\` (the system's) and \`display_status\` (the Hebrew display value)
-differ on 7,176 of 19,062 orders. Whichever you use, NAME it in the output
-column so the reader knows which one they got. \`counts_for_totals\` is 1 on
-every row in this delivery and filters nothing — do not use it as a filter and
-do not describe it as one.
+disagree on thousands of orders. \`display_status\` is the CURRENT one: where
+they differ, display_status is the later stage (order_status still says
+'ממתין לשליח' on orders display_status already shows as 'הושלם'). So any
+question about an order's current state — waiting, delivered, credited — uses
+\`display_status\` ONLY; never OR the two columns together, which counts an
+already-completed order as still waiting. NAME the column in the output.
+\`counts_for_totals\` filters nothing — do not use it as a filter and do not
+describe it as one.
+
+### RULE 7a — operational questions the client asks by name
+- **Deliveries waiting for a courier / not delivered** ("ממתין לשליח", "לא
+  סופקו"): \`display_status = 'ממתין לשליח'\`. There is NO customer city or
+  address in this data. When the question asks "by city", group by date only
+  and add a column or note saying city is not in the data — never substitute
+  shipping_method or anything else for city.
+- **Delayed deliveries** ("משלוחים מעוכבים"): orders with
+  \`display_status = 'ממתין לשליח'\` placed 10 or more calendar days before the
+  last order date in the data:
+  \`order_date <= (SELECT MAX(order_date) FROM ${schemaName}.orders) - 10\`.
+  List order_id, order_date, days waiting (last order date − order_date),
+  shipping_method, newest first.
+- **Slow-moving products** ("מלאי איטי", "slow movers"): ONLY products that are
+  open for sale AND have stock — \`products.product_status = '1' AND stock_qty > 0\`
+  (deduplicated per RULE 6; \`mv_sales_item\` does not carry product_status, so
+  join products for it). Rank by units sold in the LAST 90 DAYS of data
+  (relative to MAX(order_date), from \`mv_sales_daily_item\`), ascending — items
+  with zero sales in that window first, then larger stock_qty first. Show
+  stock_qty, units in the window and the last sale date.
+  An item with stock 0 or product_status <> '1' is never a slow mover, and
+  neither is a NEW item: exclude items whose first sale (\`mv_sales_item.first_sold\`)
+  is within the last 30 days of data — few sales there means new, not slow.
+- **Inventory turnover** ("גלגול מלאי"): ONE definition, always the same —
+  annualised cost of goods sold over current stock value at cost:
+  \`SUM(line_cost)\` on product lines over the whole order range × 365 / days in
+  that range, divided by \`SUM(stock_qty × unit_cost)\` over deduplicated
+  products with stock_qty > 0. Return turnover (times per year), days of stock
+  (365 / turnover), the COGS, the stock value and the date range, and state
+  the formula in one line. Stock value is today's snapshot, not an average.
+- **Cancellations and credits** ("ביטולי עסקה", "זיכויים"): one row per
+  status from \`orders\` by \`display_status\` — 'זוכה חלקית' (partially
+  credited), 'זוכה' (fully credited), 'בוטל' (cancelled), 'Reversed' — with
+  order count and order value (sum of the order's lines), by month when a
+  period is not given. A status with no orders is reported as zero, not
+  skipped. Order value is NOT the credited amount; say so, never present it as
+  money refunded. Never present the partial-credit count as "all cancellations".
+- **Credited amounts and reasons** ("סכום זיכוי", "סיבת זיכוי", "כמה זיכינו"):
+  \`${schemaName}.credits\` — one row per credited product line: order_id,
+  product_name, quantity, credit_reason, credited_at, credit_amount,
+  order_status. quantity, credit_amount and credited_at are stored as TEXT:
+  use \`NULLIF(regexp_replace(credit_amount, '[^0-9.-]', '', 'g'), '')::numeric\`
+  and \`credited_at::timestamp\`. Group by credit_reason for "why", by
+  \`date_trunc('month', credited_at::timestamp)\` for trends. The file covers
+  only the dates it covers — state its MIN/MAX credited_at in the answer and
+  never extrapolate to months it does not reach. Cancellation and credit
+  questions answer with BOTH the status counts above AND the credited amount
+  from this table.
+
+### RULE 7b — subsidy is SIGNED. Never report only the net.
+\`order_lines.subsidy\` is positive on some product lines and NEGATIVE on most
+others (measured 2026-10-05: ~1.2M positive lines, ~1.9M negative). The plain
+SUM nets the two against each other and is not a meaningful "subsidy amount"
+on its own. For any subsidy question return three figures side by side:
+\`SUM(subsidy) FILTER (WHERE subsidy > 0)\` AS subsidy_positive,
+\`SUM(subsidy) FILTER (WHERE subsidy < 0)\` AS subsidy_negative, and
+\`SUM(subsidy)\` AS subsidy_net — from \`order_lines\` joined to \`orders\` for
+the date (the views carry only the net).
 
 ### RULE 8 — the calendar is a dimension, not evidence
 \`${schemaName}.calendar\` covers the whole year, which can reach past the last

@@ -82,6 +82,37 @@ const COLUMN_MAP = {
     { csvName: 'סטטוס לחישוב',       dbName: 'counts_for_totals',   type: 'TEXT'    },
     { csvName: 'תאריך',              dbName: 'order_date',          type: 'DATE'    },
     { csvName: 'תאריך עדכון',        dbName: 'updated_at',          type: 'TEXT'    },
+    // Added by the client 2026-10-05: the Canceld (credits) file was ALSO
+    // appended to Orders as extra rows — order id, status and these five
+    // columns filled, customer and everything else empty. 11,678 such rows
+    // over 1,653 orders in the first delivery, so an order could appear up to
+    // 194 times and every join to orders multiplied its lines. Mapped only so
+    // the rows are recognisable; create-superhist-indexes.js deletes them and
+    // drops these columns before anything is built. Credits are read from the
+    // `credits` table (the Canceld file) instead.
+    { csvName: 'שם מוצר',            dbName: 'credit_product_name', type: 'TEXT'    },
+    { csvName: 'כמות פריטים',        dbName: 'credit_quantity',     type: 'TEXT'    },
+    { csvName: 'סיבת הזיכוי',        dbName: 'credit_reason',       type: 'TEXT'    },
+    { csvName: 'תאריך הוספה',        dbName: 'credited_at',         type: 'TEXT'    },
+    { csvName: 'סכום זיכוי',         dbName: 'credit_amount',       type: 'TEXT'    },
+  ],
+
+  // ── credits (Canceld file, added by the client 2026-10-05) ─────────────────
+  // One row per credited product line: 11,678 rows over 1,653 orders in the
+  // first delivery, credited between 2026-08-02 and 2026-08-30. The reason is
+  // free text from the shop's back office ("משלוח בעיכוב – הפצה", "מוצר חסר –
+  // מרלוג"...). `order_status` is the order's status at export time, so the
+  // same order carries the same status on every one of its credit rows.
+  // TEXT for quantity and amount: a few rows carry a stray value in the reason
+  // column, and a NUMERIC cast must not fail the whole import over them.
+  credits: [
+    { csvName: 'מס הזמנה',           dbName: 'order_id',            type: 'TEXT'    },
+    { csvName: 'שם מוצר',            dbName: 'product_name',        type: 'TEXT'    },
+    { csvName: 'כמות פריטים',        dbName: 'quantity',            type: 'TEXT'    },
+    { csvName: 'סיבת הזיכוי',        dbName: 'credit_reason',       type: 'TEXT'    },
+    { csvName: 'תאריך הוספה',        dbName: 'credited_at',         type: 'TEXT'    },
+    { csvName: 'סכום זיכוי',         dbName: 'credit_amount',       type: 'TEXT'    },
+    { csvName: 'סטטוס הזמנה',        dbName: 'order_status',        type: 'TEXT'    },
   ],
 
   // ── product catalogue ───────────────────────────────────────────────────────

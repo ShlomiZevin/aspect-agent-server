@@ -185,6 +185,13 @@ app.use('/api/modules', require('./modules/routes/modules.routes'));
 // client from the admin Modules tab). See docs/features/otto.md.
 app.use('/api/otto', require('./otto/routes/otto.routes'));
 
+// "Build with your own AI" (task #96) — the door a client's own AI tool reads
+// to build Intelligence Center apps on Otto's engine. Outside /api because
+// people paste this URL; per-client signed token, gated on module
+// `ai-builder`. See docs/features/ai-builder.md.
+app.use('/intelligence', require('./otto/routes/mcp.routes'));
+app.use('/intelligence', require('./otto/routes/mcp.routes').errorHandler);
+
 // ─── Aspect Task Board ─────────────────────────────────────────────
 // Our own task board, in its OWN database (`aspect_tasks_db`), not the platform
 // DB. The separation is physical on purpose: the existing board in

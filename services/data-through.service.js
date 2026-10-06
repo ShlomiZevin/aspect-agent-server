@@ -32,6 +32,10 @@ const KNOWN_FACT_TABLES = {
   // inside warhs_cust_part_date_key). mv_sales is the resolved view that
   // carries transaction_date; point the data-through lookup at it.
   tevanaot: 'mv_sales',
+  // superhist's fact table (order_lines) has no date — the date lives on the
+  // order. Without this entry the data loader and the chat header showed no
+  // "data from" date at all.
+  superhist: 'orders',
 };
 
 /** Date column candidates, most specific first. */
@@ -221,6 +225,42 @@ async function resolveDataRange(pool, schema, { force = false } = {}) {
             if (dated > 0 && before / dated < 0.0005) first = bound;
           }
         } catch { /* statistics are an optimisation, never a requirement */ }
+
+        // When the outlier block is large enough to land in ANALYZE's sample,
+        // the histogram's first bound IS the outlier and the check above never
+        // fires (zolstock, 2026-10-05: 2,097 placeholder rows dated 1988-01-01
+        // put "data from 1988" back in the chat header). So walk forward from
+        // MIN one distinct date at a time — each step one index probe — and
+        // drop a leading date only while it is ISOLATED (4+ days before the
+        // next dated row) and everything before the next date stays under the
+        // same 0.05% of dated rows. Stray placeholders and scattered old
+        // purchase orders are isolated; real trading runs day after day (a
+        // weekend is at most a 3-day gap), so the walk stops on the real start.
+        // Size alone is not enough: hypertoy, tevanaot and newdeli open with
+        // genuinely tiny first days that a pure threshold discarded.
+        try {
+          const { rows: tot } = await pool.query(
+            `SELECT count(*)::bigint AS dated FROM ${schema}.${factTable}
+              WHERE "${dateCol}" IS NOT NULL AND "${dateCol}" <= CURRENT_DATE`
+          );
+          const dated = Number(tot[0]?.dated || 0);
+          for (let step = 0; first && dated > 0 && step < 60; step++) {
+            const { rows: nx } = await pool.query(
+              `SELECT MIN("${dateCol}")::text AS next FROM ${schema}.${factTable}
+                WHERE "${dateCol}" > $1 AND "${dateCol}" <= CURRENT_DATE`,
+              [first]
+            );
+            const next = nx[0]?.next;
+            if (!next) break;
+            if ((Date.parse(next) - Date.parse(first)) / 86400000 < 4) break;
+            const { rows: cnt } = await pool.query(
+              `SELECT count(*)::bigint AS before FROM ${schema}.${factTable} WHERE "${dateCol}" < $1`,
+              [next]
+            );
+            if (Number(cnt[0]?.before || 0) / dated >= 0.0005) break;
+            first = next;
+          }
+        } catch { /* the trim is an optimisation, never a requirement */ }
 
         value = { first, last };
       }

@@ -25,6 +25,8 @@ orders ──< order_lines >── products ── (categories)
 | `products` | 16,537 | catalogue; 1,340 of them sold, plus 141 sold items with NO catalogue row |
 | `categories` | 110 | marketing collections, **not** a taxonomy |
 | `calendar` | 367 | all of 2026 |
+| `stock_history` | ~3.3k/day | daily stock snapshot (task #72) |
+| `credits` | 11,678 | credited product lines, from 2026-10-05 |
 
 ## Five things measured on 2026-09-02 that shape everything
 
@@ -63,6 +65,31 @@ orders.
 Also worth knowing: `order_status` and `display_status` **disagree on 7,176 of
 19,062 orders**, and `counts_for_totals` is 1 on every row, so it filters
 nothing despite its name.
+
+## What changed since the first delivery
+
+Points 4 and 5 above are history. As of 2026-10-05:
+
+- **Cost exists** (2026-09-23): `order_lines.line_cost`, `products.unit_cost`,
+  `products.supplier_name`. Gross profit = `SUM(line_total - line_cost)`, the
+  client's Qlik formula. The F&V personal-choice box (item 1050394) still
+  ships cost 0.
+- **History** runs from 2026-01-01; the export starts there.
+- **Non-product order lines** carry `extra_kind` → `line_kind` is product /
+  shipping / coupon / discount.
+- **Credits** (2026-10-05): the `Canceld` file loads into `credits` (credited
+  product lines with reason and amount). The client also appended the same
+  rows to Orders; Phase 2 deletes them and refuses to swap if `orders` still
+  holds a duplicate order id (`create-superhist-indexes.js`).
+- **Non-sale statuses** (2026-10-05): orders now include 'לא הושלם', 'זוכה',
+  'בוטל', 'Reversed'. Every sales measure and MV excludes them; they stay
+  visible by status.
+- **`display_status` is the current status**; `order_status` lags it.
+- **Signed subsidy**: most product lines carry a negative subsidy; always
+  report positive / negative / net, never the bare net.
+
+Operational rules for the client's own tiles (waiting / delayed deliveries,
+slow movers, turnover, credits) are in `superhist.rules.js` RULE 7a.
 
 ## Files
 

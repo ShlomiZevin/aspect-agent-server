@@ -67,6 +67,51 @@ const LINE_KIND_WITH_EXTRA_SQL = `
       END
     ) STORED`;
 
+/**
+ * From 2026-10-05 the Orders export also carries the Canceld (credits) rows,
+ * appended as extra rows: the order id, its status and five credit columns,
+ * with the customer and every other order column empty. Left in, one order
+ * could appear up to 194 times and every join from order_lines to orders
+ * multiplied that order's revenue by its number of credit rows. The same rows
+ * arrive on their own in the Canceld file (`credits`), so here they are
+ * removed and the credit columns dropped.
+ *
+ * Then orders must hold ONE row per order. If it still does not, this throws:
+ * a failed Phase 2 keeps yesterday's correct data live, which beats swapping
+ * in inflated totals.
+ *
+ * Idempotent — Phase 2 is retried up to five times on the same shadow schema.
+ */
+const OPTIONAL_TABLES = new Set(['credits']);
+
+const CREDIT_COLUMNS = ['credit_product_name', 'credit_quantity', 'credit_reason', 'credited_at', 'credit_amount'];
+
+async function removeAppendedCreditRows(client, schema, log) {
+  const { rows: cols } = await client.query(
+    `SELECT column_name FROM information_schema.columns
+      WHERE table_schema = $1 AND table_name = 'orders' AND column_name = ANY($2)`,
+    [schema, CREDIT_COLUMNS]
+  );
+  if (cols.length) {
+    const del = await client.query(
+      `DELETE FROM ${schema}.orders
+        WHERE (customer_id IS NULL OR customer_id = '')
+          AND (credit_amount IS NOT NULL OR credit_reason IS NOT NULL)`
+    );
+    log(`Removed ${del.rowCount.toLocaleString()} credit row(s) appended to orders (they load into credits instead).`);
+    for (const { column_name } of cols) {
+      await client.query(`ALTER TABLE ${schema}.orders DROP COLUMN IF EXISTS "${column_name}"`);
+    }
+  }
+
+  const { rows: [dup] } = await client.query(
+    `SELECT COUNT(*) - COUNT(DISTINCT order_id) AS extra FROM ${schema}.orders`
+  );
+  if (Number(dup.extra) > 0) {
+    throw new Error(`orders holds ${dup.extra} duplicate order row(s) — joins would multiply revenue; not swapping`);
+  }
+}
+
 const INDEXES = [
   // ── order_lines (654,370 rows, two row kinds) ──────────────────────────────
   // Composite first: almost every real query is "product lines of these
@@ -92,6 +137,9 @@ const INDEXES = [
 
   // ── calendar (367 rows) ────────────────────────────────────────────────────
   { name: 'idx_calendar_date',          table: 'calendar', col: '"date"' },
+
+  // ── credits (11,678 rows, from 2026-10-05) ─────────────────────────────────
+  { name: 'idx_credits_order',          table: 'credits', col: '"order_id"' },
 ];
 
 async function createIndexes(targetSchema, emitLog) {
@@ -129,15 +177,27 @@ async function createIndexes(targetSchema, emitLog) {
     } else {
       log('line_kind already present — skipping.');
     }
+
+    await removeAppendedCreditRows(client, schema, log);
   } finally {
     await client.query('RESET statement_timeout').catch(() => {});
     client.release();
   }
 
+  // A table whose file may be absent from the delivery is indexed only when it
+  // loaded — an index on a missing table fails Phase 2 on every retry, which is
+  // how zolstock's reload froze twice.
+  const { rows: present } = await pool.query(
+    `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name = ANY($2)`,
+    [schema, [...OPTIONAL_TABLES]]
+  );
+  const presentSet = new Set(present.map(r => r.table_name));
+  const indexes = INDEXES.filter(ix => !OPTIONAL_TABLES.has(ix.table) || presentSet.has(ix.table));
+
   await createIndexesForSchema({
     pool,
     schema,
-    indexes: INDEXES,
+    indexes,
     statementTimeoutMs: 3600000, // 60 min per index
     log,
   });
@@ -149,4 +209,4 @@ if (require.main === module) {
   createIndexes().catch(e => { console.error(e.message); process.exit(1); });
 }
 
-module.exports = { createIndexes, INDEXES, LINE_KIND_SQL };
+module.exports = { createIndexes, INDEXES, LINE_KIND_SQL, removeAppendedCreditRows };

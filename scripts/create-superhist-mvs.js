@@ -80,6 +80,19 @@ const ORDER_TOTALS = schema => `
    GROUP BY order_id`;
 
 /**
+ * Orders that are NOT a sale. Until 2026-10-04 the export held only orders
+ * that went through; on 2026-10-05 it started to include these four statuses
+ * as well — 19,000 orders and ₪7.8M of order lines, 'לא הושלם' (not
+ * completed) alone 17,902 orders / ₪7.45M. Counting them would have raised
+ * revenue ~17% overnight with nothing on the business side behind it. So every
+ * sales measure keeps the meaning it had: these orders are excluded, and
+ * mv_orders_by_status still shows them, so they stay answerable as their own
+ * question. Today they have no rows, so this filter changes nothing.
+ */
+const NON_SALE_STATUSES = `('לא הושלם', 'זוכה', 'בוטל', 'Reversed')`;
+const IS_SALE = alias => `COALESCE(${alias}.display_status, '') NOT IN ${NON_SALE_STATUSES}`;
+
+/**
  * Product lines joined to their order and the item master.
  *
  * The date lives on the ORDER, not the line, so every time-based measure has to
@@ -108,7 +121,8 @@ const SALES = schema => `
     FROM ${schema}.order_lines l
     JOIN ${schema}.orders o ON o.order_id = l.order_id
     LEFT JOIN (${ITEM_DIM(schema)}) i ON i.item_id = l.item_id
-   WHERE l.line_kind = 'product'`;
+   WHERE l.line_kind = 'product'
+     AND ${IS_SALE('o')}`;
 
 function mvs(schema) {
   return [
@@ -148,6 +162,7 @@ function mvs(schema) {
              GROUP BY order_id
           ) k ON k.order_id = o.order_id
          WHERE o.order_date IS NOT NULL
+           AND ${IS_SALE('o')}
          GROUP BY o.order_date`,
       indexes: [{ name: 'uq_mv_orders_daily', col: 'order_date', unique: true }],
     },
@@ -239,6 +254,7 @@ function mvs(schema) {
           FROM ${schema}.orders o
           LEFT JOIN (${ORDER_TOTALS(schema)}) t ON t.order_id = o.order_id
          WHERE o.customer_id IS NOT NULL
+           AND ${IS_SALE('o')}
          GROUP BY o.customer_id`,
       indexes: [{ name: 'uq_mv_customers', col: 'customer_id', unique: true }],
     },

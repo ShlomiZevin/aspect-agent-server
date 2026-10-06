@@ -171,11 +171,30 @@ const COLUMN_MAP = {
   // ── calendar — date dimension (733 rows, 2025-01-01 onward) ─────────────────
   // `holiday` carries Hebrew holiday names on 111 rows (15%) — genuinely useful
   // for a retailer, since Israeli trade is strongly holiday-driven.
+  //
+  // 2026-10-04: the client dropped the "מנותק" suffix from every header and
+  // added nine Qlik calendar columns (same layout as superhist's calendar).
+  // The night's Phase 2 then failed on idx_calendar_cal_date ("column cal_date
+  // does not exist") and froze live data at 2026-10-02. Both header sets are
+  // mapped so either file loads; `month` is now an English short name ('Jan').
   calendar: [
     { csvName: 'תאריך מנותק',   dbName: 'cal_date', type: 'DATE'    },
     { csvName: 'שנה מנותק',     dbName: 'year',     type: 'INTEGER' },
     { csvName: 'חודש מנותק',    dbName: 'month',    type: 'TEXT'    },
     { csvName: 'חג עברי מנותק', dbName: 'holiday',  type: 'TEXT'    },
+    { csvName: 'תאריך',          dbName: 'cal_date',        type: 'DATE'    },
+    { csvName: 'שנה',            dbName: 'year',            type: 'INTEGER' },
+    { csvName: 'חודש',           dbName: 'month',           type: 'TEXT'    },
+    { csvName: 'חג עברי',        dbName: 'holiday',         type: 'TEXT'    },
+    { csvName: 'שנה וחודש',      dbName: 'year_month',      type: 'TEXT'    },
+    { csvName: 'רבעון',          dbName: 'quarter',         type: 'TEXT'    },
+    { csvName: 'שנה ורבעון',     dbName: 'year_quarter',    type: 'TEXT'    },
+    { csvName: 'שבוע',           dbName: 'week',            type: 'TEXT'    },
+    { csvName: 'יום',            dbName: 'day',             type: 'TEXT'    },
+    { csvName: 'Period',         dbName: 'period',          type: 'TEXT'    },
+    { csvName: 'יום בשבוע',      dbName: 'day_of_week',     type: 'TEXT'    },
+    { csvName: 'Last2Week',      dbName: 'last_2_week',     type: 'TEXT'    },
+    { csvName: 'LastMonth_Flag', dbName: 'last_month_flag', type: 'TEXT'    },
   ],
 };
 
