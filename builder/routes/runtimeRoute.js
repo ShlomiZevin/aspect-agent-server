@@ -214,6 +214,12 @@ router.get('/:slug/admin/conversations', async (req, res) => {
       updatedAt: conv.updatedAt,
       messageCount: counts[conv.id] || 0,
       currentCrewId: (conv.metadata && conv.metadata.currentCrewId) || null,
+      // Where the conversation was born (stamped at creation, see POST
+      // /conversations): 'live' = the outside chat, 'builder' = the
+      // builder's own test chat. null = untagged (older rows).
+      source: conv.metadata && conv.metadata.kind === 'live' ? 'live'
+        : conv.metadata && conv.metadata.kind === 'builder-preview' ? 'builder'
+          : null,
       // Owner identity — `ownerUserId` is the external id the builder
       // mints client-side; `userId` is the internal serial.
       userId: conv.userId,
