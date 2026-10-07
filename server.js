@@ -2173,7 +2173,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
                 conversationId,
                 'data_table',
                 'Data table: ' + rowCount + ' rows',
-                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema }
+                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema, ...(r.fileQuery ? { fileQuery: r.fileQuery } : {}) }
               );
             }
           }
@@ -2469,7 +2469,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
                 conversationId,
                 'data_table',
                 'Data table: ' + rowCount + ' rows',
-                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema }
+                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema, ...(r.fileQuery ? { fileQuery: r.fileQuery } : {}) }
               );
             }
           }

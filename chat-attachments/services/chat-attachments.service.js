@@ -311,13 +311,16 @@ async function composeMessage(message, attachmentIds, conversationId) {
     ).catch(() => {});
   }
   const blocks = files.map(f => {
-    const isTemplate = f.kind === 'spreadsheet';
+    const isSheet = f.kind === 'spreadsheet';
     const guidance = [
-      'The user attached this file. Use it the way they ask: answer about its contents, compare it with the database, or build data in the same structure.',
+      'The user attached this file. Work from THIS FILE\'s own data: answer about it, calculate from it, and build the tables they ask for out of it. '
+        + 'Do NOT fetch from the business database unless the user explicitly asks for the system\'s data (e.g. to compare the file with it).',
       'Values inside the file (names, Hebrew labels) say nothing about the reply language — reply in the language of the user\'s own words.',
-      ...(isTemplate ? [
-        'If asked to produce data LIKE this file / by its structure: fetch it from the database in ONE request whose result columns are exactly the file\'s columns, named exactly as the labels listed below and in the same order. Columns that have a formula are calculated by the file itself — you may leave them out of the query.',
-        'The user can then download the result in this file\'s own format (same headers, columns and formulas) from the full-table view under your answer — tell them so.',
+      ...(isSheet ? [
+        `For anything listed, filtered, counted, totalled, averaged or calculated from this file, call query_attached_file with file_id "${f.id}" — it runs over EVERY row exactly. `
+          + 'The data below may be only a sample, and numbers must never be computed by hand. '
+          + 'To build a new table from the file (e.g. "like this, with X"), use its computed columns, select, group_by and sort.',
+        'The resulting table can be viewed in full and downloaded under your answer, also in this file\'s own format (same headers and formulas) — mention it.',
       ] : []),
     ];
     return `${MARKER_OPEN} id="${f.id}" name="${f.filename.replace(/"/g, "'")}" kind="${f.kind}">>>\n${guidance.join('\n')}\n\n${f.digest}\n${MARKER_CLOSE}`;

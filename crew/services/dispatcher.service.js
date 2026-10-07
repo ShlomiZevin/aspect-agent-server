@@ -742,6 +742,13 @@ class DispatcherService {
       console.log(`🌡️ [modules] scoped turn pins temperature=${resolvedTemperature}`);
     }
 
+    // Files attached in chat (task #100): with a spreadsheet in this
+    // conversation, any agent gets `query_attached_file` to work over the
+    // file's own rows exactly. Like module tools, attached before the handler
+    // map and removed again on turns without one.
+    await require('../../chat-attachments/services/file-tool.service')
+      .attachTo(crew, params.conversationId);
+
     // Build tool handler map from crew member tools
     const toolHandlers = {};
     for (const tool of crew.tools) {
