@@ -19,7 +19,42 @@ const PREVIEW_ROW_LIMIT = 20;
 // Column-name heuristic for "this numeric column is money" — used to prefix ₪
 // consistently everywhere. Deterministic and schema-agnostic (relies only on
 // the English column-naming convention already used across all BI schemas).
-const MONEY_KEY_RE = /sale|revenue|cost|profit|price|amount|value|vat|ils/i;
+//
+// "sale" alone is NOT enough (task #101): a client saw "2₪" in a column of
+// sales LINES — `sales_lines`, `sales_qty`, `sale_count` are counts of sales,
+// not money. So a name whose only money word is "sale" is money only when it
+// carries no quantity word; an explicit money word (revenue, cost, price,
+// amount…) is money regardless. `ils` is matched as its own token — inside a
+// word ("details") it is not a currency.
+//
+// Matched on whole WORDS of the name, not substrings: "baseline" is not
+// "line", and "actual_sales_7days" is sales over 7 days (money), while
+// "days_since_last_sale" is a duration. Checked against the 505 column names
+// the chat had actually shown: exactly `sales_lines` and
+// `days_since_last_sale` lose the ₪, nothing gains or loses it otherwise.
+const STRONG_MONEY_KEY_RE = /revenue|cost|profit|price|amount|value|vat/i;
+const QUANTITY_WORDS = new Set([
+  'count', 'qty', 'quantity', 'quantities', 'unit', 'units', 'line', 'lines', 'transaction', 'transactions',
+  'txn', 'txns', 'item', 'items', 'order', 'orders', 'customer', 'customers', 'visit', 'visits', 'ticket',
+  'tickets', 'receipt', 'receipts', 'basket', 'baskets', 'sku', 'skus', 'member', 'members', 'num', 'number',
+]);
+
+function keyWords(key) {
+  return String(key)
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+function isMoneyKey(key) {
+  const words = keyWords(key);
+  if (STRONG_MONEY_KEY_RE.test(key) || words.includes('ils')) return true;
+  if (!words.some(w => w.startsWith('sale'))) return false;
+  if (words.some(w => QUANTITY_WORDS.has(w))) return false;           // sales_lines, sale_count
+  const isDuration = (words[0] === 'days' || words[0] === 'day') || words.includes('since');
+  return !isDuration;                                                  // days_since_last_sale
+}
 
 // Percentage/ratio columns (e.g. "revenue_pct_change", "conversion_pct") must
 // NEVER get the ₪ prefix even though their name also contains a money word
@@ -58,7 +93,8 @@ const HE_WORD_MAP = {
   warehouse: 'מחסן', branch: 'סניף', store: 'חנות', stores: 'חנויות', region: 'אזור',
   revenue: 'הכנסות', sales: 'מכירות', sale: 'מכירה', cost: 'עלות',
   profit: 'רווח', margin: 'שולי רווח', qty: 'כמות', quantity: 'כמות',
-  sold: 'שנמכרה', count: 'מספר', line: 'שורות', customer: 'לקוח', customers: 'לקוחות',
+  sold: 'שנמכרה', count: 'מספר', line: 'שורות', lines: 'שורות', units: 'יחידות', unit: 'יחידה',
+  items: 'פריטים', customer: 'לקוח', customers: 'לקוחות',
   product: 'מוצר', products: 'מוצרים', item: 'פריט', description: 'תיאור',
   family: 'משפחה', part: 'מק"ט', sku: 'מק"ט', price: 'מחיר', amount: 'סכום',
   ex: 'לפני', inc: 'כולל', vat: 'מע"מ', number: 'מספר', date: 'תאריך',
@@ -78,7 +114,7 @@ const HE_WORD_MAP = {
 // "קוד מחסן" — code of-warehouse — not "מחסן קוד"), the reverse of English
 // ("warehouse code"). When the last English token is one of these common
 // head nouns, its Hebrew translation is moved to the front of the label.
-const HE_HEAD_NOUNS = new Set(['code', 'name', 'description', 'number', 'count', 'id', 'price', 'value', 'balance', 'type', 'date']);
+const HE_HEAD_NOUNS = new Set(['code', 'name', 'description', 'number', 'count', 'id', 'price', 'value', 'balance', 'type', 'date', 'lines', 'units', 'items']);
 
 function isHebrewText(str) {
   return HEBREW_RE.test(String(str || ''));
@@ -135,7 +171,7 @@ function buildDisplayColumns(columns, rows, hebrew = false) {
       // so formatting stays correct even when the label is translated below.
       label: prettifyLabel(key, hebrew),
       decimals,                                    // null = plain text / identifier column
-      isMoney: allNumeric && !isPercent && !isStat && MONEY_KEY_RE.test(key),
+      isMoney: allNumeric && !isPercent && !isStat && isMoneyKey(key),
       isPercent,
     };
   });

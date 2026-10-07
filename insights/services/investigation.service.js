@@ -548,6 +548,8 @@ The detail page is NOT one fixed template — you choose, for THIS specific find
 
 Pick 1 to 3 blocks — whichever combination best presents THIS finding. Do not default to using all of them out of habit; a simple finding might genuinely need only a "stat_callout", while a multi-store ranking finding might need "ranked_list" + "scenarios". Never include a block type that doesn't add real information beyond what's already in another block you picked.
 
+CURRENCY: ₪ goes ONLY on money amounts (revenue, sales value, cost, profit, price, inventory value). NEVER on counts or quantities — units, items, lines, transactions, customers, stores, days — nor on percentages or ratios: "2 lines", "1,240 units", "35%", never "₪2" or "2₪". A "unit" field of a block measuring a count names the count ("lines", "units"), never ₪.
+
 Respond with ONLY a JSON object with this exact shape (all string fields, ₪ for currency, matching this house style):
 {
   "tag": "short uppercase label, e.g. \\"OPPORTUNITY · CROSS-SELL\\" or \\"MARGIN ALERT\\" or \\"RISK\\" or \\"TREND\\" or \\"INVENTORY\\"",
