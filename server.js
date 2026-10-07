@@ -200,6 +200,10 @@ app.use('/intelligence', require('./otto/routes/mcp.routes').errorHandler);
 // See taskboard/README.md.
 app.use('/api/taskboard', require('./taskboard/routes/taskboard.routes'));
 
+// Files attached in chat (task #100): upload → digest, and filling an attached
+// spreadsheet back in its own structure. See chat-attachments/.
+app.use('/api/chat-attachments', require('./chat-attachments/routes/chat-attachments.routes'));
+
 // ─── Google Sign-In ────────────────────────────────────────────────
 // Switchable per client through the google-auth module. Where it is off, the
 // login page is what it has always been: a name and a phone number. Mounted
@@ -2014,11 +2018,24 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     // Add "Message received" thinking step
     thinkingService.addMessageReceivedStep(conversationId, message);
 
+    // Attached files (task #100): their digests ride inside the user message,
+    // between markers, both into this turn and into the saved history — so
+    // every crew of every agent sees the file now and in later turns, with no
+    // per-crew code. The client renders the marked block as a file chip.
+    const chatAttachments = require('./chat-attachments/services/chat-attachments.service');
+    const turnMessage = Array.isArray(req.body.attachments) && req.body.attachments.length > 0
+      ? await chatAttachments.composeMessage(message, req.body.attachments, conversationId)
+      : message;
+    // With a spreadsheet attached anywhere in this conversation, every data
+    // result gets the table viewer — that is where "download in the file's
+    // format" lives — even one small enough to be printed inline.
+    const hasTemplateFile = await chatAttachments.conversationHasSpreadsheet(conversationId).catch(() => false);
+
     // Save user message to database
     const { message: userMsg } = await conversationService.saveUserMessage(
       conversationId,
       agentNameToUse,
-      message,
+      turnMessage,
       userId || null
     );
     // Send user message ID to client so it can be deleted later
@@ -2074,7 +2091,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
 
       // Dispatch through crew system
       for await (const chunk of dispatcherService.dispatch({
-        message,
+        message: turnMessage,
         conversationId,
         agentName: agentNameToUse,
         overrideCrewMember,
@@ -2147,7 +2164,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
           if (chunk.type === 'function_result' && Array.isArray(chunk.result?._fullData) && chunk.result._fullData.length > 0) {
             const r = chunk.result;
             const rowCount = r.rowCount ?? r._fullData.length;
-            const hasViewer = r.hasViewer ?? (rowCount > tableFormatService.PREVIEW_ROW_LIMIT);
+            const hasViewer = hasTemplateFile || (r.hasViewer ?? (rowCount > tableFormatService.PREVIEW_ROW_LIMIT));
             if (hasViewer) {
               const displayColumns = r.displayColumns?.length
                 ? r.displayColumns
@@ -2405,7 +2422,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
       const legacyUseKB = !!agentConfig.vectorStoreId;
 
       // Stream the response and accumulate full reply with agent-specific config
-      for await (const chunk of llmService.sendMessageStream(message, conversationId, legacyUseKB, agentConfig)) {
+      for await (const chunk of llmService.sendMessageStream(turnMessage, conversationId, legacyUseKB, agentConfig)) {
         // Check if chunk is a function call event (object) or text (string)
         if (typeof chunk === 'object' && chunk.type) {
           // Handle function call - add thinking step
@@ -2443,7 +2460,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
           if (chunk.type === 'function_result' && Array.isArray(chunk.result?._fullData) && chunk.result._fullData.length > 0) {
             const r = chunk.result;
             const rowCount = r.rowCount ?? r._fullData.length;
-            const hasViewer = r.hasViewer ?? (rowCount > tableFormatService.PREVIEW_ROW_LIMIT);
+            const hasViewer = hasTemplateFile || (r.hasViewer ?? (rowCount > tableFormatService.PREVIEW_ROW_LIMIT));
             if (hasViewer) {
               const displayColumns = r.displayColumns?.length
                 ? r.displayColumns
@@ -3173,6 +3190,10 @@ async function runBiSql(schema, sql) {
     client.release();
   }
 }
+
+// The chat-attachments router fills an attached spreadsheet from a data_table
+// step's {schema, sql} the same way /rerun and /export-excel do.
+app.set('runBiSql', runBiSql);
 
 app.post('/api/data-query/rerun', async (req, res) => {
   try {
