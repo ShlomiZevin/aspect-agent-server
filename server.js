@@ -4192,32 +4192,12 @@ app.post('/api/admin/data-loader/:schema/cancel', async (req, res) => {
   const { schema } = req.params;
   try {
     const svc = req.app.get('dataReloadService');
-
-    // Kill all PG sessions touching this schema or its shadow (including active COPY/CREATE/ANALYZE)
-    const shadowSchema = `${schema}_new`;
-    await db.query(`
-      SELECT pg_terminate_backend(pid)
-      FROM pg_stat_activity
-      WHERE datname = current_database()
-        AND pid <> pg_backend_pid()
-        AND (query ILIKE $1 OR query ILIKE $2)
-    `, [`%${schema}%`, `%${shadowSchema}%`]).catch(e =>
-      console.warn('[cancel] pg_terminate_backend error (non-fatal):', e.message)
-    );
-
-    const result = await db.query(
-      `UPDATE public.data_reload_runs
-       SET status = 'failed', completed_at = NOW(), error_message = 'Cancelled manually'
-       WHERE schema_name = $1 AND status = 'running'
-       RETURNING id`,
-      [schema]
-    );
-    if (svc && svc.currentRuns[schema]) {
-      svc.currentRuns[schema].status = 'failed';
-    }
-    res.json({ cancelled: result.rows.map(r => r.id) });
+    // Marks the run cancelled, stops the worker (on this or any instance) and
+    // kills its statements on the DATA db — see DataReloadService.cancelRun.
+    const cancelled = await svc.cancelRun(schema);
+    res.json({ cancelled });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.code || 500).json({ error: err.message });
   }
 });
 
@@ -4238,7 +4218,7 @@ app.post('/api/admin/data-loader/:schema/test-query', async (req, res) => {
 });
 
 // GET /api/admin/data-loader/:schema/logs — SSE live log stream
-app.get('/api/admin/data-loader/:schema/logs', (req, res) => {
+app.get('/api/admin/data-loader/:schema/logs', async (req, res) => {
   const { schema } = req.params;
   const dataReloadService = req.app.get('dataReloadService');
   if (!dataReloadService?.reloaders[schema]) {
@@ -4259,6 +4239,13 @@ app.get('/api/admin/data-loader/:schema/logs', (req, res) => {
   const isRunning = current && current.status === 'running';
 
   if (!isRunning) {
+    // Running on another Cloud Run instance — stream what it persists.
+    const runningElsewhere = await dataReloadService.hasRunningRunInDB(schema).catch(() => false);
+    if (runningElsewhere) {
+      const stop = dataReloadService.subscribeRemoteLogs(schema, sendEvent, () => res.end());
+      req.on('close', stop);
+      return;
+    }
     // Not running — send last status and close
     const lastRun = dataReloadService.currentRuns[schema] || { status: 'idle' };
     sendEvent({ type: 'status', data: lastRun });
@@ -6644,6 +6631,7 @@ async function startServer() {
     // Auto-complete a swap if a worker died right after MVs (no manual re-run needed).
     dataReloadService.startSelfHealLoop();
     dataReloadService.startPeriodicCleanup();
+    dataReloadService.installShutdownHook();
 
     // Pre-load provider config (API keys) into memory
     await providerConfigService.initialize();

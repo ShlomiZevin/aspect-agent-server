@@ -25,6 +25,8 @@
  *     hot query aggregates a couple of measures over a key-column range.
  */
 
+const reloadAbort = require('../../services/reload-abort');
+
 const HEARTBEAT_MS = 30000;
 
 async function ensureMV({ pool, schema, mv, displayIdx, total, statementTimeoutMs, log }) {
@@ -41,6 +43,30 @@ async function ensureMV({ pool, schema, mv, displayIdx, total, statementTimeoutM
     // CREATE cost the same. DROP+CREATE is also robust against stale partial
     // entries from a cancelled prior run.
     const fqName = `${schema}.${mv.name}`;
+
+    // Resume, shadow only. A `<schema>_new` shadow is created fresh by every
+    // import, so a populated view in it was built from this very import's data
+    // and rebuilding it is pure waste. That waste is what made a retry after
+    // Cloud Run killed the worker start over from view 1 (mv_sales_daily_sku
+    // alone is ~34 min on thestock). The live schema is never skipped: a manual
+    // re-index there exists precisely to rebuild.
+    if (schema.endsWith('_new')) {
+      const { rows } = await client.query(
+        `SELECT m.ispopulated,
+                (SELECT array_agg(indexname::text) FROM pg_indexes
+                  WHERE schemaname = $1 AND tablename = $2) AS idx
+           FROM pg_matviews m
+          WHERE m.schemaname = $1 AND m.matviewname = $2`,
+        [schema, mv.name]
+      );
+      const existing = rows[0];
+      const wanted = (mv.indexes || []).map(i => i.name);
+      if (existing?.ispopulated && wanted.every(n => (existing.idx || []).includes(n))) {
+        log(`  [${displayIdx}/${total}] SKIP ${mv.name} (already built in this shadow)`);
+        return 'skipped';
+      }
+    }
+
     const action = 'CREATE';
     await client.query(`DROP MATERIALIZED VIEW IF EXISTS ${fqName} CASCADE`);
 
@@ -108,16 +134,18 @@ async function ensureMV({ pool, schema, mv, displayIdx, total, statementTimeoutM
  */
 async function createMVsForSchema({ pool, schema, mvs, statementTimeoutMs, log }) {
   const total = mvs.length;
-  let created = 0, refreshed = 0, failed = 0;
+  let created = 0, refreshed = 0, skipped = 0, failed = 0;
 
   log(`Building ${total} materialized views on ${schema} (timeout per MV: ${Math.round(statementTimeoutMs / 60000)}min)`);
 
   for (let i = 0; i < total; i++) {
+    reloadAbort.throwIfAborted(schema);
     const result = await ensureMV({
       pool, schema, mv: mvs[i], displayIdx: i + 1, total, statementTimeoutMs, log,
     });
     if (result === 'created') created++;
     else if (result === 'refreshed') refreshed++;
+    else if (result === 'skipped') skipped++;
     else failed++;
   }
 
@@ -144,13 +172,13 @@ async function createMVsForSchema({ pool, schema, mvs, statementTimeoutMs, log }
     client.release();
   }
 
-  log(`MV summary: ${created} created, ${refreshed} refreshed, ${failed} failed, ${invalid} invalid after run`);
+  log(`MV summary: ${created} created, ${refreshed} refreshed, ${skipped} skipped (already built), ${failed} failed, ${invalid} invalid after run`);
 
   if (invalid > 0) {
     throw new Error(`${invalid} MV(s) are missing or unpopulated after the run — see log for names`);
   }
 
-  return { created, refreshed, failed, invalid };
+  return { created, refreshed, skipped, failed, invalid };
 }
 
 module.exports = { createMVsForSchema };

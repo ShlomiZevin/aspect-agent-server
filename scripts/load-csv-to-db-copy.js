@@ -15,6 +15,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const { from: copyFrom } = require('pg-copy-streams');
 const { visualToLogical } = require('./lib/visual-rtl');
+const reloadAbort = require('../services/reload-abort');
 
 const ANALYSIS_FILE = path.join(__dirname, '..', 'data', 'zer4u-schema-analysis.json');
 
@@ -396,6 +397,7 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
     };
 
     const loadOne = async (schema, i) => {
+      reloadAbort.throwIfAborted(schemaName);
       if (schema.error) {
         throw new Error(`${schema.fileName}: analysis error — ${schema.error}`);
       }
@@ -418,6 +420,8 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
       }
 
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        // Outside the try: a cancel must not be mistaken for a retryable failure.
+        reloadAbort.throwIfAborted(schemaName);
         try {
           const attemptLabel = attempt > 1 ? ` (attempt ${attempt}/${MAX_RETRIES})` : '';
           console.log(`\n[${i + 1}/${schemas.length}] 📥 Loading: ${schema.fileName} (${formatBytes(schema.fileSize)})${attemptLabel}`);
@@ -444,7 +448,10 @@ async function loadAllCSVFiles(schemaName = 'zer4u', onProgress = null, schemas 
           if (attempt < MAX_RETRIES && isRetryable(err)) {
             const delay = RETRY_DELAY_MS * attempt;
             console.warn(`  ⚠️  ${schema.fileName} failed (${err.message}) — retrying in ${delay / 1000}s...`);
-            if (onProgress) onProgress({ type: 'file_error', file: schema.fileName, error: `${err.message} — retrying (attempt ${attempt}/${MAX_RETRIES})` });
+            // `retrying` tells the reloaders this file is not finished yet — they
+            // used to count every file_error as a loaded file, so one stalled-and-
+            // retried Fact file showed up as "10/9 files" in the run history.
+            if (onProgress) onProgress({ type: 'file_error', retrying: true, file: schema.fileName, error: `${err.message} — retrying (attempt ${attempt}/${MAX_RETRIES})` });
             await new Promise(r => setTimeout(r, delay));
           } else {
             throw err;

@@ -26,6 +26,8 @@
  *   already tuned to the instance.
  */
 
+const reloadAbort = require('../../services/reload-abort');
+
 const HEARTBEAT_MS = 30000;
 
 async function ensureIndex({ pool, schema, idx, displayIdx, total, statementTimeoutMs, log }) {
@@ -95,6 +97,9 @@ async function createIndexesForSchema({ pool, schema, indexes, statementTimeoutM
   log(`Building ${total} indexes on ${schema} (timeout per index: ${Math.round(statementTimeoutMs / 60000)}min)`);
 
   for (let i = 0; i < total; i++) {
+    // A failed index is logged and skipped, so a cancelled run would otherwise
+    // keep going index after index — stop here instead.
+    reloadAbort.throwIfAborted(schema);
     const result = await ensureIndex({
       pool, schema, idx: indexes[i], displayIdx: i + 1, total, statementTimeoutMs, log,
     });

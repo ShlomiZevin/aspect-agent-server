@@ -13,6 +13,26 @@ const gcsService = require('./gcs.service');
 const providerConfigService = require('./provider-config.service');
 const { getGcsFolder } = require('./gcs-folder.service');
 const dataThroughService = require('./data-through.service');
+const reloadAbort = require('./reload-abort');
+
+/**
+ * Worker liveness. A reload is background work inside a Cloud Run instance,
+ * and Cloud Run shuts instances down whenever it likes (scale-in, min-instance
+ * recycle) — with no error and no log line, the worker just stops. Through
+ * 2026-10 that happened to the thestock index run most nights, and the dead
+ * row stayed 'running' for the full 5h stale cutoff, blocking every other
+ * schema, before anything retried.
+ *
+ * The running instance stamps heartbeat_at every HEARTBEAT_MS; a running row
+ * whose stamp is older than DEAD_AFTER_MINUTES has no worker behind it and is
+ * reaped (see reapDeadRuns) so the scheduler can retry within minutes. Six
+ * missed beats, so a slow platform-DB moment cannot kill a live run.
+ */
+const HEARTBEAT_MS = 30000;
+const DEAD_AFTER_MINUTES = 5;
+
+/** error_message of a run the admin stopped — the scheduler does not auto-retry those. */
+const CANCELLED_MESSAGE = 'Cancelled manually';
 
 /**
  * How many times indexing may fail for ONE import before we stop retrying.
@@ -31,6 +51,10 @@ class DataReloadService {
     this.currentRuns = {};
     this.subscribers = {};
     this.logBuffers = {};
+    this.heartbeats = {};
+    // Flipped off the first time heartbeat_at turns out not to exist (migration
+    // 058 not applied yet) — everything then behaves exactly as before.
+    this._heartbeatColumn = true;
   }
 
   // ── Registry ────────────────────────────────────────────────────────────────
@@ -84,7 +108,7 @@ class DataReloadService {
             const ageMinutes = (Date.now() - new Date(r.started_at).getTime()) / 60000;
             const shadowSchema = `${r.schema_name}_new`;
             console.log(`[DataReloadService] Dropping leftover shadow schema ${shadowSchema}...`);
-            this.db.query(`DROP SCHEMA IF EXISTS ${shadowSchema} CASCADE`).then(() => {
+            (this.reloaders[r.schema_name]?.pool || this.db).query(`DROP SCHEMA IF EXISTS ${shadowSchema} CASCADE`).then(() => {
               console.log(`[DataReloadService] Dropped ${shadowSchema}`);
             }).catch(e => {
               console.error(`[DataReloadService] Failed to drop ${shadowSchema}:`, e.message);
@@ -95,6 +119,184 @@ class DataReloadService {
     } catch (err) {
       console.error('[DataReloadService] Failed to cleanup stale runs:', err.message);
     }
+    await this.reapDeadRuns();
+  }
+
+  // ── Worker liveness / cancellation ──────────────────────────────────────────
+
+  /**
+   * Fail every 'running' row whose worker has stopped beating, kill whatever
+   * statements it left behind on the data DB, and drop a dead import's shadow
+   * (an import restarts from scratch; an index run resumes on its shadow, since
+   * built indexes and views are skipped). Safe to call from every instance on
+   * every tick — the UPDATE ... RETURNING claims each dead row exactly once.
+   */
+  async reapDeadRuns() {
+    if (!this._heartbeatColumn) return [];
+    let rows;
+    try {
+      ({ rows } = await this.db.query(`
+        UPDATE public.data_reload_runs
+           SET status        = 'failed',
+               completed_at  = NOW(),
+               error_message = 'Worker stopped: the server instance running it was shut down (no heartbeat for ${DEAD_AFTER_MINUTES}+ min)'
+         WHERE status = 'running'
+           AND heartbeat_at IS NOT NULL
+           AND heartbeat_at < NOW() - INTERVAL '${DEAD_AFTER_MINUTES} minutes'
+         RETURNING id, schema_name, triggered_by
+      `));
+    } catch (err) {
+      if (err.code === '42703') { this._heartbeatColumn = false; return []; }
+      console.warn('[DataReloadService] reapDeadRuns failed:', err.message);
+      return [];
+    }
+
+    for (const r of rows) {
+      console.warn(`[DataReloadService] Reaped dead run #${r.id} (${r.schema_name}, ${r.triggered_by}) — no heartbeat for ${DEAD_AFTER_MINUTES}+ min`);
+      const pool = this.reloaders[r.schema_name]?.pool || this.db;
+      const killed = await this.terminateReloadBackends(r.schema_name, pool);
+      if (killed > 0) console.warn(`[DataReloadService] Terminated ${killed} orphaned statement(s) of run #${r.id}`);
+      if (!r.triggered_by.includes('index')) {
+        await pool.query(`DROP SCHEMA IF EXISTS ${r.schema_name}_new CASCADE`).catch(e =>
+          console.error(`[DataReloadService] Failed to drop ${r.schema_name}_new:`, e.message));
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * Terminate the reload statements running against a schema on the DATA db.
+   * That is the database the builders write to — the cancel endpoint used to
+   * run this against the platform DB, where it matched nothing, so a cancelled
+   * build kept running. Matches anything touching the shadow, plus DDL/COPY on
+   * the live schema (a manual re-index); chat SELECTs are left alone.
+   */
+  async terminateReloadBackends(schemaName, pool) {
+    const { rows } = await pool.query(
+      `SELECT pg_terminate_backend(pid) AS ok
+         FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND pid <> pg_backend_pid()
+          AND (
+            query ILIKE '%' || $1 || '%'
+            OR (query ILIKE '%' || $2 || '%' AND query ~* '^\\s*(CREATE|REFRESH|COPY|ANALYZE|ALTER|DROP|INSERT)')
+          )`,
+      [`${schemaName}_new`, `${schemaName}.`]
+    ).catch(err => {
+      console.warn(`[DataReloadService] terminate backends (${schemaName}) failed: ${err.message}`);
+      return { rows: [] };
+    });
+    return rows.filter(r => r.ok).length;
+  }
+
+  /**
+   * Stop a run: mark it cancelled, raise the abort flag for a worker on this
+   * instance, and kill its statements. A worker on ANOTHER instance sees the
+   * row leave 'running' on its next heartbeat and stops itself.
+   */
+  async cancelRun(schemaName) {
+    const reloader = this.reloaders[schemaName];
+    if (!reloader) throw { code: 404, message: `No reloader for schema: ${schemaName}` };
+
+    const result = await this.db.query(
+      `UPDATE public.data_reload_runs
+          SET status = 'failed', completed_at = NOW(), error_message = $2
+        WHERE schema_name = $1 AND status = 'running'
+        RETURNING id`,
+      [schemaName, CANCELLED_MESSAGE]
+    );
+    // Flag before killing: the builder's catch runs the moment its statement
+    // dies, and must find the flag already set or it starts the next step.
+    reloadAbort.request(schemaName, CANCELLED_MESSAGE);
+    await this.terminateReloadBackends(schemaName, reloader.pool || this.db);
+    if (this.currentRuns[schemaName]?.status === 'running') {
+      this.currentRuns[schemaName].status = 'failed';
+    }
+    return result.rows.map(r => r.id);
+  }
+
+  _startHeartbeat(runId, schemaName) {
+    this._stopHeartbeat(schemaName);
+    reloadAbort.clear(schemaName);
+    let persistedLogs = -1;
+
+    const beat = async () => {
+      const logs = this.logBuffers[schemaName];
+      const flushLogs = !!logs && logs.length !== persistedLogs;
+      const sets = [];
+      if (this._heartbeatColumn) sets.push('heartbeat_at = NOW()');
+      if (flushLogs) sets.push('log_entries = $2::jsonb');
+      if (sets.length === 0) sets.push('id = id');
+      let res;
+      try {
+        res = await this.db.query(
+          `UPDATE public.data_reload_runs SET ${sets.join(', ')} WHERE id = $1 RETURNING status, error_message`,
+          flushLogs ? [runId, JSON.stringify(logs)] : [runId]
+        );
+      } catch (err) {
+        if (err.code === '42703') { this._heartbeatColumn = false; return; }
+        throw err;
+      }
+      if (flushLogs) persistedLogs = logs.length;
+
+      // The row left 'running' while we are still working: cancelled from the
+      // admin screen (possibly via another instance) or reaped. Stop.
+      const row = res.rows[0];
+      const current = this.currentRuns[schemaName];
+      if (row && row.status !== 'running' && current?.id === runId && current.status === 'running') {
+        const reason = row.error_message || 'Run stopped elsewhere';
+        console.warn(`[DataReloadService] run #${runId} (${schemaName}) is '${row.status}' in DB (${reason}) — stopping the worker`);
+        reloadAbort.request(schemaName, reason);
+        await this.terminateReloadBackends(schemaName, this.reloaders[schemaName]?.pool || this.db);
+      }
+    };
+
+    beat().catch(() => {});
+    const timer = setInterval(() => {
+      beat().catch(err => console.warn(`[DataReloadService] heartbeat #${runId} failed: ${err.message}`));
+    }, HEARTBEAT_MS);
+    if (timer.unref) timer.unref();
+    this.heartbeats[schemaName] = timer;
+  }
+
+  _stopHeartbeat(schemaName) {
+    if (this.heartbeats[schemaName]) {
+      clearInterval(this.heartbeats[schemaName]);
+      delete this.heartbeats[schemaName];
+    }
+  }
+
+  /**
+   * Cloud Run sends SIGTERM ~10s before killing an instance. Fail this
+   * instance's runs right away so the next tick (on a surviving instance)
+   * retries in a minute instead of waiting out the heartbeat window. Registered
+   * with `once`, then re-raises: with no listener left, Node's default SIGTERM
+   * handling (exit) applies exactly as it did before.
+   */
+  installShutdownHook() {
+    process.once('SIGTERM', async () => {
+      const running = Object.entries(this.currentRuns).filter(([, r]) => r?.status === 'running');
+      try {
+        await Promise.race([
+          Promise.all(running.map(async ([schemaName, r]) => {
+            console.warn(`[DataReloadService] SIGTERM — failing run #${r.id} (${schemaName})`);
+            await this.db.query(
+              `UPDATE public.data_reload_runs
+                  SET status = 'failed', completed_at = NOW(),
+                      error_message = 'Worker stopped: the server instance running it was shut down'
+                WHERE id = $1 AND status = 'running'`,
+              [r.id]
+            );
+            reloadAbort.request(schemaName, 'Server instance shutting down');
+            await this.terminateReloadBackends(schemaName, this.reloaders[schemaName]?.pool || this.db);
+          })),
+          new Promise(resolve => setTimeout(resolve, 5000)),
+        ]);
+      } catch (err) {
+        console.error('[DataReloadService] SIGTERM cleanup failed:', err.message);
+      }
+      process.kill(process.pid, 'SIGTERM');
+    });
   }
 
   // ── Public API ───────────────────────────────────────────────────────────────
@@ -123,6 +325,8 @@ class DataReloadService {
    * Checks both in-memory state (fast path) and DB (survives server restarts).
    */
   async _assertNotBusy(schemaName) {
+    // A run whose instance died must not 409 the admin's button for 5 hours.
+    await this.reapDeadRuns();
     const current = this.currentRuns[schemaName];
     if (current && current.status === 'running') {
       throw { code: 409, message: `Schema ${schemaName} already has a running ${current.phase || 'operation'} in memory.` };
@@ -164,6 +368,7 @@ class DataReloadService {
       totalRows: 0,
     };
     this.logBuffers[schemaName] = [];
+    this._startHeartbeat(runId, schemaName);
 
     this._executeLoad(runId, schemaName).catch(err => {
       console.error(`[DataReloadService] Unhandled load error for ${schemaName}:`, err.message);
@@ -207,6 +412,7 @@ class DataReloadService {
       startedAt: new Date().toISOString(),
     };
     this.logBuffers[schemaName] = [];
+    this._startHeartbeat(runId, schemaName);
 
     this._executeIndexing(runId, schemaName, options).catch(err => {
       console.error(`[DataReloadService] Unhandled indexing error for ${schemaName}:`, err.message);
@@ -258,6 +464,20 @@ class DataReloadService {
     );
     if (completedTodayRes.rows.length > 0) {
       return { action: 'skipped', reason: `import already completed today (run #${completedTodayRes.rows[0].id})` };
+    }
+
+    // An admin who pressed Force Cancel decided something is wrong; restarting
+    // the import on the next tick, a minute later, overrides that decision.
+    // The Import button still works — this only stops the automatic retry.
+    const cancelledTodayRes = await this.db.query(
+      `SELECT id FROM public.data_reload_runs
+       WHERE schema_name = $1 AND triggered_by LIKE '%-import' AND error_message = $2
+         AND started_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Jerusalem') AT TIME ZONE 'Asia/Jerusalem')
+       LIMIT 1`,
+      [schemaName, CANCELLED_MESSAGE]
+    );
+    if (cancelledTodayRes.rows.length > 0) {
+      return { action: 'skipped', reason: `import cancelled manually today (run #${cancelledTodayRes.rows[0].id})` };
     }
 
     const runId = await this.startLoad(schemaName, 'cron');
@@ -341,7 +561,8 @@ class DataReloadService {
     // import clears it with no bookkeeping: a new `lastImport.completed_at`
     // moves the window and the count starts from zero.
     const failedRes = await this.db.query(
-      `SELECT count(*)::int AS n, max(id) AS last_id, max(error_message) AS last_error
+      `SELECT count(*)::int AS n, max(id) AS last_id, max(error_message) AS last_error,
+              (array_agg(error_message ORDER BY started_at DESC))[1] AS latest_error
          FROM public.data_reload_runs
         WHERE schema_name = $1 AND status = 'failed'
           AND (triggered_by LIKE '%-index' OR triggered_by LIKE '%-full-index' OR triggered_by IN ('index', 'cron'))
@@ -349,6 +570,13 @@ class DataReloadService {
       [schemaName, lastImport.completed_at]
     );
     const failures = failedRes.rows[0]?.n || 0;
+
+    // Force Cancel means "stop", not "try again in a minute" — on 2026-10-07 a
+    // cancelled thestock run was replaced by a fresh cron run 60s later. The
+    // Create Indexes button resumes it.
+    if (failedRes.rows[0]?.latest_error === CANCELLED_MESSAGE) {
+      return { action: 'skipped', reason: `indexing was cancelled manually after import #${lastImport.id} — start it from Create Indexes` };
+    }
     if (failures >= MAX_INDEX_ATTEMPTS) {
       // Deliberately not an error and not a new run row: another failed row a
       // minute is exactly what this exists to stop. It is a skip with a reason
@@ -401,6 +629,7 @@ class DataReloadService {
       totalRows: 0,
     };
     this.logBuffers[schemaName] = [];
+    this._startHeartbeat(runId, schemaName);
 
     // Chain: import (with swap) → then indexing automatically
     this._executeLoad(runId, schemaName)
@@ -434,6 +663,13 @@ class DataReloadService {
     );
     const last = result.rows[0] || null;
     if (!last) return null;
+
+    // Running, but on another Cloud Run instance. Without isLive the screen
+    // never opened the log stream and sat on "Starting... / Initializing..."
+    // for the whole run (the run on 2026-10-07 looked dead while it was not).
+    if (last.status === 'running') {
+      return { ...last, isLive: true, remote: true };
+    }
 
     // "Failed" and "we have stopped trying" are different things to know, and
     // the last run alone cannot tell them apart: one failure looks exactly like
@@ -678,6 +914,80 @@ class DataReloadService {
     };
   }
 
+  /** Is a run for this schema 'running' in the DB (on any instance)? */
+  async hasRunningRunInDB(schemaName) {
+    const res = await this.db.query(
+      `SELECT 1 FROM public.data_reload_runs WHERE schema_name = $1 AND status = 'running' LIMIT 1`,
+      [schemaName]
+    );
+    return res.rowCount > 0;
+  }
+
+  /**
+   * Live log for a run executing on ANOTHER instance: the in-memory buffer and
+   * subscribers live only on the worker's instance, so replay what it has
+   * persisted (the heartbeat flushes the log every 30s) and poll for more.
+   * Emits the same events as subscribeLogs; calls onEnd once the run is over.
+   */
+  subscribeRemoteLogs(schemaName, callback, onEnd, pollMs = 5000) {
+    let runId = null;
+    let sent = 0;
+    let lastStep = null;
+    let stopped = false;
+    let timer = null;
+
+    const stop = () => {
+      stopped = true;
+      if (timer) clearInterval(timer);
+    };
+
+    const poll = async () => {
+      const res = await this.db.query(
+        `SELECT id, status, step, error_message, total_files, files_loaded, total_rows, log_entries
+           FROM public.data_reload_runs
+          WHERE schema_name = $1 AND ($2::int IS NULL OR id = $2::int)
+          ORDER BY started_at DESC LIMIT 1`,
+        [schemaName, runId]
+      );
+      const row = res.rows[0];
+      if (stopped || !row) return;
+      runId = row.id;
+
+      const logs = row.log_entries || [];
+      for (const entry of logs.slice(sent)) callback({ type: 'log', data: entry });
+      sent = Math.max(sent, logs.length);
+
+      if (row.status === 'running') {
+        const step = logs.length ? logs[logs.length - 1].step : row.step;
+        if (step !== lastStep) {
+          lastStep = step;
+          callback({ type: 'status', data: { status: 'running', step } });
+        }
+        return;
+      }
+
+      callback({
+        type: row.status === 'completed' ? 'complete' : 'error',
+        data: {
+          status: row.status,
+          totalFiles: row.total_files,
+          filesLoaded: row.files_loaded,
+          totalRows: row.total_rows,
+          errorMessage: row.error_message,
+        },
+      });
+      stop();
+      onEnd();
+    };
+
+    poll().catch(err => console.warn(`[DataReloadService] remote log poll failed: ${err.message}`));
+    timer = setInterval(() => {
+      poll().catch(err => console.warn(`[DataReloadService] remote log poll failed: ${err.message}`));
+    }, pollMs);
+
+    return stop;
+  }
+
   // ── Internal ─────────────────────────────────────────────────────────────────
 
   /**
@@ -723,7 +1033,10 @@ class DataReloadService {
       await this._finishRun(runId, schemaName, 'completed', result);
 
     } catch (err) {
-      await this.db.query(`DROP SCHEMA IF EXISTS ${shadowSchema} CASCADE`).catch(() => {});
+      // The shadow lives on the reloader's (data) DB. This used to run against
+      // the platform DB, where there is no such schema, so a failed import left
+      // its half-loaded shadow — 16 GB for thestock — occupying the data DB.
+      await (reloader.pool || this.db).query(`DROP SCHEMA IF EXISTS ${shadowSchema} CASCADE`).catch(() => {});
       emitLog('failed', `Import failed: ${err.message}`);
       await this._finishRun(runId, schemaName, 'failed', null, err.message);
     }
@@ -1047,6 +1360,7 @@ class DataReloadService {
       triggeredBy: 'self-heal', startedAt: new Date().toISOString(),
     };
     this.logBuffers[schemaName] = [];
+    this._startHeartbeat(runId, schemaName);
     const emitLog = (step, message, data) => {
       this._emitLog(schemaName, step, message, data);
       if (this.currentRuns[schemaName]) this.currentRuns[schemaName].step = step;
@@ -1141,18 +1455,24 @@ class DataReloadService {
   }
 
   async _finishRun(runId, schemaName, status, result, errorMessage = null) {
+    this._stopHeartbeat(schemaName);
+    reloadAbort.clear(schemaName);
     const logs = this.logBuffers[schemaName] || [];
     const qualityStats = result?.qualityReport ?? null;
 
+    // A failure of a row that is already over (cancelled, reaped) keeps the
+    // reason it was ended with — "Cancelled manually" must not turn into the
+    // "terminating connection" error the cancel itself caused. A completion
+    // always wins: if the work really finished, the row says so.
     await this.db.query(
       `UPDATE public.data_reload_runs
-       SET status        = $1,
-           completed_at  = NOW(),
+       SET status        = CASE WHEN $1 = 'failed' AND status <> 'running' THEN status ELSE $1 END,
+           completed_at  = CASE WHEN $1 = 'failed' AND status <> 'running' THEN completed_at ELSE NOW() END,
            total_files   = $2,
            files_loaded  = $3,
            total_rows    = $4,
            log_entries   = $5::jsonb,
-           error_message = $6,
+           error_message = CASE WHEN $1 = 'failed' AND status <> 'running' THEN error_message ELSE $6 END,
            step          = $7,
            quality_stats = $8::jsonb
        WHERE id = $9`,

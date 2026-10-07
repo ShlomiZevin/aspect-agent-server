@@ -49,6 +49,14 @@ async function runTick({ dataReloadService, driveToGcs, log = console.log }) {
   const schedules = await scheduleConfig.getAllSchedules();
   const fired = [];
 
+  // First, clear runs whose worker died with its Cloud Run instance, so the
+  // busy checks below see the truth and the dead run is retried this tick.
+  const reaped = await dataReloadService.reapDeadRuns().catch(err => {
+    log(`[tick] reapDeadRuns error: ${err.message}`);
+    return [];
+  });
+  for (const r of reaped) fired.push(`${r.schema_name}:reaped#${r.id}`);
+
   for (const entry of schedules) {
     if (!entry.enabled) continue;
     const start = { hour: entry.hour, minute: entry.minute };

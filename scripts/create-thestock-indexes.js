@@ -17,20 +17,31 @@ const { createIndexesForSchema } = require('./lib/index-builder');
 
 const SCHEMA = 'thestock';
 
+// Pruned 2026-10-07. facts is 50M rows / 16 GB on db-g1-small, where every
+// index costs 5-30 min of the nightly window and the index phase alone ran
+// ~2h — long enough that Cloud Run regularly recycled the instance mid-run.
+// Removed, with the evidence (pg_stat_user_indexes on the live schema plus
+// every thestock query in slow_queries since 2026-05):
+//   idx_facts_transaction_id    30 min  0 scans — payment questions join facts
+//   idx_payments_transaction_id 11 min  0 scans   to payments over a whole
+//                                                 month: a hash join, which
+//                                                 never uses these.
+//   idx_facts_customer_id       20 min  0 scans — customer questions are
+//                                                 COUNT(DISTINCT) over a range.
+//   idx_facts_cashier           13 min  0 scans — served by mv_sales_daily_cashier.
+//   idx_facts_rt_date           15 min  97% of rows are record_type 'מכירות',
+//                                       so it filters nothing that
+//                                       idx_facts_transaction_date does not.
+// If a real query needs one back, the Query Optimizer will flag it as slow.
 const INDEXES = [
   // ── facts ─────────────────────────────────────────────────────────────────
-  // Composite — workhorse filter for "record_type='מכירות' AND date BETWEEN ..."
-  { name: 'idx_facts_rt_date',          table: 'facts', col: '"record_type", "transaction_date"' },
-  // Standalone columns — for JOINs and ad-hoc filters not covered by MVs
-  { name: 'idx_facts_sku',              table: 'facts', col: '"sku"' },
+  // Date range — the workhorse filter for raw-facts questions MVs don't cover.
   { name: 'idx_facts_transaction_date', table: 'facts', col: '"transaction_date"' },
+  // SKU lookups ("how many of item X") — the most-used facts index.
+  { name: 'idx_facts_sku',              table: 'facts', col: '"sku"' },
   { name: 'idx_facts_warehouse_code',   table: 'facts', col: '"warehouse_code"' },
-  { name: 'idx_facts_transaction_id',   table: 'facts', col: '"transaction_id"' },
-  { name: 'idx_facts_customer_id',      table: 'facts', col: '"customer_id"' },
-  { name: 'idx_facts_cashier',          table: 'facts', col: '"cashier"' },
 
-  // ── payments (~9.8M rows) ─────────────────────────────────────────────────
-  { name: 'idx_payments_transaction_id',   table: 'payments', col: '"transaction_id"' },
+  // ── payments (~12M rows) ──────────────────────────────────────────────────
   { name: 'idx_payments_payment_type',     table: 'payments', col: '"payment_type"' },
   { name: 'idx_payments_payment_type_code',table: 'payments', col: '"payment_type_code"' },
 

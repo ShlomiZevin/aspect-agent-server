@@ -146,8 +146,10 @@ async function loadTevaNaot(targetSchema, emitLog, options = {}) {
         file: event.file, rows: event.rows, totalFiles, filesCompleted: filesLoaded,
       });
     } else if (event.type === 'file_error') {
-      filesLoaded++;
-      fileResults.push({ file: event.file, status: 'error', error: event.error });
+      if (!event.retrying) {
+        filesLoaded++;
+        fileResults.push({ file: event.file, status: 'error', error: event.error });
+      }
       emitLog('loading_data', `Error loading ${event.file}: ${event.error}`, {
         file: event.file, totalFiles, filesCompleted: filesLoaded,
       });

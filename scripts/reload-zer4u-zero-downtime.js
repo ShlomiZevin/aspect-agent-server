@@ -174,8 +174,10 @@ async function loadZer4u(targetSchema, emitLog, options = {}) {
         filesCompleted: filesLoaded,
       });
     } else if (event.type === 'file_error') {
-      filesLoaded++;
-      fileResults.push({ file: event.file, status: 'error', error: event.error });
+      if (!event.retrying) {
+        filesLoaded++;
+        fileResults.push({ file: event.file, status: 'error', error: event.error });
+      }
       emitLog('loading_data', `Error loading ${event.file}: ${event.error}`, {
         file: event.file,
         error: event.error,
