@@ -88,7 +88,9 @@ router.post('/:slug/conversations', async (req, res) => {
     const agentId = await resolveLegacyAgentId(slug);
     const userId = await resolveUserId(ownerUserId);
     // metadata.kind records which V2 surface the conversation was born in:
-    // 'live' = customer-facing chat, 'builder-preview' = builder chat.
+    // 'live' = customer-facing chat, 'builder-preview' = builder chat,
+    // 'simulation' = started by an outside AI through /builder/mcp to
+    // test the agent (task #894; builder/services/mcpConversations.js).
     // V1 conversations have no tag — that's what keeps them out of V2 lists.
     const [conv] = await drizzle().insert(conversations).values({
       userId,
@@ -96,7 +98,10 @@ router.post('/:slug/conversations', async (req, res) => {
       channel: 'web',
       status: 'active',
       kind: 'user',
-      metadata: { kind: source === 'live' ? 'live' : 'builder-preview', agentSlug: slug },
+      metadata: {
+        kind: source === 'live' ? 'live' : source === 'simulation' ? 'simulation' : 'builder-preview',
+        agentSlug: slug,
+      },
     }).returning();
     if (Array.isArray(seedMemory) && seedMemory.length > 0) {
       const builderMemory = require('../runtime/builderMemory');
@@ -216,10 +221,12 @@ router.get('/:slug/admin/conversations', async (req, res) => {
       currentCrewId: (conv.metadata && conv.metadata.currentCrewId) || null,
       // Where the conversation was born (stamped at creation, see POST
       // /conversations): 'live' = the outside chat, 'builder' = the
-      // builder's own test chat. null = untagged (older rows).
+      // builder's own test chat, 'simulation' = an AI testing the agent
+      // through /builder/mcp. null = untagged (older rows).
       source: conv.metadata && conv.metadata.kind === 'live' ? 'live'
         : conv.metadata && conv.metadata.kind === 'builder-preview' ? 'builder'
-          : null,
+          : conv.metadata && conv.metadata.kind === 'simulation' ? 'simulation'
+            : null,
       // Owner identity — `ownerUserId` is the external id the builder
       // mints client-side; `userId` is the internal serial.
       userId: conv.userId,

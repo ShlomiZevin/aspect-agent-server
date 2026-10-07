@@ -61,6 +61,17 @@ const router = express.Router();
 const builderProjects = require('../services/builderProjects');
 const alfredTools = require('../../alfred/services/alfredTools');
 const { exportConversation } = require('../services/conversationExport');
+const mcpConversations = require('../services/mcpConversations');
+const modelsService = require('../../services/models.service');
+
+/**
+ * The team's shared knowledge repository (task #893) — notes, recipes and
+ * skills every assistant reads before working and adds to as it learns.
+ * The server never touches it: this door only GUIDES (where it is, when
+ * to pull, when and how to write, when to push). Git is done by the
+ * person's own assistant, under the person's own user.
+ */
+const KNOWLEDGE_REPO = process.env.LYBI_KNOWLEDGE_REPO || 'https://github.com/ShlomiZevin/lybi-knowledge';
 
 // Bodies are whole agent definitions; the default 100kb limit is too
 // small. Safe to apply again even if the app already parsed JSON —
@@ -165,6 +176,8 @@ function sendText(res, body, type = 'text/plain') {
  * tell it less.
  */
 function entryDoc({ base, origin }) {
+  const repo = KNOWLEDGE_REPO;
+  const everydayModel = modelsService.EVERYDAY_MODEL;
   return `# Lybi — building agents
 
 You are being asked to help someone build, change and debug an agent on
@@ -252,6 +265,72 @@ are near-twins, one live and one a copy.
 **When you are told something exists and you believe it does not, go and
 read the code before arguing.** You can read our actual source. Use it.
 
+## The shared knowledge — read it first, add to it as you learn
+
+The team keeps what it has learned in one git repository:
+
+**${repo}**
+
+It holds short notes in English — lessons, per-agent notes, step-by-step
+recipes and ready-made skills. Every assistant working for anyone on the
+team reads it and adds to it, so a thing learned once is not learned
+again by the next person. Doing this is part of the job, not an extra.
+
+**If you can run commands on the person's machine** (Claude Code, Codex):
+
+1. **Get it.** Look for a \`lybi-knowledge/\` folder beside your working
+   folder. If it is there, \`git pull\` in it. If not, \`git clone ${repo}\`
+   next to — not inside — the working folder. If git is missing or asks
+   for a login you cannot complete, say so in one sentence and help the
+   person set it up once (install git; sign in to GitHub; Shlomi gives
+   access to the repository). Then carry on with the task either way.
+2. **Read before you work.** Open \`RULES.md\` and \`INDEX.md\`. From the
+   index, open every note that touches what you were asked to do — the
+   notes under \`agents/<slug>/\` for the agent in question, and anything
+   relevant under \`lessons/\` and \`recipes/\`. Tell the person in a line
+   what you found that matters.
+3. **Write when you have learned something reusable.** The triggers:
+   - you found platform behaviour that is not documented;
+   - you fixed a problem whose cause could repeat;
+   - a prompt pattern clearly worked or clearly failed — and you have the
+     conversation that proves it;
+   - a decision was made with the person, and why;
+   - you did a multi-step job that will be done again.
+4. **How to write.** Search first — update an existing note rather than
+   adding a near-duplicate. One topic per note, short, with the small
+   header \`RULES.md\` describes, and a pointer to the evidence
+   (conversation id, run id, file path). Add or fix its line in
+   \`INDEX.md\` in the same commit.
+5. **Where it goes.** About one agent → \`agents/<slug>/\`. Know-how that
+   applies across agents → \`lessons/\`. A repeatable procedure →
+   \`recipes/\`. Something an assistant should be able to do on command →
+   \`skills/<name>/SKILL.md\`.
+6. **Save it for everyone.** \`git pull --rebase\`, commit with a one-line
+   message that says what was learned, \`git push\`. If the push is
+   refused, pull again and retry; never force.
+7. **Always tell the person** — "I added a note: <title>, in <path>" — so
+   they can say "remove it". Removing is deleting the file and its index
+   line, and pushing.
+
+**Never write** customer data, real people's details, passwords, keys or
+tokens. And not the passing state of one agent ("field X is currently
+required") — that lives in the agent's own Spec and change log, which
+you can already read here.
+
+**A note that is wrong is worse than no note.** If you find one that
+contradicts the code or what you just saw happen, fix it and say so; if
+you are not sure, add a line at its top saying what you saw and when.
+
+**Skills.** Each folder under \`skills/\` is a ready-made skill. In Claude
+Code, copy the folder into \`.claude/skills/\` of the working folder; in
+Codex, add one line to \`AGENTS.md\` pointing at its \`SKILL.md\`. Do it
+when a skill fits what the person is asking for, and say that you did.
+
+**If you cannot run commands** — a plain web chat — you cannot reach the
+repository. Say so once, plainly: knowledge the team has written down is
+not visible to you here, and anything you learn in this chat will not be
+saved for the others unless the person passes it on.
+
 ## Reading
 
 | What | URL |
@@ -262,6 +341,7 @@ read the code before arguing.** You can read our actual source. Use it.
 | A transcript, with what each addon did per turn | \`${base}/conversations/<id>\` |
 | One addon run in full — assembled prompt, raw and parsed output | \`${base}/runs/<id>\` |
 | **A whole conversation as JSON, for analysis** — every message, and under each reply the addon runs of that turn with their outputs and field writes. \`include=messages\` for the text only, \`include=full\` to add every assembled prompt (large). Default \`outputs\` | \`${base}/conversations/<id>/export?include=outputs\` |
+| **Where a conversation stands right now** — every field's value, the thinking, the summaries, and the crew it is in | \`${base}/conversations/<id>/state\` |
 | History of changes to an agent, and why | \`${base}/agents/<slug>/log\` |
 | **Its Spec** — project, agent and crew specs, the text of every file attached to the agent's Spec, and the notes & files on each Targeted KB (the author's knowledge map). What the person wants the agent to be; read it before designing anything. Never seen by the running agent | \`${base}/agents/<slug>/spec\` |
 | **Every knowledge base** — chunks, files, which agents it is connected to and which KB Retrievers search it, plus any retriever naming a KB that doesn't exist | \`${base}/kbs\` |
@@ -358,6 +438,110 @@ opens showing "unsaved changes" before anyone has touched it.
   "Runs in" ✓/✕ chips). Use the real crew ids from the agent's crews —
   never invent one — and omit the key to mean "all crews", never \`[]\`.
   Crew addons never carry it.
+
+## Testing an agent — talk to it yourself
+
+You can hold a conversation with any agent, as its user, and read back
+exactly what it did. This is how you check a change, reproduce a
+complaint, or run the same scenarios again after every edit. The person
+only has to ask — "simulate a 19-year-old opening a first account" — and
+the rest is yours: do it yourself, and ask them only what you cannot
+decide.
+
+**Before you start, know two things — ask if they did not say:**
+
+- **Who you are talking to.** A real name from \`${base}/people\`, as on
+  the task board. Every simulated conversation records whose it is.
+- **Which version.** \`active\` (the default) is the version the Builder
+  opens — the latest saved work. \`published\` is what customers get.
+  Only saved versions can be tested; if they have unsaved edits, those
+  must be saved first.
+
+**1. Start a conversation**
+
+\`\`\`
+POST ${base}/agents/<slug>/conversations
+{ "name": "Noa", "version": "active", "label": "student, first account" }
+→ { "conversationId": 4321, "agent": "<slug>", "version": "active", "crew": null }
+\`\`\`
+
+Optional: \`"startCrew"\` (a crew name or id) and \`"fields"\`
+(\`{ "age": 19 }\`) start the conversation in the middle of a flow, with
+values already known, instead of replaying everything before it.
+\`"label"\` becomes the conversation's name in the Builder — make it say
+what the scenario is.
+
+**2. Say something — the whole reply comes back**
+
+\`\`\`
+POST ${base}/conversations/<conversationId>/messages
+{ "text": "hi, I want to open an account" }
+→ { "reply": "...", "crew": { "name": "..." }, "fieldsWritten": [ ... ],
+    "transition": { ... }, "addons": [ ... ] }
+\`\`\`
+
+\`reply\` is what the user would see. The rest is what the turn did:
+the crew that answered, the fields it wrote, a crew transition if one
+happened, and which addons ran. It is one ordinary request — no stream —
+and it returns when the turn is over, which can take half a minute.
+Send the next message only after the previous one has returned.
+
+**3. Look at what happened**
+
+| To see | Fetch |
+|---|---|
+| Every field's value right now, and the current crew | \`${base}/conversations/<id>/state\` |
+| The transcript with each addon's part in it | \`${base}/conversations/<id>\` |
+| Everything, as JSON | \`${base}/conversations/<id>/export?include=outputs\` |
+| One addon's exact prompt and output | \`${base}/runs/<runId>\` |
+
+It is a normal conversation in the system: the person can open it in the
+Builder (Admin → Conversations, marked "Simulated") and see the same
+trail you do. Tell them its id.
+
+**Three ways to play the user — pick by what they asked for:**
+
+| | How | When |
+|---|---|---|
+| **You play the user** | Write each message yourself, read the reply, decide the next | Exploring; reproducing one complaint; "talk to it as an angry customer". Simple, and it keeps you busy for the length of the conversation. |
+| **A fixed script** | Write the user's lines up front; a small script posts them one by one and saves the replies | The same scenarios after every change. Runs in the background, needs no model at all. |
+| **A persona, in a script** | A script asks us for the user's next line (below), posts it, and repeats | Many conversations, or long ones, without you writing each line. |
+
+Scripts are for assistants that can run commands. Run them in the
+background and carry on talking to the person; check on them when they
+finish. Run a handful of conversations at once, not hundreds.
+
+**The user's next line, written for you**
+
+\`\`\`
+POST ${base}/simulate/user-reply
+{ "persona": "Dana, 19, student, first bank account, impatient, writes short Hebrew messages",
+  "goal": "open an account without paying fees",
+  "conversationId": 4321 }
+→ { "text": "...", "done": false, "model": "${everydayModel}" }
+\`\`\`
+
+It reads the conversation so far and answers with what that person would
+say next. \`done\` turns true when they would stop — goal reached, gave
+up, or nothing left to say; stop the loop then, and stop anyway after a
+sensible number of turns (twelve is plenty for most flows). Instead of
+\`conversationId\` you may send \`"transcript"\`:
+\`[ { "role": "user" | "assistant", "text": "..." } ]\`.
+
+**Which model plays the user: ask the person.** Pass their choice as
+\`"model"\` — any id from \`${origin}/api/models\`. If they have no
+preference, leave it out and it uses \`${everydayModel}\`. When you play
+the user yourself, no model of ours is involved at all.
+
+**After a run, report what matters:** did it reach the goal, where it
+went wrong (quote the turn), which fields ended up wrong or empty — and
+the conversation ids, so they can look. If you learned something
+reusable, it belongs in the shared knowledge (above).
+
+There is a daily limit on simulated turns and on user-reply calls; if
+you hit it the answer says so. Tell the person rather than working
+around it. You can only write into conversations you started this way —
+real conversations are read-only here.
 
 ## Building your own chat for an agent
 
@@ -491,7 +675,11 @@ router.get('/', (req, res) => {
 
 router.get('/agents', async (_req, res) => {
   try {
-    sendText(res, await alfredTools.listAgents(), 'text/plain');
+    // The list is where most sessions start; end it with the one reminder
+    // that is easy to skip (task #893). Added here, not in alfredTools —
+    // Alfred has no git and must not be told to use it.
+    const list = await alfredTools.listAgents();
+    sendText(res, `${list}\n\n---\nBefore working on an agent: pull the shared knowledge (${KNOWLEDGE_REPO}) and read INDEX.md — the notes under agents/<slug>/ and lessons/. How and when: the entry page, "The shared knowledge".\n`, 'text/plain');
   } catch (err) {
     console.error('[builder-mcp] agents failed:', err);
     res.status(500).type('text/plain').send(`Could not list agents: ${err.message}`);
@@ -1306,6 +1494,72 @@ router.patch('/tasks/:id', async (req, res) => {
   } catch (err) {
     console.error('[builder-mcp] edit task failed:', err);
     res.status(500).type('text/plain').send(`Could not edit the task: ${err.message}`);
+  }
+});
+
+// ─── Talking to an agent (task #894) ───────────────────────────────
+
+/**
+ * The building blocks an outside assistant uses to simulate conversations
+ * by itself. Logic and the reasons behind it: services/mcpConversations.js.
+ * A refusal the caller can fix carries `err.status` and a sentence.
+ */
+function simFail(res, err, what) {
+  if (err && err.status) return res.status(err.status).type('text/plain').send(err.message);
+  console.error(`[builder-mcp] ${what} failed:`, err);
+  return res.status(500).type('text/plain').send(`Could not ${what}: ${err.message}`);
+}
+
+router.post('/agents/:slug/conversations', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const by = await resolvePerson(b.name);
+    if (!by) return unknownPerson(res, b.name);
+    res.status(201).json(await mcpConversations.startConversation({
+      slug: req.params.slug,
+      by,
+      version: b.version,
+      label: b.label,
+      startCrew: b.startCrew,
+      fields: b.fields,
+    }));
+  } catch (err) {
+    simFail(res, err, 'start the conversation');
+  }
+});
+
+router.post('/conversations/:id/messages', async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json(await mcpConversations.sendMessage({
+      conversationId: req.params.id,
+      text: b.text ?? b.userMessage ?? b.message,
+    }));
+  } catch (err) {
+    simFail(res, err, 'send the message');
+  }
+});
+
+router.get('/conversations/:id/state', async (req, res) => {
+  try {
+    res.json(await mcpConversations.readState({ conversationId: req.params.id }));
+  } catch (err) {
+    simFail(res, err, 'read the conversation state');
+  }
+});
+
+router.post('/simulate/user-reply', async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json(await mcpConversations.userReply({
+      persona: b.persona,
+      goal: b.goal,
+      conversationId: b.conversationId,
+      transcript: b.transcript,
+      model: b.model,
+    }));
+  } catch (err) {
+    simFail(res, err, 'write the user reply');
   }
 });
 

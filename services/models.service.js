@@ -58,6 +58,14 @@ const PROVIDERS = [
   { id: 'google',    label: 'Google',    icon: 'G' },
 ];
 
+/**
+ * The current "everyday" GPT model — a step above the cheapest. The ONE
+ * place that says which model that is today; anything that wants "the
+ * common model" (e.g. the MCP door's simulated user, task #894) reads
+ * this, so it moves when the everyday model changes.
+ */
+const EVERYDAY_MODEL = 'gpt-5.6-terra';
+
 const VALID_PROVIDERS = new Set(PROVIDERS.map(p => p.id));
 
 const _byId = new Map(MODELS.map(m => [m.id, m]));
@@ -128,4 +136,5 @@ module.exports = {
   isKnownProvider,
   PROVIDERS,
   MODELS,
+  EVERYDAY_MODEL,
 };

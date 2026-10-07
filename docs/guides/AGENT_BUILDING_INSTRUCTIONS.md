@@ -240,6 +240,45 @@ to know exactly what it assembles.
 | **Profiler output**, and its runs | `GET /api/agents/<slug>/conversations/<convId>/profiler?ownerUserId=<id>` · `…/profiler/runs` | `{ panels, frame, ask }` |
 | **Why an agent was changed, and by whom** | `GET /api/builder/alfred/agents/<agentId>/log` | `{ entries: [ … ] }` — the newest 100 |
 
+### Testing an agent — talk to it yourself
+
+You can hold a conversation with an agent as its user and read back what
+it did. The person only has to ask ("simulate a 19-year-old opening a
+first account"); do it yourself and ask them only what you cannot decide —
+who they are (a name from `GET /builder/mcp/people`) and which version:
+`active` (default — the version the Builder opens) or `published` (what
+customers get). Only saved versions run; a draft file's unsaved edits do
+not, so if the change under test is still in the draft, say so and let
+them load and save it first.
+
+| What you want | Call | What comes back |
+|---|---|---|
+| **Start a conversation** | `POST /builder/mcp/agents/<slug>/conversations` with `{ "name": "<person>", "version": "active", "label": "<the scenario>" }` — optional `startCrew` (name or id) and `fields` (`{ "age": 19 }`) to begin mid-flow | `{ conversationId, agent, version, crew }` |
+| **Say something** | `POST /builder/mcp/conversations/<id>/messages` with `{ "text": "..." }` | One JSON answer, no stream, when the turn is over (can take ~30s): `{ reply, crew, fieldsWritten, transition, addons }`. Send the next message only after this returns. |
+| **Where the conversation stands** | `GET /builder/mcp/conversations/<id>/state` | `{ crew, memory, thinking, summary, … }` — every field's current value |
+| **The user's next line, written for you** | `POST /builder/mcp/simulate/user-reply` with `{ "persona": "...", "goal": "...", "conversationId": <id> }` (or `transcript` instead of the id; optional `model`) | `{ text, done, model }` — `done` is true when that person would stop |
+
+Three ways to play the user — pick by what they asked for:
+
+- **You write each line.** For exploring or reproducing one complaint.
+- **A fixed script.** Write the user's lines up front and let a small
+  script post them one by one. The same scenarios after every change;
+  runs in the background with no model.
+- **A persona, in a script.** The script loops: ask `user-reply` for the
+  next line, post it, repeat until `done` (and stop anyway after about
+  twelve turns). For many or long conversations.
+
+Run scripts in the background and keep talking to the person. **Ask them
+which model should play the user**; with no preference leave `model` out
+and the platform's everyday model is used. When you write the lines
+yourself, no model of ours is involved.
+
+These are ordinary conversations: everything under "Conversations and
+runs" above works on them, and the person can open them in the Builder
+(Admin → Conversations, tagged "Simulated"). Tell them the ids. You can
+only write into conversations you started this way — real ones are
+read-only. There is a daily limit; if you hit it, say so.
+
 ### Knowledge bases
 
 A knowledge base (KB) is a named collection of document chunks. Two
@@ -283,6 +322,48 @@ quietly fall back to asking the user to go and do your job in the Builder:
 making the call is yours, and giving up on it costs them the session.
 
 ---
+
+## The shared knowledge — read it first, add to it as you learn
+
+The team keeps what it has learned in one git repository:
+
+**https://github.com/ShlomiZevin/lybi-knowledge**
+
+Short notes in English — lessons, per-agent notes, step-by-step recipes
+and ready-made skills. Every assistant working for anyone on the team
+reads it and adds to it. This is part of the job, not an extra.
+
+1. **Get it.** Look for a `lybi-knowledge/` folder beside this one. If it
+   is there, `git pull` in it; if not, `git clone` the address above next
+   to — not inside — this folder. If git is missing or asks for a login
+   you cannot complete, say so in one sentence, help the person set it up
+   once (install git, sign in to GitHub, Shlomi gives access), and carry
+   on with the task either way.
+2. **Read before you work.** Open `RULES.md` and `INDEX.md`; from the
+   index open every note that touches the job — `agents/<slug>/` for the
+   agent in question, and what is relevant under `lessons/` and
+   `recipes/`. Tell the person in a line what you found that matters.
+3. **Write when you learned something reusable:** undocumented platform
+   behaviour; a fix whose cause could repeat; a prompt pattern that
+   clearly worked or failed, with the conversation that proves it; a
+   decision made with the person and why; a multi-step job that will be
+   done again.
+4. **How.** Search first and update an existing note rather than adding a
+   near-duplicate. One topic, short, with the header `RULES.md` describes
+   and a pointer to the evidence. Update `INDEX.md` in the same commit.
+   Then `git pull --rebase`, commit with a one-line message, `git push` —
+   never force.
+5. **Always tell the person** — "I added a note: <title>, in <path>" — so
+   they can say "remove it".
+
+Never write customer data, real people's details, passwords, keys or
+tokens — and not the passing state of one agent, which belongs in its
+Spec and change log. If a note contradicts the code or what you just saw
+happen, fix it and say so.
+
+Each folder under `skills/` is a ready-made skill: in Claude Code copy it
+into this folder's `.claude/skills/`; in Codex add a line to `AGENTS.md`
+pointing at its `SKILL.md`. Do it when one fits the request, and say so.
 
 ## Debugging what an agent actually did
 

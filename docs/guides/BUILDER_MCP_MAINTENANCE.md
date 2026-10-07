@@ -44,6 +44,10 @@ people type and paste this URL.
 | `POST /agents/:slug/kbs` `{ namespace }` | **Connect** an existing KB to an agent (a `kb_links` row). Add-only, idempotent; refuses a name that isn't a real KB in the active index (or `hq`) and changes nothing. Saves no version | inline in `mcpRoute.js`, `alfredTools.kbExists` |
 | `GET /conversations/:id/export?include=messages\|outputs\|full` | The conversation as **JSON** for handing to another AI — messages, each reply's addon runs (outputs, field writes, transitions), `full` adds prompts. Byte-for-byte the Builder Chat "Export" button's file | `builder/services/conversationExport.js` (shared with `GET /api/agents/:slug/conversations/:convId/export`) |
 | `GET /runs/:id` | One addon run in full — assembled prompt, raw/parsed output | `alfredTools.readRun` |
+| `POST /agents/:slug/conversations` `{ name, version?, label?, startCrew?, fields? }` | **Start a simulated conversation** (task #894) — a real conversation stamped `metadata.kind = 'simulation'`, owned by a fresh synthetic user. `name` is a roster name; `version` is `active` (default) or `published` | `builder/services/mcpConversations.js` → `startConversation` |
+| `POST /conversations/:id/messages` `{ text }` | **One turn, whole reply, no stream** — `{ reply, crew, fieldsWritten, transition, addons }`. Refuses any conversation without the simulation stamp | `mcpConversations.sendMessage` — posts to the live chat's own endpoint and collects its events |
+| `GET /conversations/:id/state` | Fields / memory / thinking / summaries and the current crew, for ANY Builder conversation (read-only) | `mcpConversations.readState` |
+| `POST /simulate/user-reply` `{ persona, goal?, conversationId \| transcript, model? }` | "What would this persona say next" → `{ text, done, model }`. Stateless; default model is `EVERYDAY_MODEL` | `mcpConversations.userReply` |
 | `GET /addons` | **Every addon descriptor, in one page** | reads `builder/addons/*.addon.json` |
 | `GET /code/<path>` | Any allowlisted source file; directories list | `alfredTools.readPlatformFile` |
 | `POST /agents` | Create an agent (name is enough) | `builderProjects.createProject` |
@@ -69,6 +73,47 @@ and never throws. Proof: `node scripts/test-partner-cors.js` — it runs the
 literal CORS block from `server.js` through the real `cors` package. Run it
 after ANY change to the CORS setup. If the hardcoded list or the stream
 events change, update the entry page section.
+
+**Simulated conversations (task #894) — the server never runs a
+simulation.** The door hands an outside assistant four building blocks and
+the assistant orchestrates: it writes the user's lines itself, replays a
+fixed script, or loops `user-reply`. Things to keep true:
+
+- **A simulated turn IS a real turn.** `sendMessage` posts to
+  `/api/agents/:slug/conversations/:id/messages` — the endpoint the live
+  chat uses — over loopback (`127.0.0.1:$PORT`) and folds the event stream
+  into one answer. Do not re-implement the turn in the service: a test
+  whose turn differs from production is worse than no test. Consequence:
+  any harness that mounts the door for these routes must also mount
+  `runtimeRoute` and set `process.env.PORT` to its own port (the battery
+  does).
+- **The stamp is the guard.** `metadata.kind = 'simulation'` +
+  `metadata.simulation = { by, version, ownerUserId, label }`. Writing is
+  refused without it, so this door can never put words into a customer's
+  conversation. The stamp also keeps simulations out of the Users tab and
+  usage queries (`admin.service` lists only `builder-preview` / `live`)
+  and out of proactive triggers (`triggerEvaluator` names its kinds).
+- **Saved versions only** — `active` or `published`. Never `viewing`, and
+  never override bodies: unsaved work cannot be tested from outside.
+- **Daily caps** live in `provider_config` under `mcp_sim_usage:<date>`
+  (`turns`, `userReplies`); limits from env `MCP_SIM_DAILY_TURNS` /
+  `MCP_SIM_DAILY_USER_REPLIES`, default 2000 each.
+- **The default model for the simulated user is ONE constant** —
+  `EVERYDAY_MODEL` in `services/models.service.js`. When the everyday GPT
+  model changes, change it there; the entry page reads it.
+- **The Admin Conversations screen** shows the kind (`source:
+  'simulation'` from `GET /api/agents/:slug/admin/conversations`) as a
+  "Simulated" tag and filter.
+
+**The shared knowledge repository (task #893) — guidance only.** The door
+does not read or write `lybi-knowledge`; it tells assistants where it is
+and when to pull, read, write and push (`KNOWLEDGE_REPO` in the route, env
+`LYBI_KNOWLEDGE_REPO` to override). The same text lives in
+`AGENT_BUILDING_INSTRUCTIONS.md`; the full rules live in the repository's
+own `RULES.md`, so they change without a deploy. `GET /agents` ends with a
+one-line reminder — added in the route, not in `alfredTools.listAgents`,
+because Alfred has no git and must not be told to use it. Alfred's brief
+says the repository exists and that he cannot reach it.
 
 **Task board rules:** the **LYBI** board only (`task.service`, platform
 DB) — never `/api/taskboard`, which is the IC board. Every name is
@@ -319,6 +364,13 @@ Exits `1` on any failure. What it covers:
   `POST /agents` (that one is deleted afterwards).
 - **Refusals** — malformed body `400`, unknown crew `404` with the real
   crew list.
+- **Talking to an agent** — a simulated conversation is created with the
+  stamp and the right version; unknown person / bad version / unknown crew
+  are refused with a sentence; a real conversation cannot be written to;
+  state is readable; `user-reply` rejects a missing persona and an unknown
+  model. It does NOT run a model turn (that would make the battery slow
+  and spend tokens) — after touching `mcpConversations.js`, also do one
+  real turn by hand against a test agent.
 
 It writes to the platform database (`.env`). It never touches an agent
 other than `zz-mcp-test` and the throwaway `zz-mcp-born-clean`.
@@ -397,6 +449,8 @@ aspect-agent-server/
   server.js                           app.use('/builder/mcp', …)
   alfred/services/alfredTools.js      the readers it wraps + READABLE_PREFIXES (shared allowlist)
   builder/services/builderProjects.js hydrateProject · createProject · save*VersionAs · set*Active
+  builder/services/mcpConversations.js  talking to an agent: start · one turn · state · user-reply
+  services/models.service.js          EVERYDAY_MODEL — the simulated user's default model
   builder/routes/aiBundleRoute.js     folder route: code bundle + fingerprint (sibling)
   docs/guides/AGENT_BUILDING_INSTRUCTIONS.md   folder route's instructions (sibling)
   docs/guides/WORK_WITH_CLAUDE_CODE.md         person-facing guide

@@ -139,9 +139,16 @@ async function removeIfPresent(slug) {
 
   const app = express();
   app.use('/builder/mcp', require('../builder/routes/mcpRoute'));
+  // The "talk to an agent" routes call the runtime's own endpoints over
+  // loopback (a simulated turn must BE a real turn), so the harness
+  // mounts them too and tells the service which port it is on.
+  app.use(express.json({ limit: '10mb' }));
+  app.use('/api/agents', require('../builder/routes/runtimeRoute'));
   const srv = app.listen(0);
   await new Promise(r => srv.once('listening', r));
+  process.env.PORT = String(srv.address().port);
   const base = `http://127.0.0.1:${srv.address().port}/builder/mcp`;
+  const simConvIds = [];
 
   const get = async (p, headers) => {
     const r = await fetch(base + p, { headers });
@@ -428,6 +435,63 @@ async function removeIfPresent(slug) {
     if (prevSecret === undefined) delete process.env.PARTNER_DOMAIN_SECRET;
     else process.env.PARTNER_DOMAIN_SECRET = prevSecret;
 
+    // ── talking to an agent (task #894) — no model turn is run here ──
+    section('talking to an agent');
+    check('entry page teaches testing', doc.text.includes('## Testing an agent') && doc.text.includes(`POST ${base}/agents/<slug>/conversations`));
+    check('entry page names the default model', doc.text.includes(require('../services/models.service').EVERYDAY_MODEL));
+    check('entry page teaches the shared knowledge', doc.text.includes('## The shared knowledge') && doc.text.includes('lybi-knowledge'));
+    check('agent list ends with the knowledge reminder', (await get('/agents')).text.includes('lybi-knowledge'));
+
+    check('unknown person → 400 listing the roster',
+      (await post(`/agents/${TEST_SLUG}/conversations`, { name: 'zz-nobody' })).status === 400);
+    check('unsaved "viewing" version → 400',
+      (await post(`/agents/${TEST_SLUG}/conversations`, { name: 'Claude', version: 'viewing' })).status === 400);
+    const noCrew = await post(`/agents/${TEST_SLUG}/conversations`, { name: 'Claude', startCrew: 'zz-nope' });
+    check('unknown crew → 404 naming the real crews',
+      noCrew.status === 404 && noCrew.text.includes('crew_zzmcptest'), noCrew.text.slice(0, 80));
+    check('unknown agent → 404',
+      (await post('/agents/definitely-not-real-xyz/conversations', { name: 'Claude' })).status === 404);
+
+    const started = await post(`/agents/${TEST_SLUG}/conversations`,
+      { name: 'claude', version: 'published', label: 'battery', startCrew: 'crew_zzmcptest' });
+    const sim = started.status === 201 ? JSON.parse(started.text) : {};
+    check('start → 201 with an id', started.status === 201 && Number.isInteger(sim.conversationId), started.text.slice(0, 80));
+    if (sim.conversationId) {
+      simConvIds.push(sim.conversationId);
+      const { conversations } = require('../db/schema');
+      const { eq } = require('drizzle-orm');
+      const [row] = await db.getDrizzle().select().from(conversations).where(eq(conversations.id, sim.conversationId));
+      const meta = row?.metadata || {};
+      check('stamped as a simulation', meta.kind === 'simulation');
+      check('records who ran it, in the roster spelling', meta.simulation?.by === 'Claude', meta.simulation?.by);
+      check('records the version', meta.simulation?.version === 'published' && sim.version === 'published');
+      check('label is the conversation name', meta.name === 'battery');
+      check('starts in the requested crew', meta.currentCrewId === 'crew_zzmcptest');
+      check('empty message → 400', (await post(`/conversations/${sim.conversationId}/messages`, { text: '  ' })).status === 400);
+      const st = await get(`/conversations/${sim.conversationId}/state`);
+      const state = st.status === 200 ? JSON.parse(st.text) : {};
+      check('state readable', st.status === 200 && state.kind === 'simulation' && state.crew?.id === 'crew_zzmcptest', st.text.slice(0, 80));
+      const adminList = await fetch(`http://127.0.0.1:${process.env.PORT}/api/agents/${TEST_SLUG}/admin/conversations?limit=20`).then(r => r.json());
+      check('admin list reports source "simulation"',
+        adminList.conversations?.find(c => c.id === sim.conversationId)?.source === 'simulation');
+    }
+
+    // A conversation NOT born here must be read-only through this door.
+    const realRes = await fetch(`http://127.0.0.1:${process.env.PORT}/api/agents/${TEST_SLUG}/conversations`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ownerUserId: 'zz-mcp-battery-user' }),
+    }).then(r => r.json());
+    if (realRes.conversationId) {
+      simConvIds.push(realRes.conversationId);
+      const w = await post(`/conversations/${realRes.conversationId}/messages`, { text: 'hello' });
+      check('writing into a non-simulated conversation → 403', w.status === 403, w.text.slice(0, 80));
+      check('…but its state can be read', (await get(`/conversations/${realRes.conversationId}/state`)).status === 200);
+    }
+    check('message to unknown conversation → 404', (await post('/conversations/999999999/messages', { text: 'hi' })).status === 404);
+    check('user-reply without a persona → 400', (await post('/simulate/user-reply', { goal: 'x' })).status === 400);
+    check('user-reply with an unknown model → 400',
+      (await post('/simulate/user-reply', { persona: 'x', model: 'zz-not-a-model' })).status === 400);
+
     // ── refusals ──
     section('refusals');
     check('string body → 400', (await post(`/agents/${TEST_SLUG}`, { body: 'nope' })).status === 400);
@@ -442,6 +506,11 @@ async function removeIfPresent(slug) {
     fails++;
   } finally {
     await removeIfPresent(BORN_CLEAN_SLUG).catch(() => {});
+    if (simConvIds.length) {
+      const { conversations } = require('../db/schema');
+      const { inArray } = require('drizzle-orm');
+      await db.getDrizzle().delete(conversations).where(inArray(conversations.id, simConvIds)).catch(() => {});
+    }
     if (testTaskId) await taskService.deleteTask(testTaskId).catch(() => {});
     srv.close();
     console.log(`\n${fails === 0 ? 'ALL PASS' : `${fails} FAILED`}`);

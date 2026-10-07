@@ -97,9 +97,14 @@ async function listConversations({ agentSlug, limit = 10 }) {
   if (rows.length === 0) return 'No chat conversations exist for this agent yet.';
   const lines = rows.map(c => {
     const crew = c.metadata?.currentCrewId ? ` · current crew: ${c.metadata.currentCrewId}` : '';
-    return `- conversation ${c.id} · started ${fmtTime(c.createdAt)} · last activity ${fmtTime(c.updatedAt)}${crew}`;
+    // Which surface it was born in — a simulated conversation (an outside
+    // AI testing the agent, task #894) must never be read as a customer's.
+    const kind = c.metadata?.kind === 'live' ? ' · customer /live'
+      : c.metadata?.kind === 'simulation' ? ` · SIMULATED (a test run by ${c.metadata?.simulation?.by || 'an AI'}'s assistant${c.metadata?.simulation?.label ? ` — "${c.metadata.simulation.label}"` : ''})`
+        : c.metadata?.kind === 'builder-preview' ? ' · builder preview' : '';
+    return `- conversation ${c.id} · started ${fmtTime(c.createdAt)} · last activity ${fmtTime(c.updatedAt)}${kind}${crew}`;
   });
-  return [`Recent chats (builder preview + customer /live), newest first (times in ${TZ}):`, ...lines].join('\n');
+  return [`Recent chats (builder preview, customer /live and simulated test runs), newest first (times in ${TZ}):`, ...lines].join('\n');
 }
 
 /** One run → a compact digest line-block. Full detail via read_run. */
