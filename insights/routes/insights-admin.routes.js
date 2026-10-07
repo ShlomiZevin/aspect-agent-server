@@ -6,6 +6,8 @@
  * Endpoints:
  *   GET  /api/admin/intelligence/datasets                          — every registered dataset (enabled or not) + config + insight counts + usage (conversations, Otto / MCP apps)
  *   GET  /api/admin/intelligence/datasets/:id/overview             — one project's Overview page: usage, apps, data range + last load cycle, newest insights
+ *   GET  /api/admin/intelligence/datasets/:id/conversations        — its real chat conversations (test traffic excluded), most recent first
+ *   GET  /api/admin/intelligence/datasets/:id/apps                 — its custom apps (Otto + MCP-built), archived included
  *   PUT  /api/admin/intelligence/datasets/:id                      — update a dataset's config (enabled, dataModelDescription, brandLabel, bootstrapPrompts, examplePrompts) — auto-snapshots the pre-write content into version history
  *   GET  /api/admin/intelligence/datasets/:id/versions/:section     — version history for one section ('config' | 'prompts'), newest first — see intelligence-config.service.js
  *   POST /api/admin/intelligence/datasets/:id/versions/:section/:savedAt/restore — restores a past version of that section (itself snapshotted first, so undoable)
@@ -121,6 +123,25 @@ router.get('/datasets/:id/overview', async (req, res) => {
     });
   } catch (err) {
     handleError(res, err, 'dataset overview');
+  }
+});
+
+router.get('/datasets/:id/conversations', async (req, res) => {
+  try {
+    if (!registry.get(req.params.id)) return res.status(404).json({ error: `Unknown dataset: ${req.params.id}` });
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 300, 1), 1000);
+    res.json({ conversations: await datasetActivityService.listConversations(req.params.id, { limit }) });
+  } catch (err) {
+    handleError(res, err, 'dataset conversations');
+  }
+});
+
+router.get('/datasets/:id/apps', async (req, res) => {
+  try {
+    if (!registry.get(req.params.id)) return res.status(404).json({ error: `Unknown dataset: ${req.params.id}` });
+    res.json({ apps: await datasetActivityService.listApps(req.params.id) });
+  } catch (err) {
+    handleError(res, err, 'dataset apps');
   }
 });
 
