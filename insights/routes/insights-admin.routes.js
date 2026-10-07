@@ -4,7 +4,8 @@
  * in this codebase (not linked from public nav) — nothing new introduced here.
  *
  * Endpoints:
- *   GET  /api/admin/intelligence/datasets                          — every registered dataset (enabled or not) + config + insight counts
+ *   GET  /api/admin/intelligence/datasets                          — every registered dataset (enabled or not) + config + insight counts + usage (conversations, Otto / MCP apps)
+ *   GET  /api/admin/intelligence/datasets/:id/overview             — one project's Overview page: usage, apps, data range + last load cycle, newest insights
  *   PUT  /api/admin/intelligence/datasets/:id                      — update a dataset's config (enabled, dataModelDescription, brandLabel, bootstrapPrompts, examplePrompts) — auto-snapshots the pre-write content into version history
  *   GET  /api/admin/intelligence/datasets/:id/versions/:section     — version history for one section ('config' | 'prompts'), newest first — see intelligence-config.service.js
  *   POST /api/admin/intelligence/datasets/:id/versions/:section/:savedAt/restore — restores a past version of that section (itself snapshotted first, so undoable)
@@ -28,6 +29,7 @@ const router = express.Router();
 const registry = require('../datasets/registry');
 const intelligenceConfigService = require('../services/intelligence-config.service');
 const investigationService = require('../services/investigation.service');
+const datasetActivityService = require('../services/dataset-activity.service');
 const schemaDescriptorService = require('../../services/schema-descriptor.service');
 const llmService = require('../../services/llm');
 
@@ -40,6 +42,12 @@ function handleError(res, err, context) {
 router.get('/datasets', async (_req, res) => {
   try {
     const configs = await intelligenceConfigService.getAllConfigs();
+    // Usage counts are extra columns on the overview — if they fail, the
+    // datasets (and their on/off switches) must still load.
+    const activity = await datasetActivityService.getActivityCounts(configs.map(c => c.id)).catch(err => {
+      console.warn(`⚠️  Insights admin activity counts failed: ${err.message}`);
+      return {};
+    });
     const datasets = await Promise.all(configs.map(async config => {
       const entry = registry.get(config.id);
       const generated = await investigationService.listGeneratedAll(config.id);
@@ -53,11 +61,66 @@ router.get('/datasets', async (_req, res) => {
         config,
         insightCount: generated.length,
         trackedCount: generated.filter(i => i.tracked).length,
+        activity: activity[config.id] || null,
       };
     }));
     res.json({ datasets });
   } catch (err) {
     handleError(res, err, 'datasets list');
+  }
+});
+
+/**
+ * One project's own Overview (Intelligence > Overview in that client's admin):
+ * usage, apps, data freshness, and the newest insights — everything the
+ * cross-client table has for it, plus what only fits on a page of its own.
+ */
+router.get('/datasets/:id/overview', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const entry = registry.get(id);
+    if (!entry) return res.status(404).json({ error: `Unknown dataset: ${id}` });
+
+    const dataReloadService = req.app.get('dataReloadService');
+    const hasLoader = !!dataReloadService?.reloaders?.[id];
+    const [generated, activity, dataInfo, cycles] = await Promise.all([
+      investigationService.listGeneratedAll(id),
+      datasetActivityService.getActivityCounts([id]).then(a => a[id]).catch(() => null),
+      hasLoader ? dataReloadService.getDataInfo(id).catch(() => null) : null,
+      hasLoader ? dataReloadService.getLastCycles().catch(() => ({})) : {},
+    ]);
+
+    // Generated ids are `investigate-<ms>` — the only creation time they carry.
+    const createdMs = i => Number(String(i.id).split('-')[1]) || 0;
+    const recentInsights = [...generated]
+      .sort((a, b) => createdMs(b) - createdMs(a))
+      .slice(0, 5)
+      .map(i => ({
+        id: i.id,
+        headline: i.headline,
+        category: i.category,
+        categoryLabel: i.categoryLabel,
+        impactValue: i.impactValue,
+        impactDirection: i.impactDirection,
+        tracked: !!i.tracked,
+        createdAt: createdMs(i) || null,
+      }));
+
+    res.json({
+      id,
+      insightCount: generated.length,
+      trackedCount: generated.filter(i => i.tracked).length,
+      activity,
+      data: dataInfo && {
+        firstDataDate: dataInfo.firstDataDate || null,
+        lastDataDate: dataInfo.lastDataDate || null,
+        lastLoadAt: dataInfo.lastRun?.completed_at || null,
+      },
+      lastCycle: cycles?.[id] || null,
+      recentInsights,
+    });
+  } catch (err) {
+    handleError(res, err, 'dataset overview');
   }
 });
 
