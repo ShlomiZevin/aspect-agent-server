@@ -29,14 +29,25 @@ const SCHEMA = 'thestock';
 //   idx_facts_customer_id       20 min  0 scans — customer questions are
 //                                                 COUNT(DISTINCT) over a range.
 //   idx_facts_cashier           13 min  0 scans — served by mv_sales_daily_cashier.
-//   idx_facts_rt_date           15 min  97% of rows are record_type 'מכירות',
-//                                       so it filters nothing that
-//                                       idx_facts_transaction_date does not.
 // If a real query needs one back, the Query Optimizer will flag it as slow.
+//
+// idx_facts_rt_date (record_type, transaction_date) over ALL rows was dropped
+// the same day and brought back as a PARTIAL index: for sales (97% of rows)
+// it adds nothing over idx_facts_transaction_date, but purchase-order lines
+// (record_type IS NULL, ~7K rows), inventory snapshots ('מלאי') and targets are
+// rare record types that only this index finds without scanning all 16 GB.
+// Partial = only those ~1.3M rows are indexed, so it builds in minutes.
 const INDEXES = [
   // ── facts ─────────────────────────────────────────────────────────────────
   // Date range — the workhorse filter for raw-facts questions MVs don't cover.
   { name: 'idx_facts_transaction_date', table: 'facts', col: '"transaction_date"' },
+  // Non-sales record types (purchase orders, inventory, targets) by date.
+  {
+    name: 'idx_facts_rt_date_nonsales',
+    table: 'facts',
+    col: '"record_type", "transaction_date"',
+    where: `"record_type" IS NULL OR "record_type" <> 'מכירות'`,
+  },
   // SKU lookups ("how many of item X") — the most-used facts index.
   { name: 'idx_facts_sku',              table: 'facts', col: '"sku"' },
   { name: 'idx_facts_warehouse_code',   table: 'facts', col: '"warehouse_code"' },
