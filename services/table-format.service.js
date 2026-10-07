@@ -39,6 +39,12 @@ const STATS_KEY_RE = /z[_-]?score|deviation|std[_-]?dev|variance/i;
 // "44471" must render as "44471", not "44,471", and summing part numbers is
 // meaningless). Deliberately broad since every BI schema has these.
 const ID_KEY_RE = /^(id|code|sku|part|barcode|year|month|quarter|week|day|phone|fax|zip|zipcode|postal)$|_(id|code|number|no|num|phone|fax|zip)$/i;
+// The same, for Hebrew column labels (an attached file's own headers — task
+// #100): barcode, catalogue number (מק"ט), phone, "code …".
+const HEBREW_ID_KEY_RE = /ברקוד|מק["״׳']?ט|טלפון|^קוד/;
+// Whole numbers of 12+ digits are identifiers (EAN/UPC barcodes), never
+// quantities — no revenue or unit total reaches a trillion.
+const LONG_DIGITS_RE = /^\d{12,}$/;
 
 const HEBREW_RE = /[֐-׿]/;
 
@@ -111,8 +117,9 @@ function buildDisplayColumns(columns, rows, hebrew = false) {
     : (rows[0] ? Object.keys(rows[0]) : []);
 
   return keys.map(key => {
-    const isIdLike = ID_KEY_RE.test(key);
     const values = rows.map(r => r[key]).filter(v => v != null && v !== '');
+    const isIdLike = ID_KEY_RE.test(key) || HEBREW_ID_KEY_RE.test(key)
+      || (values.length > 0 && values.every(v => LONG_DIGITS_RE.test(String(v).trim())));
     const allNumeric = !isIdLike && values.length > 0 && values.every(isNumericValue);
     let decimals = null;
     if (allNumeric) {
