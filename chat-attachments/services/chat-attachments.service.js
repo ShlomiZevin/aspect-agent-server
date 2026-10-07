@@ -411,6 +411,13 @@ function fillWorkbook(att, { columns, rows }) {
     const hit = byLabel || byHeader;
     if (hit) { mapping.set(c.index, hit); used.add(hit); }
   }
+  // A result column named like one of the template's FORMULA columns is that
+  // column (recomputed by its formula on every row) — not a new one to append.
+  for (const c of sheetMeta.columns) {
+    if (!c.formula) continue;
+    const same = columns.find(k => !used.has(k) && (norm(k) === norm(c.label) || norm(k) === norm(c.header)));
+    if (same) used.add(same);
+  }
   const extra = columns.filter(k => !used.has(k));
   let nextCol = Math.max(range.e.c, ...sheetMeta.columns.map(c => c.index)) + 1;
   const extraCols = extra.map(k => {

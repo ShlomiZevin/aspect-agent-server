@@ -58,7 +58,10 @@ async function loadSheet(attachmentId, sheetName) {
     const row = {};
     for (const c of sheetMeta.columns) {
       const v = line[c.index];
-      row[c.label] = typeof v === 'string' ? v.trim() : v;
+      // A 9+ digit whole number is an identifier (barcode, phone, account),
+      // not a quantity — kept as text so it isn't shown as 7,290,121,301,268.
+      row[c.label] = typeof v === 'string' ? v.trim()
+        : (typeof v === 'number' && Number.isInteger(v) && Math.abs(v) >= 1e8 ? String(v) : v);
     }
     rows.push(row);
   }
