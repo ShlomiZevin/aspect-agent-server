@@ -18,6 +18,7 @@ const TYPES      = ['task', 'bug', 'feature', 'idea', 'goal', 'agenda', 'read', 
 const WRITABLE = [
   'title', 'description', 'status', 'priority', 'type', 'assignee', 'opener',
   'dueDate', 'tags', 'atRisk', 'acknowledged', 'isDraft', 'dependsOn',
+  'customerNote', 'noteHeadline', 'noteBody',
 ];
 
 class ValidationError extends Error {
@@ -69,9 +70,16 @@ function clean(input, { partial = false } = {}) {
     }
   }
 
-  for (const flag of ['atRisk', 'acknowledged', 'isDraft']) {
+  for (const flag of ['atRisk', 'acknowledged', 'isDraft', 'customerNote']) {
     if (has(flag)) out[flag] = Boolean(out[flag]);
   }
+
+  if (has('noteHeadline')) {
+    const headline = typeof out.noteHeadline === 'string' ? out.noteHeadline.trim() : '';
+    if (headline.length > 255) throw new ValidationError('Release note headline is longer than 255 characters');
+    out.noteHeadline = headline || null;
+  }
+  if (has('noteBody')) out.noteBody = typeof out.noteBody === 'string' ? (out.noteBody.trim() || null) : null;
 
   return out;
 }
@@ -142,6 +150,9 @@ async function createTask(input) {
 
 async function updateTask(id, input) {
   const values = clean(input, { partial: true });
+  // Unmarking "for customers" withdraws a published note as well, so marking it
+  // again puts it back on the Publish list instead of silently re-appearing.
+  if (values.customerNote === false) values.notePublishedAt = null;
   const db = connection.getDb();
 
   if (Object.keys(values).length > 0) {
@@ -279,6 +290,10 @@ function toApi(row) {
     dependsOn: row.depends_on == null ? undefined : Number(row.depends_on),
     linkedTaskIds: (row.linked_task_ids ?? []).map(Number),
     deployedAt: row.deployed_at ?? undefined,
+    customerNote: row.customer_note ?? false,
+    noteHeadline: row.note_headline ?? undefined,
+    noteBody: row.note_body ?? undefined,
+    notePublishedAt: row.note_published_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

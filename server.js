@@ -199,6 +199,10 @@ app.use('/intelligence', require('./otto/routes/mcp.routes').errorHandler);
 // than one filtered table, so there is no query here that can reach the other.
 // See taskboard/README.md.
 app.use('/api/taskboard', require('./taskboard/routes/taskboard.routes'));
+// The customer side of the board's release notes (task #102): what the
+// Intelligence Center's "what's new" popup reads. Note text only, nothing else
+// from the task. See taskboard/routes/release-notes.routes.js.
+app.use('/api/release-notes', require('./taskboard/routes/release-notes.routes'));
 
 // Files attached in chat (task #100): upload → digest, and filling an attached
 // spreadsheet back in its own structure. See chat-attachments/.
