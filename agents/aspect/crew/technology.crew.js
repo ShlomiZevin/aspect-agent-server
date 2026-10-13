@@ -353,6 +353,9 @@ Which report:
 - \`line_by_branch\` — one P&L line or section split across branches (pass \`line\`, e.g. "דמי ניהול", "הוצאות תפעול").
 - \`branch_profitability\` — revenue, gross profit, branch opex and branch operating profit for every branch.
 - \`monthly_trend\` — the last 12 closed months.
+- \`balance_sheet\` — מאזן: assets, liabilities and equity at the end of period A against the end of period B.
+- \`cash_flow\` — דוח תזרים מזומנים: operating, investing and financing cash flows for periods A and B, opening to closing cash.
+Balance sheet, cash flow, inventory value (מלאי), cash (מזומנים), suppliers (ספקים), bank loans and equity (הון עצמי) all come from the tool too. The balance sheet and cash flow are for the whole chain — there is no per-branch balance sheet; say so if asked.
 
 Which period (\`preset\`): default \`last_month_vs_last_year\` (the last closed month against the same month a year earlier); "מתחילת השנה" / year to date → \`ytd_vs_last_ytd\`; "לעומת החודש הקודם" → \`last_month_vs_previous_month\`; a quarter → \`last_quarter_vs_last_year\`; named months → \`custom\` with a_from/a_to (and b_from/b_to if the user names the comparison) as YYYY-MM. The books are closed monthly — the current month is not in them yet; if asked, say they are closed through \`periods.data_closed_through\`.
 
@@ -374,11 +377,11 @@ Finance reports are in Hebrew — write the whole answer in Hebrew. Do NOT call 
       tools: [
         {
           name: 'get_finance_report',
-          description: 'TechZone financial statements from the company books (task #112). Returns a finished Hebrew report table in `report_markdown` — paste it into the reply exactly as returned — plus `highlights` for commentary. Use for every profit-and-loss, expense, cost-of-sales or branch-profitability question; never invent finance numbers.',
+          description: 'TechZone financial statements from the company books (task #112). Returns a finished Hebrew report table in `report_markdown` — paste it into the reply exactly as returned — plus `highlights` for commentary. Use for every profit-and-loss, expense, cost-of-sales, branch-profitability, balance-sheet or cash-flow question; never invent finance numbers.',
           parameters: {
             type: 'object',
             properties: {
-              report: { type: 'string', enum: ['pnl', 'line_by_branch', 'branch_profitability', 'monthly_trend'], description: 'pnl = P&L two periods side by side; line_by_branch = one line/section split by branch; branch_profitability = every branch\'s contribution; monthly_trend = last 12 closed months.' },
+              report: { type: 'string', enum: ['pnl', 'line_by_branch', 'branch_profitability', 'monthly_trend', 'balance_sheet', 'cash_flow'], description: 'pnl = P&L two periods side by side; line_by_branch = one line/section split by branch; branch_profitability = every branch\'s contribution; monthly_trend = last 12 closed months; balance_sheet = מאזן at the end of A vs end of B; cash_flow = דוח תזרים מזומנים for A and B.' },
               preset: { type: 'string', enum: ['last_month_vs_last_year', 'last_month_vs_previous_month', 'ytd_vs_last_ytd', 'last_quarter_vs_last_year', 'custom'], description: 'Comparison period. Default last_month_vs_last_year. Use custom with a_from/a_to for named months.' },
               a_from: { type: 'string', description: 'custom only: first month of period A, YYYY-MM.' },
               a_to: { type: 'string', description: 'custom only: last month of period A, YYYY-MM (defaults to a_from).' },

@@ -19,7 +19,7 @@ const MONTHS_HE = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי
 const HQ_NAME = 'מטה';
 
 const PRESETS = ['last_month_vs_last_year', 'last_month_vs_previous_month', 'ytd_vs_last_ytd', 'last_quarter_vs_last_year', 'custom'];
-const REPORTS = ['pnl', 'line_by_branch', 'branch_profitability', 'monthly_trend'];
+const REPORTS = ['pnl', 'line_by_branch', 'branch_profitability', 'monthly_trend', 'balance_sheet', 'cash_flow'];
 
 // ── periods ────────────────────────────────────────────────────────────────
 
@@ -49,12 +49,20 @@ function resolvePeriods({ preset, a_from, a_to, b_from, b_to }, firstYm, lastYm)
 
   if (preset === 'custom' && valid(a_from)) {
     const aF = clamp(toIdx(a_from));
-    const aT = clamp(valid(a_to) ? toIdx(a_to) : aF);
+    const aT = Math.max(aF, clamp(valid(a_to) ? toIdx(a_to) : aF));
     const len = aT - aF;
     // No B given: the same months a year earlier, the usual comparison.
-    const bF = clamp(valid(b_from) ? toIdx(b_from) : aF - 12);
-    const bT = clamp(valid(b_to) ? toIdx(b_to) : bF + len);
-    return { a: period(aF, aT), b: period(bF, bT) };
+    const bF = valid(b_from) ? toIdx(b_from) : aF - 12;
+    const bT = valid(b_to) ? toIdx(b_to) : bF + len;
+    // A comparison that starts before the books do cannot be clamped
+    // silently - it would become period A itself, or a shorter span.
+    if (bF < first) {
+      return { error: 'no_comparison_period', message: `The books start in ${periodLabel(firstYm, firstYm)}, so there is no comparison period for ${periodLabel(fromIdx(aF), fromIdx(aT))}. Offer a period from ${periodLabel(fromIdx(first + 12), fromIdx(first + 12))} onward, or ask which period to compare with.` };
+    }
+    if (bF === aF && clamp(bT) === aT) {
+      return { error: 'same_periods', message: 'Period A and period B are the same - ask which period to compare with.' };
+    }
+    return { a: period(aF, aT), b: period(bF, clamp(bT)) };
   }
   switch (preset) {
     case 'last_month_vs_previous_month':
@@ -343,6 +351,162 @@ async function monthlyTrend(pool, a, branch) {
   };
 }
 
+// ── balance sheet & cash flow ──────────────────────────────────────────────
+
+/** 'YYYY-MM' -> '30.09.2026' (the month's last day). */
+function monthEndLabel(ym) {
+  const y = Number(ym.slice(0, 4)), m = Number(ym.slice(5, 7));
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return `${String(last).padStart(2, '0')}.${String(m).padStart(2, '0')}.${y}`;
+}
+
+/** line_code -> amount at the END of each requested month ('YYYY-MM'). */
+async function balancesAt(pool, months) {
+  const uniq = [...new Set(months)];
+  const { rows } = await pool.query(
+    `SELECT to_char(month, 'YYYY-MM') AS ym, line_code, amount::float AS amount
+       FROM aspect.fin_balances WHERE to_char(month, 'YYYY-MM') = ANY($1)`,
+    [uniq]
+  );
+  const out = {};
+  for (const ym of uniq) out[ym] = {};
+  for (const r of rows) out[r.ym][r.line_code] = r.amount;
+  return out;
+}
+
+async function bsLines(pool) {
+  const { rows } = await pool.query(`SELECT line_code, section_code, section_name, line_name FROM aspect.fin_bs_lines ORDER BY line_order`);
+  return rows;
+}
+
+/** Statement of financial position at the end of period A vs the end of period B. */
+async function balanceSheet(pool, a, b) {
+  const lines = await bsLines(pool);
+  const bal = await balancesAt(pool, [a.to, b.to]);
+  const A = bal[a.to], B = bal[b.to];
+  if (!Object.keys(A).length || !Object.keys(B).length) return { error: 'no_balance', message: 'No balance sheet for that date.' };
+
+  const sum = (vals, codes) => codes.reduce((s, c) => s + (vals[c] || 0), 0);
+  const codesOf = sec => lines.filter(l => l.section_code === sec).map(l => l.line_code);
+  const assetCodes = [...codesOf('CA'), ...codesOf('FA')];
+  const totA = sum(A, assetCodes), totB = sum(B, assetCodes);
+  const leA = sum(A, [...codesOf('CL'), ...codesOf('LL'), ...codesOf('EQ')]);
+  const leB = sum(B, [...codesOf('CL'), ...codesOf('LL'), ...codesOf('EQ')]);
+  if (Math.round(totA) !== Math.round(leA) || Math.round(totB) !== Math.round(leB)) {
+    return { error: 'unbalanced', message: 'The balance sheet does not balance - refusing to show it.' };
+  }
+
+  const out = [];
+  const row = (name, va, vb, strong = false) => {
+    const cells = [name, fmtNum(va), fmtPct(va, totA), fmtNum(vb), fmtPct(vb, totB), fmtNum(va - vb), fmtChange(va, vb)];
+    out.push(strong ? cells.map(bold) : cells);
+  };
+  const section = (sec, totalName) => {
+    const ls = lines.filter(l => l.section_code === sec);
+    for (const l of ls) row(l.line_name, A[l.line_code] || 0, B[l.line_code] || 0);
+    if (ls.length > 1) row(totalName || `סה"כ ${ls[0].section_name}`, sum(A, ls.map(l => l.line_code)), sum(B, ls.map(l => l.line_code)), true);
+  };
+  section('CA');
+  section('FA', 'סה"כ רכוש קבוע, נטו');
+  row('סה"כ נכסים', totA, totB, true);
+  section('CL');
+  section('LL');
+  section('EQ');
+  row('סה"כ התחייבויות והון עצמי', leA, leB, true);
+
+  const aLabel = monthEndLabel(a.to), bLabel = monthEndLabel(b.to);
+  const ca = v => sum(v, codesOf('CA')), cl = v => sum(v, codesOf('CL')), eq = v => sum(v, codesOf('EQ'));
+  return {
+    title: `מאזן ליום ${aLabel} מול ${bLabel}`,
+    columns: ['סעיף', `${aLabel} (₪)`, `% מסה"כ נכסים ${aLabel}`, `${bLabel} (₪)`, `% מסה"כ נכסים ${bLabel}`, 'הפרש (₪)', 'שינוי %'],
+    rows: out,
+    highlights: {
+      total_assets: { a: Math.round(totA), b: Math.round(totB), change: fmtChange(totA, totB) },
+      cash: { a: Math.round(A[1101]), b: Math.round(B[1101]) },
+      inventory: { a: Math.round(A[1103]), b: Math.round(B[1103]) },
+      equity: { a: Math.round(eq(A)), b: Math.round(eq(B)), ratio_a: fmtPct(eq(A), totA), ratio_b: fmtPct(eq(B), totB) },
+      current_ratio: { a: (ca(A) / cl(A)).toFixed(2), b: (ca(B) / cl(B)).toFixed(2) },
+    },
+  };
+}
+
+/**
+ * Cash flow statement (indirect method) for periods A and B: profit before
+ * tax, plus depreciation, plus working-capital moves, then investing and
+ * financing. The bottom line is checked against the balance sheet's cash -
+ * if opening + flows does not land on the closing cash, the report refuses.
+ */
+async function cashFlow(pool, a, b) {
+  const prev = ym => fromIdx(toIdx(ym) - 1);
+  const bal = await balancesAt(pool, [prev(a.from), a.to, prev(b.from), b.to]);
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(l.amount * s.sign) FILTER (WHERE l.month BETWEEN $1 AND $2), 0)::float AS profit_a,
+            COALESCE(SUM(l.amount) FILTER (WHERE l.month BETWEEN $1 AND $2 AND l.account_code = 6010), 0)::float AS dep_a,
+            COALESCE(SUM(l.amount * s.sign) FILTER (WHERE l.month BETWEEN $3 AND $4), 0)::float AS profit_b,
+            COALESCE(SUM(l.amount) FILTER (WHERE l.month BETWEEN $3 AND $4 AND l.account_code = 6010), 0)::float AS dep_b
+       FROM aspect.fin_ledger l JOIN aspect.fin_accounts a USING (account_code) JOIN aspect.fin_sections s USING (section_code)`,
+    [`${a.from}-01`, `${a.to}-01`, `${b.from}-01`, `${b.to}-01`]
+  );
+  const p = rows[0];
+
+  const flows = (open, close, profit, dep) => {
+    if (!open || !close || !Object.keys(open).length || !Object.keys(close).length) return null;
+    const d = code => (close[code] || 0) - (open[code] || 0);
+    const f = {
+      profit, dep,
+      inventory: -d(1103), receivables: -d(1102), suppliers: d(2101), accrued: d(2102),
+      capex: -d(1201), loans: d(2201),
+      openingCash: open[1101], closingCash: close[1101],
+    };
+    f.operating = f.profit + f.dep + f.inventory + f.receivables + f.suppliers + f.accrued;
+    f.investing = f.capex;
+    f.financing = f.loans;
+    f.change = f.operating + f.investing + f.financing;
+    return f;
+  };
+  const fa = flows(bal[prev(a.from)], bal[a.to], p.profit_a, p.dep_a);
+  const fb = flows(bal[prev(b.from)], bal[b.to], p.profit_b, p.dep_b);
+  if (!fa || !fb) return { error: 'no_balance', message: 'No balance sheet for the start or end of that period.' };
+  for (const f of [fa, fb]) {
+    if (Math.round(f.openingCash + f.change) !== Math.round(f.closingCash)) {
+      return { error: 'cash_does_not_reconcile', message: 'Opening cash plus the flows does not equal closing cash - refusing to show it.' };
+    }
+  }
+
+  const out = [];
+  const row = (name, key, strong = false) => {
+    const cells = [name, fmtNum(fa[key]), fmtNum(fb[key]), fmtNum(fa[key] - fb[key])];
+    out.push(strong ? cells.map(bold) : cells);
+  };
+  row('רווח (הפסד) לפני מס', 'profit');
+  row('פחת', 'dep');
+  row('שינוי במלאי', 'inventory');
+  row('שינוי בלקוחות', 'receivables');
+  row('שינוי בספקים ונותני שירותים', 'suppliers');
+  row('שינוי בזכאים ויתרות זכות', 'accrued');
+  row('מזומנים נטו מפעילות שוטפת', 'operating', true);
+  row('רכישת רכוש קבוע', 'capex');
+  row('מזומנים נטו לפעילות השקעה', 'investing', true);
+  row('פירעון הלוואות מתאגידים בנקאיים', 'loans');
+  row('מזומנים נטו לפעילות מימון', 'financing', true);
+  row('שינוי במזומנים', 'change', true);
+  row('יתרת מזומנים לתחילת התקופה', 'openingCash');
+  row('יתרת מזומנים לסוף התקופה', 'closingCash', true);
+
+  return {
+    title: `דוח תזרים מזומנים - ${a.label} מול ${b.label}`,
+    columns: ['סעיף', `${a.label} (₪)`, `${b.label} (₪)`, 'הפרש (₪)'],
+    rows: out,
+    highlights: {
+      operating: { a: Math.round(fa.operating), b: Math.round(fb.operating) },
+      investing: { a: Math.round(fa.investing), b: Math.round(fb.investing) },
+      financing: { a: Math.round(fa.financing), b: Math.round(fb.financing) },
+      change_in_cash: { a: Math.round(fa.change), b: Math.round(fb.change) },
+      closing_cash: { a: Math.round(fa.closingCash), b: Math.round(fb.closingCash) },
+    },
+  };
+}
+
 /**
  * The crew tool's entry point.
  * @returns {Promise<Object>} { success, title, periods, report_markdown, highlights } or { success:false, ... }
@@ -352,10 +516,13 @@ async function getFinanceReport(params = {}, pool = getPool()) {
   const range = await ledgerRange(pool);
   if (!range?.last) return { success: false, error: 'no_ledger', message: 'The finance ledger is empty.' };
 
-  const { a, b } = resolvePeriods({ preset: PRESETS.includes(params.preset) ? params.preset : 'last_month_vs_last_year', ...params }, range.first, range.last);
+  const resolved = resolvePeriods({ ...params, preset: PRESETS.includes(params.preset) ? params.preset : 'last_month_vs_last_year' }, range.first, range.last);
+  if (resolved.error) return { success: false, ...resolved };
+  const { a, b } = resolved;
 
   let branch = null;
-  if (params.branch && report !== 'branch_profitability') {
+  // Branch applies to the P&L and the trend only; the balance sheet and cash flow are chain-level.
+  if (params.branch && (report === 'pnl' || report === 'monthly_trend')) {
     branch = await findBranch(pool, params.branch);
     if (branch?.notFound) {
       const { rows } = await pool.query(`SELECT name_he FROM aspect.stores ORDER BY store_id`);
@@ -367,6 +534,8 @@ async function getFinanceReport(params = {}, pool = getPool()) {
   if (report === 'line_by_branch') r = await lineByBranch(pool, a, b, params.line);
   else if (report === 'branch_profitability') r = await branchProfitability(pool, a, b);
   else if (report === 'monthly_trend') r = await monthlyTrend(pool, a, branch);
+  else if (report === 'balance_sheet') r = await balanceSheet(pool, a, b);
+  else if (report === 'cash_flow') r = await cashFlow(pool, a, b);
   else r = await pnl(pool, a, b, branch);
   if (r.error) return { success: false, ...r };
 

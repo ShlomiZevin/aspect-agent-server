@@ -27,11 +27,13 @@
  *
  * Usage (through the Cloud SQL Proxy, customer-data DB — port 5433):
  *   node scripts/seed-aspect-synthetic.js
- *   node scripts/seed-aspect-synthetic.js --dry   # generate only, print the P&L, no DB
+ *   node scripts/seed-aspect-synthetic.js --dry           # generate only, print P&L + balances, no DB
+ *   node scripts/seed-aspect-synthetic.js --finance-only  # rebuild only the fin_* tables (same day as the sales load)
  */
 
 require('dotenv').config();
 const DRY_RUN = process.argv.includes('--dry');
+const FINANCE_ONLY = process.argv.includes('--finance-only');
 const { getPool } = DRY_RUN ? { getPool: null } : require('../services/db.zer4u');
 
 // Deterministic PRNG (mulberry32) so re-runs produce the same data — makes
@@ -112,16 +114,15 @@ for (const cat of CATEGORIES) {
   }
 }
 
-// ── Sales: 26 months of history with seasonality ───────────────────────────
+// ── Sales: from January two years back, with seasonality ───────────────────
 // Ends "today" (server clock) so recency-window questions ("last N weeks")
 // have real rows to answer against, same expectation dataThroughDate serves
-// for the real clients. 26 months (was 14) so the finance reports can compare
-// year-to-date against the previous year's same months (task #112).
+// for the real clients. Starts January two years back (was 14 months): a full
+// previous year AND the year before it, so the finance reports can compare
+// "2025 vs 2024" as well as year-to-date (task #112).
 const END_DATE = new Date();
 END_DATE.setHours(12, 0, 0, 0); // midday, so toISOString() never slips a day across UTC
-const START_DATE = new Date(END_DATE);
-START_DATE.setMonth(START_DATE.getMonth() - 26);
-START_DATE.setDate(1); // whole first month, so it can be booked in the ledger
+const START_DATE = new Date(END_DATE.getFullYear() - 2, 0, 1, 12, 0, 0, 0);
 
 /** Seasonality multiplier for a given date — iPhone launch (Sep), back-to-
  *  school (Aug-Sep), Black Friday (late Nov), per agents/aspect/AGENT.md. */
@@ -328,18 +329,93 @@ function generateLedger() {
   return rows;
 }
 
-const DDL = `
-DROP SCHEMA IF EXISTS aspect CASCADE;
-CREATE SCHEMA aspect;
+// ── Finance: balance sheet (task #112) ─────────────────────────────────────
+// Chain-level, one snapshot at the END of every booked month plus an opening
+// snapshot at the end of the month before the first. Built FROM the ledger so
+// the three statements tie out: inventory is the branches' closing stock,
+// accumulated depreciation moves by the P&L depreciation, retained earnings
+// move by the P&L profit before tax (no dividends, no tax provision in the
+// demo), and cash is the balancing line - which is what makes the cash-flow
+// statement reconcile opening cash + flows = closing cash exactly.
+const BS_LINES = [
+  { code: 1101, section: 'CA', sectionName: 'נכסים שוטפים', side: 'asset', name: 'מזומנים ושווי מזומנים' },
+  { code: 1102, section: 'CA', sectionName: 'נכסים שוטפים', side: 'asset', name: 'לקוחות (חברות כרטיסי אשראי)' },
+  { code: 1103, section: 'CA', sectionName: 'נכסים שוטפים', side: 'asset', name: 'מלאי' },
+  { code: 1201, section: 'FA', sectionName: 'רכוש קבוע', side: 'asset', name: 'רכוש קבוע בעלות' },
+  { code: 1202, section: 'FA', sectionName: 'רכוש קבוע', side: 'asset', name: 'פחת שנצבר' },
+  { code: 2101, section: 'CL', sectionName: 'התחייבויות שוטפות', side: 'liability', name: 'ספקים ונותני שירותים' },
+  { code: 2102, section: 'CL', sectionName: 'התחייבויות שוטפות', side: 'liability', name: 'זכאים ויתרות זכות' },
+  { code: 2201, section: 'LL', sectionName: 'התחייבויות לזמן ארוך', side: 'liability', name: 'הלוואות מתאגידים בנקאיים' },
+  { code: 3101, section: 'EQ', sectionName: 'הון עצמי', side: 'equity', name: 'הון מניות' },
+  { code: 3102, section: 'EQ', sectionName: 'הון עצמי', side: 'equity', name: 'עודפים' },
+];
 
-CREATE TABLE aspect.stores (
-  store_id  INTEGER PRIMARY KEY,
-  name      TEXT NOT NULL,
-  name_he   TEXT NOT NULL,
-  city      TEXT,
-  format    TEXT NOT NULL,
-  is_online BOOLEAN NOT NULL DEFAULT false
-);
+/** @returns {{month: string, line_code: number, amount: number}[]} month = first day of the month whose END the row describes. */
+function generateBalances(ledger) {
+  // Chain totals per month from the ledger.
+  const t = new Map();
+  const get = m => { if (!t.has(m)) t.set(m, { rev: 0, purchases: 0, closing: 0, opening: 0, opex: 0, dep: 0, profit: 0 }); return t.get(m); };
+  const sectionOf = new Map(ACCOUNTS.map(a => [a.code, a.section]));
+  const signOf = new Map(SECTIONS.map(s => [s.code, s.sign]));
+  for (const r of ledger) {
+    const x = get(r.month);
+    const sec = sectionOf.get(r.account_code);
+    if (r.account_code === 1010) x.rev += r.amount;
+    if (r.account_code === 2020) x.purchases += r.amount;
+    if (r.account_code === 2030) x.closing += -r.amount;
+    if (r.account_code === 2010) x.opening += r.amount;
+    if (sec === 'OPEX' || sec === 'GA') x.opex += r.amount;
+    if (r.account_code === 6010) x.dep += r.amount;
+    x.profit += signOf.get(sec) * r.amount;
+  }
+  const months = [...t.keys()].sort();
+  const prevMonth = m => { const d = new Date(`${m}T12:00:00Z`); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 10); };
+
+  const rows = [];
+  // Every value is a whole shekel BEFORE cash is derived, so the sheet balances
+  // exactly and month-to-month moves equal the ledger to the shekel (the ledger
+  // amounts are whole shekels already).
+  const R = Math.round;
+  const snap = (month, v) => {
+    // Cash balances the sheet: liabilities + equity - every other asset.
+    v[1101] = v[2101] + v[2102] + v[2201] + v[3101] + v[3102] - v[1102] - v[1103] - v[1201] - v[1202];
+    for (const l of BS_LINES) rows.push({ month, line_code: l.code, amount: v[l.code] });
+  };
+
+  // Opening snapshot (end of the month before the first), sized like the first month.
+  const f = t.get(months[0]);
+  const open = {
+    1102: R(f.rev * 0.11), 1103: f.opening, 1201: 210e6, 1202: -85e6,
+    2101: R(f.opening * 0.95), 2102: R(f.opex * 0.6), 2201: 90e6, 3101: 40e6,
+  };
+  // Retained earnings chosen so the opening cash is ~30M.
+  open[3102] = 30e6 + open[1102] + open[1103] + open[1201] + open[1202] - open[2101] - open[2102] - open[2201] - open[3101];
+  snap(prevMonth(months[0]), { ...open });
+
+  let v = { ...open };
+  for (const m of months) {
+    const x = t.get(m);
+    v = {
+      ...v,
+      1102: R(x.rev * 0.11 * noise(0.05)),
+      1103: x.closing,
+      1201: v[1201] + R(x.dep * (0.9 + frand() * 0.7)), // capex around the depreciation level
+      1202: v[1202] - x.dep,
+      2101: R(x.closing * 0.95 * noise(0.03)),          // suppliers finance the stock (electronics retail)
+      2102: R(x.opex * 0.6 * noise(0.05)),
+      2201: v[2201] - 750000,                           // steady loan repayment
+      3102: v[3102] + x.profit,
+    };
+    snap(m, v);
+  }
+  return rows;
+}
+
+// The finance tables on their own, so --finance-only can rebuild them without
+// touching the 1.5M sales rows (the sales generator is deterministic for a
+// given day, so the ledger it derives is the one the sales table holds).
+const FIN_DDL = `
+DROP TABLE IF EXISTS aspect.fin_balances, aspect.fin_bs_lines, aspect.fin_ledger, aspect.fin_accounts, aspect.fin_sections;
 
 CREATE TABLE aspect.fin_sections (
   section_code  TEXT PRIMARY KEY,
@@ -364,6 +440,37 @@ CREATE TABLE aspect.fin_ledger (
   amount       NUMERIC(14,0) NOT NULL
 );
 CREATE INDEX idx_aspect_fin_ledger_month ON aspect.fin_ledger(month);
+
+CREATE TABLE aspect.fin_bs_lines (
+  line_code    INTEGER PRIMARY KEY,
+  section_code TEXT NOT NULL,
+  section_name TEXT NOT NULL,
+  side         TEXT NOT NULL,
+  line_name    TEXT NOT NULL,
+  line_order   INTEGER NOT NULL
+);
+
+-- Chain balance sheet at the END of each month (month = that month's first day).
+CREATE TABLE aspect.fin_balances (
+  month     DATE NOT NULL,
+  line_code INTEGER NOT NULL REFERENCES aspect.fin_bs_lines(line_code),
+  amount    NUMERIC(14,0) NOT NULL,
+  PRIMARY KEY (month, line_code)
+);
+`;
+
+const DDL = `
+DROP SCHEMA IF EXISTS aspect CASCADE;
+CREATE SCHEMA aspect;
+
+CREATE TABLE aspect.stores (
+  store_id  INTEGER PRIMARY KEY,
+  name      TEXT NOT NULL,
+  name_he   TEXT NOT NULL,
+  city      TEXT,
+  format    TEXT NOT NULL,
+  is_online BOOLEAN NOT NULL DEFAULT false
+);
 
 CREATE TABLE aspect.products (
   sku          TEXT PRIMARY KEY,
@@ -392,7 +499,7 @@ CREATE INDEX idx_aspect_sales_store ON aspect.sales(store_id);
 CREATE INDEX idx_aspect_sales_sku ON aspect.sales(sku);
 CREATE INDEX idx_aspect_sales_txn ON aspect.sales(transaction_id);
 CREATE INDEX idx_aspect_products_category ON aspect.products(category);
-`;
+${FIN_DDL}`;
 
 async function insertBatch(pool, table, columns, rows) {
   if (rows.length === 0) return;
@@ -428,17 +535,66 @@ function printLedgerSummary(ledger) {
   console.table(table);
 }
 
+/** Balance sheet per month-end, in millions — the sanity check for the balances. */
+function printBalanceSummary(balances) {
+  const byMonth = new Map();
+  for (const r of balances) {
+    const m = byMonth.get(r.month) || {};
+    m[r.line_code] = r.amount;
+    byMonth.set(r.month, m);
+  }
+  const M = v => (v / 1e6).toFixed(1);
+  console.table([...byMonth].map(([month, b]) => {
+    const assets = b[1101] + b[1102] + b[1103] + b[1201] + b[1202];
+    const le = b[2101] + b[2102] + b[2201] + b[3101] + b[3102];
+    return { month: month.slice(0, 7), cash: M(b[1101]), inventory: M(b[1103]), fixedNet: M(b[1201] + b[1202]), suppliers: M(b[2101]), loans: M(b[2201]), retained: M(b[3102]), assets: M(assets), balanced: assets === le };
+  }));
+}
+
+async function insertFinance(pool, ledger, balances) {
+  await insertBatch(pool, 'fin_sections', ['section_code', 'section_name', 'section_order', 'sign'],
+    SECTIONS.map(s => ({ section_code: s.code, section_name: s.name, section_order: s.order, sign: s.sign })));
+  await insertBatch(pool, 'fin_accounts', ['account_code', 'section_code', 'account_name', 'line_order', 'level'],
+    ACCOUNTS.map((a, i) => ({ account_code: a.code, section_code: a.section, account_name: a.name, line_order: i + 1, level: a.level })));
+  for (let i = 0; i < ledger.length; i += 2000) {
+    await insertBatch(pool, 'fin_ledger', ['month', 'store_id', 'account_code', 'amount'], ledger.slice(i, i + 2000));
+  }
+  await insertBatch(pool, 'fin_bs_lines', ['line_code', 'section_code', 'section_name', 'side', 'line_name', 'line_order'],
+    BS_LINES.map((l, i) => ({ line_code: l.code, section_code: l.section, section_name: l.sectionName, side: l.side, line_name: l.name, line_order: i + 1 })));
+  for (let i = 0; i < balances.length; i += 2000) {
+    await insertBatch(pool, 'fin_balances', ['month', 'line_code', 'amount'], balances.slice(i, i + 2000));
+  }
+  console.log(`[seed-aspect] ${ledger.length.toLocaleString()} ledger rows, ${balances.length.toLocaleString()} balance rows.`);
+  printLedgerSummary(ledger);
+  printBalanceSummary(balances);
+}
+
 async function main() {
   if (DRY_RUN) {
     let total = 0;
     for (const _ of generateSales()) total++;
     const ledger = generateLedger();
-    console.log(`[seed-aspect] DRY RUN: ${total.toLocaleString()} sale lines, ${ledger.length.toLocaleString()} ledger rows`);
+    const balances = generateBalances(ledger);
+    console.log(`[seed-aspect] DRY RUN: ${total.toLocaleString()} sale lines, ${ledger.length.toLocaleString()} ledger rows, ${balances.length} balance rows`);
     printLedgerSummary(ledger);
+    printBalanceSummary(balances);
     return;
   }
 
   const pool = getPool();
+
+  if (FINANCE_ONLY) {
+    // Regenerate the sales in memory only to derive the ledger from them.
+    for (const _ of generateSales());
+    const ledger = generateLedger();
+    const balances = generateBalances(ledger);
+    console.log('[seed-aspect] FINANCE ONLY: rebuilding the fin_* tables, sales untouched...');
+    await pool.query(FIN_DDL);
+    await insertFinance(pool, ledger, balances);
+    await pool.query('ANALYZE aspect.fin_ledger; ANALYZE aspect.fin_balances;');
+    await pool.end();
+    return;
+  }
 
   console.log('[seed-aspect] creating schema...');
   await pool.query(DDL);
@@ -471,23 +627,15 @@ async function main() {
   }
   console.log(`\n[seed-aspect] done: ${total.toLocaleString()} sale lines.`);
 
-  console.log('[seed-aspect] inserting the finance ledger...');
-  await insertBatch(pool, 'fin_sections', ['section_code', 'section_name', 'section_order', 'sign'],
-    SECTIONS.map(s => ({ section_code: s.code, section_name: s.name, section_order: s.order, sign: s.sign })));
-  await insertBatch(pool, 'fin_accounts', ['account_code', 'section_code', 'account_name', 'line_order', 'level'],
-    ACCOUNTS.map((a, i) => ({ account_code: a.code, section_code: a.section, account_name: a.name, line_order: i + 1, level: a.level })));
+  console.log('[seed-aspect] inserting the finance ledger and balance sheet...');
   const ledger = generateLedger();
-  for (let i = 0; i < ledger.length; i += 2000) {
-    await insertBatch(pool, 'fin_ledger', ['month', 'store_id', 'account_code', 'amount'], ledger.slice(i, i + 2000));
-  }
-  console.log(`[seed-aspect] ${ledger.length.toLocaleString()} ledger rows.`);
-  printLedgerSummary(ledger);
+  await insertFinance(pool, ledger, generateBalances(ledger));
 
   // Without this the planner works off the pre-load (empty-table) row
   // estimates until autovacuum gets around to it — a plain category/month
   // aggregate over the full table took 39s on stale stats vs. 0.5s after.
   console.log('[seed-aspect] running ANALYZE...');
-  await pool.query('ANALYZE aspect.sales; ANALYZE aspect.products; ANALYZE aspect.stores; ANALYZE aspect.fin_ledger;');
+  await pool.query('ANALYZE aspect.sales; ANALYZE aspect.products; ANALYZE aspect.stores; ANALYZE aspect.fin_ledger; ANALYZE aspect.fin_balances;');
 
   const revCheck = await pool.query(`
     SELECT to_char(sale_date, 'YYYY-MM') AS month, ROUND(SUM(qty * unit_price)) AS revenue
@@ -508,4 +656,4 @@ if (require.main === module) {
 
 // For offline tests of agents/aspect/finance-reports.js (a throwaway Postgres
 // gets the same DDL and rows without touching the real database).
-module.exports = { DDL, STORES, SECTIONS, ACCOUNTS, generateSales, generateLedger };
+module.exports = { DDL, FIN_DDL, STORES, SECTIONS, ACCOUNTS, BS_LINES, generateSales, generateLedger, generateBalances };
