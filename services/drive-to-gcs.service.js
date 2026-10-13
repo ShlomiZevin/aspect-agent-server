@@ -326,4 +326,4 @@ async function syncClient(client, opts = {}) {
   return report;
 }
 
-module.exports = { syncClient, resolveClientConfig, CLIENTS, normalizeStem };
+module.exports = { syncClient, resolveClientConfig, getDriveClient, CLIENTS, normalizeStem, DRIVE_IMPERSONATE_SA };

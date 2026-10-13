@@ -27,6 +27,7 @@ const { google } = require('googleapis');
 const { Storage } = require('@google-cloud/storage');
 const gcsService = require('./gcs.service');
 const providerConfigService = require('./provider-config.service');
+const driveToGcs = require('./drive-to-gcs.service');
 const { writeDailyStock } = require('./creative-inventory.service');
 
 const CREATIVE_FOLDER_ID = '1OHvMrdGc7ziRvdjylMso5RIJACOPjYAw';
@@ -40,29 +41,73 @@ const TOKEN_PATH = 'exports/zolstock/.creative_stock_token';
 const DOWNLOAD_NAME = 'ZolStock_Creative_Daily_Stock.csv';
 const SIGNED_URL_MINUTES = 60;
 
-// Same service account Drive sync uses: shared on the client's Drive folders,
-// writes the bucket, and - being a key, not the Cloud Run metadata identity -
-// can sign URLs without the iamcredentials API.
-function saCredentials() {
+// Auth mirrors Drive sync exactly, so it works wherever that works. On Cloud
+// Run there is no key: Drive is read by impersonating the Drive-shared service
+// account and the bucket is written with the runtime identity - both already
+// proven nightly by Drive sync. A local key (DRIVE_SYNC_SA_KEY, only in the
+// local env file) is used when present, for running the script by hand.
+function localKey() {
   return process.env.DRIVE_SYNC_SA_KEY ? JSON.parse(process.env.DRIVE_SYNC_SA_KEY) : null;
 }
 
 function bucket() {
-  const credentials = saCredentials();
-  const storage = credentials ? new Storage({ credentials }) : gcsService.storage;
+  const key = localKey();
+  const storage = key ? new Storage({ credentials: key }) : gcsService.storage;
   return storage.bucket(BUCKET);
 }
 
 function driveClient() {
-  const credentials = saCredentials();
-  if (!credentials) throw new Error('DRIVE_SYNC_SA_KEY is not set - cannot read the creative files from Drive');
-  const auth = new google.auth.GoogleAuth({ credentials, scopes: ['https://www.googleapis.com/auth/drive.readonly'] });
-  return google.drive({ version: 'v3', auth });
+  return driveToGcs.getDriveClient();
+}
+
+/**
+ * A signed URL needs a service account to sign it. The runtime identity
+ * cannot sign by itself, so we sign as the same Drive-shared account Drive
+ * sync impersonates (the runtime may already mint tokens for it; signBlob is
+ * the same grant). Storage only calls sign() and getCredentials() on the
+ * client it is given, so a two-method adapter is enough.
+ */
+function signingBucket() {
+  const key = localKey();
+  let signer;
+  if (key) {
+    signer = {
+      getCredentials: async () => ({ client_email: key.client_email }),
+      sign: async blob => crypto.createSign('RSA-SHA256').update(blob).sign(key.private_key, 'base64'),
+    };
+  } else {
+    const { Impersonated } = require('google-auth-library');
+    let impersonated = null;
+    const client = async () => {
+      if (!impersonated) {
+        const sourceClient = await new google.auth.GoogleAuth({
+          scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+        }).getClient();
+        impersonated = new Impersonated({
+          sourceClient,
+          targetPrincipal: driveToGcs.DRIVE_IMPERSONATE_SA,
+          targetScopes: ['https://www.googleapis.com/auth/cloud-platform'],
+          lifetime: 3600,
+        });
+      }
+      return impersonated;
+    };
+    signer = {
+      getCredentials: async () => ({ client_email: driveToGcs.DRIVE_IMPERSONATE_SA }),
+      sign: async blob => (await (await client()).sign(blob)).signedBlob,
+    };
+  }
+  const storage = new Storage({ projectId: process.env.GCP_PROJECT_ID || 'aspect-agents' });
+  storage.authClient = signer;
+  return storage.bucket(BUCKET);
 }
 
 /** Newest copy of each input file across the creative and main ZolStock folders. */
 async function findInputs(drive) {
-  const mainFolder = await providerConfigService.get('zolstock_drive_folder_id');
+  // The main folder is a bonus (where Reut may move the files); if the config
+  // DB is unreachable - e.g. the script run by hand - the creative folder alone
+  // still works.
+  const mainFolder = await providerConfigService.get('zolstock_drive_folder_id').catch(() => null);
   const folders = [CREATIVE_FOLDER_ID, mainFolder].filter(Boolean);
   const found = {};
   for (const folderId of folders) {
@@ -103,7 +148,7 @@ function refresh(opts = {}) {
 }
 
 async function doRefresh({ force = false, log = console.log } = {}) {
-  const drive = driveClient();
+  const drive = await driveClient();
   const inputs = await findInputs(drive);
   const out = bucket().file(OUTPUT_PATH);
 
@@ -178,10 +223,9 @@ async function verifyToken(given) {
 
 /** Short-lived signed URL for the current table, or null when not built yet. */
 async function signedDownloadUrl() {
-  const out = bucket().file(OUTPUT_PATH);
-  const [exists] = await out.exists();
+  const [exists] = await bucket().file(OUTPUT_PATH).exists();
   if (!exists) return null;
-  const [url] = await out.getSignedUrl({
+  const [url] = await signingBucket().file(OUTPUT_PATH).getSignedUrl({
     version: 'v4',
     action: 'read',
     expires: Date.now() + SIGNED_URL_MINUTES * 60 * 1000,
