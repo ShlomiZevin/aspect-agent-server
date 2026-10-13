@@ -137,9 +137,14 @@ async function getDataThroughDate(datasetId) {
   if (hit && (Date.now() - hit.at) < DATA_THROUGH_TTL_MS) return hit.value;
   let value = null;
   try {
-    const schemaName = getDatasetEntry(datasetId).schemaName;
-    const info = dataReloadServiceRef ? await dataReloadServiceRef.getDataInfo(schemaName) : null;
+    const entry = getDatasetEntry(datasetId);
+    const info = dataReloadServiceRef ? await dataReloadServiceRef.getDataInfo(entry.schemaName) : null;
     value = info?.lastDataDate || null;
+    // A dataset with no reloader (the aspect demo) reports nothing here. PLAN
+    // then got "data STARTS on 2024-01-01" and no end, and anchored every
+    // report on 2024 (task #112). Fall back to the fact table's own last date,
+    // the same source getDataFromDate() already uses for the lower bound.
+    if (!value) value = await dataThroughService.resolveDataThrough(entry.getPool(), entry.schemaName);
   } catch {
     value = null;
   }

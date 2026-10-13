@@ -931,6 +931,13 @@ ORDER BY avg_order_value DESC
       return require('./schema-rules/superhist.rules').superhistRules(schemaName);
     }
 
+    // The TechZone demo (task #112): anchor every period on the last closed
+    // month of the finance books, finance only through its views. See
+    // services/schema-rules/aspect.rules.js.
+    if (schemaName === 'aspect') {
+      return require('./schema-rules/aspect.rules').aspectRules(schemaName);
+    }
+
     if (schemaName === 'tevanaot') {
       return `
 ## tevanaot-Specific Rules (Teva Naot — footwear retail — CRITICAL, follow exactly)

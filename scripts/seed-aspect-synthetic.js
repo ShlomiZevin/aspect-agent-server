@@ -29,11 +29,13 @@
  *   node scripts/seed-aspect-synthetic.js
  *   node scripts/seed-aspect-synthetic.js --dry           # generate only, print P&L + balances, no DB
  *   node scripts/seed-aspect-synthetic.js --finance-only  # rebuild only the fin_* tables (same day as the sales load)
+ *   node scripts/seed-aspect-synthetic.js --views-only    # recreate only the finance views, no data touched
  */
 
 require('dotenv').config();
 const DRY_RUN = process.argv.includes('--dry');
 const FINANCE_ONLY = process.argv.includes('--finance-only');
+const VIEWS_ONLY = process.argv.includes('--views-only');
 const { getPool } = DRY_RUN ? { getPool: null } : require('../services/db.zer4u');
 
 // Deterministic PRNG (mulberry32) so re-runs produce the same data — makes
@@ -411,10 +413,143 @@ function generateBalances(ledger) {
   return rows;
 }
 
+// Finance views for the Intelligence Center's Reports engine and for Otto
+// screens (task #112). Both work best on ONE flat table with the hard parts
+// already done: signs, subtotals, profit rows, opening/closing stock over a
+// period, the same month last year side by side. Totals and labels match
+// agents/aspect/finance-reports.js line for line, so a Reports figure, an Otto
+// screen and the chat's P&L all show the same number.
+const FIN_VIEWS = `
+-- P&L as rows (lines + subtotals + profit rows), chain level, per month.
+CREATE VIEW aspect.fin_pnl_lines AS
+WITH acc AS (
+  SELECT l.month, s.section_code, s.section_name, s.section_order, s.sign, a.account_name, a.line_order, SUM(l.amount) AS amount
+    FROM aspect.fin_ledger l JOIN aspect.fin_accounts a USING (account_code) JOIN aspect.fin_sections s USING (section_code)
+   GROUP BY 1, 2, 3, 4, 5, 6, 7
+), r AS (
+  SELECT month, section_order * 100 + line_order AS line_order, section_name AS section, account_name AS line, false AS is_total, amount FROM acc
+  UNION ALL
+  SELECT month, section_order * 100 + 99, section_name, 'סה"כ ' || section_name, true, SUM(amount) FROM acc
+   WHERE section_code IN ('COGS', 'OPEX', 'GA', 'FIN') GROUP BY month, section_order, section_name
+  UNION ALL
+  SELECT month, 300, 'רווח גולמי', 'רווח גולמי', true, SUM(sign * amount) FROM acc WHERE section_order <= 2 GROUP BY month
+  UNION ALL
+  SELECT month, 600, 'רווח תפעולי', 'רווח תפעולי', true, SUM(sign * amount) FROM acc WHERE section_order <= 5 GROUP BY month
+  UNION ALL
+  SELECT month, 1000, 'רווח (הפסד) לפני מס', 'רווח (הפסד) לפני מס', true, SUM(sign * amount) FROM acc GROUP BY month
+), rev AS (
+  SELECT month, SUM(amount) AS revenue FROM acc WHERE section_code = 'REV' GROUP BY month
+)
+SELECT r.month, to_char(r.month, 'YYYY-MM') AS year_month,
+       EXTRACT(YEAR FROM r.month)::int AS year, EXTRACT(MONTH FROM r.month)::int AS month_number,
+       r.line_order, r.section, r.line, r.is_total,
+       r.amount, ly.amount AS amount_last_year,
+       rv.revenue, rvly.revenue AS revenue_last_year,
+       -- 0 = the last closed month (Otto expressions cannot compare text).
+       ((SELECT (EXTRACT(YEAR FROM MAX(month)) * 12 + EXTRACT(MONTH FROM MAX(month)))::int FROM aspect.fin_ledger) - (EXTRACT(YEAR FROM r.month) * 12 + EXTRACT(MONTH FROM r.month))::int) AS months_back
+  FROM r
+  JOIN rev rv ON rv.month = r.month
+  LEFT JOIN r ly ON ly.line_order = r.line_order AND ly.month = (r.month - interval '1 year')::date
+  LEFT JOIN rev rvly ON rvly.month = (r.month - interval '1 year')::date;
+
+-- Every P&L line (and opex / G&A / financing / cost-of-sales subtotal) by
+-- branch, for the last closed month and year to date, against the same
+-- period last year. Head-office lines appear under branch 'מטה'.
+CREATE VIEW aspect.fin_line_branch AS
+WITH last AS (SELECT MAX(month) AS m FROM aspect.fin_ledger),
+p AS (
+  SELECT 'החודש האחרון שנסגר'::text AS period, 1 AS period_order, m AS a_from, m AS a_to,
+         (m - interval '1 year')::date AS b_from, (m - interval '1 year')::date AS b_to FROM last
+  UNION ALL
+  SELECT 'מתחילת השנה', 2, date_trunc('year', m)::date, m,
+         (date_trunc('year', m) - interval '1 year')::date, (m - interval '1 year')::date FROM last
+), x AS (
+  SELECT p.period, p.period_order, l.store_id, l.account_code, a.account_name, a.line_order,
+         s.section_code, s.section_name, s.section_order,
+         SUM(l.amount) FILTER (WHERE CASE l.account_code WHEN 2010 THEN l.month = p.a_from WHEN 2030 THEN l.month = p.a_to
+                                    ELSE l.month BETWEEN p.a_from AND p.a_to END) AS amount,
+         SUM(l.amount) FILTER (WHERE CASE l.account_code WHEN 2010 THEN l.month = p.b_from WHEN 2030 THEN l.month = p.b_to
+                                    ELSE l.month BETWEEN p.b_from AND p.b_to END) AS amount_last_year
+    FROM p
+   CROSS JOIN aspect.fin_ledger l
+    JOIN aspect.fin_accounts a ON a.account_code = l.account_code
+    JOIN aspect.fin_sections s ON s.section_code = a.section_code
+   GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
+), y AS (
+  SELECT period, period_order, store_id, section_order * 100 + line_order AS line_order, section_name AS section, account_name AS line, amount, amount_last_year FROM x
+  UNION ALL
+  SELECT period, period_order, store_id, section_order * 100 + 99, section_name, 'סה"כ ' || section_name, SUM(amount), SUM(amount_last_year) FROM x
+   WHERE section_code IN ('COGS', 'OPEX', 'GA', 'FIN') GROUP BY period, period_order, store_id, section_order, section_name
+  -- Branch profit rows (branches only - head office has no revenue):
+  -- gross = revenue - cost of sales; branch operating = gross - branch opex.
+  -- Same definition as the chat's branch_profitability report.
+  UNION ALL
+  SELECT period, period_order, store_id, 300, 'רווח גולמי', 'רווח גולמי',
+         SUM(CASE WHEN section_code = 'REV' THEN amount ELSE -amount END),
+         SUM(CASE WHEN section_code = 'REV' THEN amount_last_year ELSE -amount_last_year END)
+    FROM x WHERE store_id IS NOT NULL AND section_code IN ('REV', 'COGS') GROUP BY period, period_order, store_id
+  UNION ALL
+  SELECT period, period_order, store_id, 600, 'רווח תפעולי סניפי', 'רווח תפעולי סניפי',
+         SUM(CASE WHEN section_code = 'REV' THEN amount ELSE -amount END),
+         SUM(CASE WHEN section_code = 'REV' THEN amount_last_year ELSE -amount_last_year END)
+    FROM x WHERE store_id IS NOT NULL AND section_code IN ('REV', 'COGS', 'OPEX') GROUP BY period, period_order, store_id
+)
+SELECT y.period, y.period_order, COALESCE(st.name_he, 'מטה') AS branch, y.line_order, y.section, y.line,
+       COALESCE(y.amount, 0) AS amount, COALESCE(y.amount_last_year, 0) AS amount_last_year,
+       rv.amount AS branch_revenue
+  FROM y
+  LEFT JOIN aspect.stores st ON st.store_id = y.store_id
+  LEFT JOIN x rv ON rv.account_code = 1010 AND rv.period = y.period AND rv.store_id IS NOT DISTINCT FROM y.store_id
+ WHERE COALESCE(y.amount, 0) <> 0 OR COALESCE(y.amount_last_year, 0) <> 0;
+
+-- Balance sheet as rows (lines + totals) at each month-end, against the same
+-- date a year earlier. Accumulated depreciation is a positive "less:" line.
+CREATE VIEW aspect.fin_balance_lines AS
+WITH b AS (
+  SELECT f.month, l.line_code, l.section_code, l.section_name, l.line_name, l.line_order, f.amount
+    FROM aspect.fin_balances f JOIN aspect.fin_bs_lines l USING (line_code)
+), r AS (
+  SELECT month, line_order * 10 AS line_order, section_name AS section,
+         CASE WHEN line_code = 1202 THEN 'בניכוי: ' || line_name ELSE line_name END AS line, false AS is_total,
+         CASE WHEN line_code = 1202 THEN -amount ELSE amount END AS amount FROM b
+  UNION ALL SELECT month, 35, 'נכסים שוטפים', 'סה"כ נכסים שוטפים', true, SUM(amount) FROM b WHERE section_code = 'CA' GROUP BY month
+  UNION ALL SELECT month, 55, 'רכוש קבוע', 'סה"כ רכוש קבוע, נטו', true, SUM(amount) FROM b WHERE section_code = 'FA' GROUP BY month
+  UNION ALL SELECT month, 58, 'סה"כ נכסים', 'סה"כ נכסים', true, SUM(amount) FROM b WHERE section_code IN ('CA', 'FA') GROUP BY month
+  UNION ALL SELECT month, 75, 'התחייבויות שוטפות', 'סה"כ התחייבויות שוטפות', true, SUM(amount) FROM b WHERE section_code = 'CL' GROUP BY month
+  UNION ALL SELECT month, 105, 'הון עצמי', 'סה"כ הון עצמי', true, SUM(amount) FROM b WHERE section_code = 'EQ' GROUP BY month
+  UNION ALL SELECT month, 110, 'סה"כ התחייבויות והון עצמי', 'סה"כ התחייבויות והון עצמי', true, SUM(amount) FROM b WHERE section_code IN ('CL', 'LL', 'EQ') GROUP BY month
+), ta AS (
+  SELECT month, SUM(amount) AS total_assets FROM b WHERE section_code IN ('CA', 'FA') GROUP BY month
+)
+SELECT r.month, to_char(r.month, 'YYYY-MM') AS year_month,
+       EXTRACT(YEAR FROM r.month)::int AS year, EXTRACT(MONTH FROM r.month)::int AS month_number,
+       r.line_order, r.section, r.line, r.is_total,
+       r.amount, ly.amount AS amount_last_year, ta.total_assets,
+       ((SELECT (EXTRACT(YEAR FROM MAX(month)) * 12 + EXTRACT(MONTH FROM MAX(month)))::int FROM aspect.fin_ledger) - (EXTRACT(YEAR FROM r.month) * 12 + EXTRACT(MONTH FROM r.month))::int) AS months_back
+  FROM r
+  JOIN ta ON ta.month = r.month
+  LEFT JOIN r ly ON ly.line_order = r.line_order AND ly.month = (r.month - interval '1 year')::date;
+
+-- One row per month: the headline P&L figures and the same month last year.
+CREATE VIEW aspect.fin_monthly_summary AS
+SELECT month, year_month, year, month_number, months_back,
+       MAX(amount) FILTER (WHERE line_order = 101) AS revenue,
+       MAX(amount) FILTER (WHERE line_order = 300) AS gross_profit,
+       MAX(amount) FILTER (WHERE line_order = 600) AS operating_profit,
+       MAX(amount) FILTER (WHERE line_order = 1000) AS profit_before_tax,
+       MAX(amount_last_year) FILTER (WHERE line_order = 101) AS revenue_last_year,
+       MAX(amount_last_year) FILTER (WHERE line_order = 300) AS gross_profit_last_year,
+       MAX(amount_last_year) FILTER (WHERE line_order = 600) AS operating_profit_last_year,
+       MAX(amount_last_year) FILTER (WHERE line_order = 1000) AS profit_before_tax_last_year
+  FROM aspect.fin_pnl_lines
+ GROUP BY month, year_month, year, month_number, months_back;
+`;
+
 // The finance tables on their own, so --finance-only can rebuild them without
 // touching the 1.5M sales rows (the sales generator is deterministic for a
 // given day, so the ledger it derives is the one the sales table holds).
 const FIN_DDL = `
+DROP VIEW IF EXISTS aspect.fin_pnl_lines, aspect.fin_line_branch, aspect.fin_balance_lines, aspect.fin_monthly_summary;
 DROP TABLE IF EXISTS aspect.fin_balances, aspect.fin_bs_lines, aspect.fin_ledger, aspect.fin_accounts, aspect.fin_sections;
 
 CREATE TABLE aspect.fin_sections (
@@ -457,7 +592,7 @@ CREATE TABLE aspect.fin_balances (
   amount    NUMERIC(14,0) NOT NULL,
   PRIMARY KEY (month, line_code)
 );
-`;
+${FIN_VIEWS}`;
 
 const DDL = `
 DROP SCHEMA IF EXISTS aspect CASCADE;
@@ -583,6 +718,14 @@ async function main() {
 
   const pool = getPool();
 
+  if (VIEWS_ONLY) {
+    // (Re)create only the finance views - no data is touched.
+    console.log('[seed-aspect] VIEWS ONLY: recreating the finance views...');
+    await pool.query('DROP VIEW IF EXISTS aspect.fin_pnl_lines, aspect.fin_line_branch, aspect.fin_balance_lines, aspect.fin_monthly_summary CASCADE;' + FIN_VIEWS);
+    await pool.end();
+    return;
+  }
+
   if (FINANCE_ONLY) {
     // Regenerate the sales in memory only to derive the ledger from them.
     for (const _ of generateSales());
@@ -656,4 +799,4 @@ if (require.main === module) {
 
 // For offline tests of agents/aspect/finance-reports.js (a throwaway Postgres
 // gets the same DDL and rows without touching the real database).
-module.exports = { DDL, FIN_DDL, STORES, SECTIONS, ACCOUNTS, BS_LINES, generateSales, generateLedger, generateBalances };
+module.exports = { DDL, FIN_DDL, FIN_VIEWS, STORES, SECTIONS, ACCOUNTS, BS_LINES, generateSales, generateLedger, generateBalances };
