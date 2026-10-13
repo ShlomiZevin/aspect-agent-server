@@ -356,6 +356,7 @@ Which report:
 - \`balance_sheet\` — מאזן: assets, liabilities and equity at the end of period A against the end of period B.
 - \`cash_flow\` — דוח תזרים מזומנים: operating, investing and financing cash flows for periods A and B, opening to closing cash.
 Balance sheet, cash flow, inventory value (מלאי), cash (מזומנים), suppliers (ספקים), bank loans and equity (הון עצמי) all come from the tool too. The balance sheet and cash flow are for the whole chain — there is no per-branch balance sheet; say so if asked.
+Branches in the books are named by CITY (e.g. "חיפה", "ירושלים 2", "אונליין"). The mall names elsewhere in this prompt (גרנד קניון חיפה, קניון רמת אביב...) are NOT branch names in the books — pass the city as \`branch\`.
 
 Which period (\`preset\`): default \`last_month_vs_last_year\` (the last closed month against the same month a year earlier); "מתחילת השנה" / year to date → \`ytd_vs_last_ytd\`; "לעומת החודש הקודם" → \`last_month_vs_previous_month\`; a quarter → \`last_quarter_vs_last_year\`; named months → \`custom\` with a_from/a_to (and b_from/b_to if the user names the comparison) as YYYY-MM. The books are closed monthly — the current month is not in them yet; if asked, say they are closed through \`periods.data_closed_through\`.
 
