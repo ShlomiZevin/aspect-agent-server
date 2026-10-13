@@ -192,6 +192,27 @@ app.use('/api/otto', require('./otto/routes/otto.routes'));
 app.use('/intelligence', require('./otto/routes/mcp.routes'));
 app.use('/intelligence', require('./otto/routes/mcp.routes').errorHandler);
 
+// ZolStock creative daily store inventory (tasks #106 / #107) — the link Reut's
+// Qlik loads nightly. Outside /api because it is pasted into a Qlik Web File
+// connector; Hosting proxies it from aspect-agents.web.app. Answers with a 302
+// to a short-lived signed GCS URL (the table is ~1 GB, past Hosting's 60s
+// proxy limit). See services/creative-inventory-export.service.js.
+app.get('/zolstock/creative-stock/:token{/:file}', async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  try {
+    const creativeExport = require('./services/creative-inventory-export.service');
+    if (!(await creativeExport.verifyToken(req.params.token))) {
+      return res.status(404).type('text/plain').send('This link is not valid.');
+    }
+    const url = await creativeExport.signedDownloadUrl();
+    if (!url) return res.status(503).type('text/plain').send('The inventory table is not built yet. Try again later.');
+    res.redirect(302, url);
+  } catch (err) {
+    console.error('❌ creative-stock link error:', err.message);
+    res.status(500).type('text/plain').send('Could not serve the inventory table right now.');
+  }
+});
+
 // ─── Aspect Task Board ─────────────────────────────────────────────
 // Our own task board, in its OWN database (`aspect_tasks_db`), not the platform
 // DB. The separation is physical on purpose: the existing board in

@@ -53,24 +53,37 @@ function formatDay(day) {
 }
 
 /**
- * Both files are simple numeric CSVs except one quoted header (מק"ט), so a
- * comma split is safe for the data rows. Header cells are unquoted for lookup.
+ * Calls onRow({date, qty, item, store}) per data line. Both files are simple
+ * numeric CSVs except one quoted header (מק"ט), so a comma split is safe for
+ * the data rows; header cells are unquoted for lookup. Walks the text line by
+ * line instead of splitting it whole - the sales file is 2.3M lines and the
+ * nightly run shares an instance with live chat.
  */
-function parseCsv(text, cols, label) {
-  const lines = text.replace(/^﻿/, '').split(/\r?\n/);
-  const header = lines[0].split(',').map(h => h.replace(/^"|"$/g, '').replace(/""/g, '"').trim());
+function forEachCsvRow(text, cols, label, onRow) {
+  let pos = text.charCodeAt(0) === 0xFEFF ? 1 : 0;
+  const nextLine = () => {
+    if (pos >= text.length) return null;
+    let end = text.indexOf('\n', pos);
+    if (end < 0) end = text.length;
+    let line = text.slice(pos, end);
+    if (line.endsWith('\r')) line = line.slice(0, -1);
+    pos = end + 1;
+    return line;
+  };
+
+  const header = (nextLine() || '').split(',').map(h => h.replace(/^"|"$/g, '').replace(/""/g, '"').trim());
   const idx = {};
   for (const [key, name] of Object.entries(cols)) {
     idx[key] = header.indexOf(name);
     if (idx[key] < 0) throw new Error(`${label}: column "${name}" not found in header: ${header.join(' | ')}`);
   }
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    if (!lines[i]) continue;
-    const c = lines[i].split(',');
-    rows.push({ date: c[idx.date], qty: c[idx.qty], item: c[idx.item], store: c[idx.store] });
+
+  let line;
+  while ((line = nextLine()) !== null) {
+    if (!line) continue;
+    const c = line.split(',');
+    onRow({ date: c[idx.date], qty: c[idx.qty], item: c[idx.item], store: c[idx.store] });
   }
-  return rows;
 }
 
 /**
@@ -102,8 +115,8 @@ function buildMovements(entriesCsv, exitsCsv) {
     days.set(day, (days.get(day) || 0) + sign * qty);
   };
 
-  for (const r of parseCsv(entriesCsv, ENTRY_COLS, 'entries file')) add(r, +1, 'entryRows');
-  for (const r of parseCsv(exitsCsv, EXIT_COLS, 'exits file')) add(r, -1, 'exitRows');
+  forEachCsvRow(entriesCsv, ENTRY_COLS, 'entries file', r => add(r, +1, 'entryRows'));
+  forEachCsvRow(exitsCsv, EXIT_COLS, 'exits file', r => add(r, -1, 'exitRows'));
 
   return { pairs, stats };
 }
@@ -143,7 +156,13 @@ async function writeDailyStock(entriesCsv, exitsCsv, write) {
     for (let d = start; d <= lastDay; d++) {
       if (i < moveDays.length && moveDays[i] === d) balance += days.get(moveDays[i++]);
       buf.push(`${item},${label(d)},${store},${balance}`);
-      if (buf.length >= 50000) { rowsWritten += buf.length; await write(buf.join('\n') + '\n'); buf = []; }
+      if (buf.length >= 50000) {
+        rowsWritten += buf.length;
+        await write(buf.join('\n') + '\n');
+        buf = [];
+        // Let chat requests on the same instance run between chunks.
+        await new Promise(r => setImmediate(r));
+      }
     }
     if (balance < 0) pairsEndingNegative++;
   }
