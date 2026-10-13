@@ -191,7 +191,8 @@ async function pnl(pool, a, b, branch) {
   addSection('OTH');
   line('רווח (הפסד) לפני מס', profit.a, profit.b, true);
 
-  const columns = ['סעיף', `${a.label} (₪)`, '% מההכנסות', `${b.label} (₪)`, '% מההכנסות', 'הפרש (₪)', 'שינוי %'];
+  // Column names must be unique: the chat's table viewer keys each row by them.
+  const columns = ['סעיף', `${a.label} (₪)`, `% מההכנסות ${a.label}`, `${b.label} (₪)`, `% מההכנסות ${b.label}`, 'הפרש (₪)', 'שינוי %'];
   const title = `דוח רווח והפסד - ${a.label} מול ${b.label}${branch ? ` - סניף ${branch.name_he}` : ''}`;
   return {
     title,
