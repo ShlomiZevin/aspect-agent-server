@@ -251,6 +251,21 @@ async function partB(pool) {
   check('B33 unknown line is refused with the line list', !badLine.success && badLine.error === 'line_not_found' && badLine.available_lines.length > 0);
   const future = await R({ report: 'pnl', preset: 'custom', a_from: '2027-03', a_to: '2027-03' });
   check('B34 a future month clamps to the last closed month', future.success && future.periods.a === future.periods.data_closed_through);
+  // The model passes B explicitly; B must move with A (live bug: "Sep 2026 vs Oct 2025").
+  const octVsOct = await R({ report: 'pnl', preset: 'custom', a_from: '2026-10', a_to: '2026-10', b_from: '2025-10', b_to: '2025-10' });
+  check('B39 unclosed month: A and B shift together (same month a year apart)', octVsOct.success && octVsOct.periods.a === 'ספטמבר 2026' && octVsOct.periods.b === 'ספטמבר 2025', JSON.stringify(octVsOct.periods));
+  check('B40 unclosed month: a notice tells the model', octVsOct.success && /closed through/.test(octVsOct.notice || ''));
+  const partly = await R({ report: 'pnl', preset: 'custom', a_from: '2026-07', a_to: '2026-12' });
+  check('B41 partly-future range: A cut to the closed months, B the same length', partly.success && partly.periods.a === 'יולי-ספטמבר 2026' && partly.periods.b === 'יולי-ספטמבר 2025', JSON.stringify(partly.periods));
+  const normal = await R({ report: 'pnl', preset: 'custom', a_from: '2026-03', a_to: '2026-03' });
+  check('B42 a closed period carries no notice', normal.success && !normal.notice);
+  const bsNet = parseTable((await R({ report: 'balance_sheet' })).report_markdown).byLabel;
+  check('B43 fixed assets: cost - accumulated depreciation = net total',
+    num(bsNet.get('רכוש קבוע בעלות')[1]) - num(bsNet.get('בניכוי: פחת שנצבר')[1]) === num(bsNet.get('סה"כ רכוש קבוע, נטו')[1]));
+  // Period columns (amount + % for A and B) never negative - the cell the model dropped.
+  const bsRows = parseTable((await R({ report: 'balance_sheet' })).report_markdown).rows;
+  check('B44 no negative amount/% in the balance sheet period columns', bsRows.every(r => [1, 2, 3, 4].every(c => !String(r[c]).replace(/\*\*/g, '').startsWith('-'))),
+    JSON.stringify(bsRows.filter(r => [1, 2, 3, 4].some(c => String(r[c]).replace(/\*\*/g, '').startsWith('-')))));
   const junk = await R({ report: 'nonsense', preset: 'nonsense' });
   check('B35 unknown report/preset falls back to the default P&L', junk.success && junk.title.startsWith('דוח רווח והפסד'));
   for (const report of ['pnl', 'balance_sheet', 'cash_flow', 'line_by_branch']) {

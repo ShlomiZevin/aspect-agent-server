@@ -48,12 +48,18 @@ function resolvePeriods({ preset, a_from, a_to, b_from, b_to }, firstYm, lastYm)
   const valid = s => typeof s === 'string' && /^\d{4}-\d{2}$/.test(s);
 
   if (preset === 'custom' && valid(a_from)) {
-    const aF = clamp(toIdx(a_from));
-    const aT = Math.max(aF, clamp(valid(a_to) ? toIdx(a_to) : aF));
-    const len = aT - aF;
+    const aF0 = toIdx(a_from);
+    const aT0 = Math.max(aF0, valid(a_to) ? toIdx(a_to) : aF0);
+    const aF = clamp(aF0);
+    const aT = Math.max(aF, clamp(aT0));
     // No B given: the same months a year earlier, the usual comparison.
-    const bF = valid(b_from) ? toIdx(b_from) : aF - 12;
-    const bT = valid(b_to) ? toIdx(b_to) : bF + len;
+    const bF0 = valid(b_from) ? toIdx(b_from) : aF0 - 12;
+    const bT0 = valid(b_to) ? toIdx(b_to) : bF0 + (aT0 - aF0);
+    // If A had to move into the books (e.g. a month not closed yet), B moves
+    // by the same months - otherwise "October 2026 vs October 2025" became
+    // "September 2026 vs October 2025" (+46%, live test 2026-10-13).
+    const bF = bF0 + (aF - aF0);
+    const bT = bT0 + (aT - aT0);
     // A comparison that starts before the books do cannot be clamped
     // silently - it would become period A itself, or a shorter span.
     if (bF < first) {
@@ -62,7 +68,11 @@ function resolvePeriods({ preset, a_from, a_to, b_from, b_to }, firstYm, lastYm)
     if (bF === aF && clamp(bT) === aT) {
       return { error: 'same_periods', message: 'Period A and period B are the same - ask which period to compare with.' };
     }
-    return { a: period(aF, aT), b: period(bF, clamp(bT)) };
+    const out = { a: period(aF, aT), b: period(bF, clamp(bT)) };
+    if (aF !== aF0 || aT !== aT0) {
+      out.notice = `${periodLabel(fromIdx(aF0), fromIdx(aT0))} is not (fully) in the books - they are closed through ${periodLabel(lastYm, lastYm)}. Showing ${out.a.label} vs ${out.b.label} instead. Tell the user this first.`;
+    }
+    return out;
   }
   switch (preset) {
     case 'last_month_vs_previous_month':
@@ -403,7 +413,14 @@ async function balanceSheet(pool, a, b) {
   };
   const section = (sec, totalName) => {
     const ls = lines.filter(l => l.section_code === sec);
-    for (const l of ls) row(l.line_name, A[l.line_code] || 0, B[l.line_code] || 0);
+    for (const l of ls) {
+      // Accumulated depreciation is shown the way statements print it - a
+      // positive amount on a "less:" line - not as a negative number. In live
+      // tests the model dropped the negative % cell of that row 2 runs in 3,
+      // breaking the pasted table; totals below still use the signed values.
+      if (l.line_code === 1202) row(`בניכוי: ${l.line_name}`, -(A[1202] || 0), -(B[1202] || 0));
+      else row(l.line_name, A[l.line_code] || 0, B[l.line_code] || 0);
+    }
     if (ls.length > 1) row(totalName || `סה"כ ${ls[0].section_name}`, sum(A, ls.map(l => l.line_code)), sum(B, ls.map(l => l.line_code)), true);
   };
   section('CA');
@@ -541,6 +558,7 @@ async function getFinanceReport(params = {}, pool = getPool()) {
 
   return {
     success: true,
+    ...(resolved.notice ? { notice: resolved.notice } : {}),
     title: r.title,
     periods: { a: a.label, b: b.label, data_closed_through: periodLabel(range.last, range.last) },
     report_markdown: `**${r.title}**\n\n${markdownTable(r.columns, r.rows)}`,
