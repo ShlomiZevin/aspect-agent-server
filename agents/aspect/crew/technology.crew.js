@@ -4,6 +4,7 @@
  * Business intelligence for technology/electronics retailers.
  */
 const CrewMember = require('../../../crew/base/CrewMember');
+const { getFinanceReport } = require('../finance-reports');
 
 class AspectTechnologyCrew extends CrewMember {
   constructor() {
@@ -339,7 +340,32 @@ Always finish with a CTA — Call To Action: suggest the next question, deeper a
 
 ## TABLES & LISTS
 
-When your answer includes a table, ranking, or list of items, render a clean, realistic table in your reply (about 15-20 rows is plenty — do NOT pad with empty, blank, or repeated rows) together with your insights. ALSO call the \`present_table\` tool with those same rows and their column headers, so the user gets a sortable/filterable table with one-click Excel export below your reply. CRITICAL: respond ENTIRELY in the language of the user's message — the prose, the table headers, the column names, and the \`title\` must all match it. If the user wrote in English, everything is in English; do not switch to Hebrew.`,
+When your answer includes a table, ranking, or list of items, render a clean, realistic table in your reply (about 15-20 rows is plenty — do NOT pad with empty, blank, or repeated rows) together with your insights. ALSO call the \`present_table\` tool with those same rows and their column headers, so the user gets a sortable/filterable table with one-click Excel export below your reply. CRITICAL: respond ENTIRELY in the language of the user's message — the prose, the table headers, the column names, and the \`title\` must all match it. If the user wrote in English, everything is in English; do not switch to Hebrew.
+
+## FINANCIAL REPORTS — FROM THE BOOKS, NEVER INVENTED
+
+This section OVERRIDES "be creative" above. TechZone's financial statements live in the company's books and are read ONLY through the \`get_finance_report\` tool. For ANY question about profit and loss / רווח והפסד / דוחות כספיים, revenue against expenses, gross / operating profit, an expense line (שכר, שכר דירה, דמי ניהול, ארנונה, חשמל, הובלות, עלויות יבוא...), cost of sales, stock (מלאי פתיחה / סגירה), purchases, financing, depreciation, or branch profitability — call the tool. NEVER write a financial number that did not come from the tool.
+
+The same applies to TOTAL REVENUE (הכנסות / מחזור / מכירות in shekels) for a month, a quarter, a year or a branch, and to gross profit or margin at those levels: those numbers are in the books, so take them from the tool (\`monthly_trend\` for months, \`branch_profitability\` for branches, \`pnl\` for a period) — a revenue figure you make up would contradict the P&L the user has just seen.
+
+Which report:
+- \`pnl\` — the P&L, two periods side by side with the gap and % of revenue. Pass \`branch\` for a single branch.
+- \`line_by_branch\` — one P&L line or section split across branches (pass \`line\`, e.g. "דמי ניהול", "הוצאות תפעול").
+- \`branch_profitability\` — revenue, gross profit, branch opex and branch operating profit for every branch.
+- \`monthly_trend\` — the last 12 closed months.
+- \`balance_sheet\` — מאזן: assets, liabilities and equity at the end of period A against the end of period B.
+- \`cash_flow\` — דוח תזרים מזומנים: operating, investing and financing cash flows for periods A and B, opening to closing cash.
+Balance sheet, cash flow, inventory value (מלאי), cash (מזומנים), suppliers (ספקים), bank loans and equity (הון עצמי) all come from the tool too. The balance sheet and cash flow are for the whole chain — there is no per-branch balance sheet; say so if asked.
+Branches in the books are named by CITY (e.g. "חיפה", "ירושלים 2", "אונליין"). The mall names elsewhere in this prompt (גרנד קניון חיפה, קניון רמת אביב...) are NOT branch names in the books — pass the city as \`branch\`.
+
+Which period (\`preset\`): default \`last_month_vs_last_year\` (the last closed month against the same month a year earlier); "מתחילת השנה" / year to date → \`ytd_vs_last_ytd\`; "לעומת החודש הקודם" → \`last_month_vs_previous_month\`; a quarter → \`last_quarter_vs_last_year\`; named months → \`custom\` with a_from/a_to (and b_from/b_to if the user names the comparison) as YYYY-MM. The books are closed monthly — the current month is not in them yet; if asked, say they are closed through \`periods.data_closed_through\`.
+
+How to answer:
+0. If the result has a \`notice\` (e.g. the month asked for is not closed yet and an earlier one is shown), say that in one sentence first. If the result has \`success: false\`, explain its \`message\` in plain Hebrew and offer what is available — never fill the gap with numbers of your own.
+1. Paste \`report_markdown\` into your reply EXACTLY as returned — every row, every number, same order, same formatting. Do not round, re-type, shorten or add rows.
+2. Then 2-4 short bullets of insight, using ONLY numbers that appear in the report or in \`highlights\`.
+3. End with one short suggestion of the next report (e.g. פירוק שורה לפי סניף, השוואה מתחילת השנה, רווחיות סניפים).
+Finance reports are in Hebrew — write the whole answer in Hebrew. Do NOT call \`present_table\` for a finance report: the table is already in your reply.`,
 
       // gpt-5.6-terra, not Sol (plain 'gpt-5.6'): this demo crew has no DB and
       // just narrates + fabricates a demo table, so Sol's full reasoning budget
@@ -348,8 +374,28 @@ When your answer includes a table, ranking, or list of items, render a clean, re
       // ~half the cost and much faster. Overridable per-session in the debug
       // panel. (Switched 2026-09-07 after a demo slowness report.)
       model: 'gpt-5.6-terra',
-      maxTokens: 4096,
+      // 8192 (was 4096): a pasted P&L is ~35 table rows before any commentary.
+      maxTokens: 8192,
       tools: [
+        {
+          name: 'get_finance_report',
+          description: 'TechZone financial statements from the company books (task #112). Returns a finished Hebrew report table in `report_markdown` — paste it into the reply exactly as returned — plus `highlights` for commentary. Use for every profit-and-loss, expense, cost-of-sales, branch-profitability, balance-sheet or cash-flow question; never invent finance numbers.',
+          parameters: {
+            type: 'object',
+            properties: {
+              report: { type: 'string', enum: ['pnl', 'line_by_branch', 'branch_profitability', 'monthly_trend', 'balance_sheet', 'cash_flow'], description: 'pnl = P&L two periods side by side; line_by_branch = one line/section split by branch; branch_profitability = every branch\'s contribution; monthly_trend = last 12 closed months; balance_sheet = מאזן at the end of A vs end of B; cash_flow = דוח תזרים מזומנים for A and B.' },
+              preset: { type: 'string', enum: ['last_month_vs_last_year', 'last_month_vs_previous_month', 'ytd_vs_last_ytd', 'last_quarter_vs_last_year', 'custom'], description: 'Comparison period. Default last_month_vs_last_year. Use custom with a_from/a_to for named months.' },
+              a_from: { type: 'string', description: 'custom only: first month of period A, YYYY-MM.' },
+              a_to: { type: 'string', description: 'custom only: last month of period A, YYYY-MM (defaults to a_from).' },
+              b_from: { type: 'string', description: 'custom only: first month of period B, YYYY-MM (defaults to a year before A).' },
+              b_to: { type: 'string', description: 'custom only: last month of period B, YYYY-MM.' },
+              branch: { type: 'string', description: 'Optional, pnl / monthly_trend: one branch by Hebrew name (e.g. "חיפה") or number.' },
+              line: { type: 'string', description: 'line_by_branch only: the P&L line or section in Hebrew, e.g. "דמי ניהול", "שכר דירה", "הוצאות תפעול".' },
+            },
+            required: ['report'],
+          },
+          handler: async (params) => getFinanceReport(params),
+        },
         {
           name: 'present_table',
           description: 'Render a data table for the user as a sortable, filterable, Excel-exportable view. Call this whenever your answer includes a table, ranking, or list of items. Pass the FULL set of rows you want to show (up to ~50) so the user can open and export the complete table below your reply.',

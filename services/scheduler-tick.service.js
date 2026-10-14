@@ -13,6 +13,7 @@
 const scheduleConfig = require('./schedule-config.service');
 const insightsRefresh = require('../insights/services/insights-refresh.service');
 const mvRefresh = require('../insights/services/mv-refresh.service');
+const creativeExport = require('./creative-inventory-export.service');
 
 const IMPORT_WINDOW_MINUTES = 5 * 60; // retry every tick for up to 5h, mirrors the old ensure-loaded sweep
 const DRIVE_SYNC_WINDOW_MINUTES = 15; // a few retries, then stop - sync failures are rarer/cheaper to just re-trigger manually
@@ -49,6 +50,14 @@ async function runTick({ dataReloadService, driveToGcs, log = console.log }) {
   const schedules = await scheduleConfig.getAllSchedules();
   const fired = [];
 
+  // First, clear runs whose worker died with its Cloud Run instance, so the
+  // busy checks below see the truth and the dead run is retried this tick.
+  const reaped = await dataReloadService.reapDeadRuns().catch(err => {
+    log(`[tick] reapDeadRuns error: ${err.message}`);
+    return [];
+  });
+  for (const r of reaped) fired.push(`${r.schema_name}:reaped#${r.id}`);
+
   for (const entry of schedules) {
     if (!entry.enabled) continue;
     const start = { hour: entry.hour, minute: entry.minute };
@@ -70,6 +79,15 @@ async function runTick({ dataReloadService, driveToGcs, log = console.log }) {
       fired.push(`${entry.schemaName}:drive_sync`);
       driveToGcs.syncClient(entry.schemaName).catch(err =>
         log(`[tick] ${entry.schemaName} drive-sync error: ${err.message}`));
+
+      // ZolStock's creative store inventory (#106) rebuilds when Reut's files
+      // change. It reads Drive itself, so it does not wait for the sync above;
+      // repeat calls in the window are an md5 check, and one run per instance.
+      if (entry.schemaName === 'zolstock') {
+        creativeExport.refresh({ log }).then(r => {
+          if (r.action === 'rebuilt') log(`[tick] zolstock creative-stock rebuilt: ${r.rowsWritten} rows`);
+        }).catch(err => log(`[tick] zolstock creative-stock error: ${err.message}`));
+      }
     }
   }
 

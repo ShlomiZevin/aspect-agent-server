@@ -451,4 +451,8 @@ module.exports = {
   check, create, update, publish, unpublish, remove,
   listVersions, restoreVersion, fullSchema,
   derivePlan, labelOf,
+  // The opening line of every door-built screen's conversation — the only
+  // mark that tells a screen built through MCP from one built in Otto
+  // (insights/services/dataset-activity.service.js counts by it).
+  FROM_OUTSIDE,
 };

@@ -567,7 +567,7 @@ The \`facts\` table mixes four kinds of records. NEVER aggregate without filteri
 Default for any sales/revenue question: \`WHERE record_type = 'מכירות'\`.
 
 ### RULE 2 — Use transaction_date for time filters (sargable!)
-\`facts.transaction_date\` is a DATE column with a composite index \`(record_type, transaction_date)\`. NEVER wrap it in EXTRACT/DATE_PART/TO_CHAR in the WHERE clause — that disables the index and forces a full scan of 40M rows.
+\`facts.transaction_date\` is an indexed DATE column (non-sales record types — purchase orders, inventory, targets — also have a \`(record_type, transaction_date)\` index). NEVER wrap it in EXTRACT/DATE_PART/TO_CHAR in the WHERE clause — that disables the index and forces a full scan of 40M rows.
 - This year (CORRECT): \`transaction_date >= DATE_TRUNC('year', CURRENT_DATE) AND transaction_date < DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year'\`
 - This month (CORRECT): \`transaction_date >= DATE_TRUNC('month', CURRENT_DATE) AND transaction_date < DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'\`
 - Specific year (CORRECT): \`transaction_date >= '2025-01-01' AND transaction_date < '2026-01-01'\`
@@ -929,6 +929,13 @@ ORDER BY avg_order_value DESC
     // rather than inside it. See services/schema-rules/superhist.rules.js.
     if (schemaName === 'superhist') {
       return require('./schema-rules/superhist.rules').superhistRules(schemaName);
+    }
+
+    // The TechZone demo (task #112): anchor every period on the last closed
+    // month of the finance books, finance only through its views. See
+    // services/schema-rules/aspect.rules.js.
+    if (schemaName === 'aspect') {
+      return require('./schema-rules/aspect.rules').aspectRules(schemaName);
     }
 
     if (schemaName === 'tevanaot') {

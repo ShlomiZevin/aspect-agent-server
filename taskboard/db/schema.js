@@ -27,6 +27,11 @@ const tasks = pgTable('tasks', {
   isDraft:      boolean('is_draft').default(false).notNull(),
   dependsOn:    bigint('depends_on', { mode: 'number' }),
   deployedAt:   timestamp('deployed_at', { withTimezone: true }),
+  // Customer release note (004). Marked by Shlomi, published by Shlomi.
+  customerNote:    boolean('customer_note').default(false).notNull(),
+  noteHeadline:    varchar('note_headline', { length: 255 }),
+  noteBody:        text('note_body'),
+  notePublishedAt: timestamp('note_published_at', { withTimezone: true }),
   createdAt:    timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt:    timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

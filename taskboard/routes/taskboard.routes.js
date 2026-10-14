@@ -10,6 +10,7 @@
  *   DELETE /api/taskboard/tasks/:id              delete (cascades)
  *   POST   /api/taskboard/tasks/:id/deploy       mark deployed
  *   POST   /api/taskboard/tasks/:id/dismiss      drop from your What's New
+ *   POST   /api/taskboard/release-notes/publish  publish customer release notes
  *   GET    /api/taskboard/tasks/:id/comments     list
  *   POST   /api/taskboard/tasks/:id/comments     add
  *   DELETE /api/taskboard/comments/:id           delete
@@ -32,6 +33,7 @@ const tasksService = require('../services/tasks.service');
 const commentsService = require('../services/comments.service');
 const peopleService = require('../services/people.service');
 const translateService = require('../services/translate.service');
+const releaseNotesService = require('../services/release-notes.service');
 const events = require('../services/events.service');
 
 const router = express.Router();
@@ -110,6 +112,16 @@ router.post('/tasks/:id/dismiss', handle(async (req, res) => {
   if (!person) return res.status(400).json({ error: 'person is required' });
   const done = await tasksService.dismiss(id(req), person);
   return done ? res.json({ success: true }) : notFound(res);
+}));
+
+// --- customer release notes ---------------------------------------------------
+
+/**
+ * Publishes the given tasks' release notes to customers (task #102). The
+ * customer side reads them through /api/release-notes, not through this router.
+ */
+router.post('/release-notes/publish', handle(async (req, res) => {
+  res.json(await releaseNotesService.publish(req.body?.taskIds));
 }));
 
 // --- comments ---------------------------------------------------------------

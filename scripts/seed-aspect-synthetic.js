@@ -16,12 +16,27 @@
  * scripts/create-superhist-schema.js), so tuning the generator doesn't leave
  * stale rows behind.
  *
+ * Finance (task #112, 2026-10-13): a P&L ledger for the demo, so the
+ * Intelligence Center chat can show financial statements from data instead of
+ * inventing them per request. It is DERIVED from the generated sales —
+ * revenue and cost of sales are the sales lines' own sums — and the rest
+ * (stock, purchases, operating / G&A expenses, financing, depreciation, other
+ * income) is generated per branch per month on top. Line names are Hebrew and
+ * follow the client's Qlik finance model (task #112 screenshots). Only CLOSED
+ * months are booked; the current month is still open.
+ *
  * Usage (through the Cloud SQL Proxy, customer-data DB — port 5433):
  *   node scripts/seed-aspect-synthetic.js
+ *   node scripts/seed-aspect-synthetic.js --dry           # generate only, print P&L + balances, no DB
+ *   node scripts/seed-aspect-synthetic.js --finance-only  # rebuild only the fin_* tables (same day as the sales load)
+ *   node scripts/seed-aspect-synthetic.js --views-only    # recreate only the finance views, no data touched
  */
 
 require('dotenv').config();
-const { getPool } = require('../services/db.zer4u');
+const DRY_RUN = process.argv.includes('--dry');
+const FINANCE_ONLY = process.argv.includes('--finance-only');
+const VIEWS_ONLY = process.argv.includes('--views-only');
+const { getPool } = DRY_RUN ? { getPool: null } : require('../services/db.zer4u');
 
 // Deterministic PRNG (mulberry32) so re-runs produce the same data — makes
 // diffing/debugging the generator sane instead of chasing a moving target.
@@ -41,11 +56,15 @@ const randFloat = (min, max) => min + rand() * (max - min);
 
 // ── Stores: 28 physical branches + one online channel ──────────────────────
 const CITIES = ['Tel Aviv', 'Jerusalem', 'Haifa', 'Rishon LeZion', 'Petah Tikva', 'Ashdod', 'Netanya', 'Beer Sheva', 'Holon', 'Bnei Brak', 'Ramat Gan', 'Bat Yam', 'Rehovot', 'Herzliya', 'Kfar Saba', 'Modiin', 'Ashkelon', 'Nahariya', 'Eilat', 'Tiberias'];
+// Hebrew branch names for the finance reports (task #112 — Hebrew only), same order as CITIES.
+const CITIES_HE = ['תל אביב', 'ירושלים', 'חיפה', 'ראשון לציון', 'פתח תקווה', 'אשדוד', 'נתניה', 'באר שבע', 'חולון', 'בני ברק', 'רמת גן', 'בת ים', 'רחובות', 'הרצליה', 'כפר סבא', 'מודיעין', 'אשקלון', 'נהריה', 'אילת', 'טבריה'];
 const STORES = [];
 for (let i = 1; i <= 28; i++) {
-  STORES.push({ store_id: i, name: `TechZone ${CITIES[(i - 1) % CITIES.length]} ${Math.floor((i - 1) / CITIES.length) + 1}`, city: CITIES[(i - 1) % CITIES.length], format: i <= 4 ? 'flagship' : 'standard', is_online: false });
+  const c = (i - 1) % CITIES.length;
+  const n = Math.floor((i - 1) / CITIES.length) + 1;
+  STORES.push({ store_id: i, name: `TechZone ${CITIES[c]} ${n}`, name_he: n > 1 ? `${CITIES_HE[c]} ${n}` : CITIES_HE[c], city: CITIES[c], format: i <= 4 ? 'flagship' : 'standard', is_online: false });
 }
-STORES.push({ store_id: 0, name: 'TechZone Online', city: null, format: 'online', is_online: true });
+STORES.push({ store_id: 0, name: 'TechZone Online', name_he: 'אונליין', city: null, format: 'online', is_online: true });
 
 // ── Products: ~8,000 SKUs across categories, priced by band ────────────────
 const CATEGORIES = [
@@ -97,13 +116,15 @@ for (const cat of CATEGORIES) {
   }
 }
 
-// ── Sales: 14 months of history with seasonality ───────────────────────────
+// ── Sales: from January two years back, with seasonality ───────────────────
 // Ends "today" (server clock) so recency-window questions ("last N weeks")
 // have real rows to answer against, same expectation dataThroughDate serves
-// for the real clients.
+// for the real clients. Starts January two years back (was 14 months): a full
+// previous year AND the year before it, so the finance reports can compare
+// "2025 vs 2024" as well as year-to-date (task #112).
 const END_DATE = new Date();
-const START_DATE = new Date(END_DATE);
-START_DATE.setMonth(START_DATE.getMonth() - 14);
+END_DATE.setHours(12, 0, 0, 0); // midday, so toISOString() never slips a day across UTC
+const START_DATE = new Date(END_DATE.getFullYear() - 2, 0, 1, 12, 0, 0, 0);
 
 /** Seasonality multiplier for a given date — iPhone launch (Sep), back-to-
  *  school (Aug-Sep), Black Friday (late Nov), per agents/aspect/AGENT.md. */
@@ -132,13 +153,21 @@ const WARRANTY_PRODUCTS = PRODUCTS.filter(p => p.is_warranty);
 const BASE_TRANSACTIONS_PER_STORE_DAY = 26;
 
 let txnSeq = 1;
+// "YYYY-MM|store_id" -> { revenue, cogs } — the ledger's revenue and cost of
+// sales are these sums, so finance and sales answers agree to the shekel.
+const SALES_BY_STORE_MONTH = new Map();
 function* generateSales() {
   for (let d = new Date(START_DATE); d <= END_DATE; d.setDate(d.getDate() + 1)) {
     const date = d.toISOString().slice(0, 10);
     const seasonality = seasonalityMultiplier(d);
+    // ~6% a year of growth, so period comparisons show a real gap (task #112).
+    const growth = Math.pow(1.06, (d - START_DATE) / (365.25 * 86400000));
+    // Black Friday week sells at 10% off (not the warranty plans), which is
+    // what makes November's margin dip instead of every month being identical.
+    const blackFriday = d.getMonth() === 10 && d.getDate() >= 20;
     for (const store of STORES) {
       const storeWeight = store.is_online ? 1.4 : (store.format === 'flagship' ? 1.8 : 1.0);
-      const txnCount = Math.max(0, Math.round(BASE_TRANSACTIONS_PER_STORE_DAY * storeWeight * seasonality * randFloat(0.75, 1.25)));
+      const txnCount = Math.max(0, Math.round(BASE_TRANSACTIONS_PER_STORE_DAY * storeWeight * seasonality * growth * randFloat(0.75, 1.25)));
       for (let t = 0; t < txnCount; t++) {
         const transactionId = `TXN${txnSeq++}`;
         const anchor = pick(NON_ACCESSORY_PRODUCTS);
@@ -148,13 +177,21 @@ function* generateSales() {
         // Extended warranty attach 25-40%.
         if (rand() < 0.32) lines.push({ product: pick(WARRANTY_PRODUCTS), qty: 1 });
         for (const line of lines) {
+          const unitPrice = blackFriday && !line.product.is_warranty
+            ? Math.round(line.product.price * 0.9 * 100) / 100
+            : line.product.price;
+          const key = `${date.slice(0, 7)}|${store.store_id}`;
+          const acc = SALES_BY_STORE_MONTH.get(key) || { revenue: 0, cogs: 0 };
+          acc.revenue += line.qty * unitPrice;
+          acc.cogs += line.qty * line.product.cost;
+          SALES_BY_STORE_MONTH.set(key, acc);
           yield {
             sale_date: date,
             store_id: store.store_id,
             sku: line.product.sku,
             transaction_id: transactionId,
             qty: line.qty,
-            unit_price: line.product.price,
+            unit_price: unitPrice,
             unit_cost: line.product.cost,
           };
         }
@@ -163,6 +200,400 @@ function* generateSales() {
   }
 }
 
+// ── Finance: chart of accounts (task #112) ─────────────────────────────────
+// Sections and lines follow the client's Qlik P&L ("מודל פיננסי") in its
+// order. `sign` is how a section enters profit: revenue and other income add,
+// everything else subtracts. Amounts are stored as shown in that model:
+// expenses positive, and closing stock NEGATIVE inside cost of sales so the
+// section sums to opening + purchases - closing.
+// `level`: 'store' lines are booked per branch; 'hq' lines on the head office
+// (store_id NULL).
+const SECTIONS = [
+  { code: 'REV', name: 'הכנסות', order: 1, sign: 1 },
+  { code: 'COGS', name: 'עלות מכר', order: 2, sign: -1 },
+  { code: 'OPEX', name: 'הוצאות תפעול', order: 4, sign: -1 },
+  { code: 'GA', name: 'הוצאות הנהלה וכלליות', order: 5, sign: -1 },
+  { code: 'FIN', name: 'מימון', order: 7, sign: -1 },
+  { code: 'DEP', name: 'פחת', order: 8, sign: -1 },
+  { code: 'OTH', name: 'הכנסות אחרות', order: 9, sign: 1 },
+];
+const ACCOUNTS = [
+  { code: 1010, section: 'REV', name: 'הכנסות ממכירות בארץ', level: 'store' },
+  { code: 2010, section: 'COGS', name: 'מלאי פתיחה', level: 'store' },
+  { code: 2020, section: 'COGS', name: 'קניות', level: 'store' },
+  { code: 2030, section: 'COGS', name: 'מלאי סגירה', level: 'store' },
+  { code: 3010, section: 'OPEX', name: 'הוצאות שכר', level: 'store' },
+  { code: 3020, section: 'OPEX', name: 'שכר דירה', level: 'store' },
+  { code: 3030, section: 'OPEX', name: 'דמי ניהול', level: 'store' },
+  { code: 3040, section: 'OPEX', name: 'ארנונה ומים', level: 'store' },
+  { code: 3050, section: 'OPEX', name: 'הוצאות חשמל', level: 'store' },
+  { code: 3060, section: 'OPEX', name: 'הובלות ומשלוחים', level: 'store' },
+  { code: 3070, section: 'OPEX', name: 'אחזקת רכב', level: 'store' },
+  { code: 3080, section: 'OPEX', name: 'אחזקה', level: 'store' },
+  { code: 3090, section: 'OPEX', name: 'הוצאות ניקיון', level: 'store' },
+  { code: 3100, section: 'OPEX', name: 'כיבודים', level: 'store' },
+  { code: 3110, section: 'OPEX', name: 'עלויות יבוא', level: 'store' },
+  { code: 4010, section: 'GA', name: 'שכר הנהלה', level: 'hq' },
+  { code: 4020, section: 'GA', name: 'פרסום ושיווק', level: 'hq' },
+  { code: 4030, section: 'GA', name: 'מחשוב ותוכנה', level: 'hq' },
+  { code: 4040, section: 'GA', name: 'ייעוץ מקצועי', level: 'hq' },
+  { code: 4050, section: 'GA', name: 'ביטוחים', level: 'hq' },
+  { code: 5010, section: 'FIN', name: 'עמלות כרטיסי אשראי', level: 'store' },
+  { code: 5020, section: 'FIN', name: 'ריבית והוצאות בנק', level: 'hq' },
+  { code: 6010, section: 'DEP', name: 'הוצאות פחת', level: 'store' },
+  { code: 7010, section: 'OTH', name: 'הכנסות אחרות', level: 'hq' },
+];
+
+// Its own PRNG, so changing the ledger never reshuffles the sales.
+const frand = mulberry32(20261013);
+const noise = (spread) => 1 + (frand() * 2 - 1) * spread;
+
+/**
+ * Books every CLOSED month (the current one is still open) from the sales
+ * totals: revenue and cost of sales exactly, plus generated stock, purchases
+ * and expenses per branch. Fixed costs (rent, property tax, depreciation, a
+ * base salary) come from each branch's average revenue and rise 3% each
+ * January; variable ones follow the month's revenue, so margins move with the
+ * season the way a real chain's do.
+ * @returns {{month: string, store_id: number|null, account_code: number, amount: number}[]}
+ */
+function generateLedger() {
+  const firstOpen = `${END_DATE.getFullYear()}-${String(END_DATE.getMonth() + 1).padStart(2, '0')}`;
+  const months = [...new Set([...SALES_BY_STORE_MONTH.keys()].map(k => k.split('|')[0]))]
+    .filter(m => m < firstOpen).sort();
+  const rows = [];
+  const book = (month, storeId, code, amount) =>
+    rows.push({ month: `${month}-01`, store_id: storeId, account_code: code, amount: Math.round(amount) });
+
+  // Per-branch fixed-cost base from its first year's average monthly revenue.
+  const base = new Map();
+  for (const s of STORES) {
+    const firstYear = months.slice(0, 12).map(m => SALES_BY_STORE_MONTH.get(`${m}|${s.store_id}`)?.revenue || 0);
+    base.set(s.store_id, firstYear.reduce((a, b) => a + b, 0) / Math.max(1, firstYear.length));
+  }
+  const yearsIn = (month) => Number(month.slice(0, 4)) - Number(months[0].slice(0, 4));
+  const escalate = (month) => Math.pow(1.03, yearsIn(month));
+
+  const closing = new Map(); // store_id -> last closing stock
+  for (const month of months) {
+    const mm = Number(month.slice(5, 7));
+    let chainRevenue = 0;
+    for (const s of STORES) {
+      const sales = SALES_BY_STORE_MONTH.get(`${month}|${s.store_id}`) || { revenue: 0, cogs: 0 };
+      const rev = sales.revenue;
+      chainRevenue += rev;
+      const b = base.get(s.store_id) * escalate(month);
+      const online = s.is_online;
+      const flagship = s.format === 'flagship';
+
+      // Revenue, and cost of sales split the way the Qlik model shows it.
+      // Stock is held at ~1.2-1.5 months of cost (inventory turn 8-10x/yr).
+      book(month, s.store_id, 1010, rev);
+      const opening = closing.has(s.store_id) ? closing.get(s.store_id) : sales.cogs * 1.35;
+      const close = sales.cogs * (1.2 + frand() * 0.3);
+      closing.set(s.store_id, close);
+      const purchases = sales.cogs + close - opening;
+      book(month, s.store_id, 2010, opening);
+      book(month, s.store_id, 2020, purchases);
+      book(month, s.store_id, 2030, -close);
+
+      // Operating expenses.
+      // Calibrated to an electronics chain: opex ~13-14% of revenue against a
+      // ~20% gross margin, so operating profit is a thin ~4% that swings with
+      // the season (and goes negative in a weak month for a weak branch).
+      book(month, s.store_id, 3010, (b * (online ? 0.025 : 0.033) + rev * 0.022) * noise(0.03));
+      book(month, s.store_id, 3020, b * (online ? 0.006 : flagship ? 0.034 : 0.030));
+      book(month, s.store_id, 3030, rev * 0.015);
+      book(month, s.store_id, 3040, b * (online ? 0.002 : 0.007) * noise(0.02));
+      book(month, s.store_id, 3050, b * (online ? 0.003 : 0.0055) * (mm >= 6 && mm <= 9 ? 1.35 : mm === 1 || mm === 2 ? 1.15 : 1) * noise(0.06));
+      book(month, s.store_id, 3060, rev * (online ? 0.03 : 0.005) * noise(0.08));
+      book(month, s.store_id, 3070, b * (online ? 0.005 : 0.002) * noise(0.15));
+      book(month, s.store_id, 3080, b * 0.003 * noise(0.35));
+      book(month, s.store_id, 3090, b * (online ? 0.001 : 0.002) * noise(0.05));
+      book(month, s.store_id, 3100, b * 0.0005 * noise(0.4));
+      book(month, s.store_id, 3110, purchases * 0.011 * noise(0.1));
+
+      // Card fees on every branch's takings; depreciation of its fit-out.
+      book(month, s.store_id, 5010, rev * 0.0068 * noise(0.04));
+      book(month, s.store_id, 6010, b * (online ? 0.006 : flagship ? 0.013 : 0.011));
+    }
+
+    // Head office. Marketing peaks with the season (iPhone launch, Black Friday).
+    const hqBase = [...base.values()].reduce((a, b) => a + b, 0) * escalate(month);
+    book(month, null, 4010, hqBase * 0.012 * noise(0.02));
+    book(month, null, 4020, chainRevenue * 0.007 * (mm === 11 ? 1.9 : mm === 9 ? 1.5 : mm === 8 ? 1.2 : 1) * noise(0.1));
+    book(month, null, 4030, hqBase * 0.004 * noise(0.05));
+    book(month, null, 4040, hqBase * 0.0015 * noise(0.5));
+    book(month, null, 4050, hqBase * 0.0015);
+    book(month, null, 5020, hqBase * 0.003 * noise(0.1));
+    book(month, null, 7010, chainRevenue * 0.003 * noise(0.3));
+  }
+  return rows;
+}
+
+// ── Finance: balance sheet (task #112) ─────────────────────────────────────
+// Chain-level, one snapshot at the END of every booked month plus an opening
+// snapshot at the end of the month before the first. Built FROM the ledger so
+// the three statements tie out: inventory is the branches' closing stock,
+// accumulated depreciation moves by the P&L depreciation, retained earnings
+// move by the P&L profit before tax (no dividends, no tax provision in the
+// demo), and cash is the balancing line - which is what makes the cash-flow
+// statement reconcile opening cash + flows = closing cash exactly.
+const BS_LINES = [
+  { code: 1101, section: 'CA', sectionName: 'נכסים שוטפים', side: 'asset', name: 'מזומנים ושווי מזומנים' },
+  { code: 1102, section: 'CA', sectionName: 'נכסים שוטפים', side: 'asset', name: 'לקוחות (חברות כרטיסי אשראי)' },
+  { code: 1103, section: 'CA', sectionName: 'נכסים שוטפים', side: 'asset', name: 'מלאי' },
+  { code: 1201, section: 'FA', sectionName: 'רכוש קבוע', side: 'asset', name: 'רכוש קבוע בעלות' },
+  { code: 1202, section: 'FA', sectionName: 'רכוש קבוע', side: 'asset', name: 'פחת שנצבר' },
+  { code: 2101, section: 'CL', sectionName: 'התחייבויות שוטפות', side: 'liability', name: 'ספקים ונותני שירותים' },
+  { code: 2102, section: 'CL', sectionName: 'התחייבויות שוטפות', side: 'liability', name: 'זכאים ויתרות זכות' },
+  { code: 2201, section: 'LL', sectionName: 'התחייבויות לזמן ארוך', side: 'liability', name: 'הלוואות מתאגידים בנקאיים' },
+  { code: 3101, section: 'EQ', sectionName: 'הון עצמי', side: 'equity', name: 'הון מניות' },
+  { code: 3102, section: 'EQ', sectionName: 'הון עצמי', side: 'equity', name: 'עודפים' },
+];
+
+/** @returns {{month: string, line_code: number, amount: number}[]} month = first day of the month whose END the row describes. */
+function generateBalances(ledger) {
+  // Chain totals per month from the ledger.
+  const t = new Map();
+  const get = m => { if (!t.has(m)) t.set(m, { rev: 0, purchases: 0, closing: 0, opening: 0, opex: 0, dep: 0, profit: 0 }); return t.get(m); };
+  const sectionOf = new Map(ACCOUNTS.map(a => [a.code, a.section]));
+  const signOf = new Map(SECTIONS.map(s => [s.code, s.sign]));
+  for (const r of ledger) {
+    const x = get(r.month);
+    const sec = sectionOf.get(r.account_code);
+    if (r.account_code === 1010) x.rev += r.amount;
+    if (r.account_code === 2020) x.purchases += r.amount;
+    if (r.account_code === 2030) x.closing += -r.amount;
+    if (r.account_code === 2010) x.opening += r.amount;
+    if (sec === 'OPEX' || sec === 'GA') x.opex += r.amount;
+    if (r.account_code === 6010) x.dep += r.amount;
+    x.profit += signOf.get(sec) * r.amount;
+  }
+  const months = [...t.keys()].sort();
+  const prevMonth = m => { const d = new Date(`${m}T12:00:00Z`); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 10); };
+
+  const rows = [];
+  // Every value is a whole shekel BEFORE cash is derived, so the sheet balances
+  // exactly and month-to-month moves equal the ledger to the shekel (the ledger
+  // amounts are whole shekels already).
+  const R = Math.round;
+  const snap = (month, v) => {
+    // Cash balances the sheet: liabilities + equity - every other asset.
+    v[1101] = v[2101] + v[2102] + v[2201] + v[3101] + v[3102] - v[1102] - v[1103] - v[1201] - v[1202];
+    for (const l of BS_LINES) rows.push({ month, line_code: l.code, amount: v[l.code] });
+  };
+
+  // Opening snapshot (end of the month before the first), sized like the first month.
+  const f = t.get(months[0]);
+  const open = {
+    1102: R(f.rev * 0.11), 1103: f.opening, 1201: 210e6, 1202: -85e6,
+    2101: R(f.opening * 0.95), 2102: R(f.opex * 0.6), 2201: 90e6, 3101: 40e6,
+  };
+  // Retained earnings chosen so the opening cash is ~30M.
+  open[3102] = 30e6 + open[1102] + open[1103] + open[1201] + open[1202] - open[2101] - open[2102] - open[2201] - open[3101];
+  snap(prevMonth(months[0]), { ...open });
+
+  let v = { ...open };
+  for (const m of months) {
+    const x = t.get(m);
+    v = {
+      ...v,
+      1102: R(x.rev * 0.11 * noise(0.05)),
+      1103: x.closing,
+      1201: v[1201] + R(x.dep * (0.9 + frand() * 0.7)), // capex around the depreciation level
+      1202: v[1202] - x.dep,
+      2101: R(x.closing * 0.95 * noise(0.03)),          // suppliers finance the stock (electronics retail)
+      2102: R(x.opex * 0.6 * noise(0.05)),
+      2201: v[2201] - 750000,                           // steady loan repayment
+      3102: v[3102] + x.profit,
+    };
+    snap(m, v);
+  }
+  return rows;
+}
+
+// Finance views for the Intelligence Center's Reports engine and for Otto
+// screens (task #112). Both work best on ONE flat table with the hard parts
+// already done: signs, subtotals, profit rows, opening/closing stock over a
+// period, the same month last year side by side. Totals and labels match
+// agents/aspect/finance-reports.js line for line, so a Reports figure, an Otto
+// screen and the chat's P&L all show the same number.
+const FIN_VIEWS = `
+-- P&L as rows (lines + subtotals + profit rows), chain level, per month.
+CREATE VIEW aspect.fin_pnl_lines AS
+WITH acc AS (
+  SELECT l.month, s.section_code, s.section_name, s.section_order, s.sign, a.account_name, a.line_order, SUM(l.amount) AS amount
+    FROM aspect.fin_ledger l JOIN aspect.fin_accounts a USING (account_code) JOIN aspect.fin_sections s USING (section_code)
+   GROUP BY 1, 2, 3, 4, 5, 6, 7
+), r AS (
+  SELECT month, section_order * 100 + line_order AS line_order, section_name AS section, account_name AS line, false AS is_total, amount FROM acc
+  UNION ALL
+  SELECT month, section_order * 100 + 99, section_name, 'סה"כ ' || section_name, true, SUM(amount) FROM acc
+   WHERE section_code IN ('COGS', 'OPEX', 'GA', 'FIN') GROUP BY month, section_order, section_name
+  UNION ALL
+  SELECT month, 300, 'רווח גולמי', 'רווח גולמי', true, SUM(sign * amount) FROM acc WHERE section_order <= 2 GROUP BY month
+  UNION ALL
+  SELECT month, 600, 'רווח תפעולי', 'רווח תפעולי', true, SUM(sign * amount) FROM acc WHERE section_order <= 5 GROUP BY month
+  UNION ALL
+  SELECT month, 1000, 'רווח (הפסד) לפני מס', 'רווח (הפסד) לפני מס', true, SUM(sign * amount) FROM acc GROUP BY month
+), rev AS (
+  SELECT month, SUM(amount) AS revenue FROM acc WHERE section_code = 'REV' GROUP BY month
+)
+SELECT r.month, to_char(r.month, 'YYYY-MM') AS year_month,
+       EXTRACT(YEAR FROM r.month)::int AS year, EXTRACT(MONTH FROM r.month)::int AS month_number,
+       r.line_order, r.section, r.line, r.is_total,
+       r.amount, ly.amount AS amount_last_year,
+       rv.revenue, rvly.revenue AS revenue_last_year,
+       -- 0 = the last closed month (Otto expressions cannot compare text).
+       ((SELECT (EXTRACT(YEAR FROM MAX(month)) * 12 + EXTRACT(MONTH FROM MAX(month)))::int FROM aspect.fin_ledger) - (EXTRACT(YEAR FROM r.month) * 12 + EXTRACT(MONTH FROM r.month))::int) AS months_back
+  FROM r
+  JOIN rev rv ON rv.month = r.month
+  LEFT JOIN r ly ON ly.line_order = r.line_order AND ly.month = (r.month - interval '1 year')::date
+  LEFT JOIN rev rvly ON rvly.month = (r.month - interval '1 year')::date;
+
+-- Every P&L line (and opex / G&A / financing / cost-of-sales subtotal) by
+-- branch, for the last closed month and year to date, against the same
+-- period last year. Head-office lines appear under branch 'מטה'.
+CREATE VIEW aspect.fin_line_branch AS
+WITH last AS (SELECT MAX(month) AS m FROM aspect.fin_ledger),
+p AS (
+  SELECT 'החודש האחרון שנסגר'::text AS period, 1 AS period_order, m AS a_from, m AS a_to,
+         (m - interval '1 year')::date AS b_from, (m - interval '1 year')::date AS b_to FROM last
+  UNION ALL
+  SELECT 'מתחילת השנה', 2, date_trunc('year', m)::date, m,
+         (date_trunc('year', m) - interval '1 year')::date, (m - interval '1 year')::date FROM last
+), x AS (
+  SELECT p.period, p.period_order, l.store_id, l.account_code, a.account_name, a.line_order,
+         s.section_code, s.section_name, s.section_order,
+         SUM(l.amount) FILTER (WHERE CASE l.account_code WHEN 2010 THEN l.month = p.a_from WHEN 2030 THEN l.month = p.a_to
+                                    ELSE l.month BETWEEN p.a_from AND p.a_to END) AS amount,
+         SUM(l.amount) FILTER (WHERE CASE l.account_code WHEN 2010 THEN l.month = p.b_from WHEN 2030 THEN l.month = p.b_to
+                                    ELSE l.month BETWEEN p.b_from AND p.b_to END) AS amount_last_year
+    FROM p
+   CROSS JOIN aspect.fin_ledger l
+    JOIN aspect.fin_accounts a ON a.account_code = l.account_code
+    JOIN aspect.fin_sections s ON s.section_code = a.section_code
+   GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
+), y AS (
+  SELECT period, period_order, store_id, section_order * 100 + line_order AS line_order, section_name AS section, account_name AS line, amount, amount_last_year FROM x
+  UNION ALL
+  SELECT period, period_order, store_id, section_order * 100 + 99, section_name, 'סה"כ ' || section_name, SUM(amount), SUM(amount_last_year) FROM x
+   WHERE section_code IN ('COGS', 'OPEX', 'GA', 'FIN') GROUP BY period, period_order, store_id, section_order, section_name
+  -- Branch profit rows (branches only - head office has no revenue):
+  -- gross = revenue - cost of sales; branch operating = gross - branch opex.
+  -- Same definition as the chat's branch_profitability report.
+  UNION ALL
+  SELECT period, period_order, store_id, 300, 'רווח גולמי', 'רווח גולמי',
+         SUM(CASE WHEN section_code = 'REV' THEN amount ELSE -amount END),
+         SUM(CASE WHEN section_code = 'REV' THEN amount_last_year ELSE -amount_last_year END)
+    FROM x WHERE store_id IS NOT NULL AND section_code IN ('REV', 'COGS') GROUP BY period, period_order, store_id
+  UNION ALL
+  SELECT period, period_order, store_id, 600, 'רווח תפעולי סניפי', 'רווח תפעולי סניפי',
+         SUM(CASE WHEN section_code = 'REV' THEN amount ELSE -amount END),
+         SUM(CASE WHEN section_code = 'REV' THEN amount_last_year ELSE -amount_last_year END)
+    FROM x WHERE store_id IS NOT NULL AND section_code IN ('REV', 'COGS', 'OPEX') GROUP BY period, period_order, store_id
+)
+SELECT y.period, y.period_order, COALESCE(st.name_he, 'מטה') AS branch, y.line_order, y.section, y.line,
+       COALESCE(y.amount, 0) AS amount, COALESCE(y.amount_last_year, 0) AS amount_last_year,
+       rv.amount AS branch_revenue
+  FROM y
+  LEFT JOIN aspect.stores st ON st.store_id = y.store_id
+  LEFT JOIN x rv ON rv.account_code = 1010 AND rv.period = y.period AND rv.store_id IS NOT DISTINCT FROM y.store_id
+ WHERE COALESCE(y.amount, 0) <> 0 OR COALESCE(y.amount_last_year, 0) <> 0;
+
+-- Balance sheet as rows (lines + totals) at each month-end, against the same
+-- date a year earlier. Accumulated depreciation is a positive "less:" line.
+CREATE VIEW aspect.fin_balance_lines AS
+WITH b AS (
+  SELECT f.month, l.line_code, l.section_code, l.section_name, l.line_name, l.line_order, f.amount
+    FROM aspect.fin_balances f JOIN aspect.fin_bs_lines l USING (line_code)
+), r AS (
+  SELECT month, line_order * 10 AS line_order, section_name AS section,
+         CASE WHEN line_code = 1202 THEN 'בניכוי: ' || line_name ELSE line_name END AS line, false AS is_total,
+         CASE WHEN line_code = 1202 THEN -amount ELSE amount END AS amount FROM b
+  UNION ALL SELECT month, 35, 'נכסים שוטפים', 'סה"כ נכסים שוטפים', true, SUM(amount) FROM b WHERE section_code = 'CA' GROUP BY month
+  UNION ALL SELECT month, 55, 'רכוש קבוע', 'סה"כ רכוש קבוע, נטו', true, SUM(amount) FROM b WHERE section_code = 'FA' GROUP BY month
+  UNION ALL SELECT month, 58, 'סה"כ נכסים', 'סה"כ נכסים', true, SUM(amount) FROM b WHERE section_code IN ('CA', 'FA') GROUP BY month
+  UNION ALL SELECT month, 75, 'התחייבויות שוטפות', 'סה"כ התחייבויות שוטפות', true, SUM(amount) FROM b WHERE section_code = 'CL' GROUP BY month
+  UNION ALL SELECT month, 105, 'הון עצמי', 'סה"כ הון עצמי', true, SUM(amount) FROM b WHERE section_code = 'EQ' GROUP BY month
+  UNION ALL SELECT month, 110, 'סה"כ התחייבויות והון עצמי', 'סה"כ התחייבויות והון עצמי', true, SUM(amount) FROM b WHERE section_code IN ('CL', 'LL', 'EQ') GROUP BY month
+), ta AS (
+  SELECT month, SUM(amount) AS total_assets FROM b WHERE section_code IN ('CA', 'FA') GROUP BY month
+)
+SELECT r.month, to_char(r.month, 'YYYY-MM') AS year_month,
+       EXTRACT(YEAR FROM r.month)::int AS year, EXTRACT(MONTH FROM r.month)::int AS month_number,
+       r.line_order, r.section, r.line, r.is_total,
+       r.amount, ly.amount AS amount_last_year, ta.total_assets,
+       ((SELECT (EXTRACT(YEAR FROM MAX(month)) * 12 + EXTRACT(MONTH FROM MAX(month)))::int FROM aspect.fin_ledger) - (EXTRACT(YEAR FROM r.month) * 12 + EXTRACT(MONTH FROM r.month))::int) AS months_back
+  FROM r
+  JOIN ta ON ta.month = r.month
+  LEFT JOIN r ly ON ly.line_order = r.line_order AND ly.month = (r.month - interval '1 year')::date;
+
+-- One row per month: the headline P&L figures and the same month last year.
+CREATE VIEW aspect.fin_monthly_summary AS
+SELECT month, year_month, year, month_number, months_back,
+       MAX(amount) FILTER (WHERE line_order = 101) AS revenue,
+       MAX(amount) FILTER (WHERE line_order = 300) AS gross_profit,
+       MAX(amount) FILTER (WHERE line_order = 600) AS operating_profit,
+       MAX(amount) FILTER (WHERE line_order = 1000) AS profit_before_tax,
+       MAX(amount_last_year) FILTER (WHERE line_order = 101) AS revenue_last_year,
+       MAX(amount_last_year) FILTER (WHERE line_order = 300) AS gross_profit_last_year,
+       MAX(amount_last_year) FILTER (WHERE line_order = 600) AS operating_profit_last_year,
+       MAX(amount_last_year) FILTER (WHERE line_order = 1000) AS profit_before_tax_last_year
+  FROM aspect.fin_pnl_lines
+ GROUP BY month, year_month, year, month_number, months_back;
+`;
+
+// The finance tables on their own, so --finance-only can rebuild them without
+// touching the 1.5M sales rows (the sales generator is deterministic for a
+// given day, so the ledger it derives is the one the sales table holds).
+const FIN_DDL = `
+DROP VIEW IF EXISTS aspect.fin_pnl_lines, aspect.fin_line_branch, aspect.fin_balance_lines, aspect.fin_monthly_summary;
+DROP TABLE IF EXISTS aspect.fin_balances, aspect.fin_bs_lines, aspect.fin_ledger, aspect.fin_accounts, aspect.fin_sections;
+
+CREATE TABLE aspect.fin_sections (
+  section_code  TEXT PRIMARY KEY,
+  section_name  TEXT NOT NULL,
+  section_order INTEGER NOT NULL,
+  sign          INTEGER NOT NULL
+);
+
+CREATE TABLE aspect.fin_accounts (
+  account_code INTEGER PRIMARY KEY,
+  section_code TEXT NOT NULL REFERENCES aspect.fin_sections(section_code),
+  account_name TEXT NOT NULL,
+  line_order   INTEGER NOT NULL,
+  level        TEXT NOT NULL
+);
+
+-- One row per month x branch x account. store_id NULL = head office.
+CREATE TABLE aspect.fin_ledger (
+  month        DATE NOT NULL,
+  store_id     INTEGER REFERENCES aspect.stores(store_id),
+  account_code INTEGER NOT NULL REFERENCES aspect.fin_accounts(account_code),
+  amount       NUMERIC(14,0) NOT NULL
+);
+CREATE INDEX idx_aspect_fin_ledger_month ON aspect.fin_ledger(month);
+
+CREATE TABLE aspect.fin_bs_lines (
+  line_code    INTEGER PRIMARY KEY,
+  section_code TEXT NOT NULL,
+  section_name TEXT NOT NULL,
+  side         TEXT NOT NULL,
+  line_name    TEXT NOT NULL,
+  line_order   INTEGER NOT NULL
+);
+
+-- Chain balance sheet at the END of each month (month = that month's first day).
+CREATE TABLE aspect.fin_balances (
+  month     DATE NOT NULL,
+  line_code INTEGER NOT NULL REFERENCES aspect.fin_bs_lines(line_code),
+  amount    NUMERIC(14,0) NOT NULL,
+  PRIMARY KEY (month, line_code)
+);
+${FIN_VIEWS}`;
+
 const DDL = `
 DROP SCHEMA IF EXISTS aspect CASCADE;
 CREATE SCHEMA aspect;
@@ -170,6 +601,7 @@ CREATE SCHEMA aspect;
 CREATE TABLE aspect.stores (
   store_id  INTEGER PRIMARY KEY,
   name      TEXT NOT NULL,
+  name_he   TEXT NOT NULL,
   city      TEXT,
   format    TEXT NOT NULL,
   is_online BOOLEAN NOT NULL DEFAULT false
@@ -202,7 +634,7 @@ CREATE INDEX idx_aspect_sales_store ON aspect.sales(store_id);
 CREATE INDEX idx_aspect_sales_sku ON aspect.sales(sku);
 CREATE INDEX idx_aspect_sales_txn ON aspect.sales(transaction_id);
 CREATE INDEX idx_aspect_products_category ON aspect.products(category);
-`;
+${FIN_DDL}`;
 
 async function insertBatch(pool, table, columns, rows) {
   if (rows.length === 0) return;
@@ -217,14 +649,101 @@ async function insertBatch(pool, table, columns, rows) {
   await pool.query(`INSERT INTO aspect.${table} (${columns.join(',')}) VALUES ${values.join(',')}`, params);
 }
 
+/** Chain P&L per month as % of revenue — the sanity check for the ledger. */
+function printLedgerSummary(ledger) {
+  const sectionOf = new Map(ACCOUNTS.map(a => [a.code, a.section]));
+  const byMonth = new Map();
+  for (const r of ledger) {
+    const m = r.month.slice(0, 7);
+    const t = byMonth.get(m) || {};
+    const sec = sectionOf.get(r.account_code);
+    t[sec] = (t[sec] || 0) + r.amount;
+    byMonth.set(m, t);
+  }
+  const pct = (v, rev) => `${(100 * v / rev).toFixed(1)}%`;
+  const table = [...byMonth].map(([m, t]) => {
+    const gp = t.REV - t.COGS;
+    const op = gp - t.OPEX - t.GA;
+    const net = op - t.FIN - t.DEP + t.OTH;
+    return { month: m, revenue: Math.round(t.REV), gross: pct(gp, t.REV), opex: pct(t.OPEX, t.REV), ga: pct(t.GA, t.REV), operating: pct(op, t.REV), net: pct(net, t.REV) };
+  });
+  console.table(table);
+}
+
+/** Balance sheet per month-end, in millions — the sanity check for the balances. */
+function printBalanceSummary(balances) {
+  const byMonth = new Map();
+  for (const r of balances) {
+    const m = byMonth.get(r.month) || {};
+    m[r.line_code] = r.amount;
+    byMonth.set(r.month, m);
+  }
+  const M = v => (v / 1e6).toFixed(1);
+  console.table([...byMonth].map(([month, b]) => {
+    const assets = b[1101] + b[1102] + b[1103] + b[1201] + b[1202];
+    const le = b[2101] + b[2102] + b[2201] + b[3101] + b[3102];
+    return { month: month.slice(0, 7), cash: M(b[1101]), inventory: M(b[1103]), fixedNet: M(b[1201] + b[1202]), suppliers: M(b[2101]), loans: M(b[2201]), retained: M(b[3102]), assets: M(assets), balanced: assets === le };
+  }));
+}
+
+async function insertFinance(pool, ledger, balances) {
+  await insertBatch(pool, 'fin_sections', ['section_code', 'section_name', 'section_order', 'sign'],
+    SECTIONS.map(s => ({ section_code: s.code, section_name: s.name, section_order: s.order, sign: s.sign })));
+  await insertBatch(pool, 'fin_accounts', ['account_code', 'section_code', 'account_name', 'line_order', 'level'],
+    ACCOUNTS.map((a, i) => ({ account_code: a.code, section_code: a.section, account_name: a.name, line_order: i + 1, level: a.level })));
+  for (let i = 0; i < ledger.length; i += 2000) {
+    await insertBatch(pool, 'fin_ledger', ['month', 'store_id', 'account_code', 'amount'], ledger.slice(i, i + 2000));
+  }
+  await insertBatch(pool, 'fin_bs_lines', ['line_code', 'section_code', 'section_name', 'side', 'line_name', 'line_order'],
+    BS_LINES.map((l, i) => ({ line_code: l.code, section_code: l.section, section_name: l.sectionName, side: l.side, line_name: l.name, line_order: i + 1 })));
+  for (let i = 0; i < balances.length; i += 2000) {
+    await insertBatch(pool, 'fin_balances', ['month', 'line_code', 'amount'], balances.slice(i, i + 2000));
+  }
+  console.log(`[seed-aspect] ${ledger.length.toLocaleString()} ledger rows, ${balances.length.toLocaleString()} balance rows.`);
+  printLedgerSummary(ledger);
+  printBalanceSummary(balances);
+}
+
 async function main() {
+  if (DRY_RUN) {
+    let total = 0;
+    for (const _ of generateSales()) total++;
+    const ledger = generateLedger();
+    const balances = generateBalances(ledger);
+    console.log(`[seed-aspect] DRY RUN: ${total.toLocaleString()} sale lines, ${ledger.length.toLocaleString()} ledger rows, ${balances.length} balance rows`);
+    printLedgerSummary(ledger);
+    printBalanceSummary(balances);
+    return;
+  }
+
   const pool = getPool();
+
+  if (VIEWS_ONLY) {
+    // (Re)create only the finance views - no data is touched.
+    console.log('[seed-aspect] VIEWS ONLY: recreating the finance views...');
+    await pool.query('DROP VIEW IF EXISTS aspect.fin_pnl_lines, aspect.fin_line_branch, aspect.fin_balance_lines, aspect.fin_monthly_summary CASCADE;' + FIN_VIEWS);
+    await pool.end();
+    return;
+  }
+
+  if (FINANCE_ONLY) {
+    // Regenerate the sales in memory only to derive the ledger from them.
+    for (const _ of generateSales());
+    const ledger = generateLedger();
+    const balances = generateBalances(ledger);
+    console.log('[seed-aspect] FINANCE ONLY: rebuilding the fin_* tables, sales untouched...');
+    await pool.query(FIN_DDL);
+    await insertFinance(pool, ledger, balances);
+    await pool.query('ANALYZE aspect.fin_ledger; ANALYZE aspect.fin_balances;');
+    await pool.end();
+    return;
+  }
 
   console.log('[seed-aspect] creating schema...');
   await pool.query(DDL);
 
   console.log(`[seed-aspect] inserting ${STORES.length} stores...`);
-  await insertBatch(pool, 'stores', ['store_id', 'name', 'city', 'format', 'is_online'], STORES);
+  await insertBatch(pool, 'stores', ['store_id', 'name', 'name_he', 'city', 'format', 'is_online'], STORES);
 
   console.log(`[seed-aspect] inserting ${PRODUCTS.length} products...`);
   const PRODUCT_COLUMNS = ['sku', 'name', 'category', 'brand', 'is_accessory', 'is_warranty', 'price', 'cost'];
@@ -251,11 +770,15 @@ async function main() {
   }
   console.log(`\n[seed-aspect] done: ${total.toLocaleString()} sale lines.`);
 
+  console.log('[seed-aspect] inserting the finance ledger and balance sheet...');
+  const ledger = generateLedger();
+  await insertFinance(pool, ledger, generateBalances(ledger));
+
   // Without this the planner works off the pre-load (empty-table) row
   // estimates until autovacuum gets around to it — a plain category/month
   // aggregate over the full table took 39s on stale stats vs. 0.5s after.
   console.log('[seed-aspect] running ANALYZE...');
-  await pool.query('ANALYZE aspect.sales; ANALYZE aspect.products; ANALYZE aspect.stores;');
+  await pool.query('ANALYZE aspect.sales; ANALYZE aspect.products; ANALYZE aspect.stores; ANALYZE aspect.fin_ledger; ANALYZE aspect.fin_balances;');
 
   const revCheck = await pool.query(`
     SELECT to_char(sale_date, 'YYYY-MM') AS month, ROUND(SUM(qty * unit_price)) AS revenue
@@ -267,7 +790,13 @@ async function main() {
   await pool.end();
 }
 
-main().catch((err) => {
-  console.error('[seed-aspect] FAILED:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('[seed-aspect] FAILED:', err);
+    process.exit(1);
+  });
+}
+
+// For offline tests of agents/aspect/finance-reports.js (a throwaway Postgres
+// gets the same DDL and rows without touching the real database).
+module.exports = { DDL, FIN_DDL, FIN_VIEWS, STORES, SECTIONS, ACCOUNTS, BS_LINES, generateSales, generateLedger, generateBalances };

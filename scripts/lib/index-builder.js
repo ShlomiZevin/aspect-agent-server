@@ -16,15 +16,18 @@
  *   6. Per-index dedicated connection — one failure can't poison the others.
  *
  * Index definitions:
- *   { name, table, col, include? }
+ *   { name, table, col, include?, where? }
  *   - col: raw column list, already quoted as needed
  *   - include: optional INCLUDE list for covering indexes (PG 11+)
+ *   - where: optional predicate for a PARTIAL index (only matching rows indexed)
  *
  * Tuning:
  *   No SET maintenance_work_mem / max_parallel_maintenance_workers. On
  *   shared-CPU tiers like db-g1-small, those overrides hurt — defaults are
  *   already tuned to the instance.
  */
+
+const reloadAbort = require('../../services/reload-abort');
 
 const HEARTBEAT_MS = 30000;
 
@@ -60,8 +63,10 @@ async function ensureIndex({ pool, schema, idx, displayIdx, total, statementTime
     // Step 2: build the index.
     const includeClause = idx.include ? ` INCLUDE (${idx.include})` : '';
     const includeMsg    = idx.include ? ` INCLUDE (${idx.include})` : '';
-    const sql = `CREATE INDEX ${idx.name} ON ${schema}.${idx.table} (${idx.col})${includeClause}`;
-    log(`  [${displayIdx}/${total}] BUILD ${idx.name} ON ${idx.table} (${idx.col})${includeMsg}...`);
+    // Partial index: only the rows matching `where` are indexed.
+    const whereClause   = idx.where ? ` WHERE ${idx.where}` : '';
+    const sql = `CREATE INDEX ${idx.name} ON ${schema}.${idx.table} (${idx.col})${includeClause}${whereClause}`;
+    log(`  [${displayIdx}/${total}] BUILD ${idx.name} ON ${idx.table} (${idx.col})${includeMsg}${whereClause}...`);
 
     heartbeat = setInterval(() => {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
@@ -95,6 +100,9 @@ async function createIndexesForSchema({ pool, schema, indexes, statementTimeoutM
   log(`Building ${total} indexes on ${schema} (timeout per index: ${Math.round(statementTimeoutMs / 60000)}min)`);
 
   for (let i = 0; i < total; i++) {
+    // A failed index is logged and skipped, so a cancelled run would otherwise
+    // keep going index after index — stop here instead.
+    reloadAbort.throwIfAborted(schema);
     const result = await ensureIndex({
       pool, schema, idx: indexes[i], displayIdx: i + 1, total, statementTimeoutMs, log,
     });

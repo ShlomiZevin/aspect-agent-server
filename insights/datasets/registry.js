@@ -263,9 +263,9 @@ const REGISTRY = {
       'What is the online revenue share trend over the last several months',
     ],
     defaultExamplePrompts: [
-      'Main risks for the next few months',
-      'Which stores have the weakest accessory attach rate',
-      'Which product category has the steepest margin decline',
+      'How is operating profit trending vs last year',
+      'Which branches are the most profitable this year',
+      'How did cash and inventory change on the balance sheet',
     ],
     // Aspect is the internal demo agent, shown to Hebrew-speaking prospects as
     // often as English ones — unlike every other dataset above (each a real
@@ -273,12 +273,14 @@ const REGISTRY = {
     // Home hero chips stayed in English under the Hebrew toggle while every
     // other string on the page switched, which read as broken rather than as
     // an untranslated corner (task, 2026-09-17).
+    // Finance chips for the demo (task #112) - the same questions the
+    // Reports page's suggested reports are built from, verified there.
     i18n: {
       he: {
         examplePrompts: [
-          'מהם הסיכונים העיקריים לחודשים הקרובים',
-          'לאילו סניפים יש את שיעור הצמדת האביזרים הנמוך ביותר',
-          'לאיזו קטגוריית מוצרים יש את הירידה החדה ביותר ברווחיות',
+          'כיצד מתפתח הרווח התפעולי חודש אחר חודש לעומת אשתקד',
+          'אילו סניפים מובילים ואילו מפגרים ברווחיות מתחילת השנה',
+          'כיצד השתנו המזומנים, המלאי והחוב לספקים במאזן לעומת אשתקד',
         ],
       },
     },

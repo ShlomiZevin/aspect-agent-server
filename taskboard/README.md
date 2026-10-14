@@ -30,6 +30,31 @@ database. Nothing can be got wrong by setting a flag incorrectly.
 | `services/people.service.js` | Roster and the notification bell. |
 | `services/events.service.js` | SSE broadcast. |
 | `routes/taskboard.routes.js` | `/api/taskboard/*`, mounted with one line in `server.js`. |
+| `services/release-notes.service.js` | Customer release notes: publish, unseen-per-user, mark seen. |
+| `routes/release-notes.routes.js` | `/api/release-notes` — what the Intelligence Center popup reads. |
+
+## Customer release notes (task #102)
+
+Same idea as LYBI's What's New, but for customers, and on this board:
+
+1. Shlomi ticks **For customers** on a task (only his name can).
+2. The assignee writes the note on the task — a Hebrew headline and a short
+   Hebrew body. General wording: every customer sees it, so it never names the
+   customer who asked for it.
+3. Once the task is Done, it appears in Shlomi's **Publish** window; publishing
+   stamps `note_published_at`.
+4. The Intelligence Center shows each customer user a "מה חדש" popup with what
+   was published since their last "הבנתי". A user's first visit sets their
+   watermark to now, so a new user sees nothing old.
+
+Unticking For customers withdraws a published note. `/api/release-notes` returns
+the headline, body and publish time only — never the task behind it.
+Per-customer targeting is not built yet; every published note goes to everyone.
+
+Migration: `node taskboard/db/migrations/run-004-customer-release-notes.js`.
+Run it **before** deploying the server that reads it: drizzle's `.returning()`
+selects every column in `schema.js`, so task create/update fails until the
+columns exist.
 
 ## Three databases now, and the naming is still misleading
 

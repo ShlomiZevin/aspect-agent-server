@@ -196,6 +196,27 @@ app.use('/api/otto', require('./otto/routes/otto.routes'));
 app.use('/intelligence', require('./otto/routes/mcp.routes'));
 app.use('/intelligence', require('./otto/routes/mcp.routes').errorHandler);
 
+// ZolStock creative daily store inventory (tasks #106 / #107) — the link Reut's
+// Qlik loads nightly. Outside /api because it is pasted into a Qlik Web File
+// connector; Hosting proxies it from aspect-agents.web.app. Answers with a 302
+// to a short-lived signed GCS URL (the table is ~1 GB, past Hosting's 60s
+// proxy limit). See services/creative-inventory-export.service.js.
+app.get('/zolstock/creative-stock/:token{/:file}', async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  try {
+    const creativeExport = require('./services/creative-inventory-export.service');
+    if (!(await creativeExport.verifyToken(req.params.token))) {
+      return res.status(404).type('text/plain').send('This link is not valid.');
+    }
+    const url = await creativeExport.signedDownloadUrl();
+    if (!url) return res.status(503).type('text/plain').send('The inventory table is not built yet. Try again later.');
+    res.redirect(302, url);
+  } catch (err) {
+    console.error('❌ creative-stock link error:', err.message);
+    res.status(500).type('text/plain').send('Could not serve the inventory table right now.');
+  }
+});
+
 // ─── Aspect Task Board ─────────────────────────────────────────────
 // Our own task board, in its OWN database (`aspect_tasks_db`), not the platform
 // DB. The separation is physical on purpose: the existing board in
@@ -203,6 +224,14 @@ app.use('/intelligence', require('./otto/routes/mcp.routes').errorHandler);
 // than one filtered table, so there is no query here that can reach the other.
 // See taskboard/README.md.
 app.use('/api/taskboard', require('./taskboard/routes/taskboard.routes'));
+// The customer side of the board's release notes (task #102): what the
+// Intelligence Center's "what's new" popup reads. Note text only, nothing else
+// from the task. See taskboard/routes/release-notes.routes.js.
+app.use('/api/release-notes', require('./taskboard/routes/release-notes.routes'));
+
+// Files attached in chat (task #100): upload → digest, and filling an attached
+// spreadsheet back in its own structure. See chat-attachments/.
+app.use('/api/chat-attachments', require('./chat-attachments/routes/chat-attachments.routes'));
 
 // ─── Google Sign-In ────────────────────────────────────────────────
 // Switchable per client through the google-auth module. Where it is off, the
@@ -2018,11 +2047,24 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
     // Add "Message received" thinking step
     thinkingService.addMessageReceivedStep(conversationId, message);
 
+    // Attached files (task #100): their digests ride inside the user message,
+    // between markers, both into this turn and into the saved history — so
+    // every crew of every agent sees the file now and in later turns, with no
+    // per-crew code. The client renders the marked block as a file chip.
+    const chatAttachments = require('./chat-attachments/services/chat-attachments.service');
+    const turnMessage = Array.isArray(req.body.attachments) && req.body.attachments.length > 0
+      ? await chatAttachments.composeMessage(message, req.body.attachments, conversationId)
+      : message;
+    // With a spreadsheet attached anywhere in this conversation, every data
+    // result gets the table viewer — that is where "download in the file's
+    // format" lives — even one small enough to be printed inline.
+    const hasTemplateFile = await chatAttachments.conversationHasSpreadsheet(conversationId).catch(() => false);
+
     // Save user message to database
     const { message: userMsg } = await conversationService.saveUserMessage(
       conversationId,
       agentNameToUse,
-      message,
+      turnMessage,
       userId || null
     );
     // Send user message ID to client so it can be deleted later
@@ -2078,7 +2120,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
 
       // Dispatch through crew system
       for await (const chunk of dispatcherService.dispatch({
-        message,
+        message: turnMessage,
         conversationId,
         agentName: agentNameToUse,
         overrideCrewMember,
@@ -2151,7 +2193,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
           if (chunk.type === 'function_result' && Array.isArray(chunk.result?._fullData) && chunk.result._fullData.length > 0) {
             const r = chunk.result;
             const rowCount = r.rowCount ?? r._fullData.length;
-            const hasViewer = r.hasViewer ?? (rowCount > tableFormatService.PREVIEW_ROW_LIMIT);
+            const hasViewer = hasTemplateFile || (r.hasViewer ?? (rowCount > tableFormatService.PREVIEW_ROW_LIMIT));
             if (hasViewer) {
               const displayColumns = r.displayColumns?.length
                 ? r.displayColumns
@@ -2160,7 +2202,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
                 conversationId,
                 'data_table',
                 'Data table: ' + rowCount + ' rows',
-                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema }
+                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema, ...(r.fileQuery ? { fileQuery: r.fileQuery } : {}) }
               );
             }
           }
@@ -2409,7 +2451,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
       const legacyUseKB = !!agentConfig.vectorStoreId;
 
       // Stream the response and accumulate full reply with agent-specific config
-      for await (const chunk of llmService.sendMessageStream(message, conversationId, legacyUseKB, agentConfig)) {
+      for await (const chunk of llmService.sendMessageStream(turnMessage, conversationId, legacyUseKB, agentConfig)) {
         // Check if chunk is a function call event (object) or text (string)
         if (typeof chunk === 'object' && chunk.type) {
           // Handle function call - add thinking step
@@ -2447,7 +2489,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
           if (chunk.type === 'function_result' && Array.isArray(chunk.result?._fullData) && chunk.result._fullData.length > 0) {
             const r = chunk.result;
             const rowCount = r.rowCount ?? r._fullData.length;
-            const hasViewer = r.hasViewer ?? (rowCount > tableFormatService.PREVIEW_ROW_LIMIT);
+            const hasViewer = hasTemplateFile || (r.hasViewer ?? (rowCount > tableFormatService.PREVIEW_ROW_LIMIT));
             if (hasViewer) {
               const displayColumns = r.displayColumns?.length
                 ? r.displayColumns
@@ -2456,7 +2498,7 @@ app.post('/api/finance-assistant/stream', async (req, res) => {
                 conversationId,
                 'data_table',
                 'Data table: ' + rowCount + ' rows',
-                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema }
+                { columns: r.columns, displayColumns, rowCount, sql: r.sql, question: r.question, title: r.tableTitle, schema: r.schema, ...(r.fileQuery ? { fileQuery: r.fileQuery } : {}) }
               );
             }
           }
@@ -3177,6 +3219,10 @@ async function runBiSql(schema, sql) {
     client.release();
   }
 }
+
+// The chat-attachments router fills an attached spreadsheet from a data_table
+// step's {schema, sql} the same way /rerun and /export-excel do.
+app.set('runBiSql', runBiSql);
 
 app.post('/api/data-query/rerun', async (req, res) => {
   try {
@@ -4196,32 +4242,12 @@ app.post('/api/admin/data-loader/:schema/cancel', async (req, res) => {
   const { schema } = req.params;
   try {
     const svc = req.app.get('dataReloadService');
-
-    // Kill all PG sessions touching this schema or its shadow (including active COPY/CREATE/ANALYZE)
-    const shadowSchema = `${schema}_new`;
-    await db.query(`
-      SELECT pg_terminate_backend(pid)
-      FROM pg_stat_activity
-      WHERE datname = current_database()
-        AND pid <> pg_backend_pid()
-        AND (query ILIKE $1 OR query ILIKE $2)
-    `, [`%${schema}%`, `%${shadowSchema}%`]).catch(e =>
-      console.warn('[cancel] pg_terminate_backend error (non-fatal):', e.message)
-    );
-
-    const result = await db.query(
-      `UPDATE public.data_reload_runs
-       SET status = 'failed', completed_at = NOW(), error_message = 'Cancelled manually'
-       WHERE schema_name = $1 AND status = 'running'
-       RETURNING id`,
-      [schema]
-    );
-    if (svc && svc.currentRuns[schema]) {
-      svc.currentRuns[schema].status = 'failed';
-    }
-    res.json({ cancelled: result.rows.map(r => r.id) });
+    // Marks the run cancelled, stops the worker (on this or any instance) and
+    // kills its statements on the DATA db — see DataReloadService.cancelRun.
+    const cancelled = await svc.cancelRun(schema);
+    res.json({ cancelled });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.code || 500).json({ error: err.message });
   }
 });
 
@@ -4242,7 +4268,7 @@ app.post('/api/admin/data-loader/:schema/test-query', async (req, res) => {
 });
 
 // GET /api/admin/data-loader/:schema/logs — SSE live log stream
-app.get('/api/admin/data-loader/:schema/logs', (req, res) => {
+app.get('/api/admin/data-loader/:schema/logs', async (req, res) => {
   const { schema } = req.params;
   const dataReloadService = req.app.get('dataReloadService');
   if (!dataReloadService?.reloaders[schema]) {
@@ -4263,6 +4289,13 @@ app.get('/api/admin/data-loader/:schema/logs', (req, res) => {
   const isRunning = current && current.status === 'running';
 
   if (!isRunning) {
+    // Running on another Cloud Run instance — stream what it persists.
+    const runningElsewhere = await dataReloadService.hasRunningRunInDB(schema).catch(() => false);
+    if (runningElsewhere) {
+      const stop = dataReloadService.subscribeRemoteLogs(schema, sendEvent, () => res.end());
+      req.on('close', stop);
+      return;
+    }
     // Not running — send last status and close
     const lastRun = dataReloadService.currentRuns[schema] || { status: 'idle' };
     sendEvent({ type: 'status', data: lastRun });
@@ -6648,6 +6681,7 @@ async function startServer() {
     // Auto-complete a swap if a worker died right after MVs (no manual re-run needed).
     dataReloadService.startSelfHealLoop();
     dataReloadService.startPeriodicCleanup();
+    dataReloadService.installShutdownHook();
 
     // Pre-load provider config (API keys) into memory
     await providerConfigService.initialize();

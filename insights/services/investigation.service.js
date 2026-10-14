@@ -137,9 +137,14 @@ async function getDataThroughDate(datasetId) {
   if (hit && (Date.now() - hit.at) < DATA_THROUGH_TTL_MS) return hit.value;
   let value = null;
   try {
-    const schemaName = getDatasetEntry(datasetId).schemaName;
-    const info = dataReloadServiceRef ? await dataReloadServiceRef.getDataInfo(schemaName) : null;
+    const entry = getDatasetEntry(datasetId);
+    const info = dataReloadServiceRef ? await dataReloadServiceRef.getDataInfo(entry.schemaName) : null;
     value = info?.lastDataDate || null;
+    // A dataset with no reloader (the aspect demo) reports nothing here. PLAN
+    // then got "data STARTS on 2024-01-01" and no end, and anchored every
+    // report on 2024 (task #112). Fall back to the fact table's own last date,
+    // the same source getDataFromDate() already uses for the lower bound.
+    if (!value) value = await dataThroughService.resolveDataThrough(entry.getPool(), entry.schemaName);
   } catch {
     value = null;
   }
@@ -547,6 +552,8 @@ The detail page is NOT one fixed template — you choose, for THIS specific find
 - "scenarios": exactly 4 cards (Current / Good prognosis / Neutral / Negative) with forward-looking projections — best when the finding calls for "what happens if we act vs don't."
 
 Pick 1 to 3 blocks — whichever combination best presents THIS finding. Do not default to using all of them out of habit; a simple finding might genuinely need only a "stat_callout", while a multi-store ranking finding might need "ranked_list" + "scenarios". Never include a block type that doesn't add real information beyond what's already in another block you picked.
+
+CURRENCY: ₪ goes ONLY on money amounts (revenue, sales value, cost, profit, price, inventory value). NEVER on counts or quantities — units, items, lines, transactions, customers, stores, days — nor on percentages or ratios: "2 lines", "1,240 units", "35%", never "₪2" or "2₪". A "unit" field of a block measuring a count names the count ("lines", "units"), never ₪.
 
 Respond with ONLY a JSON object with this exact shape (all string fields, ₪ for currency, matching this house style):
 {
