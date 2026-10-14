@@ -492,6 +492,18 @@ async function removeIfPresent(slug) {
     check('user-reply with an unknown model → 400',
       (await post('/simulate/user-reply', { persona: 'x', model: 'zz-not-a-model' })).status === 400);
 
+    // ── simulation jobs (task #897) — refusals and reads only; a released
+    //    job would run a model. Job logic: scripts/test-simulation-jobs.js ──
+    section('simulation jobs');
+    check('entry page teaches releasing a simulation', doc.text.includes(`POST ${base}/simulations`) && doc.text.includes('Admin →\nSimulations'));
+    check('release without a person → 400', (await post('/simulations', { agent: TEST_SLUG, persona: 'x' })).status === 400);
+    check('release without an agent → 400', (await post('/simulations', { name: 'Claude', persona: 'x' })).status === 400);
+    check('release without a scenario → 400', (await post('/simulations', { name: 'Claude', agent: TEST_SLUG })).status === 400);
+    check('persona AND lines → 400', (await post('/simulations', { name: 'Claude', agent: TEST_SLUG, persona: 'x', lines: ['hi'] })).status === 400);
+    check('unknown model → 400', (await post('/simulations', { name: 'Claude', agent: TEST_SLUG, persona: 'x', model: 'zz-not-a-model' })).status === 400);
+    check('unknown simulation → 404', (await get('/simulations/999999999')).status === 404);
+    check('an agent\'s simulations list reads', (await get(`/agents/${TEST_SLUG}/simulations`)).status === 200);
+
     // ── refusals ──
     section('refusals');
     check('string body → 400', (await post(`/agents/${TEST_SLUG}`, { body: 'nope' })).status === 400);

@@ -158,6 +158,10 @@ app.use('/api/builder', require('./builder/routes/projectsRoute'));
 app.use('/api/agents', require('./builder/routes/triggersRoute'));
 app.use('/api/agents', require('./builder/routes/conversationExportRoute'));
 app.use('/api/agents', require('./builder/routes/runtimeRoute'));
+// Simulation jobs — one simulated conversation that runs on the server by
+// itself; released through /builder/mcp, watched in Admin → Simulations
+// (task #897). See builder/services/simulationJobs.js.
+app.use('/api/simulations', require('./builder/routes/simulationsRoute'));
 
 // ─── Aspect BI ─────────────────────────────────────────────────────
 // Standalone Qlik-style BI layer over customer data schemas (hypertoy

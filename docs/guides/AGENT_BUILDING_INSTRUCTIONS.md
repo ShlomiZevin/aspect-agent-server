@@ -268,6 +268,20 @@ Three ways to play the user — pick by what they asked for:
   next line, post it, repeat until `done` (and stop anyway after about
   twelve turns). For many or long conversations.
 
+**Or release it to the server and let it run by itself** — nothing to
+write and nothing to keep running. One call with the whole scenario:
+
+| What you want | Call | What comes back |
+|---|---|---|
+| **Release a simulation** | `POST /builder/mcp/simulations` with `{ "name": "<person>", "agent": "<slug>", "version": "active", "label": "...", "persona": "...", "goal": "...", "maxTurns": 10 }` — or `"lines": ["hi", "what are the fees?"]` instead of `persona`/`goal` (never both). Optional `model`, `startCrew`, `fields` | At once: `{ id, status: "pending", conversationId, … }`. The conversation then runs on the server, start to finish. |
+| **How it is going** | `GET /builder/mcp/simulations/<id>` | `{ status, turns, stopped, endedInCrew, error, conversationId, … }` — `pending` → `running` → `completed`, or `failed` / `interrupted` (server restarted; release it again) |
+| **Every simulation of an agent** | `GET /builder/mcp/agents/<slug>/simulations` | Plain text, newest first |
+
+One call is one conversation; for several, release several. Check back
+every so often rather than in a tight loop — a turn takes up to half a
+minute. **Tell the person where to watch it:** in the Builder, Admin →
+Simulations, with its setup and the conversation as it grows.
+
 Run scripts in the background and keep talking to the person. **Ask them
 which model should play the user**; with no preference leave `model` out
 and the platform's everyday model is used. When you write the lines

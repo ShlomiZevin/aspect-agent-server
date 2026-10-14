@@ -47,6 +47,8 @@ people type and paste this URL.
 | `POST /agents/:slug/conversations` `{ name, version?, label?, startCrew?, fields? }` | **Start a simulated conversation** (task #894) — a real conversation stamped `metadata.kind = 'simulation'`, owned by a fresh synthetic user. `name` is a roster name; `version` is `active` (default) or `published` | `builder/services/mcpConversations.js` → `startConversation` |
 | `POST /conversations/:id/messages` `{ text }` | **One turn, whole reply, no stream** — `{ reply, crew, fieldsWritten, transition, addons }`. Refuses any conversation without the simulation stamp | `mcpConversations.sendMessage` — posts to the live chat's own endpoint and collects its events |
 | `GET /conversations/:id/state` | Fields / memory / thinking / summaries and the current crew, for ANY Builder conversation (read-only) | `mcpConversations.readState` |
+| `POST /simulations` `{ name, agent, version?, label?, persona+goal? \| lines?, maxTurns?, model?, startCrew?, fields? }` | **Release a simulation job** (task #897) — answers at once with `{ id, status: "pending", conversationId }`; the server then runs that ONE conversation by itself | `builder/services/simulationJobs.js` → `releaseJob` |
+| `GET /simulations/:id` · `GET /agents/:slug/simulations` | A job's status / result (JSON); an agent's jobs, newest first (text) | `simulationJobs.getJob` / `listJobs` |
 | `POST /simulate/user-reply` `{ persona, goal?, conversationId \| transcript, model? }` | "What would this persona say next" → `{ text, done, model }`. Stateless; default model is `EVERYDAY_MODEL` | `mcpConversations.userReply` |
 | `GET /addons` | **Every addon descriptor, in one page** | reads `builder/addons/*.addon.json` |
 | `GET /code/<path>` | Any allowlisted source file; directories list | `alfredTools.readPlatformFile` |
@@ -104,6 +106,42 @@ fixed script, or loops `user-reply`. Things to keep true:
 - **The Admin Conversations screen** shows the kind (`source:
   'simulation'` from `GET /api/agents/:slug/admin/conversations`) as a
   "Simulated" tag and filter.
+
+**Simulation jobs (task #897, phase 1) — the server runs one conversation
+by itself.** `POST /simulations` creates the conversation and a job row,
+answers, and then runs the job in the same process (`setImmediate`).
+Things to keep true:
+
+- **This relies on the service being always-on** — `--no-cpu-throttling`
+  and `--min-instances 1` in `deploy.sh`. Remove either and a released job
+  stalls the moment the request has answered.
+- **A job only composes the building blocks** in `mcpConversations.js`
+  (`userReply` + `sendMessage`), so a job's turn is the same real turn,
+  with the same stamp, caps and logs. Do not give jobs their own turn.
+- **Storage is the existing `test_runs` table**, `type = 'simulation'`
+  (`input` = the setup, `output` = turns / stop reason / result). No
+  schema change; the old Test Runner's rows (`individuals`, …) share the
+  table and are never returned as simulations.
+- **Interrupted jobs are detected at read time**, not at startup: every
+  turn bumps `updatedAt`, and a job still running with no heartbeat for
+  10 minutes is saved as `interrupted` when next read. A startup sweep
+  would let one instance mark another instance's live job.
+- **A separate simulation service, later:** deploy the same code as a
+  second Cloud Run service and set `SIMULATION_SERVICE_URL` on the main
+  one. `releaseJob` then forwards to `POST <url>/api/simulations`
+  (`builder/routes/simulationsRoute.js`) and that service runs the job;
+  both share the database, so reading jobs works from either. Nothing
+  else changes — not the door, not the Admin screen.
+- **Admin → Simulations** (`SimulationsTab.tsx`) reads
+  `GET /api/simulations?agentSlug=` and can release a job itself — the
+  "New simulation" form posts `{ slug, by, body }` to `POST
+  /api/simulations`, the same call the main server uses to forward. The
+  form's "Released by" is free text; only the door checks the name
+  against the roster.
+- **Phase 1 limits, on purpose:** one conversation per job, no cancel, no
+  grading, no saved scenarios.
+- **Verify:** `node scripts/test-simulation-jobs.js` (offline — job logic
+  with stand-ins), then release one real job against a test agent.
 
 **The shared knowledge repository (task #893) — guidance only.** The door
 does not read or write `lybi-knowledge`; it tells assistants where it is
@@ -450,6 +488,9 @@ aspect-agent-server/
   alfred/services/alfredTools.js      the readers it wraps + READABLE_PREFIXES (shared allowlist)
   builder/services/builderProjects.js hydrateProject · createProject · save*VersionAs · set*Active
   builder/services/mcpConversations.js  talking to an agent: start · one turn · state · user-reply
+  builder/services/simulationJobs.js    simulation jobs: release · run in the background · status
+  builder/routes/simulationsRoute.js    /api/simulations — Admin's list + the forward target
+  scripts/test-simulation-jobs.js       offline battery for the job logic
   services/models.service.js          EVERYDAY_MODEL — the simulated user's default model
   builder/routes/aiBundleRoute.js     folder route: code bundle + fingerprint (sibling)
   docs/guides/AGENT_BUILDING_INSTRUCTIONS.md   folder route's instructions (sibling)

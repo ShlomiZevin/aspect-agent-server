@@ -62,6 +62,7 @@ const builderProjects = require('../services/builderProjects');
 const alfredTools = require('../../alfred/services/alfredTools');
 const { exportConversation } = require('../services/conversationExport');
 const mcpConversations = require('../services/mcpConversations');
+const simulationJobs = require('../services/simulationJobs');
 const modelsService = require('../../services/models.service');
 
 /**
@@ -506,10 +507,50 @@ trail you do. Tell them its id.
 | **You play the user** | Write each message yourself, read the reply, decide the next | Exploring; reproducing one complaint; "talk to it as an angry customer". Simple, and it keeps you busy for the length of the conversation. |
 | **A fixed script** | Write the user's lines up front; a small script posts them one by one and saves the replies | The same scenarios after every change. Runs in the background, needs no model at all. |
 | **A persona, in a script** | A script asks us for the user's next line (below), posts it, and repeats | Many conversations, or long ones, without you writing each line. |
+| **Release it to the server** | One call with the whole scenario; the server runs the conversation by itself and you check back | When the person just wants it run. Nothing to write, nothing to keep running — and they can watch it in the Builder. See "Release a simulation" below. |
 
 Scripts are for assistants that can run commands. Run them in the
 background and carry on talking to the person; check on them when they
 finish. Run a handful of conversations at once, not hundreds.
+
+**Release a simulation — the server runs it by itself**
+
+One call with everything inside. It answers at once with an id; the
+conversation then runs on the server, start to finish, with nobody
+holding it:
+
+\`\`\`
+POST ${base}/simulations
+{ "name": "Noa", "agent": "<slug>", "version": "active",
+  "label": "impatient student",
+  "persona": "Dana, 19, student, first bank account, impatient, short Hebrew messages",
+  "goal": "open an account without paying fees",
+  "maxTurns": 10 }
+→ { "id": 57, "status": "pending", "conversationId": 4321, ... }
+\`\`\`
+
+For a fixed script send \`"lines"\` — \`["hi", "I'm a student", "what are the fees?"]\` —
+instead of \`"persona"\` / \`"goal"\`; never both. Optional, as when you
+start a conversation yourself: \`"startCrew"\`, \`"fields"\`, and for a
+persona \`"model"\` (ask the person; left out, it is \`${everydayModel}\`)
+and \`"maxTurns"\` (default 12, at most 30).
+
+| To see | Fetch |
+|---|---|
+| How it is going — status, turns so far, why it stopped | \`${base}/simulations/<id>\` |
+| Every simulation of an agent, newest first | \`${base}/agents/<slug>/simulations\` |
+| What was said, and what each addon did | \`${base}/conversations/<conversationId>\` (and the other reads above) |
+
+\`status\` goes \`pending\` → \`running\` → \`completed\`, or \`failed\`
+(the reason is in \`error\`), or \`interrupted\` if the server restarted
+mid-run — the conversation up to then is kept; release it again. A turn
+takes up to half a minute, so check back every so often rather than in a
+tight loop, and talk to the person meanwhile.
+
+**Tell the person where to watch it:** in the Builder, Admin →
+Simulations, each one with its setup — who released it, the version, the
+model playing the user — and the conversation as it grows. One call is
+one conversation; for several, release several.
 
 **The user's next line, written for you**
 
@@ -1545,6 +1586,54 @@ router.get('/conversations/:id/state', async (req, res) => {
     res.json(await mcpConversations.readState({ conversationId: req.params.id }));
   } catch (err) {
     simFail(res, err, 'read the conversation state');
+  }
+});
+
+// ─── Simulation jobs (task #897) — the server runs the conversation ──
+
+function simulationLine(j) {
+  const bits = [
+    `#${j.id}`, j.status, `"${j.label}"`,
+    j.kind === 'script' ? `script, ${j.lines.length} lines` : `persona, user played by ${j.userModel}`,
+    `version ${j.version}`, `${j.turns} turn${j.turns === 1 ? '' : 's'}`,
+    j.by ? `by ${j.by}` : '', `conversation ${j.conversationId}`,
+  ].filter(Boolean);
+  if (j.stopped) bits.push(`stopped: ${j.stopped}`);
+  if (j.error) bits.push(`error: ${j.error}`);
+  return `- ${bits.join(' · ')}`;
+}
+
+router.post('/simulations', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const by = await resolvePerson(b.name);
+    if (!by) return unknownPerson(res, b.name);
+    const slug = String(b.agent || b.agentSlug || b.slug || '').trim();
+    if (!slug) {
+      return res.status(400).type('text/plain').send('Say which agent: { "agent": "<slug>" }. Fetch ../agents for the list.');
+    }
+    res.status(201).json(await simulationJobs.releaseJob({ slug, by, body: b }));
+  } catch (err) {
+    simFail(res, err, 'release the simulation');
+  }
+});
+
+router.get('/simulations/:id', async (req, res) => {
+  try {
+    res.json(await simulationJobs.getJob(req.params.id));
+  } catch (err) {
+    simFail(res, err, 'read the simulation');
+  }
+});
+
+router.get('/agents/:slug/simulations', async (req, res) => {
+  try {
+    const jobs = await simulationJobs.listJobs({ slug: req.params.slug, limit: req.query.limit });
+    sendText(res, jobs.length
+      ? [`Simulations of "${req.params.slug}", newest first:`, ...jobs.map(simulationLine)].join('\n')
+      : `No simulations have been released for "${req.params.slug}" yet.`);
+  } catch (err) {
+    simFail(res, err, 'list the simulations');
   }
 });
 
