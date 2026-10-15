@@ -43,6 +43,9 @@ const OUTPUT_PATH = 'exports/zolstock/creative_daily_stock.csv';
 const TOKEN_PATH = 'exports/zolstock/.creative_stock_token';
 const DOWNLOAD_NAME = 'ZolStock_Creative_Daily_Stock.csv';
 const SIGNED_URL_MINUTES = 60;
+// Public mirror: https://storage.googleapis.com/aspect-public-exports/zolstock/creative_daily_stock.csv
+const PUBLIC_BUCKET = 'aspect-public-exports';
+const PUBLIC_PATH = 'zolstock/creative_daily_stock.csv';
 // Bump when the output columns change, so the table rebuilds even though
 // Reut's input files did not. 2 = added מק"ט + Priority customer (2026-10-13).
 const FORMAT_VERSION = '2';
@@ -154,6 +157,38 @@ function refresh(opts = {}) {
 }
 
 async function doRefresh({ force = false, log = console.log } = {}) {
+  const result = await buildTable({ force, log });
+  // Checked on every run, not only after a rebuild, so a copy that failed
+  // once catches up the next night.
+  result.publicCopy = await syncPublicCopy(log).catch(err => {
+    log(`[creative-stock] public copy failed: ${err.message}`);
+    return 'failed';
+  });
+  return result;
+}
+
+/**
+ * Shlomi asked for a plain public storage link Reut can use with no tooling
+ * (2026-10-15). The main bucket holds every client's raw data and has public
+ * access prevention enforced, so the table is mirrored into a bucket that
+ * holds only public exports. no-cache, so nobody gets yesterday's file from
+ * Google's edge cache after the nightly rebuild.
+ */
+async function syncPublicCopy(log) {
+  const src = bucket().file(OUTPUT_PATH);
+  const dest = bucket().storage.bucket(PUBLIC_BUCKET).file(PUBLIC_PATH);
+  const [[srcMeta], [destExists]] = await Promise.all([src.getMetadata(), dest.exists()]);
+  if (destExists) {
+    const [destMeta] = await dest.getMetadata();
+    if (destMeta.md5Hash === srcMeta.md5Hash) return 'unchanged';
+  }
+  log(`[creative-stock] copying table to gs://${PUBLIC_BUCKET}/${PUBLIC_PATH}`);
+  await src.copy(dest, { metadata: { cacheControl: 'no-cache', contentType: 'text/csv; charset=utf-8' } });
+  return 'copied';
+}
+
+/** Rebuilds the GCS table when an input or the format changed. */
+async function buildTable({ force, log }) {
   const drive = await driveClient();
   const inputs = await findInputs(drive);
   const out = bucket().file(OUTPUT_PATH);
