@@ -201,6 +201,9 @@ app.use('/api/aspect-finance', require('./agents/aspect/finance.routes'));
 app.use('/intelligence', require('./otto/routes/mcp.routes'));
 app.use('/intelligence', require('./otto/routes/mcp.routes').errorHandler);
 
+// Readable, keyless data-file URLs: /<client>/intelligence/data/<name>
+app.use(require('./routes/intelligence-data.routes'));
+
 // ZolStock creative daily store inventory (tasks #106 / #107) — the link Reut's
 // Qlik loads nightly. Outside /api because it is pasted into a Qlik Web File
 // connector; Hosting proxies it from aspect-agents.web.app. Answers with a 302

@@ -83,7 +83,22 @@ const CLIENTS = {
       'teva naot israel calendargroupb',
     ]),
   },
+  zolstock: {
+    // Folder and GCS prefix come from the Data Loader Configuration tab.
+    folderId: null,
+    gcsPrefix: null,
+    mode: 'passthrough',
+    skipStems: new Set(),
+    // Our own creative stock table (#106/#107, ~1.5 GB) - Reut keeps copies of
+    // it in the import folder, and Drive names re-uploads "... (1).csv", so
+    // match the name as a prefix rather than one exact stem.
+    skipStemPattern: /^zolstock creative daily stock\b/,
+  },
 };
+
+function isSkipped(cfg, stem) {
+  return cfg.skipStems.has(stem) || !!cfg.skipStemPattern?.test(stem);
+}
 
 /**
  * Normalize a filename to a comparison stem:
@@ -262,7 +277,7 @@ async function syncClient(client, opts = {}) {
   for (const file of driveFiles) {
     const stem = normalizeStem(file.name);
 
-    if (cfg.skipStems.has(stem)) {
+    if (isSkipped(cfg, stem)) {
       report.skipped.push({ name: file.name, reason: 'skip-table' });
       continue;
     }
@@ -312,7 +327,7 @@ async function syncClient(client, opts = {}) {
   // Validation: canonical GCS files that NO Drive file mapped to (skip-tables excluded)
   if (cfg.mode === 'canonical-match') {
     for (const [stem, basename] of canonicalMap.entries()) {
-      if (cfg.skipStems.has(stem)) continue;
+      if (isSkipped(cfg, stem)) continue;
       if (!matchedStems.has(stem)) report.missingCanonical.push(basename);
     }
   }

@@ -20,16 +20,31 @@
  *   - Output: one row per day per store per item, from OUTPUT_FROM to the last
  *     date found in either file. Only pairs that ever moved are emitted; a pair
  *     starts on its first movement if that is after OUTPUT_FROM.
+ *   - Reut also asked (2026-10-13) for the item's מק"ט and the store's
+ *     Priority customer number. Both exist only in the orders file, where each
+ *     item has exactly one מק"ט and each store exactly one customer. Items that
+ *     were only ever sold, and stores with no orders, leave the cell empty.
+ *     Appended at the end so the first four columns keep their order.
  */
 
 const COUNT_FROM = '2024-01-01';
 const OUTPUT_FROM = '2025-01-01';
 
-const ENTRY_COLS = { date: 'Date', qty: 'כמות כניסה למלאי', item: 'מספר פריט', store: 'מספר חנות' };
+const ENTRY_COLS = {
+  date: 'Date', qty: 'כמות כניסה למלאי', item: 'מספר פריט', store: 'מספר חנות',
+  sku: 'מק"ט', customer: 'מספר לקוח פריוריטי',
+};
 const EXIT_COLS = { date: 'תאריך', qty: 'כמות שנמכרה', item: 'מספר פריט', store: 'מספר חנות' };
 
-// Output headers mirror the names Reut already uses in her own files.
-const OUTPUT_HEADER = 'מספר פריט,תאריך,מספר חנות,כמות במלאי';
+// Output headers mirror the names Reut already uses in her own files
+// (מק"ט quoted the way her export quotes it).
+const OUTPUT_HEADER = 'מספר פריט,תאריך,מספר חנות,כמות במלאי,"מק""ט",מספר לקוח פריוריטי';
+
+/** Quotes a CSV cell only when it needs it. */
+function csvCell(v) {
+  if (!v) return '';
+  return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
 
 const DAY_MS = 86400000;
 
@@ -82,7 +97,9 @@ function forEachCsvRow(text, cols, label, onRow) {
   while ((line = nextLine()) !== null) {
     if (!line) continue;
     const c = line.split(',');
-    onRow({ date: c[idx.date], qty: c[idx.qty], item: c[idx.item], store: c[idx.store] });
+    const row = {};
+    for (const key in idx) row[key] = c[idx[key]];
+    onRow(row);
   }
 }
 
@@ -115,10 +132,19 @@ function buildMovements(entriesCsv, exitsCsv) {
     days.set(day, (days.get(day) || 0) + sign * qty);
   };
 
-  forEachCsvRow(entriesCsv, ENTRY_COLS, 'entries file', r => add(r, +1, 'entryRows'));
+  // Descriptive columns, taken from every order line that carries them - they
+  // describe the item / store, so a line skipped as a movement still counts.
+  const skuByItem = new Map();
+  const customerByStore = new Map();
+
+  forEachCsvRow(entriesCsv, ENTRY_COLS, 'entries file', r => {
+    if (r.item && r.sku) skuByItem.set(r.item, r.sku);
+    if (r.store && r.customer) customerByStore.set(r.store, r.customer);
+    add(r, +1, 'entryRows');
+  });
   forEachCsvRow(exitsCsv, EXIT_COLS, 'exits file', r => add(r, -1, 'exitRows'));
 
-  return { pairs, stats };
+  return { pairs, stats, skuByItem, customerByStore };
 }
 
 /**
@@ -127,7 +153,7 @@ function buildMovements(entriesCsv, exitsCsv) {
  * @returns {Promise<Object>} stats incl. rows written and negative-stock counts
  */
 async function writeDailyStock(entriesCsv, exitsCsv, write) {
-  const { pairs, stats } = buildMovements(entriesCsv, exitsCsv);
+  const { pairs, stats, skuByItem, customerByStore } = buildMovements(entriesCsv, exitsCsv);
   const outputFrom = isoToDay(OUTPUT_FROM);
   const lastDay = stats.lastDay;
 
@@ -137,7 +163,7 @@ async function writeDailyStock(entriesCsv, exitsCsv, write) {
     return sa - sb || ia - ib;
   });
 
-  let rowsWritten = 0, pairsEndingNegative = 0;
+  let rowsWritten = 0, pairsEndingNegative = 0, pairsWithoutSku = 0, pairsWithoutCustomer = 0;
   const dayLabel = new Map(); // memoised dd/mm/yyyy strings
   const label = d => { let s = dayLabel.get(d); if (!s) { s = formatDay(d); dayLabel.set(d, s); } return s; };
 
@@ -152,10 +178,14 @@ async function writeDailyStock(entriesCsv, exitsCsv, write) {
     let balance = 0, i = 0;
     while (i < moveDays.length && moveDays[i] < outputFrom) balance += days.get(moveDays[i++]);
     const start = Math.max(outputFrom, moveDays[0]);
+    const sku = csvCell(skuByItem.get(item));
+    const customer = csvCell(customerByStore.get(store));
+    if (!sku) pairsWithoutSku++;
+    if (!customer) pairsWithoutCustomer++;
 
     for (let d = start; d <= lastDay; d++) {
       if (i < moveDays.length && moveDays[i] === d) balance += days.get(moveDays[i++]);
-      buf.push(`${item},${label(d)},${store},${balance}`);
+      buf.push(`${item},${label(d)},${store},${balance},${sku},${customer}`);
       if (buf.length >= 50000) {
         rowsWritten += buf.length;
         await write(buf.join('\n') + '\n');
@@ -175,6 +205,8 @@ async function writeDailyStock(entriesCsv, exitsCsv, write) {
     outputFrom: OUTPUT_FROM,
     pairs: pairs.size,
     pairsEndingNegative,
+    pairsWithoutSku,
+    pairsWithoutCustomer,
     rowsWritten,
   };
 }

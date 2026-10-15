@@ -20,6 +20,9 @@
  * The token is a random secret kept as a private object in the bucket, not in
  * env or the admin config list: one link, for one consumer (Reut's Qlik).
  * Replacing that object revokes the link.
+ *
+ * The same table is also served at a plain keyless address,
+ * /zolstock/intelligence/data/creative-stock (routes/intelligence-data.routes.js).
  */
 
 const crypto = require('crypto');
@@ -40,6 +43,9 @@ const OUTPUT_PATH = 'exports/zolstock/creative_daily_stock.csv';
 const TOKEN_PATH = 'exports/zolstock/.creative_stock_token';
 const DOWNLOAD_NAME = 'ZolStock_Creative_Daily_Stock.csv';
 const SIGNED_URL_MINUTES = 60;
+// Bump when the output columns change, so the table rebuilds even though
+// Reut's input files did not. 2 = added מק"ט + Priority customer (2026-10-13).
+const FORMAT_VERSION = '2';
 
 // Auth mirrors Drive sync exactly, so it works wherever that works. On Cloud
 // Run there is no key: Drive is read by impersonating the Drive-shared service
@@ -157,7 +163,8 @@ async function doRefresh({ force = false, log = console.log } = {}) {
     if (exists) {
       const [meta] = await out.getMetadata();
       const m = meta.metadata || {};
-      if (m.entriesMd5 === inputs.entries.md5Checksum && m.exitsMd5 === inputs.exits.md5Checksum) {
+      if (m.entriesMd5 === inputs.entries.md5Checksum && m.exitsMd5 === inputs.exits.md5Checksum
+          && m.formatVersion === FORMAT_VERSION) {
         return { action: 'unchanged' };
       }
     }
@@ -174,6 +181,7 @@ async function doRefresh({ force = false, log = console.log } = {}) {
     contentType: 'text/csv; charset=utf-8',
     metadata: {
       metadata: {
+        formatVersion: FORMAT_VERSION,
         entriesMd5: inputs.entries.md5Checksum,
         exitsMd5: inputs.exits.md5Checksum,
         entriesModified: inputs.entries.modifiedTime,
