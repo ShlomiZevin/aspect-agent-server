@@ -71,6 +71,36 @@ async function headlineFor(descriptor, datasetId) {
 }
 
 /**
+ * The DEMO's financial statements (task #116) — the P&L, the balance sheet and
+ * the cash flow as their own screens, drawn like a company report rather than
+ * a grid of rows.
+ *
+ * Hardcoded to the `aspect` demo and to no module: there is nothing to enable,
+ * nothing to initialize and no per-client state — the books behind them are
+ * generated demo data. Every other dataset gets an empty array, so its shelf
+ * payload is byte-identical to before (asserted in test-otto-unit.js).
+ */
+function demoFinanceApps(datasetId) {
+  if (datasetId !== 'aspect') return [];
+  const tile = (id, he, en, blurbHe, blurbEn) => ({
+    id,
+    name: { he, en },
+    icon: 'finance',
+    blurb: { he: blurbHe, en: blurbEn },
+    researchedAt: null,
+    headline: null,
+  });
+  return [
+    tile('finance-pnl', 'דוח רווח והפסד', 'Profit & loss',
+      'הכנסות, עלות מכר, הוצאות ורווח - שתי תקופות זו מול זו', 'Revenue, cost of sales, expenses and profit — two periods side by side'),
+    tile('finance-balance', 'מאזן', 'Balance sheet',
+      'נכסים, התחייבויות והון עצמי לסוף התקופה', 'Assets, liabilities and equity at the end of the period'),
+    tile('finance-cash', 'דוח תזרים מזומנים', 'Cash flow',
+      'תזרים מפעילות שוטפת, השקעה ומימון', 'Operating, investing and financing cash flow'),
+  ];
+}
+
+/**
  * @param {string} datasetId
  * @param {{ withHeadlines?: boolean, viewerId?: string|null }} opts headlines
  *   cost a full compute, so the nav check — which only needs to know whether
@@ -104,7 +134,7 @@ async function listApps(datasetId, opts = {}) {
 
   return {
     datasetId,
-    apps,
+    apps: apps.concat(demoFinanceApps(datasetId)),
     // Announced, not built. Shown greyed out so the client can see where this
     // is going; never installable, because installing one would install nothing.
     planned: registry.PLANNED_APPS.map(a => ({ id: a.id, name: a.name, icon: a.icon, blurb: a.blurb })),

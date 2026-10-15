@@ -103,6 +103,31 @@ const fmtPct = (num, den) => {
 const fmtChange = (a, b) => (b ? fmtPct(a - b, Math.abs(b)) : '');
 const bold = s => (s === '' ? '' : `**${s}**`);
 
+/**
+ * The grouping for the reports that do not build it themselves (one line by
+ * branch, branch profitability, the monthly trend, the cash flow): a bold row
+ * closes the plain rows above it into one collapsible section, which is
+ * exactly how those tables are laid out. A table with no bold row at all (the
+ * trend) stays one flat block — nothing to collapse.
+ */
+const unbold = cells => cells.map(c => String(c ?? '').replace(/\*\*/g, ''));
+const isStrongRow = cells => cells.some(c => typeof c === 'string' && c.startsWith('**'));
+function deriveBlocks(rows) {
+  const blocks = [];
+  let pending = [];
+  for (const cells of rows) {
+    if (isStrongRow(cells)) {
+      const total = unbold(cells);
+      blocks.push({ type: 'group', label: total[0], total, lines: pending });
+      pending = [];
+    } else {
+      pending.push(cells);
+    }
+  }
+  if (pending.length) blocks.push({ type: 'rows', lines: pending });
+  return blocks;
+}
+
 function markdownTable(columns, rows) {
   const esc = v => String(v ?? '').replace(/\|/g, '/');
   return [
@@ -180,34 +205,44 @@ async function pnl(pool, a, b, branch) {
   const revA = sec('REV').a, revB = sec('REV').b;
 
   const out = [];
+  // The same rows a second time, GROUPED: the chat renders the statement as
+  // collapsible sections (a total line you open to see its detail), the way a
+  // financial report is read, instead of one long flat table (task #116).
+  // `out` is untouched so the markdown table stays byte-identical for the
+  // report/Otto callers.
+  const blocks = [];
   const line = (name, va, vb, strong = false) => {
     const cells = [name, fmtNum(va), fmtPct(va, revA), fmtNum(vb), fmtPct(vb, revB), fmtNum(va - vb), fmtChange(va, vb)];
     out.push(strong ? cells.map(bold) : cells);
+    return cells;
   };
+  // A profit line belongs to no section — it is the statement's own subtotal.
+  const profitLine = (name, va, vb) => { blocks.push({ type: 'row', cells: line(name, va, vb, true) }); };
   const profit = { a: 0, b: 0 };
   const addSection = code => {
     const s = sec(code);
     // A branch carries no head-office lines - leave out what is empty in both periods.
     const lines = s.lines.filter(l => l.a_amt !== 0 || l.b_amt !== 0);
     if (!lines.length) return;
-    for (const l of lines) line(l.account_name, l.a_amt, l.b_amt);
-    if (lines.length > 1) line(`סה"כ ${s.name}`, s.a, s.b, true);
+    const detail = lines.map(l => line(l.account_name, l.a_amt, l.b_amt));
+    const total = lines.length > 1 ? line(`סה"כ ${s.name}`, s.a, s.b, true) : null;
+    blocks.push({ type: 'group', label: s.name, total, lines: detail });
     profit.a += s.sign * s.a;
     profit.b += s.sign * s.b;
   };
 
   addSection('REV');
   addSection('COGS');
-  line('רווח גולמי', profit.a, profit.b, true);
+  profitLine('רווח גולמי', profit.a, profit.b);
   const gross = { ...profit };
   addSection('OPEX');
   addSection('GA');
-  line(branch ? 'רווח תפעולי של הסניף' : 'רווח תפעולי', profit.a, profit.b, true);
+  profitLine(branch ? 'רווח תפעולי של הסניף' : 'רווח תפעולי', profit.a, profit.b);
   const operating = { ...profit };
   addSection('FIN');
   addSection('DEP');
   addSection('OTH');
-  line('רווח (הפסד) לפני מס', profit.a, profit.b, true);
+  profitLine('רווח (הפסד) לפני מס', profit.a, profit.b);
 
   // Column names must be unique: the chat's table viewer keys each row by them.
   const columns = ['סעיף', `${a.label} (₪)`, `% מההכנסות ${a.label}`, `${b.label} (₪)`, `% מההכנסות ${b.label}`, 'הפרש (₪)', 'שינוי %'];
@@ -216,6 +251,7 @@ async function pnl(pool, a, b, branch) {
     title,
     columns,
     rows: out,
+    blocks,
     highlights: {
       revenue: { a: Math.round(revA), b: Math.round(revB), change: fmtChange(revA, revB) },
       gross_profit: { a: Math.round(gross.a), b: Math.round(gross.b), margin_a: fmtPct(gross.a, revA), margin_b: fmtPct(gross.b, revB) },
@@ -407,29 +443,39 @@ async function balanceSheet(pool, a, b) {
   }
 
   const out = [];
+  const blocks = [];
   const row = (name, va, vb, strong = false) => {
     const cells = [name, fmtNum(va), fmtPct(va, totA), fmtNum(vb), fmtPct(vb, totB), fmtNum(va - vb), fmtChange(va, vb)];
     out.push(strong ? cells.map(bold) : cells);
+    return cells;
   };
+  // The statement's own totals (סה"כ נכסים / סה"כ התחייבויות והון עצמי) sit
+  // outside any section, like the profit lines in the P&L.
+  const totalRow = (name, va, vb) => { blocks.push({ type: 'row', cells: row(name, va, vb, true) }); };
   const section = (sec, totalName) => {
     const ls = lines.filter(l => l.section_code === sec);
+    if (!ls.length) return;
+    const detail = [];
     for (const l of ls) {
       // Accumulated depreciation is shown the way statements print it - a
       // positive amount on a "less:" line - not as a negative number. In live
       // tests the model dropped the negative % cell of that row 2 runs in 3,
       // breaking the pasted table; totals below still use the signed values.
-      if (l.line_code === 1202) row(`בניכוי: ${l.line_name}`, -(A[1202] || 0), -(B[1202] || 0));
-      else row(l.line_name, A[l.line_code] || 0, B[l.line_code] || 0);
+      if (l.line_code === 1202) detail.push(row(`בניכוי: ${l.line_name}`, -(A[1202] || 0), -(B[1202] || 0)));
+      else detail.push(row(l.line_name, A[l.line_code] || 0, B[l.line_code] || 0));
     }
-    if (ls.length > 1) row(totalName || `סה"כ ${ls[0].section_name}`, sum(A, ls.map(l => l.line_code)), sum(B, ls.map(l => l.line_code)), true);
+    const total = ls.length > 1
+      ? row(totalName || `סה"כ ${ls[0].section_name}`, sum(A, ls.map(l => l.line_code)), sum(B, ls.map(l => l.line_code)), true)
+      : null;
+    blocks.push({ type: 'group', label: ls[0].section_name, total, lines: detail });
   };
   section('CA');
   section('FA', 'סה"כ רכוש קבוע, נטו');
-  row('סה"כ נכסים', totA, totB, true);
+  totalRow('סה"כ נכסים', totA, totB);
   section('CL');
   section('LL');
   section('EQ');
-  row('סה"כ התחייבויות והון עצמי', leA, leB, true);
+  totalRow('סה"כ התחייבויות והון עצמי', leA, leB);
 
   const aLabel = monthEndLabel(a.to), bLabel = monthEndLabel(b.to);
   const ca = v => sum(v, codesOf('CA')), cl = v => sum(v, codesOf('CL')), eq = v => sum(v, codesOf('EQ'));
@@ -437,6 +483,7 @@ async function balanceSheet(pool, a, b) {
     title: `מאזן ליום ${aLabel} מול ${bLabel}`,
     columns: ['סעיף', `${aLabel} (₪)`, `% מסה"כ נכסים ${aLabel}`, `${bLabel} (₪)`, `% מסה"כ נכסים ${bLabel}`, 'הפרש (₪)', 'שינוי %'],
     rows: out,
+    blocks,
     highlights: {
       total_assets: { a: Math.round(totA), b: Math.round(totB), change: fmtChange(totA, totB) },
       cash: { a: Math.round(A[1101]), b: Math.round(B[1101]) },
@@ -562,6 +609,10 @@ async function getFinanceReport(params = {}, pool = getPool()) {
     title: r.title,
     periods: { a: a.label, b: b.label, data_closed_through: periodLabel(range.last, range.last) },
     report_markdown: `**${r.title}**\n\n${markdownTable(r.columns, r.rows)}`,
+    // The same report as structure, for a surface that can render a statement
+    // rather than a flat table (the chat's finance card, task #116). Callers
+    // that only want the table keep using `report_markdown` and ignore this.
+    view: { columns: r.columns, blocks: r.blocks || deriveBlocks(r.rows) },
     highlights: r.highlights,
   };
 }

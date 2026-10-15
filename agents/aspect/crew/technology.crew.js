@@ -362,10 +362,10 @@ Which period (\`preset\`): default \`last_month_vs_last_year\` (the last closed 
 
 How to answer:
 0. If the result has a \`notice\` (e.g. the month asked for is not closed yet and an earlier one is shown), say that in one sentence first. If the result has \`success: false\`, explain its \`message\` in plain Hebrew and offer what is available — never fill the gap with numbers of your own.
-1. Paste \`report_markdown\` into your reply EXACTLY as returned — every row, every number, same order, same formatting. Do not round, re-type, shorten or add rows.
-2. Then 2-4 short bullets of insight, using ONLY numbers that appear in the report or in \`highlights\`.
+1. THE REPORT IS ALREADY ON SCREEN. It renders under your reply as a proper statement — section totals the user opens to see the detail lines. Do NOT write the table, do NOT list its rows, do NOT repeat section totals one by one. You are writing the commentary that goes WITH a report the user is already looking at.
+2. Open with ONE short sentence naming the report and the two periods it compares, then 2-4 short bullets of insight, using ONLY numbers that appear in \`highlights\`.
 3. End with one short suggestion of the next report (e.g. פירוק שורה לפי סניף, השוואה מתחילת השנה, רווחיות סניפים).
-Finance reports are in Hebrew — write the whole answer in Hebrew. Do NOT call \`present_table\` for a finance report: the table is already in your reply.`,
+Finance reports are in Hebrew — write the whole answer in Hebrew. Do NOT call \`present_table\` for a finance report: the report is already rendered for the user.`,
 
       // gpt-5.6-terra, not Sol (plain 'gpt-5.6'): this demo crew has no DB and
       // just narrates + fabricates a demo table, so Sol's full reasoning budget
@@ -379,7 +379,7 @@ Finance reports are in Hebrew — write the whole answer in Hebrew. Do NOT call 
       tools: [
         {
           name: 'get_finance_report',
-          description: 'TechZone financial statements from the company books (task #112). Returns a finished Hebrew report table in `report_markdown` — paste it into the reply exactly as returned — plus `highlights` for commentary. Use for every profit-and-loss, expense, cost-of-sales, branch-profitability, balance-sheet or cash-flow question; never invent finance numbers.',
+          description: 'TechZone financial statements from the company books (task #112). The report is RENDERED FOR THE USER automatically as a collapsible statement under your reply — you get `title`, `periods` and `highlights` to write commentary from, and you never write the table yourself. Use for every profit-and-loss, expense, cost-of-sales, branch-profitability, balance-sheet or cash-flow question; never invent finance numbers.',
           parameters: {
             type: 'object',
             properties: {
@@ -394,7 +394,32 @@ Finance reports are in Hebrew — write the whole answer in Hebrew. Do NOT call 
             },
             required: ['report'],
           },
-          handler: async (params) => getFinanceReport(params),
+          handler: async (params) => {
+            const r = await getFinanceReport(params);
+            if (!r.success || !r.view) return r;
+            // The table itself is deliberately kept OUT of the model's context:
+            // `_`-prefixed keys are stripped by every provider, so the report
+            // reaches the user through the card and cannot be re-typed,
+            // rounded or half-pasted on the way (task #116). The model keeps
+            // the title, the periods and `highlights` to comment from.
+            const { view, report_markdown: _markdown, ...rest } = r;
+            return {
+              ...rest,
+              report_rendered: true,
+              _chatAction: {
+                kind: 'finance.report',
+                module: 'finance',
+                datasetId: 'aspect',
+                payload: {
+                  title: r.title,
+                  periods: r.periods,
+                  notice: r.notice || null,
+                  columns: view.columns,
+                  blocks: view.blocks,
+                },
+              },
+            };
+          },
         },
         {
           name: 'present_table',

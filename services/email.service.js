@@ -9,7 +9,7 @@ const transporter = nodemailer.createTransport({
 });
 
 async function sendLybiContactEmail({ name, email, company, message }) {
-  const recipients = 'noa@freeda.ai, noa@lybi.ai';
+  const recipients = 'noa@lybi.ai, hila@lybi.ai';
 
   const text = [
     `New contact form submission from Lybi landing page`,
@@ -23,6 +23,7 @@ async function sendLybiContactEmail({ name, email, company, message }) {
   await transporter.sendMail({
     from: `"Lybi Contact" <${process.env.GMAIL_USER}>`,
     to: recipients,
+    replyTo: email,
     subject: `New contact: ${name}`,
     text,
   });

@@ -189,6 +189,11 @@ app.use('/api/modules', require('./modules/routes/modules.routes'));
 // client from the admin Modules tab). See docs/features/otto.md.
 app.use('/api/otto', require('./otto/routes/otto.routes'));
 
+// The Aspect DEMO's financial statements as structure, for the Apps screens
+// that draw them like a company report (task #116). Read-only, and hardcoded
+// to the demo's own schema — no other client can reach it.
+app.use('/api/aspect-finance', require('./agents/aspect/finance.routes'));
+
 // "Build with your own AI" (task #96) — the door a client's own AI tool reads
 // to build Intelligence Center apps on Otto's engine. Outside /api because
 // people paste this URL; per-client signed token, gated on module
