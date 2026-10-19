@@ -138,10 +138,9 @@ async function verify(idToken) {
  * This is what permits a sign-in at all, by either method, and the role it
  * carries is the role the person signs in as.
  *
- * Grants are added ahead of time, one address at a time. A grant with no tenant
- * spans every agent — that is us, not a customer — and a grant for a specific
- * agent wins over it, so a person can be an admin on one client and an ordinary
- * user everywhere else.
+ * One account per login, added ahead of time, opening the projects listed in
+ * `tenants` — or every project when that is NULL (us, not a customer). One
+ * password and one admin mark for all of them.
  */
 async function grantFor(email, tenant) {
   const [grant] = await db.getDrizzle()
@@ -150,9 +149,8 @@ async function grantFor(email, tenant) {
     .where(and(
       eq(allowedEmails.email, email),
       isNull(allowedEmails.revokedAt),
-      or(eq(allowedEmails.tenant, tenant), isNull(allowedEmails.tenant)),
+      or(isNull(allowedEmails.tenants), sql`${tenant} = ANY(${allowedEmails.tenants})`),
     ))
-    .orderBy(sql`${allowedEmails.tenant} NULLS LAST`)
     .limit(1);
 
   return grant || null;

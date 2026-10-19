@@ -76,7 +76,7 @@ async function run() {
 
   // --- invitations ------------------------------------------------------------
   await drizzle.insert(allowedEmails)
-    .values({ email: INVITED, tenant: AGENT, role: 'admin', invitedBy: 'verification' });
+    .values({ email: INVITED, tenants: [AGENT], role: 'admin', invitedBy: 'verification' });
 
   const invited = await signin.grantFor(INVITED, AGENT);
   assert.strictEqual(invited.role, 'admin');
@@ -91,7 +91,7 @@ async function run() {
   // --- password sign-in --------------------------------------------------------
   await drizzle.insert(allowedEmails).values({
     email: WITH_PASSWORD,
-    tenant: AGENT,
+    tenants: [AGENT, 'hypertoy'],
     role: 'user',
     invitedBy: 'verification',
     passwordHash: await passwords.hash(SECRET),
@@ -107,6 +107,15 @@ async function run() {
   const again = await signin.signInWithPassword(WITH_PASSWORD, SECRET, AGENT);
   assert.strictEqual(again.user.id, signedIn.user.id);
   ok('signing in twice reuses the same user rather than making a second');
+
+  // One account, several projects, one password.
+  assert.ok(await signin.signInWithPassword(WITH_PASSWORD, SECRET, 'hypertoy'));
+  await assert.rejects(
+    () => signin.signInWithPassword(WITH_PASSWORD, SECRET, 'zolstock'),
+    e => e.name === 'AuthError' && e.code === 403,
+    'a project not on the account',
+  );
+  ok('one account opens each of its projects with the same password, and no other');
 
   // Every failure answers identically, so the form cannot be used to work out
   // which addresses exist.
@@ -159,11 +168,11 @@ async function run() {
 
   // --- global grants ----------------------------------------------------------
   await drizzle.insert(allowedEmails)
-    .values({ email: STRANGER, tenant: null, role: 'user', invitedBy: 'verification' });
+    .values({ email: STRANGER, tenants: null, role: 'user', invitedBy: 'verification' });
   for (const agent of [AGENT, 'zolstock', 'hypertoy']) {
     assert.ok(await signin.grantFor(STRANGER, agent), `global grant should work on ${agent}`);
   }
-  ok('a grant with no tenant works on every agent');
+  ok('an account with no project list works on every project');
 
   // --- anon → account: Intelligence reports move with the person ---------------
   const insightsStore = require('../../insights/services/insights-store.service');

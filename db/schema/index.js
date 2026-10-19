@@ -53,8 +53,10 @@ const users = pgTable('users', {
 const allowedEmails = pgTable('allowed_emails', {
   id:        serial('id').primaryKey(),
   email:     varchar('email', { length: 255 }).notNull(),
-  // The agent slug. NULL grants access across every agent - that is us.
-  tenant:    varchar('tenant', { length: 100 }),
+  // The projects (agent slugs) this account opens. NULL = every project - that
+  // is us. One row per login (task #113, migration 061); the old single
+  // `tenant` column is no longer read.
+  tenants:   text('tenants').array(),
   role:      varchar('role', { length: 20 }).default('user').notNull(),
   invitedBy: varchar('invited_by', { length: 255 }),
   note:      text('note'),

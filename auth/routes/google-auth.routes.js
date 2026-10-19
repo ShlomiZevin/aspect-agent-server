@@ -7,7 +7,7 @@
  *
  *   GET    /api/auth/signin/allowed?tenant=   list accounts
  *   POST   /api/auth/signin/allowed           add an account
- *   PUT    /api/auth/signin/allowed/:id       change admin access / project
+ *   PUT    /api/auth/signin/allowed/:id       change admin access / projects
  *   PUT    /api/auth/signin/allowed/:id/password  set or clear one
  *   DELETE /api/auth/signin/allowed/:id       revoke one
  *
@@ -19,7 +19,7 @@
  * who has been invited — that list is exactly what an attacker would want.
  */
 const express = require('express');
-const { and, desc, eq, isNull, or } = require('drizzle-orm');
+const { desc, eq, isNull, or, sql } = require('drizzle-orm');
 
 const db = require('../../services/db.pg');
 const { allowedEmails } = require('../../db/schema');
@@ -103,8 +103,8 @@ admin.get('/', handle(async (req, res) => {
     .select()
     .from(allowedEmails)
     .where(tenant
-      // A global grant applies here too, so it belongs in this agent's list.
-      ? or(eq(allowedEmails.tenant, tenant), isNull(allowedEmails.tenant))
+      // An all-projects account opens this one too, so it belongs in its list.
+      ? or(isNull(allowedEmails.tenants), sql`${tenant} = ANY(${allowedEmails.tenants})`)
       : undefined)
     .orderBy(desc(allowedEmails.createdAt));
 
@@ -130,20 +130,21 @@ admin.post('/', handle(async (req, res) => {
 
   const drizzle = db.getDrizzle();
 
-  // Re-inviting someone who was revoked brings them back rather than failing on
-  // the unique index, which is what whoever typed the address meant.
+  // One account per login. Adding a login that already exists adds this
+  // project to it (and brings it back if it was revoked) — which is what
+  // whoever typed it on this project's page meant.
   const [existing] = await drizzle
     .select().from(allowedEmails)
-    .where(and(
-      eq(allowedEmails.email, clean),
-      tenant ? eq(allowedEmails.tenant, tenant) : isNull(allowedEmails.tenant),
-    ))
+    .where(eq(allowedEmails.email, clean))
     .limit(1);
 
   if (existing) {
+    const tenants = existing.tenants === null || !tenant
+      ? existing.tenants
+      : Array.from(new Set([...existing.tenants, tenant]));
     const [revived] = await drizzle
       .update(allowedEmails)
-      .set({ revokedAt: null, role: role || existing.role, note: note ?? existing.note })
+      .set({ revokedAt: null, tenants, role: role || existing.role, note: note ?? existing.note })
       .where(eq(allowedEmails.id, existing.id))
       .returning();
     return res.status(200).json({ allowed: strip(revived) });
@@ -163,7 +164,7 @@ admin.post('/', handle(async (req, res) => {
     .insert(allowedEmails)
     .values({
       email: clean,
-      tenant: tenant || null,
+      tenants: tenant ? [tenant] : null,
       role: role || 'user',
       note: note || null,
       invitedBy: invitedBy || null,
@@ -176,9 +177,8 @@ admin.post('/', handle(async (req, res) => {
 }));
 
 /**
- * Changes an account's admin access (`role`) and/or its project (`tenant`;
- * null = every project). Moving onto a project where the same login already
- * has an account is refused rather than silently merged.
+ * Changes an account's admin access (`role`) and/or its projects (`tenants`:
+ * a non-empty list of project slugs, or null = every project).
  */
 admin.put('/:id', handle(async (req, res) => {
   const patch = {};
@@ -188,23 +188,22 @@ admin.put('/:id', handle(async (req, res) => {
     }
     patch.role = req.body.role;
   }
-  if (req.body.tenant !== undefined) patch.tenant = req.body.tenant || null;
+  if (req.body.tenants !== undefined) {
+    const t = req.body.tenants;
+    if (t !== null && !(Array.isArray(t) && t.length && t.every(x => typeof x === 'string' && x.trim()))) {
+      return res.status(400).json({ error: 'Pick at least one project, or all projects' });
+    }
+    patch.tenants = t === null ? null : Array.from(new Set(t.map(x => x.trim())));
+  }
   if (!Object.keys(patch).length) return res.status(400).json({ error: 'Nothing to change' });
 
-  try {
-    const [updated] = await db.getDrizzle()
-      .update(allowedEmails)
-      .set(patch)
-      .where(eq(allowedEmails.id, Number(req.params.id)))
-      .returning();
-    if (!updated) return res.status(404).json({ error: 'No such account' });
-    res.json({ allowed: strip(updated) });
-  } catch (err) {
-    if ((err.code || err.cause?.code) === '23505') {
-      return res.status(409).json({ error: 'This login already has an account for that project' });
-    }
-    throw err;
-  }
+  const [updated] = await db.getDrizzle()
+    .update(allowedEmails)
+    .set(patch)
+    .where(eq(allowedEmails.id, Number(req.params.id)))
+    .returning();
+  if (!updated) return res.status(404).json({ error: 'No such account' });
+  res.json({ allowed: strip(updated) });
 }));
 
 /** Sets or clears one invitation's password. */
