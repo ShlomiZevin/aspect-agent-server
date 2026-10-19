@@ -18,10 +18,11 @@ const registry = require('../../modules/registry');
  * invitation lookup, revocation, and password hashing — because that is where
  * an access decision gets made wrong quietly.
  *
- * Note the two ways in are not symmetric: Google is open (a verified account
- * signs in with no invitation, an invitation only supplies the role), a
- * password works only for an invited address. The invitation lookup below is
- * therefore the whole gate for passwords and role-only for Google.
+ * Both ways in need an invitation for the project (task #113 made Google
+ * sign-in only, no longer registration), and both work whether or not the
+ * module is on — the module decides whether an agent's chat needs sign-in, the
+ * Intelligence Center always does. The invitation lookup below is therefore
+ * the whole gate for both.
  *
  *   node verification/google-auth/test-google-auth.js
  *
@@ -60,17 +61,13 @@ async function run() {
   assert.strictEqual((await signin.policyFor(AGENT)).live, false);
   ok('not live until it is switched on');
 
-  for (const [name, call] of [
-    ['google', () => signin.signInWithGoogle('any-token', AGENT)],
-    ['password', () => signin.signInWithPassword(INVITED, SECRET, AGENT)],
-  ]) {
-    await assert.rejects(
-      call,
-      e => e.name === 'AuthError' && e.code === 403 && /not enabled/.test(e.message),
-      `${name} sign-in must be refused before anything else while the module is off`,
-    );
-  }
-  ok('both ways in are refused while the module is off, before any credential is read');
+  // Off no longer means "nobody may sign in" — it still needs an invitation.
+  await assert.rejects(
+    () => signin.signInWithPassword(STRANGER, SECRET, AGENT),
+    e => e.name === 'AuthError' && e.code === 403 && /not been given access/.test(e.message),
+    'an uninvited address must be refused while the module is off',
+  );
+  ok('with the module off, sign-in is still possible but an uninvited address is refused');
 
   // --- switched on ------------------------------------------------------------
   const live = await moduleService.setEnabled(AGENT, 'google-auth', true, 'verification');

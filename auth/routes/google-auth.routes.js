@@ -66,9 +66,11 @@ router.get('/config', handle(async (req, res) => {
     // the setting allows it. Whether it can complete a sign-in is `clientId`:
     // without a configured OAuth client the UI shows it disabled rather than
     // hiding the option and looking like it was never built.
-    google: live && methods !== 'password',
-    password: live && methods !== 'google',
-    clientId: live && signin.isConfigured() ? signin.CLIENT_ID : '',
+    // Not tied to `enabled`: the Intelligence Center needs sign-in for every
+    // project, module or not (task #113).
+    google: methods !== 'password',
+    password: methods !== 'google',
+    clientId: signin.isConfigured() ? signin.CLIENT_ID : '',
   });
 }));
 
@@ -113,8 +115,12 @@ admin.post('/', handle(async (req, res) => {
 
   // Not a full RFC check — just enough to catch a typo before it becomes a
   // grant nobody can use and nobody notices is broken.
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) {
-    return res.status(400).json({ error: 'That does not look like an email address' });
+  // A customer's own user need not be an address — e.g. `thereforyou.aspect.com`
+  // (task #113); it signs in with its password.
+  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean);
+  const isUserName = /^[a-z0-9][a-z0-9._-]{2,63}$/.test(clean);
+  if (!isEmail && !isUserName) {
+    return res.status(400).json({ error: 'Use an email address or a user name (letters, digits, dots, dashes)' });
   }
   if (role && !['user', 'admin'].includes(role)) {
     return res.status(400).json({ error: 'role must be user or admin' });

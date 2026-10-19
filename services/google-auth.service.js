@@ -2,11 +2,9 @@
  * Sign-in: proving who someone is, deciding whether they may in, and handing
  * back the session the browser then holds.
  *
- * Two ways to prove it, and they are NOT symmetric:
- *   - a Google identity is open — signing in with Google is how a person
- *     registers, no invitation needed;
- *   - an email and a password work only for addresses added ahead of time on
- *     the Access page.
+ * Two ways to prove it — Google or a login + password — and both need an
+ * account added ahead of time for this project on the Access page (task #113:
+ * Google used to be open registration; now it is sign-in only).
  * `toSession` is the one place that turns either proven identity into a
  * platform user, so anon-merge, history read-back and role handling cannot
  * drift apart between them.
@@ -61,8 +59,8 @@ class AuthError extends Error {
  *                      history to an account so it follows them between devices.
  *
  * `purpose` changes only whether the chat is usable before sign-in, never who
- * may sign in: Google is open to anyone either way, a password still needs an
- * invitation either way.
+ * may sign in: either way, Google and a password both need an account for
+ * this project.
  *
  * @returns {Promise<{live:boolean, methods:'both'|'google'|'password', purpose:'gate'|'sync'}>}
  */
@@ -80,10 +78,6 @@ async function policyFor(tenant) {
 /** @returns {boolean} whether the server can accept Google logins at all. */
 function isConfigured() {
   return Boolean(CLIENT_ID);
-}
-
-function assertLive(policy) {
-  if (!policy.live) throw new AuthError('Sign-in is not enabled for this agent', 403);
 }
 
 function assertMethod(policy, method) {
@@ -141,9 +135,8 @@ async function verify(idToken) {
 /**
  * The invitation for this email on this agent, or null.
  *
- * For a password sign-in this is what permits it at all. For a Google sign-in
- * it is consulted only for the role it carries — an invited address signs in as
- * the role it was invited as, everyone else as a plain 'user'.
+ * This is what permits a sign-in at all, by either method, and the role it
+ * carries is the role the person signs in as.
  *
  * Grants are added ahead of time, one address at a time. A grant with no tenant
  * spans every agent — that is us, not a customer — and a grant for a specific
@@ -168,31 +161,32 @@ async function grantFor(email, tenant) {
 // ── the two ways in ─────────────────────────────────────────────────────────
 
 /**
- * Sign in with Google — this IS the registration path.
+ * Sign in with Google — sign-in only, NOT registration (task #113).
  *
- * Anyone with a verified Google account may sign in; there is no invitation to
- * hold. The user row keys on `google_<sub>`, not on the email: Google subjects
- * are stable and addresses are not, and someone who changes their address
- * should keep their history rather than arrive as a stranger.
+ * The address needs a grant for this project (or a global one — us), exactly
+ * like a password; without one it gets the same refusal. Until #113 Google was
+ * open registration, which let any Gmail into any customer's Intelligence
+ * Center. The user row keys on `google_<sub>`, not on the email: Google
+ * subjects are stable and addresses are not, and someone who changes their
+ * address should keep their history rather than arrive as a stranger.
  *
- * An invitation, if one exists for the address, is consulted only for its role;
- * without one the person signs in as a plain 'user'. `purpose` ('gate' vs
- * 'sync') decides whether the chat works before this happens, not whether it
- * may happen.
+ * Works whether or not the Sign-In module is on for the project: the module's
+ * `purpose` decides whether an agent's chat needs sign-in, not whether signing
+ * in is possible — the Intelligence Center always needs it.
  */
 async function signInWithGoogle(idToken, tenant) {
   const policy = await policyFor(tenant);
-  assertLive(policy);
   assertMethod(policy, 'google');
 
   const identity = await verify(idToken);
   const grant = await grantFor(identity.email, tenant);
+  if (!grant) throw new AuthError(DENIED, 403);
 
   const user = await upsertUser({
     externalId: `google_${identity.sub}`,
     email: identity.email,
     name: identity.name,
-    role: grant?.role || 'user',
+    role: grant.role,
     tenant,
   });
 
@@ -209,7 +203,6 @@ async function signInWithGoogle(idToken, tenant) {
  */
 async function signInWithPassword(email, password, tenant) {
   const policy = await policyFor(tenant);
-  assertLive(policy);
   assertMethod(policy, 'password');
 
   const clean = String(email ?? '').trim().toLowerCase();
