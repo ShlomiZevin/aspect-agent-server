@@ -5,10 +5,14 @@
  *   POST /api/auth/signin/google           { idToken, tenant }
  *   POST /api/auth/signin/password         { email, password, tenant }
  *
- *   GET    /api/auth/signin/allowed?tenant=   list invitations   (super-admin)
- *   POST   /api/auth/signin/allowed           invite an email    (super-admin)
- *   PUT    /api/auth/signin/allowed/:id/password  set or clear one (super-admin)
- *   DELETE /api/auth/signin/allowed/:id       revoke one         (super-admin)
+ *   GET    /api/auth/signin/allowed?tenant=   list accounts
+ *   POST   /api/auth/signin/allowed           add an account
+ *   PUT    /api/auth/signin/allowed/:id       change admin access / project
+ *   PUT    /api/auth/signin/allowed/:id/password  set or clear one
+ *   DELETE /api/auth/signin/allowed/:id       revoke one
+ *
+ * The account routes sit behind the admin, which is itself behind sign-in with
+ * admin access (task #113) — no separate super-admin key any more.
  *
  * The config route is public and deliberately thin: it says which ways in this
  * client offers and which OAuth client to draw the button for. It must not leak
@@ -21,7 +25,6 @@ const db = require('../../services/db.pg');
 const { allowedEmails } = require('../../db/schema');
 const signin = require('../../services/google-auth.service');
 const passwords = require('../../services/password.service');
-const { requireSuperAdmin } = require('../../services/super-admin');
 
 const router = express.Router();
 
@@ -91,7 +94,6 @@ router.post('/password', handle(async (req, res) => {
 // --- invitations (super-admin) --------------------------------------------------
 
 const admin = express.Router();
-admin.use(requireSuperAdmin);
 
 admin.get('/', handle(async (req, res) => {
   const tenant = req.query.tenant ? String(req.query.tenant) : null;
@@ -171,6 +173,38 @@ admin.post('/', handle(async (req, res) => {
     .returning();
 
   res.status(201).json({ allowed: strip(created), password: plaintext });
+}));
+
+/**
+ * Changes an account's admin access (`role`) and/or its project (`tenant`;
+ * null = every project). Moving onto a project where the same login already
+ * has an account is refused rather than silently merged.
+ */
+admin.put('/:id', handle(async (req, res) => {
+  const patch = {};
+  if (req.body.role !== undefined) {
+    if (!['user', 'admin'].includes(req.body.role)) {
+      return res.status(400).json({ error: 'role must be user or admin' });
+    }
+    patch.role = req.body.role;
+  }
+  if (req.body.tenant !== undefined) patch.tenant = req.body.tenant || null;
+  if (!Object.keys(patch).length) return res.status(400).json({ error: 'Nothing to change' });
+
+  try {
+    const [updated] = await db.getDrizzle()
+      .update(allowedEmails)
+      .set(patch)
+      .where(eq(allowedEmails.id, Number(req.params.id)))
+      .returning();
+    if (!updated) return res.status(404).json({ error: 'No such account' });
+    res.json({ allowed: strip(updated) });
+  } catch (err) {
+    if ((err.code || err.cause?.code) === '23505') {
+      return res.status(409).json({ error: 'This login already has an account for that project' });
+    }
+    throw err;
+  }
 }));
 
 /** Sets or clears one invitation's password. */
