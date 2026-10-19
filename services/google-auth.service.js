@@ -32,7 +32,7 @@ const CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || '';
 // One shared refusal for every reason access is denied. "No such account" vs
 // "wrong password" tells whoever is guessing which half they got right and
 // turns the form into a way to enumerate who has access.
-const DENIED = 'That account has not been given access';
+const DENIED = 'Incorrect login or password';
 
 // A real scrypt hash of a value nothing will ever match, so the password check
 // costs the same whether or not the account exists (see authenticateWithPassword).

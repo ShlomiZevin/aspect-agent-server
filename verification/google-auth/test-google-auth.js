@@ -64,7 +64,7 @@ async function run() {
   // Off no longer means "nobody may sign in" — it still needs an invitation.
   await assert.rejects(
     () => signin.signInWithPassword(STRANGER, SECRET, AGENT),
-    e => e.name === 'AuthError' && e.code === 403 && /not been given access/.test(e.message),
+    e => e.name === 'AuthError' && e.code === 403 && e.message === 'Incorrect login or password',
     'an uninvited address must be refused while the module is off',
   );
   ok('with the module off, sign-in is still possible but an uninvited address is refused');
