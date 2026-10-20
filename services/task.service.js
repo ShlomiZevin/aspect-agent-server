@@ -1,6 +1,6 @@
 const db = require('./db.pg');
 const { tasks, taskAssignees } = require('../db/schema');
-const { eq, desc, and, or, gt, lt, ilike, isNull, notInArray, sql } = require('drizzle-orm');
+const { eq, desc, and, or, gt, lt, ilike, isNull, isNotNull, notInArray, sql } = require('drizzle-orm');
 const notificationsService = require('./notifications.service');
 const boardEventsService = require('./boardEvents.service');
 
@@ -386,6 +386,32 @@ class TaskService {
       .where(sql`lower(${taskAssignees.name}) = lower(${identity})`)
       .limit(1);
     return person || null;
+  }
+
+  /**
+   * Release history: every task ever released, newest first — the "all updates"
+   * tab of What's New, so a release note can be read again after "Got it".
+   * Same filters and fields as getWhatsNew, without the watermark.
+   */
+  async getReleaseHistory({ limit } = {}) {
+    if (!this.drizzle) this.initialize();
+    const max = Math.min(Math.max(Number(limit) || 300, 1), 1000);
+    return this.drizzle
+      .select({
+        id: tasks.id,
+        title: tasks.title,
+        whatsNewHeadline: tasks.whatsNewHeadline,
+        whatChanged: tasks.whatChanged,
+        deployedAt: tasks.deployedAt,
+      })
+      .from(tasks)
+      .where(and(
+        isNotNull(tasks.deployedAt),
+        eq(tasks.isDraft, false),
+        notInArray(tasks.type, NON_RELEASE_TYPES),
+      ))
+      .orderBy(desc(tasks.deployedAt))
+      .limit(max);
   }
 
   /**

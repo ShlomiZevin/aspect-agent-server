@@ -4944,6 +4944,16 @@ app.get('/api/tasks/whats-new', async (req, res) => {
   }
 });
 
+// Release history — every released task, newest first (What's New → "all updates")
+app.get('/api/tasks/releases', async (req, res) => {
+  try {
+    res.json({ tasks: await taskService.getReleaseHistory({ limit: req.query.limit }) });
+  } catch (err) {
+    console.error('Failed to get release history:', err);
+    res.status(500).json({ error: 'Failed to get release history' });
+  }
+});
+
 // Dismiss a deployed task from "What's New"
 app.post('/api/tasks/:id/dismiss-deployed', async (req, res) => {
   try {
