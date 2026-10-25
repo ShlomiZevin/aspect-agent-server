@@ -63,7 +63,11 @@ const alfredTools = require('../../alfred/services/alfredTools');
 const { exportConversation } = require('../services/conversationExport');
 const mcpConversations = require('../services/mcpConversations');
 const simulationJobs = require('../services/simulationJobs');
+const loadTests = require('../services/loadTests');
+const errorCenter = require('../services/errorCenter');
+const { publicBaseOf } = require('./publicBase');
 const modelsService = require('../../services/models.service');
+const environments = require('../environments');
 
 /**
  * The team's shared knowledge repository (task #893) — notes, recipes and
@@ -185,6 +189,7 @@ You are being asked to help someone build, change and debug an agent on
 Lybi. This page is everything you need to start. Read it, then go and
 look things up.
 
+${environments.environmentsSection(origin)}
 ## What an agent is
 
 An agent is a JSON body stored on our server — not code. It has fields it
@@ -552,6 +557,61 @@ Simulations, each one with its setup — who released it, the version, the
 model playing the user — and the conversation as it grows. One call is
 one conversation; for several, release several.
 
+**Load test — many conversations at once**
+
+To see how the agent holds up when several people talk to it at the same
+time. One call; the server first runs ONE conversation alone (the
+baseline), then all of them together, every turn through the public
+address like a real user, and compares the two. **Ask the person before
+starting one** — it spends real tokens. Show them the estimate first:
+
+\`\`\`
+POST ${base}/load-tests/estimate
+{ "agent": "<slug>", "conversations": 10 }
+→ { "usd": 0.41, "capUsd": 20, "overCap": false, "basis": "...", ... }
+
+POST ${base}/load-tests
+{ "name": "Noa", "agent": "<slug>", "conversations": 10,
+  "start": "together", "label": "10 at once after the prompt change" }
+→ { "id": 46, "status": "running", "phase": "baseline", ... }
+\`\`\`
+
+\`"conversations"\` 1–20. Every conversation sends the same fixed script —
+a default of five ordinary lines, or your own \`"lines"\` (up to 10) — so a
+slower turn means a slower server, not a different conversation. For a
+persona instead send \`"persona"\` (+ \`"goal"\`, \`"turns"\` up to 10,
+\`"model"\`). \`"start": "ramp"\` spreads the starts over a minute.
+\`"version"\` is \`active\` (default) or \`published\`. A run whose estimate
+is over $20 is refused; a running one stops when its real spend reaches $20.
+
+| To see | Fetch |
+|---|---|
+| How it went — the verdict ("10 at once: turns 1.35× slower, no errors"), baseline vs under load (median, slowest 5%), errors by kind, cost, this server's CPU / memory / database pool, and every conversation's turn times | \`${base}/load-tests/<id>\` |
+| Every load test of an agent, newest first | \`${base}/agents/<slug>/load-tests\` |
+| Stop one (each conversation finishes its turn and takes no more) | \`POST ${base}/load-tests/<id>/stop\` with \`{ "name": "Noa" }\` |
+
+A run takes a few minutes; check back every half minute or so. The person
+can watch it in the Builder, Admin → Load tests, with a chart of turn time
+over the run. Each conversation of a run is an ordinary simulated
+conversation — read it at \`${base}/conversations/<conversationId>\`.
+
+**Errors — what went wrong in this agent's conversations**
+
+Every error on the conversation path — a whole turn, any add-on, a model
+call (rate limit, timeout, refusal), offline add-ons, triggers, Profiler,
+Live Brain, simulations — is kept for a month and grouped, so the same
+problem is one line with its count:
+
+| To see | Fetch |
+|---|---|
+| The agent's errors, one line per problem | \`${base}/agents/<slug>/errors\` — optional \`?status=new\`, \`&source=customer\` (or \`builder\`, \`simulation\`), \`&kind=model_rate_limit\`, \`&area=addon\`, \`&sort=frequent\` |
+| One problem: every time it happened, with the conversation and technical details | the \`details\` link on its line |
+
+Read only. A person marks a problem looking-at-it / handled / ignored in
+the Builder, Admin → Errors; a handled one that comes back shows as BACK.
+When a person says "something is broken" or a simulation or load test
+failed, look here first.
+
 **The user's next line, written for you**
 
 \`\`\`
@@ -710,6 +770,11 @@ that conversation yet" beats a confident guess every time.
 
 router.get('/', (req, res) => {
   sendText(res, entryDoc(urls(req)));
+});
+
+/** Which environment this is and the others — see builder/environments.js. */
+router.get('/environments', (req, res) => {
+  res.json(environments.environmentsJson(urls(req).origin));
 });
 
 // ─── Reading ───────────────────────────────────────────────────────
@@ -1649,6 +1714,152 @@ router.post('/simulate/user-reply', async (req, res) => {
     }));
   } catch (err) {
     simFail(res, err, 'write the user reply');
+  }
+});
+
+// ─── Load tests (task #902) — several simulations at once, one run ──
+
+const secs = ms => (ms == null ? '—' : `${(ms / 1000).toFixed(1)} s`);
+
+/** A run without its heavy parts — what an assistant reads. */
+function loadTestDigest(r) {
+  const baselineId = r.baseline ? r.baseline.jobId : null;
+  let n = 0;
+  return {
+    id: r.id, agent: r.agent, status: r.status, phase: r.phase, verdict: r.verdict,
+    label: r.label, by: r.by, version: r.version, start: r.start, kind: r.kind,
+    conversations: r.conversations, turnsEach: r.turnsEach, counts: r.counts,
+    baseline: r.baseline ? { timing: r.baseline.timing, errors: r.baseline.errors } : null,
+    underLoad: r.timing, slowdown: r.slowdown, turnsPerSecond: r.turnsPerSecond,
+    turnsDone: r.turnsDone, turnsPlanned: r.turnsPlanned,
+    errors: r.errors, errorsByKind: r.errorsByKind, addonFailures: r.addonFailures,
+    costUsd: r.costUsd, estimateUsd: r.estimate ? r.estimate.usd : null, capUsd: r.capUsd,
+    server: r.vitals, previous: r.previous, stopped: r.stopped, error: r.error,
+    createdAt: r.createdAt, finishedAt: r.finishedAt,
+    conversationsRun: r.jobs.map(j => ({
+      role: j.id === baselineId ? 'baseline' : `conversation ${++n}`,
+      conversationId: j.conversationId, status: j.status,
+      turnTimesMs: (j.timings || []).map(t => (t.ok ? t.ms : `failed (${t.kind || 'error'})`)),
+      ...(j.stopped ? { stopped: j.stopped } : {}), ...(j.error ? { error: j.error } : {}),
+    })),
+  };
+}
+
+function loadTestLine(r) {
+  const bits = [
+    `#${r.id}`, r.status, `"${r.label}"`, `${r.conversations} at once × ${r.turnsEach} turns`,
+    r.timing ? `median ${secs(r.timing.medianMs)}, slowest 5% ${secs(r.timing.p95Ms)}` : '',
+    r.verdict || '', r.costUsd != null ? `cost $${r.costUsd}` : '', r.by ? `by ${r.by}` : '',
+  ].filter(Boolean);
+  return `- ${bits.join(' · ')}`;
+}
+
+const agentOf = b => String(b.agent || b.agentSlug || b.slug || '').trim();
+
+router.post('/load-tests/estimate', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const slug = agentOf(b);
+    if (!slug) return res.status(400).type('text/plain').send('Say which agent: { "agent": "<slug>" }. Fetch ../agents for the list.');
+    res.json(await loadTests.estimate({ slug, body: b }));
+  } catch (err) {
+    simFail(res, err, 'estimate the load test');
+  }
+});
+
+router.post('/load-tests', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const by = await resolvePerson(b.name);
+    if (!by) return unknownPerson(res, b.name);
+    const slug = agentOf(b);
+    if (!slug) return res.status(400).type('text/plain').send('Say which agent: { "agent": "<slug>" }. Fetch ../agents for the list.');
+    const run = await loadTests.releaseRun({ slug, by, body: b, publicBase: publicBaseOf(req) });
+    res.status(201).json(loadTestDigest(run));
+  } catch (err) {
+    simFail(res, err, 'release the load test');
+  }
+});
+
+router.get('/load-tests/:id', async (req, res) => {
+  try {
+    res.json(loadTestDigest(await loadTests.getRun(req.params.id)));
+  } catch (err) {
+    simFail(res, err, 'read the load test');
+  }
+});
+
+router.post('/load-tests/:id/stop', async (req, res) => {
+  try {
+    const by = await resolvePerson((req.body || {}).name);
+    if (!by) return unknownPerson(res, (req.body || {}).name);
+    res.json(loadTestDigest(await loadTests.stopRun(req.params.id, by)));
+  } catch (err) {
+    simFail(res, err, 'stop the load test');
+  }
+});
+
+router.get('/agents/:slug/load-tests', async (req, res) => {
+  try {
+    const runs = await loadTests.listRuns({ slug: req.params.slug, limit: req.query.limit });
+    sendText(res, runs.length
+      ? [`Load tests of "${req.params.slug}", newest first:`, ...runs.map(loadTestLine)].join('\n')
+      : `No load tests have been run on "${req.params.slug}" yet.`);
+  } catch (err) {
+    simFail(res, err, 'list the load tests');
+  }
+});
+
+// ─── The error center (task #903) — read only ──────────────────────
+
+router.get('/agents/:slug/errors', async (req, res) => {
+  try {
+    const { kind, area, source, status, sort } = req.query;
+    const groups = await errorCenter.listGroups({ slug: req.params.slug, kind, area, source, status, sort, limit: req.query.limit || 100 });
+    if (!groups.length) return sendText(res, `No errors for "${req.params.slug}" in the last month${kind || area || source || status ? ' that match' : ''}.`);
+    const line = g => {
+      const from = Object.entries(g.sources).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(', ');
+      const st = g.reopened ? 'BACK (was handled)' : g.status;
+      return `- [${st}] ×${g.count} in ${g.conversations} conversation(s) · ${g.area}${g.code ? '/' + g.code : ''} · ${g.kind}`
+        + ` · last ${new Date(g.lastSeen).toISOString()} · first ${new Date(g.firstSeen).toISOString()}`
+        + (from ? ` · from ${from}` : '')
+        + `\n  ${g.message.replace(/\s+/g, ' ').slice(0, 300)}`
+        + (g.note ? `\n  note: ${g.note.replace(/\s+/g, ' ')}` : '')
+        + `\n  details: ${urls(req).base}/agents/${encodeURIComponent(req.params.slug)}/errors/${g.fingerprint}`;
+    };
+    sendText(res, [
+      `Errors of "${req.params.slug}" (last month), ${sort === 'frequent' ? 'most frequent' : 'newest'} first. Each line is one problem with every repeat counted on it.`,
+      '', ...groups.map(line),
+    ].join('\n'));
+  } catch (err) {
+    simFail(res, err, 'list the errors');
+  }
+});
+
+router.get('/agents/:slug/errors/:fingerprint', async (req, res) => {
+  try {
+    const [g] = (await errorCenter.listGroups({ slug: req.params.slug, limit: 500 })).filter(x => x.fingerprint === req.params.fingerprint);
+    if (!g) return res.status(404).type('text/plain').send(`No error group ${req.params.fingerprint} for "${req.params.slug}" in the last month. Fetch ${urls(req).base}/agents/${encodeURIComponent(req.params.slug)}/errors for the list.`);
+    const occ = await errorCenter.listOccurrences({ slug: req.params.slug, fingerprint: g.fingerprint, limit: 50 });
+    sendText(res, [
+      `${g.message}`,
+      '',
+      `Where: ${g.area}${g.code ? ' / ' + g.code : ''} · kind: ${g.kind} · ×${g.count} in ${g.conversations} conversation(s)`,
+      `Status: ${g.reopened ? 'back — it was marked handled' : g.status}${g.note ? ` · note: ${g.note}` : ''}${g.statusBy ? ` · by ${g.statusBy}` : ''}`,
+      `First seen ${new Date(g.firstSeen).toISOString()} · last seen ${new Date(g.lastSeen).toISOString()}`,
+      '',
+      `Occurrences, newest first (read a conversation at ${urls(req).base}/conversations/<id>):`,
+      ...occ.map(o => {
+        const d = { ...o.detail };
+        const stack = d.stack; delete d.stack;
+        return `- ${new Date(o.createdAt).toISOString()} · ${o.source || 'no conversation kind'} · conversation ${o.conversationId ?? '—'}`
+          + (o.messageId ? ` · reply message ${o.messageId}` : '')
+          + (Object.keys(d).length ? `\n  ${JSON.stringify(d)}` : '')
+          + (stack ? `\n  ${String(stack).split('\n').slice(0, 4).join('\n  ')}` : '');
+      }),
+    ].join('\n'));
+  } catch (err) {
+    simFail(res, err, 'read the error');
   }
 });
 

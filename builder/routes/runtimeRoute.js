@@ -21,6 +21,8 @@ const { agents, conversations, messages, users } = require('../../db/schema');
 const { runOnce, runProactive } = require('../runtime/BuilderRunner');
 const stopRegistry = require('../runtime/stopRegistry');
 const conversationPush = require('../../services/conversation-push.service');
+const errorCenter = require('../services/errorCenter');
+const errorRules = require('../services/errorRules');
 
 const router = express.Router({ mergeParams: true });
 
@@ -883,7 +885,7 @@ router.post('/:slug/conversations/:convId/proactive', async (req, res) => {
 
   try {
     const userId = await resolveUserId(ownerUserId);
-    const result = await runProactive({
+    const result = await errorCenter.withContext({ agentSlug: slug, conversationId: Number(convId), lane: 'trigger' }, () => runProactive({
       agentSlug: slug,
       ownerUserId,
       userId,
@@ -895,11 +897,14 @@ router.post('/:slug/conversations/:convId/proactive', async (req, res) => {
       overrideAgentBody,
       overrideCrewBody,
       emit,
-    });
+    }));
     emit('done', { totalMs: result.totalMs, outcome: result.outcome });
     res.end();
   } catch (err) {
     console.error('[builder] proactive test fire failed:', err);
+    if (!errorCenter.wasRecorded(err)) {
+      errorCenter.record(err, { area: 'trigger', code: 'proactive_failed', agentSlug: slug, conversationId: Number(convId), detail: { crewId, version } });
+    }
     emit('addon.error', { instanceId: null, error: { code: 'proactive_failed', message: err.message } });
     res.end();
   }
@@ -945,6 +950,8 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
     if (res.flush) res.flush();
   };
 
+  // The reply row of this turn, once reserved — the error center links to it.
+  let replyMessageId = null;
   try {
     const d = drizzle();
 
@@ -1014,6 +1021,7 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       role: 'assistant',
       content: '',
     }).returning();
+    replyMessageId = asstMsgPlaceholder.id;
 
     // Run the chain. BuilderRunner now owns the assistant message
     // update + `assistant.message` emit (between the blocking and
@@ -1027,7 +1035,8 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
     const stopHandle = stopRegistry.start(stopKey);
     let turn;
     try {
-      turn = await runOnce({
+      // Error center (#903): everything recorded during this turn knows its agent / conversation / reply.
+      turn = await errorCenter.withContext({ agentSlug: slug, conversationId: Number(convId), messageId: asstMsgPlaceholder.id }, () => runOnce({
         agentSlug: slug,
         ownerUserId,
         userId,
@@ -1042,7 +1051,7 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
         overrideCrewBodies,
         emit,
         stopKey,
-      });
+      }));
     } finally {
       stopRegistry.end(stopKey, stopHandle);
     }
@@ -1059,7 +1068,28 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
     res.end();
   } catch (err) {
     console.error('[builder] runtime POST failed:', err);
-    emit('addon.error', { instanceId: null, error: { code: 'runtime_failed', message: err.message } });
+    // Error center (#903): keep it — unless a deeper hook (add-on, model call)
+    // already did. Fire-and-forget; the reply below is unchanged.
+    if (!errorCenter.wasRecorded(err)) errorCenter.record(err, {
+      area: 'turn', code: 'runtime_failed',
+      agentSlug: slug, conversationId: Number(convId), messageId: replyMessageId,
+      detail: { version },
+    });
+    // Handling rule "tell the user nicely" (#903 step 7, errorRules.js): a
+    // CUSTOMER sees a polite sentence instead of the technical message. The
+    // Builder test chat and simulations keep the real message — their
+    // author needs it.
+    let shown = err.message;
+    try {
+      const [c] = await drizzle().select({ metadata: conversations.metadata }).from(conversations)
+        .where(eq(conversations.id, Number(convId))).limit(1);
+      if (c && c.metadata && c.metadata.kind === 'live') {
+        let kind = errorCenter.classify(err);
+        if (/^Failed to (stream|get)/.test(String(err.message)) && !kind.startsWith('model_')) kind = 'model_other';
+        shown = errorRules.userMessageFor(kind);
+      }
+    } catch { /* keep the original message */ }
+    emit('addon.error', { instanceId: null, error: { code: 'runtime_failed', message: shown } });
     res.end();
   }
 });

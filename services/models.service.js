@@ -37,7 +37,7 @@ const MODELS = [
 
   // ── OpenAI ──
   { id: 'gpt-5.6',       providerId: 'openai', name: 'GPT-5.6 Sol',   notes: 'Newest, recommended' },
-  { id: 'gpt-5.6-terra', providerId: 'openai', name: 'GPT-5.6 Terra', notes: 'Balanced — half price of Sol' },
+  { id: 'gpt-5.6-terra', providerId: 'openai', name: 'GPT-5.6 Terra', notes: 'Balanced — half price of Sol (default talker)' },
   { id: 'gpt-5.6-luna',  providerId: 'openai', name: 'GPT-5.6 Luna',  notes: 'Cheap & fast' },
   { id: 'gpt-5.5',      providerId: 'openai', name: 'GPT-5.5',      notes: 'Strong all-round' },
   { id: 'gpt-4o',       providerId: 'openai', name: 'GPT-4o',       notes: 'Balanced' },
@@ -49,7 +49,7 @@ const MODELS = [
 
   // ── Google ──
   { id: 'gemini-2.5-pro',   providerId: 'google', name: 'Gemini 2.5 Pro',   notes: 'Powerful, long context' },
-  { id: 'gemini-2.5-flash', providerId: 'google', name: 'Gemini 2.5 Flash', notes: 'Cheap & fast (default talker)' },
+  { id: 'gemini-2.5-flash', providerId: 'google', name: 'Gemini 2.5 Flash', notes: 'Cheap & fast — closed to NEW Gemini accounts (new environments cannot use it)' },
 ];
 
 const PROVIDERS = [

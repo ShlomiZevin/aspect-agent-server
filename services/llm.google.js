@@ -289,7 +289,10 @@ class GoogleService {
       return { text, usage };
     } catch (error) {
       console.error('❌ Google OneShot Error:', error.message);
-      throw new Error(`Failed to get Google response: ${error.message}`);
+      const err = new Error(`Failed to get Google response: ${error.message}`);
+      // Keep the provider's HTTP status (429 = rate limit) for the error center / retry.
+      err.status = error.status || error.statusCode || null;
+      throw err;
     }
   }
 

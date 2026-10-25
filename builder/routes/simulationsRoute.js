@@ -14,6 +14,7 @@
 
 const express = require('express');
 const simulationJobs = require('../services/simulationJobs');
+const { publicBaseOf } = require('./publicBase');
 
 const router = express.Router();
 
@@ -47,7 +48,9 @@ router.post('/', async (req, res) => {
     if (!slug || !by) return res.status(400).json({ error: 'Missing slug or by' });
     // Released from the Admin screen, or forwarded by the main server (which
     // marks the body itself). Either way releaseJob decides where it runs.
-    res.status(201).json(await simulationJobs.releaseJob({ slug, by: String(by).trim().slice(0, 60), body: body || {} }));
+    res.status(201).json(await simulationJobs.releaseJob({
+      slug, by: String(by).trim().slice(0, 60), body: body || {}, publicBase: publicBaseOf(req),
+    }));
   } catch (err) {
     fail(res, err, 'release');
   }

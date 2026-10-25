@@ -38,6 +38,7 @@
  * quiet outcomes are recorded too.
  */
 
+const errorCenter = require('../services/errorCenter');
 const db = require('../../services/db.pg');
 const builderMemory = require('./builderMemory');
 const triggerEvaluator = require('./triggerEvaluator');
@@ -213,7 +214,7 @@ async function fireOne({
     }
 
     // ── Launch. Whether it speaks is the crew's decision, not ours. ──
-    const result = await runProactive({
+    const result = await errorCenter.withContext({ agentSlug, conversationId, lane: 'trigger', detail: { trigger: { id: trigger.id, name: trigger.name || null } } }, () => runProactive({
       agentSlug,
       ownerUserId: null,             // resolved conversations don't need it
       userId:      conv.user_id,
@@ -224,7 +225,7 @@ async function fireOne({
       overrideAgentBody,
       overrideCrewBody,
       reason:      matchReason,
-    });
+    }));
 
     await triggerEventsStore.close(eventId, {
       outcome:      result.outcome,          // 'spoke' | 'silent'
@@ -238,6 +239,9 @@ async function fireOne({
     return { outcome: result.outcome, eventId, messageId: result.assistantMessageId };
   } catch (err) {
     console.error(`[triggerDispatcher] ${trigger.id} on conversation ${conversationId}:`, err.message);
+    if (!errorCenter.wasRecorded(err)) {
+      errorCenter.record(err, { area: 'trigger', code: 'trigger_fire_failed', agentSlug, conversationId, group: String(trigger.id), detail: { trigger: { id: trigger.id, name: trigger.name || null } } });
+    }
     if (eventId) {
       await triggerEventsStore.close(eventId, {
         outcome: 'error', error: err.message, startedAt,
@@ -274,6 +278,7 @@ async function sweepTrigger({ agentSlug, agentId, trigger, now = new Date(), dry
   } catch (err) {
     error = err.message;
     console.error(`[triggerDispatcher] findDue failed for ${trigger.id}:`, err.message);
+    errorCenter.record(err, { area: 'trigger', code: 'trigger_find_due', agentSlug, group: String(trigger.id), detail: { trigger: { id: trigger.id, name: trigger.name || null } } });
   }
 
   // Status is recorded even on a dry run — "we looked" is true either

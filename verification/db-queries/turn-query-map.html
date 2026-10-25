@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Turn query map</title>
+<style>
+  :root {
+    --bg: #f9fafb; --surface: #ffffff; --border: #e5e7eb; --ink: #111827; --ink2: #374151; --muted: #6b7280; --faint: #9ca3af;
+    --accent: #4f46e5; --accent-soft: #eef2ff; --good: #047857; --good-soft: #ecfdf5; --warn: #b45309; --warn-soft: #fffbeb;
+    --bad: #b91c1c; --bad-soft: #fef2f2; --row: #f3f4f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111318; --surface: #1a1d24; --border: #2b2f38; --ink: #f3f4f6; --ink2: #d1d5db; --muted: #9ca3af; --faint: #6b7280;
+      --accent: #8b8cf6; --accent-soft: #23243a; --good: #34d399; --good-soft: #10261e; --warn: #fbbf24; --warn-soft: #2a2110;
+      --bad: #f87171; --bad-soft: #2a1414; --row: #20242c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  nav { position: sticky; top: 0; z-index: 5; display: flex; gap: 18px; flex-wrap: wrap; padding: 10px 24px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 13px; }
+  nav a { color: var(--muted); text-decoration: none; font-weight: 600; }
+  nav a:hover { color: var(--accent); }
+  main { max-width: 1080px; margin: 0 auto; padding: 28px 16px 80px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 40px 0 10px; padding-top: 8px; scroll-margin-top: 60px; }
+  h3 { font-size: 15px; margin: 22px 0 6px; }
+  p { margin: 8px 0; color: var(--ink2); }
+  .sub { color: var(--muted); margin: 0 0 22px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 18px 0; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .tile .k { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
+  .tile .v { font-size: 26px; font-weight: 700; margin-top: 2px; }
+  .tile .s { font-size: 12.5px; color: var(--muted); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; margin: 12px 0; }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 12px 16px; margin: 14px 0; color: var(--ink2); }
+  .callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+  .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { text-align: left; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); padding: 10px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--row); vertical-align: top; color: var(--ink2); }
+  tr:last-child td { border-bottom: 0; }
+  td.n { color: var(--faint); font-variant-numeric: tabular-nums; width: 28px; }
+  td.what b { color: var(--ink); }
+  tr.phase td { background: var(--row); font-weight: 700; color: var(--ink); font-size: 12.5px; }
+  tr.model td { background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 12.5px; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--row); padding: 1px 5px; border-radius: 4px; color: var(--ink2); }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+  .keep { background: var(--good-soft); color: var(--good); }
+  .cut { background: var(--bad-soft); color: var(--bad); }
+  .move { background: var(--warn-soft); color: var(--warn); }
+  .bar { display: flex; height: 26px; border-radius: 6px; overflow: hidden; margin: 8px 0 4px; border: 1px solid var(--border); }
+  .bar span { display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; }
+  .bar .db { background: #b45309; }
+  .bar .llm { background: #4f46e5; }
+  .legend { font-size: 12.5px; color: var(--muted); }
+  ol li, ul li { margin: 4px 0; color: var(--ink2); }
+  .num { font-variant-numeric: tabular-nums; }
+  @media (max-width: 640px) { main { padding: 18px 16px 60px; } h1 { font-size: 22px; } }
+</style>
+</head>
+<body>
+<nav>
+  <a href="#short">In short</a>
+  <a href="#map">The map</a>
+  <a href="#why">Why so many</a>
+  <a href="#time">Where the time goes</a>
+  <a href="#scale">How it grows</a>
+  <a href="#plan">What we can do</a>
+  <a href="#safe">Doing it safely</a>
+  <a href="#how">How this was measured</a>
+</nav>
+<main>
+  <h1>Why one agent turn talks to the database so much</h1>
+  <p class="sub">Measured on 2026-10-22 — a real customer turn on <code>tkb-demo</code> (2 add-ons: a field extractor and the Talker), local server.</p>
+
+  <h2 id="short">In short</h2>
+  <div class="tiles">
+    <div class="tile"><div class="k">Customer turn</div><div class="v num">22</div><div class="s">database queries (tkb-demo, 2 add-ons)</div></div>
+    <div class="tile"><div class="k">Simulated turn</div><div class="v num">~46</div><div class="s">the simulation layer adds its own (caps, reading back the reply, job progress)</div></div>
+    <div class="tile"><div class="k">Grows with add-ons</div><div class="v num">+5</div><div class="s">queries for every add-on that calls a model</div></div>
+    <div class="tile"><div class="k">After the plan</div><div class="v num">~12</div><div class="s">for the same turn — about 45% fewer, no change in behaviour</div></div>
+  </div>
+  <div class="callout">
+    The turn is not doing anything wrong — every query has a reason. But it was written step by step, each step reading what it needs for itself. So the
+    same things are read several times (the conversation 3×, the history once per add-on, the memory before every save), and the agent's setup takes 4 separate
+    reads. None of that is needed for the answer the customer gets.
+  </div>
+
+  <h2 id="map">The map — every query of one turn, in order</h2>
+  <p>Turn 2 of a customer conversation (turn 1 is the same plus a one-off "name the conversation" write). The middle column says why it happens; the last column what we can do.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Query</th><th>Why it happens (where in the code)</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr class="phase"><td></td><td colspan="3">A · The message arrives (the chat route, before the agent starts)</td></tr>
+      <tr><td class="n">1</td><td class="what"><b>Find the user</b><br><code>users</code></td><td>Turn the customer's outside id into our internal id. Every turn, though the answer never changes. <code>runtimeRoute.resolveUserId</code></td><td><span class="tag cut">remember it</span></td></tr>
+      <tr><td class="n">2</td><td class="what"><b>Save the customer's message</b><br><code>messages</code> insert</td><td>Needed — the message must be in the history.</td><td><span class="tag keep">keep</span></td></tr>
+      <tr><td class="n">3</td><td class="what"><b>Read the conversation</b><br><code>conversations</code></td><td>To check whether the conversation already has a name. <code>runtimeRoute</code> auto-name</td><td><span class="tag cut">read once</span></td></tr>
+      <tr><td class="n">4</td><td class="what"><b>Read the conversation again</b><br><code>conversations</code></td><td>To tell the screen which crew is talking. <code>runtimeRoute</code> before the first event</td><td><span class="tag cut">read once</span></td></tr>
+      <tr><td class="n">5</td><td class="what"><b>Reserve the reply</b><br><code>messages</code> insert</td><td>Needed — every add-on's trail is attached to this reply.</td><td><span class="tag keep">keep</span></td></tr>
+      <tr class="phase"><td></td><td colspan="3">B · Loading the agent</td></tr>
+      <tr><td class="n">6</td><td class="what"><b>Read the conversation a third time</b><br><code>conversations</code></td><td>The runner reads which crew is current. <code>BuilderRunner.runOnce</code></td><td><span class="tag cut">read once</span></td></tr>
+      <tr><td class="n">7</td><td class="what"><b>The agent</b><br><code>builder_agents</code> + project</td><td rowspan="4">The agent's setup, read as four separate questions: the agent → its saved version → the crew → the crew's saved version. Same answer every turn until someone saves an edit. <code>builderProjects.resolveRunnable</code></td><td rowspan="4"><span class="tag cut">one query</span></td></tr>
+      <tr><td class="n">8</td><td class="what"><b>The agent's version</b><br><code>builder_agent_versions</code></td></tr>
+      <tr><td class="n">9</td><td class="what"><b>The crew</b><br><code>builder_crews</code></td></tr>
+      <tr><td class="n">10</td><td class="what"><b>The crew's version</b><br><code>builder_crew_versions</code></td></tr>
+      <tr><td class="n">11</td><td class="what"><b>The conversation's memory</b><br><code>context_data</code></td><td>Needed — fields, thinking, summaries. <code>builderMemory.loadMemory</code></td><td><span class="tag keep">keep</span></td></tr>
+      <tr class="phase"><td></td><td colspan="3">C · Add-on 1 — the field extractor</td></tr>
+      <tr><td class="n">12</td><td class="what"><b>The conversation history</b><br><code>messages</code></td><td>The last N messages for this add-on's prompt. <code>addonRunner → historyService.loadHistory</code></td><td><span class="tag move">once per turn</span></td></tr>
+      <tr class="model"><td></td><td colspan="3">model call — gpt-4o-mini, about 2.1 s</td></tr>
+      <tr><td class="n">13</td><td class="what"><b>Log the tokens</b><br><code>llm_usage</code> insert</td><td>Needed for cost and billing. Already done without waiting.</td><td><span class="tag move">batch per turn</span></td></tr>
+      <tr><td class="n">14</td><td class="what"><b>Read the memory again</b><br><code>context_data</code></td><td>The save first reads the row it is about to overwrite — though the runner already holds the memory. <code>contextService.saveContext</code></td><td><span class="tag cut">write directly</span></td></tr>
+      <tr><td class="n">15</td><td class="what"><b>Save the memory</b><br><code>context_data</code> update</td><td>Needed — the extracted fields.</td><td><span class="tag keep">keep</span></td></tr>
+      <tr><td class="n">16</td><td class="what"><b>Save the add-on's trail</b><br><code>addon_runs</code> insert</td><td>Needed (the trail you open in the chat). But the turn <i>waits</i> for it before the next add-on.</td><td><span class="tag move">don't wait / batch</span></td></tr>
+      <tr class="phase"><td></td><td colspan="3">D · Add-on 2 — the Talker</td></tr>
+      <tr><td class="n">17</td><td class="what"><b>The conversation history, again</b><br><code>messages</code></td><td>Same history, read again for this add-on.</td><td><span class="tag move">once per turn</span></td></tr>
+      <tr class="model"><td></td><td colspan="3">model call — gemini-2.5-flash, about 2.2 s (the reply)</td></tr>
+      <tr><td class="n">18</td><td class="what"><b>Log the tokens</b><br><code>llm_usage</code> insert</td><td>As 13.</td><td><span class="tag move">batch per turn</span></td></tr>
+      <tr><td class="n">19</td><td class="what"><b>Read the memory again</b><br><code>context_data</code></td><td>As 14.</td><td><span class="tag cut">write directly</span></td></tr>
+      <tr><td class="n">20</td><td class="what"><b>Save the memory</b><br><code>context_data</code> update</td><td>As 15.</td><td><span class="tag keep">keep</span></td></tr>
+      <tr><td class="n">21</td><td class="what"><b>Save the add-on's trail</b><br><code>addon_runs</code> insert</td><td>As 16.</td><td><span class="tag move">don't wait / batch</span></td></tr>
+      <tr class="phase"><td></td><td colspan="3">E · Finishing</td></tr>
+      <tr><td class="n">22</td><td class="what"><b>Write the reply text</b><br><code>messages</code> update</td><td>Needed.</td><td><span class="tag keep">keep</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="legend"><span class="tag keep">keep</span> needed as it is · <span class="tag cut">…</span> can be removed without changing anything · <span class="tag move">…</span> still needed, but can be done once per turn or off the waiting path.</p>
+
+  <h2 id="why">Why so many — the pattern</h2>
+  <ul>
+    <li><b>Each step reads for itself.</b> The chat route, the "which crew" check and the runner each read the same conversation row — 3 reads where 1 does.</li>
+    <li><b>The agent's setup is four questions, not one.</b> Agent → its version → crew → its version, one after another.</li>
+    <li><b>Every add-on fetches its own history</b>, even when two add-ons want the same last messages.</li>
+    <li><b>Every memory save reads before it writes</b> — a shared helper from the older platform (<code>contextService.saveContext</code>) that asks "does a row exist?" before updating, although the runner just loaded it.</li>
+    <li><b>Small writes wait in line.</b> The add-on trail is written while the next add-on waits for it.</li>
+  </ul>
+  <p>None of these affect what the customer gets. They were the simplest way to write each step on its own.</p>
+
+  <h2 id="time">Where the time goes</h2>
+  <p>Most queries run <b>one after another</b>, so each one's travel time adds to the turn. Locally every trip is about 65 ms (Israel → the database in Belgium), so it shows up plainly:</p>
+  <div class="card">
+    <b>A local customer turn, 5.5 s</b>
+    <div class="bar">
+      <span class="db" style="width:15%">DB 0.8 s</span>
+      <span class="llm" style="width:38%">extractor model 2.1 s</span>
+      <span class="db" style="width:5%"></span>
+      <span class="llm" style="width:38%">Talker model 2.2 s</span>
+      <span class="db" style="width:4%"></span>
+    </div>
+    <div class="legend">Orange = waiting for the database (about 20 trips in a row ≈ 1.3 s, 25% of the turn). Blue = the models.</div>
+  </div>
+  <div class="callout warn">
+    <b>In production this is much smaller.</b> The servers sit next to the database, so a trip is a few milliseconds: the same 20 trips cost roughly
+    40–60 ms of a 5 s turn. The customer will hardly feel the cut. What production gains is <b>capacity</b>: half the queries means each turn holds a
+    database connection half as long, so the same pool (and the database's limit of 50 connections) serves about twice as many people at once.
+  </div>
+
+  <h2 id="scale">How it grows</h2>
+  <p>Roughly: <b>12 fixed queries + 5 for every add-on that calls a model</b> (history, usage log, memory read, memory save, trail).</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Agent</th><th class="num">Today</th><th class="num">After the plan</th><th class="num">With batched writes too</th></tr></thead>
+    <tbody>
+      <tr><td>tkb-demo — 2 add-ons</td><td class="num">22</td><td class="num">~12</td><td class="num">~9</td></tr>
+      <tr><td>A typical agent — 5 add-ons</td><td class="num">~37</td><td class="num">~21</td><td class="num">~13</td></tr>
+      <tr><td>A rich agent — 8 add-ons + Live Brain / Profiler</td><td class="num">~55+</td><td class="num">~30</td><td class="num">~17</td></tr>
+      <tr><td>A simulated turn (tkb-demo)</td><td class="num">~46</td><td class="num">~20</td><td class="num">~17</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="legend">"After the plan" = steps 1–6 below. The 5- and 8-add-on rows are calculated from the pattern, not measured.</p>
+
+  <h2 id="plan">What we can do — in order, safest first</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Change</th><th>Saves per turn</th><th>Risk</th><th>Why the risk is what it is</th></tr></thead>
+    <tbody>
+      <tr><td class="n">1</td><td><b>Remember the user's internal id</b> (in the server's memory)</td><td>1</td><td>Very low</td><td>The mapping never changes once created.</td></tr>
+      <tr><td class="n">2</td><td><b>Read the conversation once</b> and pass it along</td><td>2</td><td>Low</td><td>Same row, read in one place instead of three. Care: the crew may be switched before the run — pass the updated row.</td></tr>
+      <tr><td class="n">3</td><td><b>Load the agent's setup in one query</b> (join the four tables)</td><td>3</td><td>Low</td><td>Same data, one trip, always fresh. (A cache would save all four, but a saved version can be edited in place, and another server instance would not know — not worth it now.)</td></tr>
+      <tr><td class="n">4</td><td><b>Save memory directly</b> — update, and insert only if nothing was there</td><td>1 per add-on that writes memory</td><td>Low–medium</td><td>Only the Builder's memory save changes; the older platform's shared helper stays as it is.</td></tr>
+      <tr><td class="n">5</td><td><b>Load the history once per turn</b>, give each add-on its slice</td><td>1 per extra add-on</td><td>Medium</td><td>Add-ons ask for different windows (last N, since a summary, offline lane sees the full turn). The slice logic must match today's exactly.</td></tr>
+      <tr><td class="n">6</td><td><b>Lighter simulated turns</b> — don't read the whole conversation back after every simulated turn when the job only needs the add-on statuses</td><td>~6–8 (simulations only)</td><td>Low</td><td>Customers are untouched; only the simulation layer.</td></tr>
+      <tr><td class="n">7</td><td><b>Write the trail and the usage log without waiting</b>, all at the end of the turn in one go</td><td>2 per add-on → 2 per turn</td><td>Medium</td><td>The chat shows the trail live from events (unchanged), but a reload right after a turn must still find it; a crash mid-turn must not lose it.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Steps 1–4 are small and contained (≈ 7 queries off every turn). Step 5 and 7 are where care is needed.</p>
+
+  <h2 id="safe">Doing it safely</h2>
+  <ol>
+    <li><b>The map is the test.</b> The measuring tool used here stays in the repo: before and after each step, one real turn, and the query list must shrink exactly as planned — nothing else changes.</li>
+    <li><b>Same turn, same result.</b> The same scripted conversation before and after: same replies' context, same memory after every turn, same add-on trail. Compared automatically.</li>
+    <li><b>The existing batteries</b> (simulation jobs, error center, load tests, MCP) after every step.</li>
+    <li><b>Then a load test on production</b> — 1, 5, 10 at once — to see the real effect on time and on the database pool, which a local server cannot show.</li>
+    <li><b>One step per change</b>, each one shippable on its own, in the order above.</li>
+  </ol>
+
+  <h2 id="how">How this was measured</h2>
+  <p>A local server started through a small wrapper around the database driver (no code change): every query recorded with its start time, how long it took, and its SQL. A customer conversation on <code>tkb-demo</code> (the outside chat, the active version) ran three turns; turn 2 is shown above, turns 1 and 3 match it (23 and 24 queries; turn 1 includes naming the conversation). Two background queries of the trigger clock that happened to fall inside the turn are left out. The code location of each query was traced by hand from its SQL — the driver hides the call site.</p>
+  <p class="legend">Numbers for other agents are calculated from the pattern. Production timings are estimates; the 65 ms per trip is measured from this machine.</p>
+</main>
+</body>
+</html>

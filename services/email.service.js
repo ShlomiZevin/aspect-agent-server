@@ -372,4 +372,51 @@ async function sendDeployedDigestEmail({ recipientEmail, recipientName, tasks })
   });
 }
 
-module.exports = { sendLybiContactEmail, sendAspectContactEmail, sendTaskAttentionEmail, sendAgentErrorEmail, sendDeployedDigestEmail };
+const escapeHtml = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/**
+ * Error center alert (task #903): a serious kind of error appeared for the
+ * first time, or came back after being marked handled.
+ *
+ * @param {object} a
+ * @param {string} a.to
+ * @param {string} a.agentSlug     null = not tied to one agent
+ * @param {string} a.what          'new' | 'back'
+ * @param {object} a.error         { area, kind, code, message, source, conversationId }
+ * @param {string} a.link          Admin → Errors of the agent
+ */
+async function sendErrorCenterAlert({ to, agentSlug, what, error, link }) {
+  const where = agentSlug || 'the server';
+  const subject = `${what === 'back' ? 'Error is back' : 'New error'} · ${where} · ${String(error.message || '').slice(0, 70)}`;
+  const rows = [
+    ['What', what === 'back' ? 'Marked handled, and it happened again' : 'Happened for the first time'],
+    ['Where', `${error.area}${error.code ? ' · ' + error.code : ''}`],
+    ['Kind', error.kind],
+    ['Conversation', error.conversationId ? `#${error.conversationId}${error.source ? ' (' + error.source + ')' : ''}` : '—'],
+    ['Time', new Date().toUTCString()],
+  ];
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:24px;background:#F9FAFB;font-family:Arial,sans-serif;">
+  <table width="600" cellpadding="0" cellspacing="0" style="margin:0 auto;background:#fff;border-radius:8px;border:1px solid #E5E7EB;">
+    <tr><td style="padding:20px 24px;border-bottom:1px solid #E5E7EB;">
+      <div style="font-size:12px;font-weight:700;color:#B91C1C;text-transform:uppercase;letter-spacing:0.5px;">${what === 'back' ? 'Error is back' : 'New error'} · ${escapeHtml(where)}</div>
+      <div style="margin-top:8px;font-size:14px;color:#111827;font-family:monospace;word-break:break-word;">${escapeHtml(error.message)}</div>
+    </td></tr>
+    ${rows.map(([k, v]) => `<tr><td style="padding:8px 24px;font-size:13px;color:#374151;"><span style="display:inline-block;width:110px;color:#9CA3AF;">${k}</span>${escapeHtml(v)}</td></tr>`).join('')}
+    ${link ? `<tr><td style="padding:16px 24px 20px;"><a href="${escapeHtml(link)}" style="color:#4F46E5;font-weight:700;font-size:13px;">Open Admin → Errors</a></td></tr>` : ''}
+  </table>
+</body></html>`;
+  await transporter.sendMail({
+    from: `"Lybi Errors" <${process.env.GMAIL_USER}>`,
+    to,
+    subject,
+    html,
+    text: [
+      `${what === 'back' ? 'Error is back' : 'New error'} — ${where}`, '', String(error.message || ''), '',
+      ...rows.map(([k, v]) => `${k}: ${v}`),
+      ...(link ? ['', link] : []),
+    ].join('\n'),
+  });
+}
+
+module.exports = { sendLybiContactEmail, sendAspectContactEmail, sendTaskAttentionEmail, sendAgentErrorEmail, sendDeployedDigestEmail, sendErrorCenterAlert };

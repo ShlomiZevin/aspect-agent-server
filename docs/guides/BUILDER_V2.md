@@ -1669,6 +1669,96 @@ model's notes. The dropdown itself contains just the model name.
 
 ---
 
+## Stability: the error center and load tests (tasks #903, #902)
+
+Two Admin tabs, both per agent: **Errors** and **Load tests** (next to
+Simulations). Batteries: `scripts/test-error-center.js` (offline),
+`scripts/test-load-tests.js` (offline), `scripts/test-simulation-jobs.js`,
+and the `load tests` / `errors` sections of `scripts/test-builder-mcp.js`.
+
+### Error center — `builder/services/errorCenter.js`
+
+**One rule: recording never changes or breaks a conversation.**
+`record(err, ctx)` returns at once, writes after, swallows its own failures.
+
+| Hook | Where | Area |
+|---|---|---|
+| A whole turn | `runtimeRoute.js` message handler (`runtime_failed`) | `turn` |
+| Any add-on, both lanes | `addonRunner.runAddon` — one wrapper around `emit('addon.error')` covers all five failure sites | `addon` / `offline` (from the lane) |
+| A model call | `services/llm.js` — `sendOneShot` + `sendMessageStreamWithPrompt` (the router — all three providers) | `model` |
+| Offline add-on extras | `offlineDispatcher.js` catches | `offline` |
+| Triggers | `triggerDispatcher.fireOne` / `findDue`, the proactive test route (`proactive_failed`) | `trigger` |
+| Profiler / Live Brain | every "best-effort" catch, via `errorCenter.swallowed()` | `profiler` / `live-brain` |
+| Simulation jobs | `simulationJobs.runJob` — only what fails AROUND a turn (the turn itself is the turn hook's) | `simulation` |
+| Anything else | `server.js` → `expressCatchAll()` + `installCrashHandlers()` — records, then behaves exactly as before (route errors still go to Express; a crash still exits 1, after the write) | `server` |
+
+- **Context, not parameters.** Turns, add-ons, triggers and the dispatchers
+  run inside `errorCenter.withContext({...})` (AsyncLocalStorage). A model
+  error deep inside an add-on therefore knows the agent, conversation, reply
+  and add-on without being told. Dispatchers set `lane` so add-on failures
+  land under `profiler` / `live-brain` / `trigger`.
+- **Counted once.** `record()` marks the error object; every hook above it
+  checks `wasRecorded(err)` (add-on → turn). A hook that has the `err` passes
+  it as the third `emit('addon.error', payload, err)` argument.
+- **Source** (Builder / Customer / Simulation) is read from
+  `conversations.metadata.kind` when the hook does not say.
+- **Grouping:** `fingerprint` = area + kind + code + the message with numbers
+  and ids blanked (+ `group`: the add-on instance, the model id, the trigger).
+  Groups are computed at read time. Tables: `error_events` (migration 063,
+  pruned after 30 days by the service itself) and `error_groups` (064 —
+  status + note + last alert). Status: new → looking → handled / ignored; a
+  handled group whose errors come back reads **new, reopened** ("Back").
+- **Handling rules — `builder/services/errorRules.js`, one place.** Retry a
+  rate limit twice (2 s, 6 s) in `services/llm.js` — a stream only while
+  nothing reached the user; a customer whose turn fails sees a polite
+  sentence (Builder and simulations keep the technical one); `alert` kinds
+  email Shlomi (`errorAlerts.js`, registered in `server.js`) the first time
+  a group appears — or comes back after "handled" — in a customer
+  conversation or the server itself. One email per appearance
+  (`claimAlert` is atomic). `ERROR_ALERTS=off` silences a local server.
+  Fallback model: task #574.
+- Nothing secret is stored: `scrub()` blanks keys, bearer tokens, DB
+  passwords; no prompts (the reply message / add-on run hold those).
+
+### Load tests — `builder/services/loadTests.js`
+
+A run = a `test_runs` row of type `load_test`; its conversations are
+ordinary simulation jobs with `parent_run_id` (kept out of the Simulations
+list). With more than one conversation, ONE runs alone first (the
+baseline); then N (1–20) start together or spread over a minute. Every turn
+goes through the **public address the run was released from**
+(`publicBase` — `via: 'public'` on the job), like a real user. Fixed script
+by default (five ordinary lines), or a persona.
+
+- **Cost:** estimate = conversations (+ baseline) × turns × the agent's cost
+  per turn — the higher of its 30-day average and its last load test's real
+  per-turn cost (the first 5-at-once run cost 1.6× an average-based
+  estimate) — plus the simulated user's model for a persona. Over $20 →
+  refused. While running, every job asks `simulationJobs.setTurnGate` before
+  each turn; the gate sums the run's real `llm_usage` and stops at $20 (or on
+  Stop). A model with no list price in `models.service.js` is counted at the
+  top known rate — estimates and the cap can only err high.
+- **Result:** baseline vs under load (median, slowest 5%), slowdown ×,
+  turns/second, errors by kind (the error center's words), add-on failures,
+  cost, this server's vitals sampled every 2 s (CPU, memory, event-loop
+  delay, DB pool in use / waiting), the previous run with the same number of
+  conversations, and a one-line verdict.
+- **Measured (local server, tkb-demo, 2026-10-22):** 2 and 5 at once — no
+  slowdown; 10 at once — 1.24–1.35× slower with the DB pool (5) full; with
+  `DB_POOL_MAX=15` — no slowdown. **Read this with care: a local server is
+  ~64 ms from the database (Israel → europe-west1), so each of a turn's ~46
+  queries holds a connection ~65 ms — ~3 s per turn. Cloud Run sits next to
+  the database (a few ms), so production holds a connection ~20× less per
+  turn.** The local result says nothing yet about production's pool; run
+  the load test on production to know. The database's own limit is
+  `max_connections = 50` for everything (all instances × pool + scripts +
+  one LISTEN connection per instance). A load test's own bookkeeping is kept
+  light on purpose (one query for all its jobs every 3 s, results frozen
+  when a run ends) — it once made ~half of all queries during a run.
+  Details: `verification/load-tests/README.md`.
+- Not here yet: Google Cloud metrics across instances (instance count) —
+  the vitals cover only the instance that drove the run.
+
 ## Quick reference: build a new plugin
 
 ```ts

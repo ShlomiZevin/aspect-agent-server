@@ -25,6 +25,7 @@
  * endpoint used for initial load / history.
  */
 
+const errorCenter = require('../services/errorCenter');
 const { assemblePrompt } = require('./promptAssembler');
 const { parseOutput } = require('./outputParser');
 const { validatePanelValues } = require('./panelShapes');
@@ -199,10 +200,19 @@ async function logTextRun(ctx, panel, entry, resolved) {
     });
   } catch (err) {
     console.error('[liveBrainDispatcher] text run log failed:', err.message);
+    errorCenter.swallowed(err, 'live-brain', 'text_run_log_failed');
   }
 }
 
-async function dispatchLiveBrainPanels({ ctx, didTransition }) {
+/** Error center (#903): everything recorded inside is tagged area 'live-brain'. */
+function dispatchLiveBrainPanels(args) {
+  return errorCenter.withContext(
+    { lane: 'live-brain', agentSlug: args.ctx.agentSlug, conversationId: args.ctx.conversationId },
+    () => dispatchLiveBrainPanelsInner(args),
+  );
+}
+
+async function dispatchLiveBrainPanelsInner({ ctx, didTransition }) {
   const { runnable, userId, conversationId, memory, emit } = ctx;
   // Master switch — `enabled:false` skips the whole Live Brain (all panels).
   if (runnable.agent.body?.liveBrain?.enabled === false) return;
@@ -242,6 +252,7 @@ async function dispatchLiveBrainPanels({ ctx, didTransition }) {
       });
     } catch (err) {
       console.error('[liveBrainDispatcher] text panel resolve failed:', err.message);
+      errorCenter.swallowed(err, 'live-brain', 'text_panel_resolve_failed');
     }
     textWrites.push(entry ? { kind: 'panel', panelId: panel.id, entry } : { kind: 'panel', panelId: panel.id, clear: true });
     textLogs.push({ panel, entry, resolved });
@@ -252,6 +263,7 @@ async function dispatchLiveBrainPanels({ ctx, didTransition }) {
       await builderMemory.saveMemory(userId, conversationId, memory);
     } catch (err) {
       console.error('[liveBrainDispatcher] text panel memory save failed:', err.message);
+      errorCenter.swallowed(err, 'live-brain', 'text_panel_memory_save_failed');
     }
     await Promise.all(textLogs.map(t => logTextRun(ctx, t.panel, t.entry, t.resolved)));
     // Text panels resolve together (no LLM) — emit each now.
@@ -280,6 +292,7 @@ async function dispatchLiveBrainPanels({ ctx, didTransition }) {
       await offlineTriggerState.save(userId, conversationId, state);
     } catch (err) {
       console.error('[liveBrainDispatcher] trigger-state save failed:', err.message);
+      errorCenter.swallowed(err, 'live-brain', 'trigger_state_save_failed');
     }
 
     if (dispatches.length > 0) {
@@ -291,6 +304,7 @@ async function dispatchLiveBrainPanels({ ctx, didTransition }) {
           .then(() => emitPanel(panel))
           .catch(err => {
             console.error('[liveBrainDispatcher] unexpected throw from runAddon:', err.message);
+            errorCenter.swallowed(err, 'live-brain', 'unexpected_throw_from_runaddon');
           }),
       ));
     }

@@ -11,6 +11,35 @@ const modelsService = require('./models.service');
  *
  * Function calls are handled at this layer (provider-agnostic)
  */
+const errorCenter = require('../builder/services/errorCenter');
+const errorRules = require('../builder/services/errorRules');
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * A model call failed: record it in the error center (task #903) with the
+ * provider kind, and say whether to try again. Returns the wait in ms
+ * before the next try, or null to give up (rethrow). Never throws itself.
+ */
+function noteModelError(err, model, call, attempt, canRetry) {
+  try {
+    let kind = errorCenter.classify(err);
+    if (!kind.startsWith('model_')) kind = 'model_other';
+    const retry = errorRules.ruleFor(kind).retry;
+    const willRetry = !!(canRetry && retry && attempt < retry.times);
+    errorCenter.record(err, {
+      area: 'model',
+      kind,
+      code: String(call || 'call').slice(0, 60),
+      group: model || 'unknown-model',
+      detail: { model: model || null, attempt: attempt + 1, ...(willRetry ? { retried: true } : {}) },
+    });
+    return willRetry ? (retry.waitMs[attempt] ?? retry.waitMs[retry.waitMs.length - 1]) : null;
+  } catch {
+    return null;
+  }
+}
+
 class LLMService {
   constructor() {
     this.provider = openaiService;  // Default provider for chat
@@ -90,7 +119,23 @@ class LLMService {
   async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
     // Detect provider from model name
     const provider = this._getProviderForModel(config.model, 'crew');
-    yield* provider.sendMessageStreamWithPrompt(message, conversationId, config);
+    // Error center (#903): record a failed call with its kind; retry a rate
+    // limit per builder/services/errorRules.js — only while nothing has
+    // reached the caller yet, so a reply is never sent twice.
+    for (let attempt = 0; ; attempt++) {
+      let yielded = false;
+      try {
+        for await (const chunk of provider.sendMessageStreamWithPrompt(message, conversationId, config)) {
+          yielded = true;
+          yield chunk;
+        }
+        return;
+      } catch (err) {
+        const waitMs = noteModelError(err, config.model, 'stream', attempt, !yielded);
+        if (waitMs == null) throw err;
+        await sleep(waitMs);
+      }
+    }
   }
 
   /**
@@ -148,8 +193,21 @@ class LLMService {
   async sendOneShot(instructions, message, options = {}) {
     // Detect provider from model name (use context from options for logging)
     const provider = this._getProviderForModel(options.model, options.context || 'one-shot');
-    const start = Date.now();
-    const result = await provider.sendOneShot(instructions, message, options);
+    let start;
+    let result;
+    // Error center (#903): record a failed call with its kind; retry a rate
+    // limit per builder/services/errorRules.js.
+    for (let attempt = 0; ; attempt++) {
+      start = Date.now();
+      try {
+        result = await provider.sendOneShot(instructions, message, options);
+        break;
+      } catch (err) {
+        const waitMs = noteModelError(err, options.model, options.context || 'one-shot', attempt, true);
+        if (waitMs == null) throw err;
+        await sleep(waitMs);
+      }
+    }
     const durationMs = Date.now() - start;
 
     // Providers return { text, usage } — log usage and return just text for backward compat

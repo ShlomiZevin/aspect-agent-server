@@ -287,6 +287,8 @@ class ClaudeService {
       const wrapped = new Error(`Failed to get Claude response: ${error.message}`);
       // Preserve billed usage across the wrap (set on truncation errors).
       if (error && error.usage) wrapped.usage = error.usage;
+      // Keep the provider's HTTP status (429 = rate limit) for the error center / retry.
+      wrapped.status = error.status || error.statusCode || null;
       throw wrapped;
     }
   }

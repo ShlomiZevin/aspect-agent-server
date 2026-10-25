@@ -336,6 +336,30 @@ const triggerStatus = pgTable('trigger_status', {
   agentIdx: index('trigger_status_agent_idx').on(t.agentId),
 }));
 
+// error_events — the error center (task #903). One row per error on the
+// conversation path; repeats share `fingerprint` and are grouped at read
+// time. Pruned after a month by builder/services/errorCenter.js.
+// See migrations/063_error_events.sql.
+const errorEvents = pgTable('error_events', {
+  id:             serial('id').primaryKey(),
+  agentSlug:      varchar('agent_slug', { length: 100 }),
+  conversationId: integer('conversation_id'),
+  messageId:      integer('message_id'),
+  addonRunId:     varchar('addon_run_id', { length: 64 }),
+  source:         varchar('source', { length: 20 }),   // builder | customer | simulation
+  area:           varchar('area', { length: 40 }).notNull(),
+  kind:           varchar('kind', { length: 40 }).notNull(),
+  code:           varchar('code', { length: 60 }),
+  message:        text('message').notNull(),
+  detail:         jsonb('detail').notNull().default({}),
+  fingerprint:    varchar('fingerprint', { length: 40 }).notNull(),
+  createdAt:      timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, t => ({
+  agentTimeIdx:   index('error_events_agent_time_idx').on(t.agentSlug, t.createdAt),
+  fingerprintIdx: index('error_events_fingerprint_idx').on(t.agentSlug, t.fingerprint),
+  createdIdx:     index('error_events_created_idx').on(t.createdAt),
+}));
+
 module.exports = {
   builderProjects,
   builderWorkspaces,
@@ -351,4 +375,5 @@ module.exports = {
   builderTkbNotes,
   triggerEvents,
   triggerStatus,
+  errorEvents,
 };

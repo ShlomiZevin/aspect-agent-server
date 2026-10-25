@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lybi Google Cloud setup</title>
+<style>
+  :root { --bg:#f9fafb; --surface:#fff; --border:#e5e7eb; --ink:#111827; --ink2:#374151; --muted:#6b7280; --faint:#9ca3af;
+          --accent:#4f46e5; --accent-soft:#eef2ff; --good:#047857; --good-soft:#ecfdf5; --warn:#b45309; --warn-soft:#fffbeb; --row:#f3f4f6; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+          --bg:#111318; --surface:#1a1d24; --border:#2b2f38; --ink:#f3f4f6; --ink2:#d1d5db; --muted:#9ca3af; --faint:#6b7280;
+          --accent:#8b8cf6; --accent-soft:#23243a; --good:#34d399; --good-soft:#10261e; --warn:#fbbf24; --warn-soft:#2a2110; --row:#20242c; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.6 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h2 { font-size: 18px; margin: 36px 0 10px; }
+  p, li { color: var(--ink2); }
+  .sub { color: var(--muted); margin-top: 0; }
+  .picture { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap: 12px; margin: 16px 0; }
+  .box { background: var(--surface); border:1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .box h3 { margin: 0 0 6px; font-size: 14px; }
+  .box ul { margin: 0; padding-left: 18px; font-size: 13.5px; }
+  .old h3 { color: var(--warn); } .new h3 { color: var(--good); }
+  .step { display:flex; gap: 12px; background: var(--surface); border:1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin: 10px 0; }
+  .step input { width: 20px; height: 20px; margin-top: 3px; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+  .step.done { opacity: .55; }
+  .step .who { display:inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1px 8px; border-radius: 999px; margin-left: 6px; vertical-align: 2px; }
+  .you { background: var(--accent-soft); color: var(--accent); }
+  .admin { background: var(--warn-soft); color: var(--warn); }
+  .me { background: var(--good-soft); color: var(--good); }
+  .step b.t { font-size: 15px; color: var(--ink); }
+  .step ol, .step ul { margin: 6px 0 0; padding-left: 20px; font-size: 14px; }
+  code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--row); padding: 1px 5px; border-radius: 4px; }
+  .note { border-left: 3px solid var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 14px; color: var(--ink2); }
+  .tip { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 14px; color: var(--ink2); }
+  table { width:100%; border-collapse: collapse; background: var(--surface); border:1px solid var(--border); border-radius: 10px; overflow: hidden; font-size: 14px; }
+  th { text-align:left; font-size: 11px; letter-spacing:.05em; text-transform: uppercase; color: var(--faint); padding: 9px 12px; border-bottom:1px solid var(--border); }
+  td { padding: 8px 12px; border-bottom:1px solid var(--row); color: var(--ink2); }
+  tr:last-child td { border-bottom: 0; }
+  .progress { position: sticky; top: 0; background: var(--bg); padding: 10px 0; font-size: 13px; color: var(--muted); border-bottom: 1px solid var(--border); margin-bottom: 8px; z-index: 2; }
+  @media (max-width: 640px) { main { padding: 18px 16px 60px; } h1 { font-size: 22px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Lybi's own Google Cloud — step by step</h1>
+  <p class="sub">One clean home, all named Lybi. The old setup is left exactly as it is until the new one works. Tick the boxes as you go — this page remembers them.</p>
+
+  <h2>The picture</h2>
+  <div class="picture">
+    <div class="box old">
+      <h3>Today — leave it alone for now</h3>
+      <ul>
+        <li><code>menopause-bot</code> "Freeda AI" — Kosta's half-built Lybi server, billed to Netanel's account, in no organization</li>
+        <li><code>freeda-2b4af</code> — the Firebase that serves lybi.ai today (Boostart side)</li>
+        <li>The <code>freeda.ai</code> Google organization (old name)</li>
+        <li>Production server <code>aspect-agents</code> (Boostart)</li>
+      </ul>
+    </div>
+    <div class="box new">
+      <h3>Target — everything says Lybi</h3>
+      <ul>
+        <li>Your Lybi identity: <code>shlomi@lybi.ai</code> (super admin)</li>
+        <li>Google Cloud organization: <code>lybi.ai</code></li>
+        <li>Billing account: <b>Lybi</b>, company card</li>
+        <li>Projects: <code>lybi-staging</code> now; <code>lybi-prod</code> and <code>lybi-&lt;customer&gt;</code> later</li>
+        <li><code>shlomi@boostart.io</code> keeps full admin access</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="progress" id="progress"></div>
+
+  <h2>Part 1 — Your Lybi identity <span class="who admin">lybi.ai admin</span></h2>
+  <p>lybi.ai already runs on Google Workspace (company email). Someone set it up — most likely Netanel. That person is its <b>super admin</b>.</p>
+
+  <div class="step" data-k="s1"><input type="checkbox"><div>
+    <b class="t">1. Find the lybi.ai super admin</b> <span class="who you">you</span>
+    <ul>
+      <li>Ask Netanel (and Noa) who set up the lybi.ai email. Whoever it is can sign in at <code>admin.google.com</code>.</li>
+      <li>If you already have a lybi.ai address, try <code>admin.google.com</code> yourself — if it opens the Admin console, you are an admin already: skip to step 3.</li>
+    </ul>
+  </div></div>
+
+  <div class="step" data-k="s2"><input type="checkbox"><div>
+    <b class="t">2. Create <code>shlomi@lybi.ai</code> and make it super admin</b> <span class="who admin">lybi.ai admin</span>
+    <ol>
+      <li><code>admin.google.com</code> → <b>Directory → Users → Add new user</b> → <code>shlomi@lybi.ai</code>.</li>
+      <li>Open that user → <b>Admin roles and privileges → Assign roles → Super Admin</b>.</li>
+    </ol>
+    <div class="tip">Ownership tip: there should be at least two super admins (you and one more), so the company never gets locked out.</div>
+  </div></div>
+
+  <div class="step" data-k="s3"><input type="checkbox"><div>
+    <b class="t">3. Sign in as <code>shlomi@lybi.ai</code> and turn on 2-step verification</b> <span class="who you">you</span>
+    <ul><li>Google requires it for super admins. Use an incognito window so it doesn't mix with your Boostart login.</li></ul>
+  </div></div>
+
+  <h2>Part 2 — Lybi's Google Cloud organization <span class="who you">you, as shlomi@lybi.ai</span></h2>
+
+  <div class="step" data-k="s4"><input type="checkbox"><div>
+    <b class="t">4. Open <code>console.cloud.google.com</code> as <code>shlomi@lybi.ai</code></b>
+    <ul>
+      <li>Accept the terms. Because lybi.ai is a Workspace domain, Google creates the <b>lybi.ai organization</b> automatically.</li>
+      <li>Check: top bar → project picker → you should see <b>lybi.ai</b> as the organization. (If it does not appear within a few minutes: <b>IAM &amp; Admin → Identity &amp; Organization</b> walks you through it.)</li>
+    </ul>
+  </div></div>
+
+  <div class="step" data-k="s5"><input type="checkbox"><div>
+    <b class="t">5. Allow your Boostart address into the organization</b>
+    <div class="note">New organizations block outside email domains by default ("domain restricted sharing"). Without this step, adding <code>shlomi@boostart.io</code> fails.</div>
+    <ol>
+      <li>With the <b>lybi.ai</b> organization selected: <b>IAM &amp; Admin → IAM → Grant access</b> → <code>shlomi@lybi.ai</code> → role <b>Organization Policy Administrator</b> (yourself — super admins don't get it automatically).</li>
+      <li><b>IAM &amp; Admin → Organization Policies</b> → search <b>"Domain restricted sharing"</b> (<code>iam.allowedPolicyMemberDomains</code>) → <b>Manage policy</b> → <b>Override parent</b> → Replace → Rule: <b>Allow all</b> → Save.</li>
+    </ol>
+  </div></div>
+
+  <div class="step" data-k="s6"><input type="checkbox"><div>
+    <b class="t">6. Give <code>shlomi@boostart.io</code> admin rights</b>
+    <ul>
+      <li>Organization selected → <b>IAM → Grant access</b> → <code>shlomi@boostart.io</code> → roles:
+        <b>Organization Administrator</b>, <b>Project Creator</b>, <b>Folder Admin</b>.</li>
+      <li>That's the address this computer is already signed in with — after this, I can do everything from here.</li>
+    </ul>
+  </div></div>
+
+  <h2>Part 3 — Billing <span class="who you">you, as shlomi@lybi.ai</span></h2>
+
+  <div class="step" data-k="s7"><input type="checkbox"><div>
+    <b class="t">7. Create the Lybi billing account</b>
+    <ol>
+      <li><code>console.cloud.google.com/billing</code> → <b>Create account</b> → name <b>Lybi</b> → organization <b>lybi.ai</b> → country Israel → the company card.</li>
+      <li>Open it → <b>Account management</b> → add <code>shlomi@boostart.io</code> as <b>Billing Account Administrator</b>.</li>
+    </ol>
+    <div class="tip">Optional but recommended: <b>Budgets &amp; alerts</b> → a monthly budget (e.g. $200) that emails you at 50 / 90 / 100%.</div>
+  </div></div>
+
+  <h2>Part 4 — Tell me "done" <span class="who me">Claude</span></h2>
+  <div class="step" data-k="s8"><input type="checkbox"><div>
+    <b class="t">8. I build Lybi staging — nothing needed from you</b>
+    <ul>
+      <li>Folders <b>Staging</b> / <b>Production</b> / <b>Customers</b> in the organization.</li>
+      <li>Project <code>lybi-staging</code> on the Lybi billing account, everything in Tel Aviv (<code>me-west1</code>).</li>
+      <li>Database <code>lybi-staging-db</code> (same size as production), its structure copied from production — no data.</li>
+      <li>Server <code>lybi-server</code> on Cloud Run, client on Firebase (<code>lybi-staging.web.app</code>), the per-minute scheduler.</li>
+      <li>A deploy log of every step — the recipe for every future customer.</li>
+    </ul>
+  </div></div>
+
+  <h2>Part 5 — New model keys <span class="who you">you, as shlomi@lybi.ai</span></h2>
+  <p>Sign up with <code>shlomi@lybi.ai</code> so the accounts belong to Lybi, not a person. Send me the keys privately (I put them only in the git-ignored settings files).</p>
+  <div class="step" data-k="s9"><input type="checkbox"><div>
+    <b class="t">9. OpenAI</b> — <code>platform.openai.com</code> → organization <b>Lybi</b> → project <b>lybi-staging</b> → API key. Send: the key, the organization id, the project id.
+  </div></div>
+  <div class="step" data-k="s10"><input type="checkbox"><div>
+    <b class="t">10. Anthropic</b> — <code>console.anthropic.com</code> → organization <b>Lybi</b> → workspace <b>lybi-staging</b> → API key.
+  </div></div>
+  <div class="step" data-k="s11"><input type="checkbox"><div>
+    <b class="t">11. Gemini</b> — <code>aistudio.google.com</code> as <code>shlomi@lybi.ai</code> → <b>Get API key</b> → choose the project <code>lybi-staging</code> (after step 8, so it bills to Lybi).
+  </div></div>
+  <p>Unchanged on purpose: the same Pinecone, the same Gmail for alerts, the one Leonardo key, the same sign-in.</p>
+
+  <h2>Names — so nothing says Freeda again</h2>
+  <table>
+    <thead><tr><th>Thing</th><th>Name</th></tr></thead>
+    <tbody>
+      <tr><td>Organization</td><td><code>lybi.ai</code></td></tr>
+      <tr><td>Billing account</td><td>Lybi</td></tr>
+      <tr><td>Projects</td><td><code>lybi-staging</code> · later <code>lybi-prod</code> · <code>lybi-&lt;customer&gt;</code></td></tr>
+      <tr><td>Server (Cloud Run)</td><td><code>lybi-server</code></td></tr>
+      <tr><td>Database</td><td><code>lybi-staging-db</code></td></tr>
+      <tr><td>Client (Firebase)</td><td><code>lybi-staging</code> → <code>lybi-staging.web.app</code></td></tr>
+      <tr><td>Deploy targets in code</td><td><code>./deploy.sh staging</code> · <code>npm run deploy:staging</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Later — not now</h2>
+  <ul>
+    <li><b>Lybi production</b> moves into <code>lybi-prod</code> in the same organization, the same way staging was built — then lybi.ai points there.</li>
+    <li>Only after that: retire <code>menopause-bot</code> ("Freeda AI"), <code>freeda-2b4af</code>, and anything else named Freeda. Nothing old is deleted before the new home runs production.</li>
+    <li>Kosta's half-done migration task is replaced by this plan.</li>
+  </ul>
+</main>
+<script>
+  (function () {
+    var KEY = 'lybi-gcloud-setup-v1';
+    var state = {};
+    try { state = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { state = {}; }
+    var steps = Array.prototype.slice.call(document.querySelectorAll('.step'));
+    function render() {
+      var done = 0;
+      steps.forEach(function (s) {
+        var on = !!state[s.dataset.k];
+        s.querySelector('input').checked = on;
+        s.classList.toggle('done', on);
+        if (on) done++;
+      });
+      document.getElementById('progress').textContent = done + ' of ' + steps.length + ' steps done';
+    }
+    steps.forEach(function (s) {
+      s.querySelector('input').addEventListener('change', function (e) {
+        state[s.dataset.k] = e.target.checked;
+        try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (err) { /* private mode */ }
+        render();
+      });
+    });
+    render();
+  })();
+</script>
+</body>
+</html>

@@ -49,6 +49,10 @@ people type and paste this URL.
 | `GET /conversations/:id/state` | Fields / memory / thinking / summaries and the current crew, for ANY Builder conversation (read-only) | `mcpConversations.readState` |
 | `POST /simulations` `{ name, agent, version?, label?, persona+goal? \| lines?, maxTurns?, model?, startCrew?, fields? }` | **Release a simulation job** (task #897) — answers at once with `{ id, status: "pending", conversationId }`; the server then runs that ONE conversation by itself | `builder/services/simulationJobs.js` → `releaseJob` |
 | `GET /simulations/:id` · `GET /agents/:slug/simulations` | A job's status / result (JSON); an agent's jobs, newest first (text) | `simulationJobs.getJob` / `listJobs` |
+| `POST /load-tests/estimate` `{ agent, conversations, … }` | **What a load test would cost** (task #902) — `{ usd, capUsd, overCap, basis, unpriced }`; nothing starts | `builder/services/loadTests.js` → `estimate` |
+| `POST /load-tests` `{ name, agent, conversations, version?, start?, lines? \| persona+goal?+turns?+model?, label? }` | **Release a load test** — one conversation alone (baseline), then N at once through the public address; refused over $20, stops at $20 spent. Answers with the run digest | `loadTests.releaseRun` |
+| `GET /load-tests/:id` · `POST /load-tests/:id/stop` `{ name }` · `GET /agents/:slug/load-tests` | A run's digest — verdict, baseline vs under load, errors by kind, cost, server vitals, every conversation's turn times (JSON); stop it; an agent's runs (text) | `loadTests.getRun` / `stopRun` / `listRuns` |
+| `GET /agents/:slug/errors` `?status&source&kind&area&sort` · `GET /agents/:slug/errors/:fingerprint` | **The error center, read only** (task #903) — one line per problem with its count; one problem's occurrences with conversation + technical details (text) | `builder/services/errorCenter.js` → `listGroups` / `listOccurrences` |
 | `POST /simulate/user-reply` `{ persona, goal?, conversationId \| transcript, model? }` | "What would this persona say next" → `{ text, done, model }`. Stateless; default model is `EVERYDAY_MODEL` | `mcpConversations.userReply` |
 | `GET /addons` | **Every addon descriptor, in one page** | reads `builder/addons/*.addon.json` |
 | `GET /code/<path>` | Any allowlisted source file; directories list | `alfredTools.readPlatformFile` |
@@ -323,10 +327,31 @@ transcript. That only wastes the reader's context.
       `lybi-prod`.
 - [ ] `MCP_URL` in
       `aspect-react-client/src/builder/components/FolderDrafts/aiSetupContent.ts`
-      is what the Builder's AI dialog shows and copies.
+      is what the Builder's AI dialog shows and copies. It follows the
+      environment the Builder talks to (`VITE_API_URL`): Origin's server →
+      `lybi.ai/builder/mcp`, any other → `<server>/builder/mcp`.
 - [ ] Nothing in `mcpRoute.js` needs changing: every URL on the entry page
       is built from the request by `urls(req)`, which honours
       `X-Forwarded-Proto` / `X-Forwarded-Host`.
+
+### 3.10 A new environment (lybi-prod, lybi-<customer>, …)
+
+Each environment serves its own door from its own server, and the entry
+page opens with "Environments — which Lybi you are on": this one, the
+others, and the rule that agents never cross on their own (the person
+may name an agent that lives elsewhere). The list is
+`builder/environments.js` — **one entry per environment**:
+
+- [ ] Add it: `id`, `name`, `what` (one line, for the assistant), `app`,
+      `mcp`, `server`, and `hosts` — every hostname the door can be
+      reached on (the Cloud Run hostname is fixed per project, so this
+      works with no setting). `LYBI_ENV=<id>` overrides the match.
+- [ ] `mcp` is the **server's** address unless that site's hosting really
+      reaches its own server. `lybi-staging.web.app/builder/mcp` does not:
+      it shares lybi.ai's `firebase.json`, whose redirect goes to Origin.
+- [ ] The task board stays on Origin (`BOARD_ENV`) until it moves.
+- [ ] Check: `GET <server>/builder/mcp/environments` → `current` is the
+      new id.
 
 ---
 
@@ -485,12 +510,17 @@ aspect-agent-server/
   builder/routes/mcpRoute.js          THE DOOR — entryDoc, reads, /code, /addons, writes,
                                       normalizeAgentBody / normalizeCrewBody, urls(), sendText()
   server.js                           app.use('/builder/mcp', …)
+  builder/environments.js             the environments (Origin, Lybi Staging, …) — §3.10
   alfred/services/alfredTools.js      the readers it wraps + READABLE_PREFIXES (shared allowlist)
   builder/services/builderProjects.js hydrateProject · createProject · save*VersionAs · set*Active
   builder/services/mcpConversations.js  talking to an agent: start · one turn · state · user-reply
   builder/services/simulationJobs.js    simulation jobs: release · run in the background · status
   builder/routes/simulationsRoute.js    /api/simulations — Admin's list + the forward target
   scripts/test-simulation-jobs.js       offline battery for the job logic
+  builder/services/loadTests.js         load tests: estimate · $20 cap · baseline → N at once · vitals · verdict
+  builder/routes/loadTestsRoute.js      /api/load-tests — Admin's Load tests + the forward target
+  scripts/test-load-tests.js            offline battery for the run logic (limits, cap, stop, verdict)
+  builder/services/errorCenter.js       the error center: record · group · status (read here by /agents/:slug/errors)
   services/models.service.js          EVERYDAY_MODEL — the simulated user's default model
   builder/routes/aiBundleRoute.js     folder route: code bundle + fingerprint (sibling)
   docs/guides/AGENT_BUILDING_INSTRUCTIONS.md   folder route's instructions (sibling)

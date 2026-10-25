@@ -22,6 +22,7 @@
  * used for initial load / history.
  */
 
+const errorCenter = require('../services/errorCenter');
 const { assemblePrompt } = require('./promptAssembler');
 const { parseOutput } = require('./outputParser');
 const { validatePanelValues } = require('./panelShapes');
@@ -194,10 +195,19 @@ async function logTextRun(ctx, panel, entry, resolved) {
     });
   } catch (err) {
     console.error('[profilerDispatcher] text run log failed:', err.message);
+    errorCenter.swallowed(err, 'profiler', 'text_run_log_failed');
   }
 }
 
-async function dispatchProfilerPanels({ ctx, didTransition }) {
+/** Error center (#903): everything recorded inside is tagged area 'profiler'. */
+function dispatchProfilerPanels(args) {
+  return errorCenter.withContext(
+    { lane: 'profiler', agentSlug: args.ctx.agentSlug, conversationId: args.ctx.conversationId },
+    () => dispatchProfilerPanelsInner(args),
+  );
+}
+
+async function dispatchProfilerPanelsInner({ ctx, didTransition }) {
   const { runnable, userId, conversationId, memory, emit } = ctx;
   // Master switch — `enabled:false` skips the whole Profiler (all panels).
   if (runnable.agent.body?.profiler?.enabled === false) return;
@@ -233,6 +243,7 @@ async function dispatchProfilerPanels({ ctx, didTransition }) {
       });
     } catch (err) {
       console.error('[profilerDispatcher] text panel resolve failed:', err.message);
+      errorCenter.swallowed(err, 'profiler', 'text_panel_resolve_failed');
     }
     textWrites.push(entry
       ? { kind: 'panel', panelId: panel.id, entry, slot: PROFILER_SLOT }
@@ -245,6 +256,7 @@ async function dispatchProfilerPanels({ ctx, didTransition }) {
       await builderMemory.saveMemory(userId, conversationId, memory);
     } catch (err) {
       console.error('[profilerDispatcher] text panel memory save failed:', err.message);
+      errorCenter.swallowed(err, 'profiler', 'text_panel_memory_save_failed');
     }
     await Promise.all(textLogs.map(t => logTextRun(ctx, t.panel, t.entry, t.resolved)));
     for (const t of textLogs) emitPanel(t.panel);
@@ -272,6 +284,7 @@ async function dispatchProfilerPanels({ ctx, didTransition }) {
       await offlineTriggerState.save(userId, conversationId, state);
     } catch (err) {
       console.error('[profilerDispatcher] trigger-state save failed:', err.message);
+      errorCenter.swallowed(err, 'profiler', 'trigger_state_save_failed');
     }
 
     if (dispatches.length > 0) {
@@ -280,6 +293,7 @@ async function dispatchProfilerPanels({ ctx, didTransition }) {
           .then(() => emitPanel(panel))
           .catch(err => {
             console.error('[profilerDispatcher] unexpected throw from runAddon:', err.message);
+            errorCenter.swallowed(err, 'profiler', 'unexpected_throw_from_runaddon');
           }),
       ));
     }
@@ -300,7 +314,14 @@ async function dispatchProfilerPanels({ ctx, didTransition }) {
  * @param {string} [a.mode]       — 'active' | 'viewing' | 'published'
  * @param {Function} [a.emit]     — optional SSE emitter (per-panel)
  */
-async function refreshProfilerPanels({ agentSlug, ownerUserId, userId, conversationId, mode = 'active', emit = () => {} }) {
+function refreshProfilerPanels(args) {
+  return errorCenter.withContext(
+    { lane: 'profiler', agentSlug: args.agentSlug, conversationId: args.conversationId },
+    () => refreshProfilerPanelsInner(args),
+  );
+}
+
+async function refreshProfilerPanelsInner({ agentSlug, ownerUserId, userId, conversationId, mode = 'active', emit = () => {} }) {
   const { resolveRunnable } = require('../services/builderProjects');
   const llm = require('../../services/llm');
   const { logUsage } = require('../../services/usageLogger');
@@ -386,6 +407,7 @@ async function refreshProfilerPanels({ agentSlug, ownerUserId, userId, conversat
       });
     } catch (err) {
       console.error('[profilerDispatcher] refresh text resolve failed:', err.message);
+      errorCenter.swallowed(err, 'profiler', 'refresh_text_resolve_failed');
     }
     textWrites.push(entry
       ? { kind: 'panel', panelId: panel.id, entry, slot: PROFILER_SLOT }
@@ -402,13 +424,14 @@ async function refreshProfilerPanels({ agentSlug, ownerUserId, userId, conversat
   const promptPanels = panels.filter(p => p?.source?.kind === 'prompt');
   await Promise.all(promptPanels.map(panel =>
     runAddon({ ctx, instance: toPromptInstance(panel), addonStart: Date.now() })
-      .catch(err => console.error('[profilerDispatcher] refresh runAddon failed:', err.message)),
+      .catch(err => { console.error('[profilerDispatcher] refresh runAddon failed:', err.message); errorCenter.swallowed(err, 'profiler', 'refresh_runaddon_failed'); }),
   ));
 
   try {
     await builderMemory.saveMemory(userId, conversationId, memory);
   } catch (err) {
     console.error('[profilerDispatcher] refresh save failed:', err.message);
+    errorCenter.swallowed(err, 'profiler', 'refresh_save_failed');
   }
 
   for (const panel of panels) emitPanel(panel);

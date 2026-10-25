@@ -39,12 +39,24 @@
  *
  * Storage: the existing `test_runs` table, `type = 'simulation'`
  * (`input` = the setup, `output` = progress and result). No schema change.
+ *
+ * ── Timed turns and the public address (load tests, task #902) ─────
+ *
+ * Every turn's time is kept (`output.timings`: how long, when, and — for a
+ * failed turn — the kind of error, in the error center's words). A job
+ * released with `via: 'public'` sends its turns through the server's public
+ * address instead of straight to its own process, like a real user, so
+ * routing between instances is part of what is measured. The address is
+ * the one the release came in on (`publicBase`) — production when released
+ * from production, a local server when released locally. One such
+ * conversation alone is the baseline a load test compares against.
  */
 
 const db = require('../../services/db.pg');
-const { eq, and, desc } = require('drizzle-orm');
+const { eq, and, desc, asc, isNull } = require('drizzle-orm');
 const { testRuns } = require('../../db/schema');
 const mcpConversations = require('./mcpConversations');
+const errorCenter = require('./errorCenter');
 const models = require('../../services/models.service');
 
 const TYPE = 'simulation';
@@ -53,6 +65,8 @@ const MAX_TURNS_CAP = 30;
 const MAX_LINES = 40;
 /** A turn takes seconds, rarely a minute or two; ten quiet minutes = gone. */
 const STALE_MS = 10 * 60 * 1000;
+/** A public-address turn that takes longer than this counts as a timeout. */
+const PUBLIC_TURN_TIMEOUT_MS = 3 * 60 * 1000;
 
 function drizzle() {
   return db.getDrizzle();
@@ -62,6 +76,30 @@ function refuse(status, message) {
   const e = new Error(message);
   e.status = status;
   return e;
+}
+
+/** Median and slowest-5% of the turns that answered; null when none did. */
+function timingSummary(timings) {
+  const ms = (timings || []).filter(t => t.ok).map(t => t.ms).sort((a, b) => a - b);
+  if (ms.length === 0) return null;
+  const at = q => ms[Math.min(ms.length - 1, Math.ceil(q * ms.length) - 1)];
+  return {
+    turns: ms.length,
+    medianMs: ms.length % 2 ? ms[(ms.length - 1) / 2] : Math.round((ms[ms.length / 2 - 1] + ms[ms.length / 2]) / 2),
+    p95Ms: at(0.95),
+    maxMs: ms[ms.length - 1],
+  };
+}
+
+/** The error center's kind for a failed turn (rate limit, timeout, our code…). */
+function turnErrorKind(err) {
+  if (err && err.turnFailure) return errorCenter.classify(new Error(err.turnFailure));
+  // The address itself refused the turn (Cloud Run 429 = no free instance,
+  // 5xx = it failed): our server, not the model.
+  if (err && (err.upstreamStatus === 429 || err.upstreamStatus >= 500)) return 'server_unavailable';
+  return errorCenter.classify({
+    message: err && err.message, status: err && err.upstreamStatus, code: err && err.code, name: err && err.name,
+  });
 }
 
 /** What the door and the Admin screen see. */
@@ -84,7 +122,11 @@ function shape(row) {
     startCrew: input.startCrew || null,
     fields: input.fields || null,
     conversationId: input.conversationId || null,
+    loadTestId: row.parentRunId || null,
     turns: output.turns || 0,
+    via: input.via === 'public' ? 'public' : 'direct',
+    timings: output.timings || [],
+    timing: timingSummary(output.timings),
     stopped: output.stopped || null,
     endedInCrew: output.endedInCrew || null,
     error: row.error || null,
@@ -155,10 +197,25 @@ function readSetup(b) {
  * @param {string} a.slug   the agent
  * @param {string} a.by     roster name of the person whose assistant asks
  * @param {object} a.body   { version?, label?, persona?, goal?, lines?,
- *                            maxTurns?, model?, startCrew?, fields? }
+ *                            maxTurns?, model?, startCrew?, fields?, via? }
+ * @param {string} [a.publicBase] the address the release came in on —
+ *                            where `via: 'public'` turns are sent
+ * @param {number} [a.parentRunId] the load test this job belongs to
+ *                            (builder/services/loadTests.js)
+ * @param {boolean} [a.hold]  create the job but do not start it — the
+ *                            caller starts it with startJob(), so a load
+ *                            test can start all of its conversations at once
  */
-async function releaseJob({ slug, by, body }) {
-  const b = body || {};
+async function releaseJob({ slug, by, body, publicBase, parentRunId, hold }) {
+  const b = { ...(body || {}) };
+  if (b.via != null && b.via !== 'public' && b.via !== 'direct') {
+    throw refuse(400, '"via" is "direct" (the default — straight to the server running the job) or "public" (through the public address, like a real user).');
+  }
+  // Decided where the release came in; a forwarded release keeps it.
+  if (b.via === 'public' && !b.publicBase) b.publicBase = publicBase;
+  if (b.via === 'public' && !/^https?:\/\/[^/\s]+$/.test(String(b.publicBase || ''))) {
+    throw refuse(400, "Could not tell this server's public address, so the simulation cannot go through it. Release it again, or use \"via\": \"direct\".");
+  }
   const remote = String(process.env.SIMULATION_SERVICE_URL || '').replace(/\/+$/, '');
   if (remote && !b._forwarded) {
     // The dedicated simulation service runs it; this server only passes it on.
@@ -178,12 +235,14 @@ async function releaseJob({ slug, by, body }) {
 
   // The conversation first — refuses an unknown agent, version or crew
   // with a sentence, and gives the job its conversation id from the start.
+  const base = b.via === 'public' ? b.publicBase : undefined;
   const conv = await mcpConversations.startConversation({
-    slug, by, version: b.version, label, startCrew: b.startCrew, fields: b.fields,
+    slug, by, version: b.version, label, startCrew: b.startCrew, fields: b.fields, base,
   });
 
   const [row] = await drizzle().insert(testRuns).values({
     type: TYPE,
+    ...(parentRunId ? { parentRunId } : {}),
     agentName: slug,
     status: 'pending',
     input: {
@@ -194,16 +253,26 @@ async function releaseJob({ slug, by, body }) {
       conversationId: conv.conversationId,
       ...(conv.crew ? { startCrew: conv.crew.name } : {}),
       ...(b.fields ? { fields: b.fields } : {}),
+      ...(base ? { via: 'public', publicBase: base } : {}),
     },
-    output: { turns: 0 },
+    output: { turns: 0, timings: [] },
   }).returning();
 
-  // Run it after this request has answered. Never let it take the process down.
-  setImmediate(() => {
-    runJob(row.id).catch(err => console.error(`[simulations] job ${row.id} crashed:`, err));
-  });
-
+  if (!hold) startJob(row.id);
   return shape(row);
+}
+
+/** Set by loadTests.js: (loadTestId) → null to go on, or why to stop. */
+let turnGate = null;
+function setTurnGate(fn) {
+  turnGate = fn;
+}
+
+/** Run a released job after the current request has answered. Never let it take the process down. */
+function startJob(id) {
+  setImmediate(() => {
+    runJob(id).catch(err => console.error(`[simulations] job ${id} crashed:`, err));
+  });
 }
 
 // ─── Run ───────────────────────────────────────────────────────────
@@ -213,23 +282,51 @@ async function runJob(id) {
   if (!row || row.type !== TYPE || row.status !== 'pending') return;
   const input = row.input || {};
   const conversationId = input.conversationId;
-  let output = { ...(row.output || {}), turns: 0 };
+  let output = { ...(row.output || {}), turns: 0, timings: [] };
   await save(id, { status: 'running', output });
+  const base = input.via === 'public' ? input.publicBase : undefined;
 
+  // One timed turn. A failed turn is timed too, with its kind, and then
+  // ends the job as before (the catch below).
   const say = async text => {
-    await mcpConversations.sendMessage({ conversationId, text });
-    output = { ...output, turns: output.turns + 1 };
+    const at = new Date().toISOString();
+    const t0 = Date.now();
+    let reply;
+    try {
+      reply = await mcpConversations.sendMessage({
+        conversationId, text, base, ...(base ? { timeoutMs: PUBLIC_TURN_TIMEOUT_MS } : {}),
+      });
+    } catch (err) {
+      output = { ...output, timings: [...output.timings, { turn: output.turns + 1, at, ms: Date.now() - t0, ok: false, kind: turnErrorKind(err) }] };
+      throw err;
+    }
+    const addonFailures = (reply.addons || []).filter(a => a.status === 'error').length;
+    const timing = { turn: output.turns + 1, at, ms: Date.now() - t0, ok: true, ...(addonFailures ? { addonFailures } : {}) };
+    output = { ...output, turns: output.turns + 1, timings: [...output.timings, timing] };
     await save(id, { output }); // also the heartbeat
+  };
+
+  // A load test's job asks before every turn whether it may go on (the
+  // $20 cap, task #902). Null = go on; a sentence = stop, saying why.
+  const gate = async () => {
+    if (!turnGate || !row.parentRunId) return null;
+    try { return await turnGate(row.parentRunId); } catch { return null; }
   };
 
   try {
     let stopped;
     if (Array.isArray(input.lines)) {
-      for (const line of input.lines) await say(line);
-      stopped = 'script finished';
+      for (const line of input.lines) {
+        stopped = await gate();
+        if (stopped) break;
+        await say(line);
+      }
+      if (!stopped) stopped = 'script finished';
     } else {
       const maxTurns = input.maxTurns || DEFAULT_MAX_TURNS;
       for (let i = 0; i < maxTurns && !stopped; i++) {
+        stopped = await gate();
+        if (stopped) break;
         const next = await mcpConversations.userReply({
           persona: input.persona, goal: input.goal, conversationId, model: input.model,
         });
@@ -243,7 +340,7 @@ async function runJob(id) {
 
     let endedInCrew = null;
     try {
-      const state = await mcpConversations.readState({ conversationId });
+      const state = await mcpConversations.readState({ conversationId, base });
       endedInCrew = state.crew ? state.crew.name : null;
     } catch { /* the result stands without it */ }
 
@@ -252,6 +349,20 @@ async function runJob(id) {
       output: { ...output, stopped, endedInCrew, finishedAt: new Date().toISOString() },
     });
   } catch (err) {
+    // Error center (#903). A failed agent turn was already recorded by the
+    // turn itself; this keeps what failed AROUND it — the simulated user's
+    // model, the address refusing the turn, a timeout.
+    if (!err.turnFailure && !errorCenter.wasRecorded(err)) {
+      errorCenter.record(err, {
+        area: 'simulation',
+        kind: turnErrorKind(err),
+        code: err.upstreamStatus ? `http_${err.upstreamStatus}` : 'job_failed',
+        agentSlug: row.agentName,
+        conversationId,
+        source: 'simulation',
+        detail: { simulationId: id, ...(row.parentRunId ? { loadTestId: row.parentRunId } : {}) },
+      });
+    }
     await save(id, {
       status: 'failed',
       error: err.message,
@@ -271,9 +382,20 @@ async function getJob(id) {
   return shape(await settleIfStale(row));
 }
 
+/** The jobs of one load test, in release order — settled like any job. */
+async function listChildJobs(parentRunId) {
+  const rows = await drizzle().select().from(testRuns)
+    .where(and(eq(testRuns.type, TYPE), eq(testRuns.parentRunId, parentRunId)))
+    .orderBy(asc(testRuns.id));
+  const settled = [];
+  for (const r of rows) settled.push(shape(await settleIfStale(r)));
+  return settled;
+}
+
+/** The agent's own simulations — a load test's conversations show under the load test. */
 async function listJobs({ slug, limit }) {
   const rows = await drizzle().select().from(testRuns)
-    .where(and(eq(testRuns.type, TYPE), eq(testRuns.agentName, slug)))
+    .where(and(eq(testRuns.type, TYPE), eq(testRuns.agentName, slug), isNull(testRuns.parentRunId)))
     .orderBy(desc(testRuns.createdAt))
     .limit(Math.min(Math.max(Number(limit) || 50, 1), 200));
   const settled = [];
@@ -281,4 +403,7 @@ async function listJobs({ slug, limit }) {
   return settled;
 }
 
-module.exports = { releaseJob, getJob, listJobs, STALE_MS };
+module.exports = {
+  releaseJob, startJob, getJob, listJobs, listChildJobs, timingSummary, setTurnGate, STALE_MS,
+  _internal: { timingSummary, turnErrorKind },
+};

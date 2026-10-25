@@ -20,6 +20,7 @@ require('dotenv').config({ quiet: true });
 const express = require('express');
 const db = require('../services/db.pg');
 const bp = require('../builder/services/builderProjects');
+const errorCenter = require('../builder/services/errorCenter');
 
 const TEST_SLUG = 'zz-mcp-test';
 const BORN_CLEAN_SLUG = 'zz-mcp-born-clean';
@@ -503,6 +504,37 @@ async function removeIfPresent(slug) {
     check('unknown model → 400', (await post('/simulations', { name: 'Claude', agent: TEST_SLUG, persona: 'x', model: 'zz-not-a-model' })).status === 400);
     check('unknown simulation → 404', (await get('/simulations/999999999')).status === 404);
     check('an agent\'s simulations list reads', (await get(`/agents/${TEST_SLUG}/simulations`)).status === 200);
+
+    // ── load tests (task #902) — estimate, refusals and reads only; a released
+    //    run would spend tokens. Run logic: scripts/test-load-tests.js ──
+    section('load tests');
+    check('entry page teaches load tests and asks to check with the person first',
+      doc.text.includes(`POST ${base}/load-tests`) && doc.text.includes(`${base}/load-tests/estimate`) && /Ask the person before\s+starting one/.test(doc.text));
+    const est = await post('/load-tests/estimate', { agent: TEST_SLUG, conversations: 3 });
+    const estJson = JSON.parse(est.text || '{}');
+    check('estimate answers with a cost, the cap and its basis', est.status === 200 && typeof estJson.usd === 'number' && estJson.capUsd === 20 && !!estJson.basis, est.text.slice(0, 120));
+    check('estimate without an agent → 400', (await post('/load-tests/estimate', { conversations: 3 })).status === 400);
+    check('release without a person → 400', (await post('/load-tests', { agent: TEST_SLUG, conversations: 2 })).status === 400);
+    check('release without an agent → 400', (await post('/load-tests', { name: 'Claude', conversations: 2 })).status === 400);
+    const tooMany = await post('/load-tests', { name: 'Claude', agent: TEST_SLUG, conversations: 21 });
+    check('21 conversations → 400 with a sentence', tooMany.status === 400 && /1 to 20/.test(tooMany.text), tooMany.text.slice(0, 80));
+    check('unknown load test → 404', (await get('/load-tests/999999999')).status === 404);
+    check('an agent\'s load tests list reads', (await get(`/agents/${TEST_SLUG}/load-tests`)).status === 200);
+
+    // ── errors (task #903) — read only ──
+    section('errors');
+    check('entry page teaches the error list', doc.text.includes(`${base}/agents/<slug>/errors`));
+    const errMsg = `mcp battery test error ${Date.now()}`;
+    await errorCenter.recordNow(new Error(errMsg), { area: 'turn', code: 'battery_test', agentSlug: TEST_SLUG, source: 'builder' });
+    const errList = await get(`/agents/${TEST_SLUG}/errors`);
+    check('the agent\'s errors list shows a recorded error', errList.status === 200 && errList.text.includes(errMsg), errList.text.slice(0, 120));
+    const detailUrl = (errList.text.match(/details: (\S+)/) || [])[1] || '';
+    check('…with an absolute details link', detailUrl.startsWith(base), detailUrl);
+    const detail = detailUrl ? await get(detailUrl.slice(base.length)) : { status: 0, text: '' };
+    check('the details page lists its occurrences', detail.status === 200 && detail.text.includes(errMsg) && /Occurrences/.test(detail.text), detail.text.slice(0, 120));
+    check('a filter that matches nothing says so', /No errors/.test((await get(`/agents/${TEST_SLUG}/errors?kind=database&area=trigger`)).text));
+    check('unknown error group → 404', (await get(`/agents/${TEST_SLUG}/errors/${'0'.repeat(40)}`)).status === 404);
+    await db.query("DELETE FROM error_events WHERE agent_slug = $1 AND code = 'battery_test'", [TEST_SLUG]).catch(() => {});
 
     // ── refusals ──
     section('refusals');

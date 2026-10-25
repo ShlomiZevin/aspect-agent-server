@@ -1086,7 +1086,10 @@ class OpenAIService {
       return { text, usage };
     } catch (error) {
       console.error('❌ OpenAI OneShot Error:', error.message);
-      throw new Error(`Failed to get one-shot response: ${error.message}`);
+      const err = new Error(`Failed to get one-shot response: ${error.message}`);
+      // Keep the provider's HTTP status (429 = rate limit) for the error center / retry.
+      err.status = error.status || error.statusCode || null;
+      throw err;
     }
   }
 

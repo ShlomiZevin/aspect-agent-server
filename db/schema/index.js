@@ -746,5 +746,6 @@ module.exports = {
   // Triggers (proactive) — see docs/guides/BUILDER_V2_TRIGGERS.md
   triggerEvents:          builderSchema.triggerEvents,
   triggerStatus:          builderSchema.triggerStatus,
+  errorEvents:            builderSchema.errorEvents,
   agentLog,
 };

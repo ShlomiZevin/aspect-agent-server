@@ -56,8 +56,13 @@ function refuse(status, message) {
   return e;
 }
 
-/** Our own server, from inside it. */
-function selfUrl(pathname) {
+/**
+ * Our own server. By default straight from inside it; with `base` (a load
+ * test, task #902) through that address instead — the public front door,
+ * like a real user, so routing between instances is part of the test.
+ */
+function selfUrl(pathname, base) {
+  if (base) return `${String(base).replace(/\/+$/, '')}${pathname}`;
   return `http://127.0.0.1:${process.env.PORT || 3000}${pathname}`;
 }
 
@@ -93,8 +98,9 @@ async function countUse(kind, cap) {
  * @param {string} [a.label]   free text shown on the conversation
  * @param {string} [a.startCrew] crew id or name to begin in
  * @param {object} [a.fields]  { fieldName: value } the conversation is born with
+ * @param {string} [a.base]    send through this address (see selfUrl)
  */
-async function startConversation({ slug, by, version, label, startCrew, fields }) {
+async function startConversation({ slug, by, version, label, startCrew, fields, base }) {
   const project = await builderProjects.hydrateProject({ agentSlug: slug });
   const agent = project && project.agents[0];
   if (!agent) throw refuse(404, `No agent with slug "${slug}". Fetch ../agents for the list.`);
@@ -127,7 +133,7 @@ async function startConversation({ slug, by, version, label, startCrew, fields }
   const tag = Math.random().toString(36).slice(2, 10);
   const ownerUserId = `sim-${String(by).toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${tag}`;
 
-  const res = await fetch(selfUrl(`/api/agents/${encodeURIComponent(slug)}/conversations`), {
+  const res = await fetch(selfUrl(`/api/agents/${encodeURIComponent(slug)}/conversations`, base), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ownerUserId, source: 'simulation', ...(seedMemory ? { seedMemory } : {}) }),
@@ -196,22 +202,30 @@ async function readEvents(res, onEvent) {
 /**
  * Send one user message; resolve with the whole reply.
  *
+ * `base` sends it through that address (see selfUrl); `timeoutMs` gives up
+ * on a turn that takes longer. A failure carries what went wrong for a
+ * load test to classify: `turnFailure` (the agent's own error) or
+ * `upstreamStatus` (the address answered with an HTTP error).
+ *
  * @returns {{ conversationId, reply, messageId, crew?, transition?, fieldsWritten?, addons?, export }}
  */
-async function sendMessage({ conversationId, text }) {
+async function sendMessage({ conversationId, text, base, timeoutMs }) {
   const message = String(text || '').trim();
   if (!message) throw refuse(400, 'Send { "text": "what the user says" }.');
   const { id, sim, slug } = await loadSimulation(conversationId);
   await countUse('turns', DAILY_TURN_CAP);
 
-  const res = await fetch(selfUrl(`/api/agents/${encodeURIComponent(slug)}/conversations/${id}/messages`), {
+  const res = await fetch(selfUrl(`/api/agents/${encodeURIComponent(slug)}/conversations/${id}/messages`, base), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ownerUserId: sim.ownerUserId, userMessage: message, version: sim.version }),
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
   if (!res.ok || !res.body) {
     const body = await res.text().catch(() => '');
-    throw new Error(`the agent did not accept the message (${res.status}) ${body.slice(0, 200)}`);
+    const e = new Error(`the agent did not accept the message (${res.status}) ${body.slice(0, 200)}`);
+    e.upstreamStatus = res.status;
+    throw e;
   }
 
   const replies = [];
@@ -228,7 +242,11 @@ async function sendMessage({ conversationId, text }) {
       stopped = true;
     }
   });
-  if (failure) throw refuse(502, `The agent's turn failed: ${failure}. The conversation is intact — open it in the Builder, or fetch ../conversations/${id}, to see which addon broke.`);
+  if (failure) {
+    const e = refuse(502, `The agent's turn failed: ${failure}. The conversation is intact — open it in the Builder, or fetch ../conversations/${id}, to see which addon broke.`);
+    e.turnFailure = failure;
+    throw e;
+  }
 
   const out = {
     conversationId: id,
@@ -261,7 +279,7 @@ async function sendMessage({ conversationId, text }) {
 // ─── State ─────────────────────────────────────────────────────────
 
 /** Fields / memory / thinking and the current crew — any conversation. */
-async function readState({ conversationId }) {
+async function readState({ conversationId, base }) {
   const id = Number(conversationId);
   if (!Number.isInteger(id) || id <= 0) throw refuse(400, 'The conversation id is a number.');
   const d = drizzle();
@@ -276,6 +294,7 @@ async function readState({ conversationId }) {
   const res = await fetch(selfUrl(
     `/api/agents/${encodeURIComponent(meta.agentSlug)}/conversations/${id}/memory`
     + `?ownerUserId=${encodeURIComponent(user.externalId)}&version=${version}`,
+    base,
   ));
   const memory = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(memory.error || `could not read the memory (${res.status})`);

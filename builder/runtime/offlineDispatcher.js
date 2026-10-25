@@ -32,6 +32,7 @@
  * the offline runs see consistent state.
  */
 
+const errorCenter = require('../services/errorCenter');
 const { runAddon } = require('./addonRunner');
 const offlineTriggerState = require('./offlineTriggerState');
 
@@ -128,6 +129,7 @@ async function dispatchOfflineAddons({ ctx, didTransition }) {
     await offlineTriggerState.save(userId, conversationId, state);
   } catch (err) {
     console.error('[offlineDispatcher] trigger-state save failed:', err.message);
+    errorCenter.record(err, { area: 'offline', code: 'trigger_state_save', agentSlug: ctx.agentSlug, conversationId });
   }
 
   if (dispatches.length === 0) return;
@@ -149,6 +151,9 @@ async function dispatchOfflineAddons({ ctx, didTransition }) {
         // a throw here is something unexpected. Log + swallow so one
         // bad offline addon can't take down the others.
         console.error('[offlineDispatcher] unexpected throw from runAddon:', err.message);
+        if (!errorCenter.wasRecorded(err)) {
+          errorCenter.record(err, { area: 'offline', code: 'unexpected_throw', agentSlug: ctx.agentSlug, conversationId, group: instance.instanceId, detail: { addon: { instanceId: instance.instanceId, pluginId: instance.pluginId } } });
+        }
       }),
   ));
 }

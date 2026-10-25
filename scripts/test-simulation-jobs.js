@@ -18,15 +18,15 @@ const fake = (file, exports) => { const id = require.resolve(file); require.cach
 
 const rows = [];
 let nextId = 1;
-const match = (r, c) => (!c ? true : c.and ? c.and.every(x => match(r, x)) : r[c.col] === c.val);
+const match = (r, c) => (!c ? true : c.and ? c.and.every(x => match(r, x)) : c.isNull ? r[c.isNull] == null : r[c.col] === c.val);
 const drizzle = () => ({
   insert: () => ({ values: v => ({ returning: async () => { const r = { id: nextId++, error: null, createdAt: new Date(), updatedAt: new Date(), ...v }; rows.push(r); return [{ ...r }]; } }) }),
   update: () => ({ set: p => ({ where: c => { const hit = rows.filter(r => match(r, c)); hit.forEach(r => Object.assign(r, p)); const out = hit.map(r => ({ ...r })); return Object.assign(Promise.resolve(out), { returning: async () => out }); } }) }),
-  select: () => ({ from: () => ({ where: c => { const hit = rows.filter(r => match(r, c)).map(r => ({ ...r })); return { limit: async () => hit, orderBy: () => ({ limit: async () => [...hit].sort((a, b) => b.createdAt - a.createdAt) }) }; } }) }),
+  select: () => ({ from: () => ({ where: c => { const hit = rows.filter(r => match(r, c)).map(r => ({ ...r })); return { limit: async () => hit, orderBy: o => { const sorted = o === 'asc:id' ? [...hit].sort((a, b) => a.id - b.id) : [...hit].sort((a, b) => b.createdAt - a.createdAt); return Object.assign(Promise.resolve(sorted), { limit: async () => sorted }); } }; } }) }),
 });
 fake(root + 'services/db.pg.js', { getDrizzle: drizzle });
-fake(root + 'db/schema/index.js', { testRuns: { id: 'id', type: 'type', agentName: 'agentName', createdAt: 'createdAt' } });
-fake(root + 'node_modules/drizzle-orm/index.cjs', { eq: (col, val) => ({ col, val }), and: (...a) => ({ and: a }), desc: x => x });
+fake(root + 'db/schema/index.js', { testRuns: { id: 'id', type: 'type', agentName: 'agentName', createdAt: 'createdAt', parentRunId: 'parentRunId' } });
+fake(root + 'node_modules/drizzle-orm/index.cjs', { eq: (col, val) => ({ col, val }), and: (...a) => ({ and: a }), desc: x => x, asc: x => `asc:${x}`, isNull: col => ({ isNull: col }) });
 
 const said = {};
 let failOn = null;
@@ -108,6 +108,30 @@ const refused = async fn => { try { await fn(); return null; } catch (e) { retur
   check('list holds only this agent\'s simulations, not other agents or other test-run kinds', list.length === 7 && list.every(j => j.agent === 'bank'), String(list.length));
   check('unknown job → 404', await refused(() => jobs.getJob(99999)) === 404);
   check('a non-simulation test run is not readable as a simulation', await refused(() => jobs.getJob(otherKindId)) === 404);
+
+  // timed turns + the public address (task #902)
+  check('every turn is timed', sDone.timings.length === 2 && sDone.timings.every(t => t.ok && t.ms >= 0 && t.at) && sDone.timing && sDone.timing.turns === 2, JSON.stringify(sDone.timing));
+  const viaPub = await jobs.releaseJob({ slug: 'bank', by: 'Noa', body: { lines: ['hi'], via: 'public' }, publicBase: 'https://example.run.app' });
+  check('via public is kept with the address it came in on', viaPub.via === 'public' && rows.find(r => r.id === viaPub.id).input.publicBase === 'https://example.run.app');
+  check('via public with no address → 400', await refused(() => jobs.releaseJob({ slug: 'bank', by: 'Noa', body: { lines: ['hi'], via: 'public' } })) === 400);
+  check('an unknown via → 400', await refused(() => jobs.releaseJob({ slug: 'bank', by: 'Noa', body: { lines: ['hi'], via: 'sideways' } })) === 400);
+  failOn = 'boom';
+  const bad = await jobs.releaseJob({ slug: 'bank', by: 'Noa', body: { lines: ['fine', 'boom'] } });
+  await settle();
+  const badDone = await jobs.getJob(bad.id);
+  check('a failed turn is timed too, with its kind', badDone.timings.length === 2 && badDone.timings[1].ok === false && badDone.timings[1].kind === 'code', JSON.stringify(badDone.timings[1]));
+  failOn = null;
+
+  // a load test's conversations (task #902)
+  const h1 = await jobs.releaseJob({ slug: 'bank', by: 'Noa', body: { lines: ['a'] }, parentRunId: 500, hold: true });
+  const h2 = await jobs.releaseJob({ slug: 'bank', by: 'Noa', body: { lines: ['a'] }, parentRunId: 500, hold: true });
+  await settle();
+  check('a held job waits to be started', (await jobs.getJob(h1.id)).status === 'pending');
+  jobs.startJob(h1.id); jobs.startJob(h2.id);
+  await settle();
+  const children = await jobs.listChildJobs(500);
+  check('…startJob runs it; a load test lists its own jobs in order', children.length === 2 && children[0].id === h1.id && children.every(c => c.status === 'completed' && c.loadTestId === 500), children.map(c => c.status).join(','));
+  check('the Simulations list leaves a load test\'s jobs out', (await jobs.listJobs({ slug: 'bank' })).every(j => !j.loadTestId));
 
   console.log(fails ? `\n${fails} FAILED` : '\nALL PASS');
   process.exit(fails ? 1 : 0);

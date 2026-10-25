@@ -47,6 +47,7 @@ const { conversations } = require('../../db/schema');
 const { assemblePrompt } = require('./promptAssembler');
 const { getPlugin } = require('./pluginRegistry');
 const builderMemory = require('./builderMemory');
+const errorCenter = require('../services/errorCenter');
 const addonRunsStore = require('./addonRunsStore');
 const historyService = require('./historyService');
 const { evaluateConditions } = require('./conditionMatcher');
@@ -68,7 +69,46 @@ function isEmptyValue(v) {
  * @param {number} [args.addonStart] — wall-clock ms at start of execution.
  *                                     Defaults to `Date.now()` if omitted.
  */
+/**
+ * Error center (task #903): every add-on failure — all five `addon.error`
+ * sites below, main and offline lanes alike — goes through this one
+ * wrapper around `emit`. The run happens inside an error context (agent,
+ * conversation, reply, which add-on), so a model error recorded deeper
+ * down knows where it was; an error already recorded there (passed as the
+ * third `emit` argument) is not counted twice. Recording never changes
+ * what the add-on emits or returns.
+ */
 async function runAddon({ ctx, instance, addonStart = Date.now() }) {
+  const addon = {
+    instanceId: instance.instanceId,
+    pluginId: instance.pluginId,
+    label: instance.config?.name || instance.pluginId,
+    lane: instance.lane,
+  };
+  const emit = (type, payload, cause) => {
+    if (type === 'addon.error' && !errorCenter.wasRecorded(cause)) {
+      const e = payload && payload.error ? payload.error : {};
+      const lane = errorCenter.currentContext().lane;
+      errorCenter.record(cause || new Error(e.message || 'add-on failed'), {
+        area: lane || (instance.lane === 'offline' ? 'offline' : 'addon'),
+        code: e.code || null,
+        group: instance.instanceId,
+      });
+    }
+    return ctx.emit(type, payload);
+  };
+  return errorCenter.withContext(
+    {
+      agentSlug: ctx.agentSlug,
+      conversationId: ctx.conversationId,
+      messageId: ctx.assistantMessageId || null,
+      detail: { addon },
+    },
+    () => runAddonInner({ ctx: { ...ctx, emit }, instance, addonStart }),
+  );
+}
+
+async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
   const {
     runnable,
     agentSlug,
@@ -265,7 +305,7 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
     emit('addon.error', {
       instanceId: instance.instanceId,
       error: { code: 'unknown_plugin', message: err.message },
-    });
+    }, err);
     return { result: null, didTransition: false, broke: false };
   }
 
@@ -330,7 +370,7 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
     emit('addon.error', {
       instanceId: instance.instanceId,
       error: { code: 'assemble_failed', message: err.message },
-    });
+    }, err);
     return { result: null, didTransition: false, broke: false };
   }
 
@@ -442,7 +482,7 @@ async function runAddon({ ctx, instance, addonStart = Date.now() }) {
     emit('addon.error', {
       instanceId: instance.instanceId,
       error: { code: 'plugin_run_failed', message: err.message },
-    });
+    }, err);
     return { result: null, didTransition: false, broke: false };
   }
 

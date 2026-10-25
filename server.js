@@ -90,6 +90,9 @@ if (process.env.NODE_ENV === 'development') {
         'https://freeda-2b4af.firebaseapp.com',
         'https://lybi-prod.web.app',
         'https://lybi-prod.firebaseapp.com',
+        // Lybi staging (task #913) — project lybi-staging
+        'https://lybi-staging.web.app',
+        'https://lybi-staging.firebaseapp.com',
         'https://lybi.ai',
         'https://app.freeda.ai'
       ];
@@ -162,6 +165,12 @@ app.use('/api/agents', require('./builder/routes/runtimeRoute'));
 // itself; released through /builder/mcp, watched in Admin → Simulations
 // (task #897). See builder/services/simulationJobs.js.
 app.use('/api/simulations', require('./builder/routes/simulationsRoute'));
+// Load tests — several simulations released together, shown as one run
+// (task #902). See builder/services/loadTests.js.
+app.use('/api/load-tests', require('./builder/routes/loadTestsRoute'));
+// Error center — errors on the conversation path, grouped; read by
+// Admin → Errors (task #903). See builder/services/errorCenter.js.
+app.use('/api/errors', require('./builder/routes/errorsRoute'));
 
 // ─── Aspect BI ─────────────────────────────────────────────────────
 // Standalone Qlik-style BI layer over customer data schemas (hypertoy
@@ -6668,6 +6677,18 @@ app.delete('/api/library/files/:id', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ─── Error center catch-all (task #903, #8) ──────────────────────────────────
+// Records what nothing else caught, then behaves exactly as before:
+//  - a route error still goes to Express's default handler (next(err));
+//  - an unhandled rejection / uncaught exception still ends the process
+//    with exit code 1, as Node's default does — after the record is
+//    written (or 2 s at most).
+const errorCenterCatchAll = require('./builder/services/errorCenter');
+// Email Shlomi when a serious error first appears in a customer conversation (#903, step 6).
+require('./builder/services/errorAlerts').register();
+app.use(errorCenterCatchAll.expressCatchAll());
+errorCenterCatchAll.installCrashHandlers();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Initialize database and start server
