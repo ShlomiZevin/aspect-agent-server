@@ -345,10 +345,12 @@ async function userReply({ persona, goal, conversationId, transcript, model }) {
   }
 
   let turns = [];
+  let agentName = null; // for llm_usage — the simulated user's cost counts to the agent
   if (conversationId != null && conversationId !== '') {
     const data = await exportConversation({ conversationId, include: 'messages' });
     if (!data) throw refuse(404, `No conversation ${conversationId}.`);
     turns = (data.messages || []).map(m => ({ role: m.role, text: m.text }));
+    agentName = data.agent?.name || data.agent?.slug || null;
   } else if (Array.isArray(transcript)) {
     turns = transcript.map(m => ({ role: m && m.role, text: m && (m.text ?? m.content) }));
   }
@@ -369,6 +371,10 @@ async function userReply({ persona, goal, conversationId, transcript, model }) {
     maxTokens: 600,
     jsonOutput: true,
     context: 'mcp_simulated_user',
+    // Counted to the agent and conversation it plays in, so the agent's
+    // usage shows what its simulations cost (MCP /usage).
+    ...(agentName ? { agentName, crewMember: 'Simulated user' } : {}),
+    ...(conversationId != null && conversationId !== '' ? { conversationId: String(conversationId) } : {}),
   });
   const rawText = typeof raw === 'string' ? raw : (raw && (raw.text ?? raw.content)) ?? '';
   let parsed = null;

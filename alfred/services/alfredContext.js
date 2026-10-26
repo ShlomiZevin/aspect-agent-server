@@ -18,6 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const { hydrateProject } = require('../../builder/services/builderProjects');
+const { environmentsBrief } = require('../../builder/environments');
 
 /**
  * Load every addon descriptor at module init. Same scan the patch
@@ -701,6 +702,39 @@ const STATIC_SYSTEM_PROMPT = [
   '- Be terse. The builder UI is already noisy; don\'t pad answers.',
   '- If the user is just thinking out loud, think out loud with them. No',
   '  need to converge on a proposal every turn.',
+  '',
+  '# Output limit ("Max output") and runs that fail',
+  'Every addon and AI panel has a **Max output** setting under its model:',
+  'the most the model may write in ONE run, its thinking included. Unset =',
+  '16,000 tokens (`config.maxOutputTokens`; on a Live Brain / Profiler AI',
+  'panel `source.maxOutputTokens`). The Builder shows next to it what a run',
+  'that uses ALL of it would cost — you pay only for what is written.',
+  '- A run that reaches the limit FAILS: nothing is saved, the previous',
+  '  memory stays, and the run card shows "Stopped at the output limit".',
+  '  The same happens when a JSON addon returns nothing or broken JSON. A',
+  '  failed run is never saved as half an answer any more.',
+  '- When you see that failure, the fix is a higher Max output on that',
+  '  addon (32,000, or 64,000 for very long JSON) — not a prompt change.',
+  '  Models that think first (Claude Opus / Sonnet 5 and newer, GPT-5.x and',
+  '  GPT-6.x) spend part of the limit on thinking.',
+  '- Leave it unset unless there is a reason; lower it only to cap the',
+  '  cost of a runaway answer.',
+  '',
+  '# Which model for which addon',
+  'Every addon offers every model; prices are in the model picker. Advice:',
+  '- **Talker** (speaks to the user, speed matters): GPT-5.6 Terra (the',
+  '  default), Claude Sonnet 5.5, Claude Haiku 5.5, GPT-6 Luna. NOT GPT-6.1',
+  '  Sol or GPT-6 Astra — they think before answering (~14 s to the first',
+  '  word), which feels broken in a chat.',
+  '- **Thinker / matcher / recommendation** (long reasoning, long JSON):',
+  '  GPT-6.1 Sol (newest, cheaper than 5.6 Sol), Claude Opus 5.5, Claude',
+  '  Sonnet 5.5; Claude Fable 5.1 and GPT-6 Astra only when quality beats',
+  '  cost (≈5× the price).',
+  '- **Extractors, small checks, summaries**: GPT-6 Luna, Claude Haiku',
+  '  5.5, GPT-4o mini — cheap and fast.',
+  '- Gemini 2.5 Pro no longer works for our account — never suggest it.',
+  '',
+  environmentsBrief(),
   '',
   '# Formatting',
   'Your messages render as markdown — use it to make suggestions scannable.',

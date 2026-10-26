@@ -355,6 +355,16 @@ saved for the others unless the person passes it on.
 | The files in a knowledge base | \`${base}/kbs/<name>/files\` |
 | One file's text, chunk by chunk | \`${base}/kbs/<name>/files/<fileId>\` |
 | **Our source code**, any path, directories list | \`${base}/code/<path>\` |
+| **What the models cost** — every agent's estimated cost over the last N days (default 7, up to 90) | \`${base}/usage?days=7\` |
+| One agent's cost — where it ran (Builder chat / simulations / customers), by day, crew, add-on step and model, and its costliest conversations | \`${base}/agents/<slug>/usage?days=7\` |
+| One conversation's cost, by crew, step and model | \`${base}/conversations/<id>/usage\` |
+
+Costs are estimates at list price (the model list with prices: \`${origin}/api/models\`);
+cache discounts are not counted, so the real bill can only be lower. They
+cover this environment only — the other environment has its own (see
+"Environments"). When someone asks "why is this expensive", look at the
+step and model tables first: the cost is almost always one add-on on one
+model, run on every turn.
 
 ## Learning how the platform actually works
 
@@ -444,6 +454,18 @@ opens showing "unsaved changes" before anyone has touched it.
   "Runs in" ✓/✕ chips). Use the real crew ids from the agent's crews —
   never invent one — and omit the key to mean "all crews", never \`[]\`.
   Crew addons never carry it.
+- **"Max output"** is \`config.maxOutputTokens\` on an addon (\`source.maxOutputTokens\`
+  on a Live Brain / Profiler AI panel): the most the model may write in one
+  run, thinking included. Leave it out for the default, 16,000; a whole
+  number 256–64000 otherwise. A run that reaches it **fails** — nothing
+  saved, the run shows \`output_cut_off\` / "Stopped at the output limit".
+  The same for a JSON addon that returns nothing (\`empty_output\`) or
+  broken JSON (\`bad_json\`). When you see one, the fix is a higher Max
+  output on that addon, not a prompt change.
+- Models: read \`${origin}/api/models\` for the current list with prices
+  — never assume an id. GPT-6.1 Sol and GPT-6 Astra think before they
+  answer (~14 s to the first word): fine for a thinker or matcher, wrong
+  for a talker.
 
 ## Testing an agent — talk to it yourself
 
@@ -855,6 +877,41 @@ router.get('/conversations/:id', async (req, res) => {
  * fetches itself never differ. JSON, like /agents/:slug: the structure IS
  * the point, and the digest above is the prose view of the same data.
  */
+// ─── LLM usage and cost (readers in alfredTools.js) ────────────────
+
+router.get('/usage', async (req, res) => {
+  try {
+    sendText(res, await alfredTools.usageOverview({ days: req.query.days }));
+  } catch (err) {
+    console.error('[builder-mcp] usage failed:', err);
+    res.status(500).type('text/plain').send(`Could not read the usage: ${err.message}`);
+  }
+});
+
+router.get('/agents/:slug/usage', async (req, res) => {
+  try {
+    const text = await alfredTools.agentUsage({ agentSlug: req.params.slug, days: req.query.days });
+    if (text === null) {
+      return res.status(404).type('text/plain').send(
+        `No agent with slug "${req.params.slug}". Fetch ../../agents for the list — or ../../usage for every agent's cost.`,
+      );
+    }
+    sendText(res, text);
+  } catch (err) {
+    console.error('[builder-mcp] agent usage failed:', err);
+    res.status(500).type('text/plain').send(`Could not read the usage: ${err.message}`);
+  }
+});
+
+router.get('/conversations/:id/usage', async (req, res) => {
+  try {
+    sendText(res, await alfredTools.conversationUsage({ conversationId: req.params.id }));
+  } catch (err) {
+    console.error('[builder-mcp] conversation usage failed:', err);
+    res.status(500).type('text/plain').send(`Could not read the usage: ${err.message}`);
+  }
+});
+
 router.get('/conversations/:id/export', async (req, res) => {
   try {
     const data = await exportConversation({ conversationId: req.params.id, include: req.query.include });

@@ -391,6 +391,20 @@ export interface FieldExtractorConfig {
   prompt: string;
   model: ModelRef;
   /**
+   * "Max output" (tasks #889, #920): the most the model may write in ONE
+   * run, its thinking included. Unset = 16,000 (the default — leave it
+   * unset unless there is a reason). Allowed 256–64,000; the Builder offers
+   * 4,000 / 8,000 / 16,000 / 32,000 / 64,000.
+   *
+   * A run that reaches it FAILS (nothing saved, previous memory kept, the
+   * run card shows "Stopped at the output limit") — it is never saved as a
+   * partial answer. So raise it when an addon writes long JSON (e.g. several
+   * product objects in Hebrew) or uses a model that thinks first (Claude
+   * Opus/Sonnet 5+, GPT-5.x/6.x); lower it only to cap the cost of a
+   * runaway answer. You pay for what is written, not for the limit.
+   */
+  maxOutputTokens?: number;
+  /**
    * User-editable name for this extractor instance. Lets users
    * distinguish "Date Extractor" from "Intent Extractor" in the
    * chain canvas. Empty → falls back to "Field Extractor [#N]".
@@ -421,6 +435,20 @@ export interface FieldExtractorConfig {
 export interface FieldReasonerConfig {
   prompt: string;
   model: ModelRef;
+  /**
+   * "Max output" (tasks #889, #920): the most the model may write in ONE
+   * run, its thinking included. Unset = 16,000 (the default — leave it
+   * unset unless there is a reason). Allowed 256–64,000; the Builder offers
+   * 4,000 / 8,000 / 16,000 / 32,000 / 64,000.
+   *
+   * A run that reaches it FAILS (nothing saved, previous memory kept, the
+   * run card shows "Stopped at the output limit") — it is never saved as a
+   * partial answer. So raise it when an addon writes long JSON (e.g. several
+   * product objects in Hebrew) or uses a model that thinks first (Claude
+   * Opus/Sonnet 5+, GPT-5.x/6.x); lower it only to cap the cost of a
+   * runaway answer. You pay for what is written, not for the limit.
+   */
+  maxOutputTokens?: number;
   /** Instance display name. Empty → falls back to "Field Reasoner [#N]". */
   name?: string;
   /** Length-1 array referencing the FieldDef this Reasoner populates.
@@ -446,6 +474,20 @@ export interface FieldReasonerConfig {
 export interface FieldInterviewerConfig {
   prompt: string;
   model: ModelRef;
+  /**
+   * "Max output" (tasks #889, #920): the most the model may write in ONE
+   * run, its thinking included. Unset = 16,000 (the default — leave it
+   * unset unless there is a reason). Allowed 256–64,000; the Builder offers
+   * 4,000 / 8,000 / 16,000 / 32,000 / 64,000.
+   *
+   * A run that reaches it FAILS (nothing saved, previous memory kept, the
+   * run card shows "Stopped at the output limit") — it is never saved as a
+   * partial answer. So raise it when an addon writes long JSON (e.g. several
+   * product objects in Hebrew) or uses a model that thinks first (Claude
+   * Opus/Sonnet 5+, GPT-5.x/6.x); lower it only to cap the cost of a
+   * runaway answer. You pay for what is written, not for the limit.
+   */
+  maxOutputTokens?: number;
   /** Instance display name. Empty → falls back to "Field Interviewer [#N]". */
   name?: string;
   /** Length-1 array referencing the FieldDef this Interviewer populates. */
@@ -461,6 +503,20 @@ export interface TalkerConfig {
   /** The voice prompt — what the crew is supposed to say and how. */
   prompt: string;
   model: ModelRef;
+  /**
+   * "Max output" (tasks #889, #920): the most the model may write in ONE
+   * run, its thinking included. Unset = 16,000 (the default — leave it
+   * unset unless there is a reason). Allowed 256–64,000; the Builder offers
+   * 4,000 / 8,000 / 16,000 / 32,000 / 64,000.
+   *
+   * A run that reaches it FAILS (nothing saved, previous memory kept, the
+   * run card shows "Stopped at the output limit") — it is never saved as a
+   * partial answer. So raise it when an addon writes long JSON (e.g. several
+   * product objects in Hebrew) or uses a model that thinks first (Claude
+   * Opus/Sonnet 5+, GPT-5.x/6.x); lower it only to cap the cost of a
+   * runaway answer. You pay for what is written, not for the limit.
+   */
+  maxOutputTokens?: number;
 }
 
 /**
@@ -478,6 +534,20 @@ export interface TalkerConfig {
 export interface ThinkerConfig {
   prompt: string;
   model: ModelRef;
+  /**
+   * "Max output" (tasks #889, #920): the most the model may write in ONE
+   * run, its thinking included. Unset = 16,000 (the default — leave it
+   * unset unless there is a reason). Allowed 256–64,000; the Builder offers
+   * 4,000 / 8,000 / 16,000 / 32,000 / 64,000.
+   *
+   * A run that reaches it FAILS (nothing saved, previous memory kept, the
+   * run card shows "Stopped at the output limit") — it is never saved as a
+   * partial answer. So raise it when an addon writes long JSON (e.g. several
+   * product objects in Hebrew) or uses a model that thinks first (Claude
+   * Opus/Sonnet 5+, GPT-5.x/6.x); lower it only to cap the cost of a
+   * runaway answer. You pay for what is written, not for the limit.
+   */
+  maxOutputTokens?: number;
   /** User-editable instance name shown on the chain card. */
   name?: string;
   /**
@@ -505,6 +575,20 @@ export interface ThinkerConfig {
 export interface SummarizerConfig {
   prompt: string;
   model: ModelRef;
+  /**
+   * "Max output" (tasks #889, #920): the most the model may write in ONE
+   * run, its thinking included. Unset = 16,000 (the default — leave it
+   * unset unless there is a reason). Allowed 256–64,000; the Builder offers
+   * 4,000 / 8,000 / 16,000 / 32,000 / 64,000.
+   *
+   * A run that reaches it FAILS (nothing saved, previous memory kept, the
+   * run card shows "Stopped at the output limit") — it is never saved as a
+   * partial answer. So raise it when an addon writes long JSON (e.g. several
+   * product objects in Hebrew) or uses a model that thinks first (Claude
+   * Opus/Sonnet 5+, GPT-5.x/6.x); lower it only to cap the cost of a
+   * runaway answer. You pay for what is written, not for the limit.
+   */
+  maxOutputTokens?: number;
   /** Token name used in `{{summary:NAME}}` AND in
    *  `since_summarizer: NAME` history references. Unique per agent. */
   name: string;
@@ -1338,6 +1422,20 @@ export interface PanelPromptSource {
   kind: 'prompt';
   prompt: string;
   model: ModelRef;
+  /**
+   * "Max output" (tasks #889, #920): the most the model may write in ONE
+   * run, its thinking included. Unset = 16,000 (the default — leave it
+   * unset unless there is a reason). Allowed 256–64,000; the Builder offers
+   * 4,000 / 8,000 / 16,000 / 32,000 / 64,000.
+   *
+   * A run that reaches it FAILS (nothing saved, previous memory kept, the
+   * run card shows "Stopped at the output limit") — it is never saved as a
+   * partial answer. So raise it when an addon writes long JSON (e.g. several
+   * product objects in Hebrew) or uses a model that thinks first (Claude
+   * Opus/Sonnet 5+, GPT-5.x/6.x); lower it only to cap the cost of a
+   * runaway answer. You pay for what is written, not for the limit.
+   */
+  maxOutputTokens?: number;
   /**
    * How much conversation the addon sees. Same options as an addon's
    * History. Depth matters for a brain — default is several messages,

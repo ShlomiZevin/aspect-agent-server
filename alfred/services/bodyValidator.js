@@ -98,8 +98,17 @@ function checkExcludedCrewIds(addon, path, errors) {
     pushErr(errors, `${path}.excludedCrewIds`, 'when present must be an array of crew id strings');
 }
 
+/** "Max output" (#889): optional; when present a whole number 256–64,000. */
+function checkMaxOutputTokens(holder, path, errors) {
+  if (!isObject(holder) || !('maxOutputTokens' in holder) || holder.maxOutputTokens === undefined) return;
+  const n = holder.maxOutputTokens;
+  if (typeof n !== 'number' || !Number.isInteger(n) || n < 256 || n > 64000)
+    pushErr(errors, `${path}.maxOutputTokens`, 'must be a whole number from 256 to 64000 (or left out = 16,000)');
+}
+
 function checkAddonInstance(addon, path, errors, knownFieldIds) {
   if (!isObject(addon)) { pushErr(errors, path, 'must be an object'); return; }
+  checkMaxOutputTokens(addon.config, `${path}.config`, errors);
   if (typeof addon.instanceId !== 'string' || !addon.instanceId)
     pushErr(errors, `${path}.instanceId`, 'required string');
   if (!KNOWN_PLUGINS.has(addon.pluginId))
@@ -258,6 +267,7 @@ function checkPanel(p, path, errors, { allowPlacement = false } = {}) {
       pushErr(errors, `${path}.source.prompt`, 'required string for kind "prompt"');
     if (!isObject(src.model))
       pushErr(errors, `${path}.source.model`, 'required ModelRef object for kind "prompt"');
+    checkMaxOutputTokens(src, `${path}.source`, errors);
     if (!isObject(src.history) || !VALID_HISTORY_MODES.has(src.history.mode))
       pushErr(errors, `${path}.source.history.mode`, `must be one of ${[...VALID_HISTORY_MODES].join(', ')}`);
     if (!isObject(src.trigger) || typeof src.trigger.kind !== 'string')

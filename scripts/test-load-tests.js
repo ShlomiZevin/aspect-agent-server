@@ -69,16 +69,20 @@ const base = 'https://lybi.example';
   check('"ramp" is kept; anything else starts together', readSetup({ start: 'ramp' }).start === 'ramp' && readSetup({ start: 'x' }).start === 'together');
 
   // ── prices ──
-  const c = costOfUsage([{ model: 'claude-haiku-4-5', inputTokens: 1e6, outputTokens: 0 }, { model: 'gpt-4o-mini', inputTokens: 1e6, outputTokens: 0 }]);
-  check('a priced model costs its list price; an unpriced one the top rate (errs high)', c.usd === 6 && c.unpriced.includes('gpt-4o-mini'), JSON.stringify(c));
+  // A made-up id, so the test never depends on which real models have a
+  // price. Unpriced = counted at the dearest known rate (today Claude
+  // Fable 5.1 / GPT-6 Astra, $10 in / $50 out per 1M).
+  const UNPRICED = 'zz-unpriced-model';
+  const c = costOfUsage([{ model: 'claude-haiku-4-5', inputTokens: 1e6, outputTokens: 0 }, { model: UNPRICED, inputTokens: 1e6, outputTokens: 0 }]);
+  check('a priced model costs its list price; an unpriced one the top rate (errs high)', c.usd === 11 && c.unpriced.includes(UNPRICED), JSON.stringify(c));
 
   // ── estimate ──
   usageRows = []; historyTurns = 0;
   const e0 = await loadTests.estimate({ slug: 'a', body: { conversations: 2, lines: ['a', 'b'] } });
   check('no history → a stated, generous assumption per turn', e0.perTurnUsd === 0.05 && /no usage history/.test(e0.basis) && e0.agentTurns === 6, JSON.stringify(e0));
-  usageRows = [{ model: 'gpt-4o-mini', inputTokens: 1e6, outputTokens: 0 }]; historyTurns = 10; // $5 / 10 turns = $0.50 a turn
+  usageRows = [{ model: UNPRICED, inputTokens: 1e6, outputTokens: 0 }]; historyTurns = 10; // $10 / 10 turns = $1 a turn
   const e1 = await loadTests.estimate({ slug: 'a', body: { conversations: 10 } });
-  check('10 × 5 turns + baseline at $0.50 a turn → $27.50, over the cap', e1.usd === 27.5 && e1.overCap === true, JSON.stringify({ usd: e1.usd, over: e1.overCap }));
+  check('10 × 5 turns + baseline at $1 a turn → $55, over the cap', e1.usd === 55 && e1.overCap === true, JSON.stringify({ usd: e1.usd, over: e1.overCap }));
 
   // ── refused before it starts ──
   const before = rows.length;
@@ -87,11 +91,11 @@ const base = 'https://lybi.example';
   check('no public address → refused', await refused(() => loadTests.releaseRun({ slug: 'a', by: 'Noa', body: { conversations: 1 }, publicBase: null })) === 400);
 
   // ── a run that fits, then the cap while running ──
-  usageRows = [{ model: 'gpt-4o-mini', inputTokens: 1000, outputTokens: 0 }]; historyTurns = 10;
+  usageRows = [{ model: UNPRICED, inputTokens: 1000, outputTokens: 0 }]; historyTurns = 10;
   const run = await loadTests.releaseRun({ slug: 'a', by: 'Noa', body: { conversations: 2, lines: ['a'] }, publicBase: base });
   check('a run under the cap is released', run.status === 'running' && run.estimate && !run.estimate.overCap);
   check('the gate lets turns go while under the cap', await gate(run.id) === null);
-  usageRows = [{ model: 'gpt-4o-mini', inputTokens: 4e6, outputTokens: 1e6 }]; // $20 + $25 at the top rate
+  usageRows = [{ model: UNPRICED, inputTokens: 4e6, outputTokens: 1e6 }]; // $40 + $50 at the top rate
   await new Promise(r => setTimeout(r, 2100)); // past the gate's 2 s cache
   const why = await gate(run.id);
   check('…and stops every conversation once the real spend reaches the cap', /cost cap/.test(why || ''), why);

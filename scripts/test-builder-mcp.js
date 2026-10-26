@@ -521,6 +521,26 @@ async function removeIfPresent(slug) {
     check('unknown load test → 404', (await get('/load-tests/999999999')).status === 404);
     check('an agent\'s load tests list reads', (await get(`/agents/${TEST_SLUG}/load-tests`)).status === 200);
 
+    // ── output limit (#889/#920) + environments — read only ──
+    section('output limit + environments');
+    check('entry page teaches Max output and the cut-off failure',
+      doc.text.includes('maxOutputTokens') && doc.text.includes('output_cut_off'));
+    check('entry page opens with which environment this is', doc.text.includes('## Environments'));
+    const envRes = await get('/environments');
+    const envs = envRes.status === 200 ? JSON.parse(envRes.text) : null;
+    check('/environments lists Origin (frozen) and Lybi Staging',
+      !!envs && envs.environments.some(e => e.id === 'origin' && e.frozen) && envs.environments.some(e => e.id === 'staging'),
+      envs ? `current: ${envs.current}` : `status ${envRes.status}`);
+
+    // ── LLM usage and cost — read only ──
+    section('usage');
+    check('entry page teaches the cost pages', doc.text.includes(`${base}/usage?days=7`) && doc.text.includes(`${base}/agents/<slug>/usage`));
+    const usageAll = await get('/usage?days=7');
+    check('every agent\'s cost reads', usageAll.status === 200 && usageAll.text.includes('LLM usage'));
+    const usageAgent = await get(`/agents/${TEST_SLUG}/usage?days=30`);
+    check('one agent\'s cost reads', usageAgent.status === 200 && usageAgent.text.includes('LLM usage'));
+    check('unknown agent\'s cost → 404', (await get('/agents/zz-no-such-agent/usage')).status === 404);
+
     // ── errors (task #903) — read only ──
     section('errors');
     check('entry page teaches the error list', doc.text.includes(`${base}/agents/<slug>/errors`));

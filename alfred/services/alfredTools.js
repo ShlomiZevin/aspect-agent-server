@@ -470,7 +470,154 @@ async function kbExists(namespace) {
   return (stats.namespaces || []).some(n => n.name === namespace && (n.vectorCount || 0) > 0);
 }
 
+// ─── LLM usage and cost (MCP /usage) ───────────────────────────────
+//
+// Every model call is logged to `llm_usage` (llm.js → logUsage) with the
+// agent's NAME (not slug), crew, step (`process`) and conversation. Cost
+// is estimated here at list price (models.service costOf) — cache
+// discounts are not counted, so the real bill can only be lower. The
+// "where" split joins the conversation's metadata.kind: builder preview,
+// simulation, or a customer on /live.
+
+const { sql } = require('drizzle-orm');
+const modelsService = require('../../services/models.service');
+
+const WHERE_LABEL = { 'builder-preview': 'Builder chat', simulation: 'Simulations', live: 'Customers (/live)' };
+const usd = n => (n == null ? '—' : n < 0.01 && n > 0 ? '< $0.01' : `$${n.toFixed(2)}`);
+const int = n => Number(n || 0).toLocaleString('en-US');
+const clampDays = d => Math.min(Math.max(Math.round(Number(d) || 7), 1), 90);
+
+/** Sum rows into buckets keyed by keyFn, with cost and unpriced calls. */
+function bucket(rows, keyFn) {
+  const m = new Map();
+  for (const r of rows) {
+    const k = keyFn(r);
+    const b = m.get(k) || { key: k, calls: 0, input: 0, output: 0, cost: 0, unpriced: 0, convs: new Set() };
+    b.calls += r.n; b.input += r.i; b.output += r.o;
+    if (r.cost == null) b.unpriced += r.n; else b.cost += r.cost;
+    if (r.conv) b.convs.add(r.conv);
+    m.set(k, b);
+  }
+  return [...m.values()].sort((a, b) => b.cost - a.cost || b.calls - a.calls);
+}
+
+function usageRows(raw) {
+  return raw.map(r => {
+    const n = Number(r.n), i = Number(r.i || 0), o = Number(r.o || 0);
+    return { ...r, n, i, o, conv: r.conv || null, cost: modelsService.costOf(r.model, i, o) };
+  });
+}
+
+function usageBody(rows, { withConversations }) {
+  const total = bucket(rows, () => 'all')[0];
+  if (!total) return ['No model calls in this period.'];
+  const out = [
+    `**Estimated cost ${usd(total.cost)}** · ${int(total.calls)} model calls · ${int(total.input)} input / ${int(total.output)} output tokens`,
+    `List prices; cache discounts are not counted, so the real bill can only be lower.${total.unpriced ? ` ${int(total.unpriced)} calls used a model with no known price — not in the $.` : ''}`,
+    '',
+    '### Where it ran',
+    '| where | cost | calls | conversations |', '|---|---|---|---|',
+    ...bucket(rows, r => WHERE_LABEL[r.kind] || (r.conv ? 'Other conversations' : 'Outside a conversation'))
+      .map(b => `| ${b.key} | ${usd(b.cost)} | ${int(b.calls)} | ${b.convs.size} |`),
+    '',
+    '### By day',
+    '| day | cost | calls |', '|---|---|---|',
+    ...bucket(rows, r => r.d).sort((a, b) => b.key.localeCompare(a.key)).map(b => `| ${b.key} | ${usd(b.cost)} | ${int(b.calls)} |`),
+    '',
+    '### By crew',
+    '| crew | cost | calls |', '|---|---|---|',
+    ...bucket(rows, r => r.crew || '(none)').map(b => `| ${b.key} | ${usd(b.cost)} | ${int(b.calls)} |`),
+    '',
+    '### By step (add-on)',
+    '| step | cost | calls | avg output tokens |', '|---|---|---|---|',
+    ...bucket(rows, r => r.process).map(b => `| ${b.key} | ${usd(b.cost)} | ${int(b.calls)} | ${int(Math.round(b.output / b.calls))} |`),
+    '',
+    '### By model',
+    '| model | cost | calls | input tokens | output tokens |', '|---|---|---|---|---|',
+    ...bucket(rows, r => r.model).map(b => `| ${b.key}${b.unpriced ? ' (no price)' : ''} | ${usd(b.cost)} | ${int(b.calls)} | ${int(b.input)} | ${int(b.output)} |`),
+  ];
+  if (withConversations) {
+    const convs = bucket(rows.filter(r => r.conv), r => r.conv).slice(0, 10);
+    if (convs.length) {
+      const kindOf = new Map(rows.map(r => [r.conv, WHERE_LABEL[r.kind] || '']));
+      out.push('', '### Most expensive conversations', '| conversation | where | cost | calls |', '|---|---|---|---|',
+        ...convs.map(b => `| ${b.key} | ${kindOf.get(b.key) || ''} | ${usd(b.cost)} | ${int(b.calls)} |`));
+    }
+  }
+  return out;
+}
+
+const USAGE_SELECT = sql`
+  select to_char(u.created_at at time zone ${TZ}, 'YYYY-MM-DD') as d,
+         u.crew_member as crew, u.process, u.model, u.conversation_id as conv,
+         coalesce(c.metadata->>'kind', '') as kind,
+         count(*) as n, sum(u.input_tokens) as i, sum(u.output_tokens) as o
+  from llm_usage u
+  left join conversations c on c.id::text = u.conversation_id`;
+const USAGE_GROUP = sql`group by 1, 2, 3, 4, 5, 6`;
+
+/** One agent's model calls and estimated cost over the last `days`. */
+async function agentUsage({ agentSlug, days = 7 }) {
+  const project = await builderProjects.hydrateProject({ agentSlug });
+  const agent = project && project.agents[0];
+  if (!agent) return null;
+  const name = agent.name || agentSlug;
+  const n = clampDays(days);
+  const res = await drizzle().execute(sql`${USAGE_SELECT}
+    where u.agent_name = ${name} and u.created_at > now() - make_interval(days => ${n})
+    ${USAGE_GROUP}`);
+  return [
+    `## LLM usage — "${name}" (${agentSlug}), last ${n} day${n === 1 ? '' : 's'} (days in ${TZ})`,
+    '',
+    ...usageBody(usageRows(res.rows), { withConversations: true }),
+    '',
+    'Counted by the agent\'s current name — calls made under an older name are not included.',
+  ].join('\n');
+}
+
+/** One conversation's model calls and estimated cost. */
+async function conversationUsage({ conversationId }) {
+  const res = await drizzle().execute(sql`${USAGE_SELECT}
+    where u.conversation_id = ${String(conversationId)}
+    ${USAGE_GROUP}`);
+  return [
+    `## LLM usage — conversation ${conversationId}`,
+    '',
+    ...usageBody(usageRows(res.rows), { withConversations: false }),
+  ].join('\n');
+}
+
+/** Every Builder agent's cost over the last `days`, most expensive first. */
+async function usageOverview({ days = 7 }) {
+  const n = clampDays(days);
+  const projects = await builderProjects.listProjects();
+  const slugByName = new Map(projects.map(p => [p.agentName, p.agentSlug]));
+  const res = await drizzle().execute(sql`
+    select u.agent_name as agent, u.model, count(*) as n, sum(u.input_tokens) as i, sum(u.output_tokens) as o,
+           count(distinct u.conversation_id) as convs
+    from llm_usage u
+    where u.agent_name is not null and u.created_at > now() - make_interval(days => ${n})
+    group by 1, 2`);
+  const rows = usageRows(res.rows).filter(r => slugByName.has(r.agent));
+  const agents = bucket(rows, r => r.agent);
+  const total = bucket(rows, () => 'all')[0];
+  if (!total) return `## LLM usage — all agents, last ${n} days\n\nNo model calls by Builder agents in this period.`;
+  return [
+    `## LLM usage — all agents, last ${n} day${n === 1 ? '' : 's'}`,
+    '',
+    `**Estimated cost ${usd(total.cost)}** · ${int(total.calls)} model calls. List prices; cache discounts are not counted.${total.unpriced ? ` ${int(total.unpriced)} calls on a model with no known price are not in the $.` : ''}`,
+    '',
+    '| agent | slug | cost | calls |', '|---|---|---|---|',
+    ...agents.map(b => `| ${b.key} | ${slugByName.get(b.key)} | ${usd(b.cost)} | ${int(b.calls)} |`),
+    '',
+    'One agent in detail (by where it ran, day, crew, step, model, costliest conversations): `/agents/<slug>/usage?days=N`.',
+  ].join('\n');
+}
+
 module.exports = {
+  agentUsage,
+  conversationUsage,
+  usageOverview,
   listKnowledgeBases,
   agentKnowledgeBases,
   listKbFiles,
