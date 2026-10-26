@@ -237,6 +237,9 @@ async function runOnce({
   // below so the lookup is uniform.
   overrideCrewBodies = null,
   emit,
+  // The conversation row when the caller already read it this turn (the chat
+  // route does — #914). Only its `metadata` is used. Omitted → read here.
+  convRow: preloadedConvRow = null,
 }) {
   const totalStart = Date.now();
 
@@ -245,8 +248,10 @@ async function runOnce({
   //   2. conversation.metadata.currentCrewId (set by a prior Transition Router firing)
   //   3. null → resolver falls back to the agent's defaultCrewId
   const drizzle = db.getDrizzle();
-  const [convRow] = await drizzle.select().from(conversations)
-    .where(eq(conversations.id, Number(conversationId))).limit(1);
+  const [convRow] = preloadedConvRow
+    ? [preloadedConvRow]
+    : await drizzle.select().from(conversations)
+      .where(eq(conversations.id, Number(conversationId))).limit(1);
   const metaCrewId = (convRow?.metadata && convRow.metadata.currentCrewId) || null;
   const currentCrewId = overrideCrewId || metaCrewId;
 
@@ -406,6 +411,9 @@ async function runOnce({
     historyExcludeFromMessageId: Number.isFinite(userMessageId) && userMessageId > 0
       ? Number(userMessageId)
       : undefined,
+    // One history read per phase instead of one per add-on (#914). Replaced
+    // whenever this turn writes a message (before the offline phase below).
+    historyCache: new Map(),
   };
 
   let assistantText = '';
@@ -547,6 +555,7 @@ async function runOnce({
   // finish — which is what lets the chat UI render their cards in
   // the same timeline.
   ctx.historyExcludeFromMessageId = undefined;
+  ctx.historyCache = new Map(); // the reply text was just written
   await dispatchOfflineAddons({ ctx, didTransition: anyTransition });
 
   // ── 7. Compute the Live Brain panels. Same non-blocking phase as the

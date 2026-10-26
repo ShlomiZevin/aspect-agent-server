@@ -43,6 +43,9 @@
  */
 
 const contextService = require('../../services/context.service');
+const db = require('../../services/db.pg');
+const { contextData } = require('../../db/schema');
+const { eq, and } = require('drizzle-orm');
 
 const NAMESPACE = 'builder_memory';
 const GENERAL_KEY = '_general';
@@ -147,7 +150,30 @@ async function loadMemory(userId, conversationId) {
  */
 async function saveMemory(userId, conversationId, blob) {
   if (!userId || !conversationId) return;
-  await contextService.saveContext(userId, NAMESPACE, normalizeBlob(blob), conversationId);
+  // UPDATE first, INSERT only when no row matched (#914). Same outcome as
+  // contextService.saveContext, without its read-before-write — the caller
+  // already holds the blob, and this runs after every add-on of every turn.
+  // Errors are logged and swallowed, as saveContext does.
+  const data = normalizeBlob(blob);
+  try {
+    const d = db.getDrizzle();
+    const updated = await d.update(contextData)
+      .set({ data, updatedAt: new Date() })
+      .where(and(
+        eq(contextData.userId, userId),
+        eq(contextData.namespace, NAMESPACE),
+        eq(contextData.conversationId, conversationId),
+      ))
+      .returning({ id: contextData.id });
+    if (updated.length === 0) {
+      await d.insert(contextData).values({
+        userId, conversationId, namespace: NAMESPACE, data,
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+    }
+  } catch (error) {
+    console.error(`❌ Error saving builder memory (userId=${userId}, conversationId=${conversationId}):`, error.message);
+  }
 }
 
 /**

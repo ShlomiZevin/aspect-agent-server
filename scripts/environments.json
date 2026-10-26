@@ -1,7 +1,7 @@
 {
   "_about": "Lybi environments — used by scripts/copy-agent-to-env.js (skill: copy-agent). Addresses only; credentials live in the git-ignored env file named by credentialsFrom. dbHost is the Cloud SQL PUBLIC IP (this machine must be on the instance's authorized networks). Add an environment = add an entry.",
-  "prod": {
-    "label": "Production (Boostart project aspect-agents)",
+  "origin": {
+    "label": "Origin — the existing environment: lybi.ai, Noa, customers (Boostart project aspect-agents)",
     "credentialsFrom": ".env",
     "dbHost": "35.240.73.50",
     "gcpProject": "aspect-agents",

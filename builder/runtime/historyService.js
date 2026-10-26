@@ -62,28 +62,46 @@ function baseConditions(conversationId, excludeFromMessageId) {
   return out;
 }
 
+/**
+ * Per-turn memo (#914). Every add-on of a turn used to fetch the same rows
+ * again; the runner passes one Map per turn phase (`ctx.historyCache`) and
+ * resets it the moment it writes a message, so a hit is always the same rows a
+ * fresh query would return. No cache passed = query every time, as before.
+ * Rows are shared between callers — read them, never mutate them.
+ */
+function memo(cache, key, load) {
+  if (!cache) return load();
+  if (!cache.has(key)) {
+    // A Drizzle query re-runs on every `.then` — settle it once into a real Promise.
+    const p = Promise.resolve(load());
+    cache.set(key, p);
+    p.catch(() => cache.delete(key)); // a failed read is retried by the next caller
+  }
+  return cache.get(key);
+}
+
 /** All messages in a conversation up to (but not including) the
  *  current turn, oldest→newest. */
-async function fetchAll(conversationId, excludeFromMessageId) {
-  return drizzle().select()
+async function fetchAll(conversationId, excludeFromMessageId, cache) {
+  return memo(cache, `all|${conversationId}|${excludeFromMessageId}`, () => drizzle().select()
     .from(messages)
     .where(and(...baseConditions(conversationId, excludeFromMessageId)))
-    .orderBy(asc(messages.createdAt));
+    .orderBy(asc(messages.createdAt)));
 }
 
 /** Messages strictly after the given DB id, oldest→newest, capped at
  *  the current turn's user message id. */
-async function fetchAfterId(conversationId, afterId, excludeFromMessageId) {
+async function fetchAfterId(conversationId, afterId, excludeFromMessageId, cache) {
   if (!Number.isFinite(afterId) || afterId <= 0) {
-    return fetchAll(conversationId, excludeFromMessageId);
+    return fetchAll(conversationId, excludeFromMessageId, cache);
   }
-  return drizzle().select()
+  return memo(cache, `after|${conversationId}|${afterId}|${excludeFromMessageId}`, () => drizzle().select()
     .from(messages)
     .where(and(
       ...baseConditions(conversationId, excludeFromMessageId),
       gt(messages.id, Number(afterId)),
     ))
-    .orderBy(asc(messages.createdAt));
+    .orderBy(asc(messages.createdAt)));
 }
 
 /** Look up `conversations.metadata.lastTransitionMessageId`. Returns
@@ -123,6 +141,8 @@ function format(rows) {
  *        caller to exclude the current turn's own user message AND
  *        assistant placeholder (both are inserted by the route handler
  *        before runOnce). Omit to include everything up to the present.
+ * @param {Map} [args.cache] — the turn's history memo (`ctx.historyCache`);
+ *        omit to always query.
  * @returns {Promise<{
  *   messages: Array<{ role: string, content: string }>,
  *   resolution: {
@@ -133,7 +153,7 @@ function format(rows) {
  *   }
  * }>}
  */
-async function loadHistory({ conversationId, historyMode, brain, excludeFromMessageId }) {
+async function loadHistory({ conversationId, historyMode, brain, excludeFromMessageId, cache }) {
   const mode = historyMode?.mode || 'none';
 
   // Tiny helper — wraps a message list with the resolution record so
@@ -155,13 +175,13 @@ async function loadHistory({ conversationId, historyMode, brain, excludeFromMess
   // no point in a separate per-conversation LIMIT query; conversations
   // here are bounded.
   if (mode === 'last_n') {
-    const rows = await fetchAll(conversationId, excludeFromMessageId);
+    const rows = await fetchAll(conversationId, excludeFromMessageId, cache);
     const n = Math.max(0, Math.floor(historyMode?.n ?? 5));
     return resolved(format(rows).slice(-n));
   }
 
   if (mode === 'all' || mode === 'full') {
-    return resolved(format(await fetchAll(conversationId, excludeFromMessageId)));
+    return resolved(format(await fetchAll(conversationId, excludeFromMessageId, cache)));
   }
 
   if (mode === 'since_transition') {
@@ -171,11 +191,11 @@ async function loadHistory({ conversationId, historyMode, brain, excludeFromMess
       // hasn't lost data; they just see everything until the first
       // transition lands.
       return resolved(
-        format(await fetchAll(conversationId, excludeFromMessageId)),
+        format(await fetchAll(conversationId, excludeFromMessageId, cache)),
         { effectiveMode: 'all', fallbackReason: 'No crew transition has fired in this conversation yet.' },
       );
     }
-    return resolved(format(await fetchAfterId(conversationId, cutoff, excludeFromMessageId)));
+    return resolved(format(await fetchAfterId(conversationId, cutoff, excludeFromMessageId, cache)));
   }
 
   if (mode === 'since_summarizer') {
@@ -187,7 +207,7 @@ async function loadHistory({ conversationId, historyMode, brain, excludeFromMess
       // `all` so a fresh agent doesn't render an empty history (which
       // would be more confusing than seeing everything).
       return resolved(
-        format(await fetchAll(conversationId, excludeFromMessageId)),
+        format(await fetchAll(conversationId, excludeFromMessageId, cache)),
         {
           effectiveMode: 'all',
           fallbackReason: name
@@ -196,7 +216,7 @@ async function loadHistory({ conversationId, historyMode, brain, excludeFromMess
         },
       );
     }
-    return resolved(format(await fetchAfterId(conversationId, cutoff, excludeFromMessageId)));
+    return resolved(format(await fetchAfterId(conversationId, cutoff, excludeFromMessageId, cache)));
   }
 
   // Unknown mode — treat as `none` rather than crashing on a typo.

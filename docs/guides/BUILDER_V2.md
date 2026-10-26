@@ -1758,6 +1758,18 @@ by default (five ordinary lines), or a persona.
   Details: `verification/load-tests/README.md`.
 - Not here yet: Google Cloud metrics across instances (instance count) —
   the vitals cover only the instance that drove the run.
+- **Queries per turn (task #914, 2026-10-25):** a customer turn on Noa's
+  account-opening agent went from 45 to ~30 queries, behaviour identical
+  (record/replay proof on real conversations). Four rules keep it there — keep
+  them when touching the runtime: `builderMemory.saveMemory` writes directly
+  (no read-before-write); history comes through `ctx.historyCache`, one read
+  per turn phase, and **any code that writes a message mid-turn must replace
+  `ctx.historyCache` with a new Map** (the runner does after writing the
+  reply); `resolveRunnable` joins each row with its chosen version (2 queries,
+  always fresh — no in-memory agent cache, it would go stale across instances);
+  the chat route reads the conversation row once and passes it to `runOnce`
+  as `convRow`. Battery: `scripts/test-turn-queries.js`. Proof:
+  `verification/db-queries/README.md`.
 
 ## Quick reference: build a new plugin
 

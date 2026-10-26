@@ -3,9 +3,9 @@
  * Copy one Builder agent's SETUP from one environment to another.
  * Skill: .claude/skills/copy-agent/SKILL.md · environments: scripts/environments.json
  *
- *   node scripts/copy-agent-to-env.js <agent-slug> --from prod --to staging --dry
- *   node scripts/copy-agent-to-env.js <agent-slug> --from prod --to staging
- *   node scripts/copy-agent-to-env.js <agent-slug> --from prod --to staging --replace
+ *   node scripts/copy-agent-to-env.js <agent-slug> --from origin --to staging --dry
+ *   node scripts/copy-agent-to-env.js <agent-slug> --from origin --to staging
+ *   node scripts/copy-agent-to-env.js <agent-slug> --from origin --to staging --replace
  *
  *   --dry             print what would be copied; write nothing
  *   --replace         the agent already exists on the target: replace its setup
@@ -51,7 +51,7 @@ if (!ENVS[fromName] || !ENVS[toName]) fail(`unknown environment — known: ${nam
 if (fromName === toName) fail('--from and --to are the same environment');
 const FROM = ENVS[fromName];
 const TO = ENVS[toName];
-if (TO.isProduction && !flag('--yes-production')) fail(`"${toName}" is production — writing into it needs --yes-production (ask Shlomi first)`);
+if (TO.isProduction && !flag('--yes-production')) fail(`"${toName}" is live (customers use it) — writing into it needs --yes-production (ask Shlomi first)`);
 
 function creds(env) {
   const file = path.join(ROOT, env.credentialsFrom);

@@ -394,6 +394,7 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
       historyMode:           instance.context?.history,
       brain:                 memory,
       excludeFromMessageId:  ctx.historyExcludeFromMessageId,
+      cache:                 ctx.historyCache,
     });
 
   // Blocking-phase addons receive the current user message OUTSIDE

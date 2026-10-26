@@ -965,18 +965,24 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       content: userMessage,
     }).returning();
 
+    // The conversation row, read ONCE for this turn (#914) — the auto-name,
+    // the crew override, the `conversation` event and the runner all use it.
+    // Each write below updates this copy too, so it always matches the DB.
+    const [convRow] = await d.select().from(conversations)
+      .where(eq(conversations.id, Number(convId))).limit(1);
+
     // Auto-name the conversation on its first user message. Truncated
     // first message reads better than "Chat #1667" in the history
     // panel; user can still rename via the pencil affordance.
     try {
-      const [conv] = await d.select().from(conversations)
-        .where(eq(conversations.id, Number(convId))).limit(1);
-      if (conv && !(conv.metadata && conv.metadata.name)) {
+      if (convRow && !(convRow.metadata && convRow.metadata.name)) {
         const auto = userMessage.replace(/\s+/g, ' ').trim().slice(0, 60);
         if (auto) {
+          const nextMeta = { ...(convRow.metadata || {}), name: auto };
           await d.update(conversations)
-            .set({ metadata: { ...(conv.metadata || {}), name: auto } })
+            .set({ metadata: nextMeta })
             .where(eq(conversations.id, Number(convId)));
+          convRow.metadata = nextMeta;
         }
       }
     } catch (err) {
@@ -986,15 +992,15 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
     // Apply the override BEFORE emitting `conversation` so the event
     // reflects the post-override DB state (avoids a header flicker
     // where the chip briefly snaps to the pre-pick value).
-    if (overrideCrewId) {
+    if (overrideCrewId && convRow) {
       try {
-        const [conv] = await d.select().from(conversations)
-          .where(eq(conversations.id, Number(convId))).limit(1);
-        const meta = conv?.metadata || {};
+        const meta = convRow.metadata || {};
         if (meta.currentCrewId !== overrideCrewId) {
+          const nextMeta = { ...meta, currentCrewId: overrideCrewId };
           await d.update(conversations)
-            .set({ metadata: { ...meta, currentCrewId: overrideCrewId }, updatedAt: new Date() })
+            .set({ metadata: nextMeta, updatedAt: new Date() })
             .where(eq(conversations.id, Number(convId)));
+          convRow.metadata = nextMeta;
         }
       } catch (err) {
         console.warn('[builder] pre-run override persist failed:', err.message);
@@ -1005,12 +1011,10 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
     // the client header can show "you're talking to crew X right now"
     // before any addons fire this turn. Falls back to null →
     // client resolves to the agent's default crew.
-    const [convForEvent] = await d.select().from(conversations)
-      .where(eq(conversations.id, Number(convId))).limit(1);
     emit('conversation', {
       conversationId: Number(convId),
       messageId: userMsg.id,
-      currentCrewId: (convForEvent?.metadata && convForEvent.metadata.currentCrewId) || null,
+      currentCrewId: (convRow?.metadata && convRow.metadata.currentCrewId) || null,
     });
 
     // Reserve the assistant message row up front (empty content) so
@@ -1051,6 +1055,7 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
         overrideCrewBodies,
         emit,
         stopKey,
+        convRow,
       }));
     } finally {
       stopRegistry.end(stopKey, stopHandle);

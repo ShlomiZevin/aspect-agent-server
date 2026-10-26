@@ -807,6 +807,25 @@ function pickVersionId(mode, row) {
   return row.viewingVersionId;
 }
 
+/** `pickVersionId` as SQL, so a row and its chosen version come back in one
+ *  query (#914). `table` is builderAgents or builderCrews. The JS rule still
+ *  runs on the row afterwards and must agree with the joined version's id. */
+function versionPointerSql(mode, table) {
+  if (mode === 'published') {
+    return sql`COALESCE(${table.publishedVersionId}, ${table.activeVersionId}, ${table.viewingVersionId})`;
+  }
+  if (mode === 'active') return sql`${table.activeVersionId}`;
+  return sql`${table.viewingVersionId}`;
+}
+
+/** The version row the join brought back — or, if it isn't the one the JS rule
+ *  picked (it always should be), the old separate read. Never a different answer. */
+async function joinedOrRead(d, joined, table, versionId) {
+  if (joined && joined.id === versionId) return joined;
+  const [row] = await d.select().from(table).where(eq(table.id, versionId)).limit(1);
+  return row || null;
+}
+
 /**
  * Given an agentSlug + ownerUserId + version mode ('viewing',
  * 'active', or 'published'), return the addons to execute and metadata
@@ -877,9 +896,12 @@ async function resolveRunnable({
   // Shared workspace — look up by slug only. `_ownerUserId` accepted
   // for backward compat; ignored. Same rule as hydrateProject /
   // listProjects so all three lookups agree on what's visible.
+  // One query: the agent, its project (must exist) and the version `mode`
+  // picks (#914 — was three).
   const agentRow = await d.select()
     .from(builderAgents)
     .innerJoin(builderProjects, eq(builderAgents.projectId, builderProjects.id))
+    .leftJoin(builderAgentVersions, eq(builderAgentVersions.id, versionPointerSql(mode, builderAgents)))
     .where(eq(builderAgents.slug, agentSlug))
     .limit(1);
 
@@ -901,10 +923,7 @@ async function resolveRunnable({
   const agentVersionId = pickVersionId(mode, agent);
   if (!agentVersionId) throw new Error('Agent has no version pointer');
 
-  const [agentVersion] = await d.select()
-    .from(builderAgentVersions)
-    .where(eq(builderAgentVersions.id, agentVersionId))
-    .limit(1);
+  const agentVersion = await joinedOrRead(d, agentRow[0].builder_agent_versions, builderAgentVersions, agentVersionId);
   if (!agentVersion) throw new Error('Agent version row missing');
 
   // Builder preview path: the client may have sent the working-copy
@@ -924,32 +943,27 @@ async function resolveRunnable({
   // back to `defaultCrewId` if it points at a crew that's been
   // deleted (logs a warning so the misconfiguration is visible).
   const preferredCrewId = overrideCrewId || defaultCrewId;
-  let [crew] = await d.select()
+  // The crew together with the version `mode` picks — one query (#914).
+  const crewWithVersion = (crewId) => d.select()
     .from(builderCrews)
+    .leftJoin(builderCrewVersions, eq(builderCrewVersions.id, versionPointerSql(mode, builderCrews)))
     .where(and(
-      eq(builderCrews.id, preferredCrewId),
+      eq(builderCrews.id, crewId),
       eq(builderCrews.agentId, agent.id),
     ))
     .limit(1);
-  if (!crew && overrideCrewId && defaultCrewId && defaultCrewId !== overrideCrewId) {
+  let [crewRow] = await crewWithVersion(preferredCrewId);
+  if (!crewRow && overrideCrewId && defaultCrewId && defaultCrewId !== overrideCrewId) {
     console.warn(`[builder] currentCrewId "${overrideCrewId}" not found; falling back to defaultCrewId "${defaultCrewId}"`);
-    [crew] = await d.select()
-      .from(builderCrews)
-      .where(and(
-        eq(builderCrews.id, defaultCrewId),
-        eq(builderCrews.agentId, agent.id),
-      ))
-      .limit(1);
+    [crewRow] = await crewWithVersion(defaultCrewId);
   }
-  if (!crew) throw new Error(`Crew ${preferredCrewId} not found`);
+  if (!crewRow) throw new Error(`Crew ${preferredCrewId} not found`);
+  const crew = crewRow.builder_crews;
 
   const crewVersionId = pickVersionId(mode, crew);
   if (!crewVersionId) throw new Error('Crew has no version pointer');
 
-  const [crewVersion] = await d.select()
-    .from(builderCrewVersions)
-    .where(eq(builderCrewVersions.id, crewVersionId))
-    .limit(1);
+  const crewVersion = await joinedOrRead(d, crewRow.builder_crew_versions, builderCrewVersions, crewVersionId);
   if (!crewVersion) throw new Error('Crew version row missing');
 
   // Builder preview path: the client may have sent the working-copy
