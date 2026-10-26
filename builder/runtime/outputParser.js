@@ -58,6 +58,10 @@ function extractJSON(text) {
         }
       }
     }
+    // The first object never closes: the output was cut off. Searching on
+    // from the next "{" would return an INNER object that happens to be
+    // complete and pass it off as the whole answer (task #920).
+    return { value: null, error: 'JSON is cut off — it never closes' };
   }
   return { value: null, error: 'no JSON object/array found in output' };
 }

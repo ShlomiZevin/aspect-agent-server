@@ -286,7 +286,11 @@ class GoogleService {
         inputTokens: um.promptTokenCount || 0,
         outputTokens: um.candidatesTokenCount || 0,
       } : null;
-      return { text, usage };
+      // In Anthropic's words, so callers check one value (task #920).
+      const finishReason = response.candidates?.[0]?.finishReason;
+      const stopReason = finishReason === 'MAX_TOKENS' ? 'max_tokens'
+        : (finishReason ? String(finishReason).toLowerCase() : null);
+      return { text, usage, stopReason };
     } catch (error) {
       console.error('❌ Google OneShot Error:', error.message);
       const err = new Error(`Failed to get Google response: ${error.message}`);

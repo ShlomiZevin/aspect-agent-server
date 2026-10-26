@@ -3,6 +3,15 @@ const fs = require('fs');
 const path = require('path');
 const providerConfigService = require('./provider-config.service');
 
+/**
+ * Newer Claude models reject `temperature` with a 400 (sampling settings
+ * were removed: Opus 4.7+, Sonnet 5+, Haiku 5.5, Fable, Mythos). Callers
+ * that pass one keep working — it is simply not sent to those models.
+ */
+function acceptsTemperature(model) {
+  return !/^claude-(opus-4-[78]|opus-5|sonnet-5|haiku-5|fable|mythos)/.test(String(model || ''));
+}
+
 /** Agent display name ("ZolStock") -> per-customer key scope ("zolstock").
  *  Matches the ENV_FALLBACKS naming in provider-config.service.js exactly. */
 function normalizeScope(agentName) {
@@ -79,7 +88,7 @@ class ClaudeService {
       messages,
     };
     if (tools.length) params.tools = tools;
-    if (temperature !== undefined) params.temperature = temperature;
+    if (temperature !== undefined && acceptsTemperature(model)) params.temperature = temperature;
 
     const response = await this._clientFor(null).messages.create(params);
 
@@ -214,7 +223,7 @@ class ClaudeService {
 
       // Only sent when the caller explicitly asked for it — leaving it off
       // preserves Anthropic's default (1.0) for every pre-existing caller.
-      if (temperature != null) requestParams.temperature = Math.max(0, Math.min(1, temperature));
+      if (temperature != null && acceptsTemperature(model)) requestParams.temperature = Math.max(0, Math.min(1, temperature));
 
       // Tool-use mode — when the caller provides a tool definition
       // (and typically a tool_choice forcing it), the response is a
@@ -426,7 +435,7 @@ class ClaudeService {
           messages: currentMessages
         };
 
-        if (temperature != null) requestParams.temperature = Math.min(temperature, 1.0); // Claude max is 1.0
+        if (temperature != null && acceptsTemperature(model)) requestParams.temperature = Math.min(temperature, 1.0); // Claude max is 1.0
         if (topK != null) requestParams.top_k = topK;
 
         // Add tools if provided

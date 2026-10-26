@@ -1083,7 +1083,13 @@ class OpenAIService {
         inputTokens: response.usage.input_tokens || 0,
         outputTokens: response.usage.output_tokens || 0,
       } : null;
-      return { text, usage };
+      // Same words as Anthropic's stop_reason, so callers check one value.
+      // An `incomplete` response hit max_output_tokens (reasoning counts
+      // against it) — the text is cut or empty (task #920).
+      const stopReason = response.status === 'incomplete'
+        ? (response.incomplete_details?.reason === 'max_output_tokens' ? 'max_tokens' : (response.incomplete_details?.reason || 'incomplete'))
+        : 'end_turn';
+      return { text, usage, stopReason };
     } catch (error) {
       console.error('❌ OpenAI OneShot Error:', error.message);
       const err = new Error(`Failed to get one-shot response: ${error.message}`);

@@ -27,29 +27,39 @@
  *   }
  */
 
+// Prices: provider list prices, verified 2026-10-26 (OpenAI's pricing page;
+// Anthropic's model table). Newest first within each provider.
 const MODELS = [
   // ── Anthropic ──
+  { id: 'claude-opus-5-5',   providerId: 'anthropic', name: 'Claude Opus 5.5',   notes: 'Newest top reasoning — cheaper than Opus 5', price: { in: 4, out: 20 } },
+  { id: 'claude-sonnet-5-5', providerId: 'anthropic', name: 'Claude Sonnet 5.5', notes: 'Newest balanced — fast & sharp', price: { in: 2, out: 10 } },
+  { id: 'claude-haiku-5-5',  providerId: 'anthropic', name: 'Claude Haiku 5.5',  notes: 'Newest cheap & fast', price: { in: 0.1, out: 0.5 } },
+  { id: 'claude-fable-5-1',  providerId: 'anthropic', name: 'Claude Fable 5.1',  notes: 'Most capable — slow & expensive', price: { in: 10, out: 50 } },
   { id: 'claude-opus-5',     providerId: 'anthropic', name: 'Claude Opus 5',     notes: 'Newest top reasoning — same price as 4.7', price: { in: 5, out: 25 } },
-  { id: 'claude-sonnet-5',   providerId: 'anthropic', name: 'Claude Sonnet 5',   notes: 'Newest balanced — same price as 4.6', price: { in: 3, out: 15 } },
+  { id: 'claude-sonnet-5',   providerId: 'anthropic', name: 'Claude Sonnet 5',   notes: 'Newest balanced — cheaper than 4.6', price: { in: 2, out: 10 } },
   { id: 'claude-opus-4-7',   providerId: 'anthropic', name: 'Claude Opus 4.7',   notes: 'Top reasoning — slow & expensive', price: { in: 5, out: 25 } },
   { id: 'claude-sonnet-4-6', providerId: 'anthropic', name: 'Claude Sonnet 4.6', notes: 'Default for thinking — fast & sharp', price: { in: 3, out: 15 } },
   { id: 'claude-haiku-4-5',  providerId: 'anthropic', name: 'Claude Haiku 4.5',  notes: 'Cheap & fast', price: { in: 1, out: 5 } },
 
   // ── OpenAI ──
-  { id: 'gpt-5.6',       providerId: 'openai', name: 'GPT-5.6 Sol',   notes: 'Newest, recommended' },
-  { id: 'gpt-5.6-terra', providerId: 'openai', name: 'GPT-5.6 Terra', notes: 'Balanced — half price of Sol (default talker)' },
-  { id: 'gpt-5.6-luna',  providerId: 'openai', name: 'GPT-5.6 Luna',  notes: 'Cheap & fast' },
-  { id: 'gpt-5.5',      providerId: 'openai', name: 'GPT-5.5',      notes: 'Strong all-round' },
-  { id: 'gpt-4o',       providerId: 'openai', name: 'GPT-4o',       notes: 'Balanced' },
-  { id: 'gpt-5.4-mini', providerId: 'openai', name: 'GPT-5.4 mini', notes: 'New mini — cheap & fast' },
-  { id: 'gpt-4o-mini',  providerId: 'openai', name: 'GPT-4o mini',  notes: 'Old mini (default extractor)' },
+  { id: 'gpt-6.1-sol',   providerId: 'openai', name: 'GPT-6.1 Sol',   notes: 'Newest & strongest, cheaper than 5.6 Sol — thinks first (~14s to first word), so not for the talker', price: { in: 2, out: 10 } },
+  { id: 'gpt-6-astra',   providerId: 'openai', name: 'GPT-6 Astra',   notes: 'Top reasoning — slow & expensive', price: { in: 10, out: 50 } },
+  { id: 'gpt-6-luna',    providerId: 'openai', name: 'GPT-6 Luna',    notes: 'Newest cheap & fast', price: { in: 0.1, out: 0.5 } },
+  // `gpt-5.6` is OpenAI's alias for gpt-5.6-sol; kept as the id agents already use.
+  { id: 'gpt-5.6',       providerId: 'openai', name: 'GPT-5.6 Sol',   notes: 'Previous Sol', price: { in: 4, out: 20 } },
+  { id: 'gpt-5.6-terra', providerId: 'openai', name: 'GPT-5.6 Terra', notes: 'Balanced (default talker)', price: { in: 2, out: 12 } },
+  { id: 'gpt-5.6-luna',  providerId: 'openai', name: 'GPT-5.6 Luna',  notes: 'Cheap & fast', price: { in: 0.2, out: 1.2 } },
+  { id: 'gpt-5.5',      providerId: 'openai', name: 'GPT-5.5',      notes: 'Strong all-round', price: { in: 5, out: 30 } },
+  { id: 'gpt-4o',       providerId: 'openai', name: 'GPT-4o',       notes: 'Balanced', price: { in: 2.5, out: 10 } },
+  { id: 'gpt-5.4-mini', providerId: 'openai', name: 'GPT-5.4 mini', notes: 'New mini — cheap & fast', price: { in: 0.75, out: 4.5 } },
+  { id: 'gpt-4o-mini',  providerId: 'openai', name: 'GPT-4o mini',  notes: 'Old mini (default extractor)', price: { in: 0.15, out: 0.6 } },
   // Hidden from pickers — an old ChatGPT snapshot (Aug 2025), kept so
   // existing agents that reference it keep resolving.
   { id: 'gpt-5-chat-latest', providerId: 'openai', name: 'GPT-5 chat', notes: 'Legacy', deprecated: true },
 
   // ── Google ──
-  { id: 'gemini-2.5-pro',   providerId: 'google', name: 'Gemini 2.5 Pro',   notes: 'Powerful, long context' },
-  { id: 'gemini-2.5-flash', providerId: 'google', name: 'Gemini 2.5 Flash', notes: 'Cheap & fast — closed to NEW Gemini accounts (new environments cannot use it)' },
+  { id: 'gemini-2.5-pro',   providerId: 'google', name: 'Gemini 2.5 Pro',   notes: 'Powerful, long context', price: { in: 1.25, out: 10 } },
+  { id: 'gemini-2.5-flash', providerId: 'google', name: 'Gemini 2.5 Flash', notes: 'Cheap & fast — closed to NEW Gemini accounts (new environments cannot use it)', price: { in: 0.3, out: 2.5 } },
 ];
 
 const PROVIDERS = [

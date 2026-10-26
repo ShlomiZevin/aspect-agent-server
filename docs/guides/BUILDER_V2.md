@@ -1667,6 +1667,33 @@ mid-sentence by browser select rendering. Notes now render as a
 small italic caption *below* the picker row, showing the selected
 model's notes. The dropdown itself contains just the model name.
 
+### 51. Output limit per addon, and a cut-off answer is a failure (tasks #889, #920)
+Addons used to call their model with no limit, so each provider's default
+applied (Anthropic 4,096 · Gemini 2,048 · OpenAI 8,192 one-shot / 2,048
+streaming). Models that think first (Claude Opus 5 / Sonnet 5, GPT-5.x,
+Gemini 3) spend part of the same budget on thinking, so JSON came back cut
+or empty — and the parser fished the first complete INNER object out of the
+broken outer one and saved it as the whole answer, as `success`.
+
+- **The limit** — `config.maxOutputTokens` on any addon or AI panel
+  (`source.maxOutputTokens`), else 16,000 (`builder/runtime/outputLimit.js`,
+  client mirror `registry/outputLimit.ts`). Applied in ONE place:
+  `addonRunner` hands plugins a wrapped `llm` that adds the limit to
+  `sendOneShot` and `sendMessageStreamWithPrompt`. Above 16,000 a one-shot
+  call streams (the Anthropic SDK refuses ~21K+ non-streaming).
+- **The UI** — "Max output" under the model in `ModelPicker` (presets
+  4K–64K), with the cost of a run that uses all of it (`model.price.out`;
+  prices now on every model in `models.service.js`).
+- **Cut-off = failure** — providers return `stopReason` (`'max_tokens'` in
+  all three; `llm.sendOneShot(…, { withMeta: true })` passes it on).
+  `outputFailureOf()` fails a run that hit the limit, came back empty, or
+  isn't JSON (json-to-memory): no memory writes (the previous value stays),
+  `addon.error` → error center, an `addon_runs` row with `status: 'error'`
+  and the raw output, so the run card shows why. Only judged when the
+  plugin actually called a model.
+- **Parser** — `extractJSON` no longer searches past an outer object that
+  never closes: `JSON is cut off — it never closes`.
+
 ---
 
 ## Stability: the error center and load tests (tasks #903, #902)

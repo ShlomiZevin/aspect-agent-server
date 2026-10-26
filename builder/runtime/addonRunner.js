@@ -51,6 +51,7 @@ const errorCenter = require('../services/errorCenter');
 const addonRunsStore = require('./addonRunsStore');
 const historyService = require('./historyService');
 const { evaluateConditions } = require('./conditionMatcher');
+const { chosenLimitOf, outputLimitOf, STREAM_ABOVE } = require('./outputLimit');
 
 /** `{}`, `[]`, or blank text — a value that says nothing. */
 function isEmptyValue(v) {
@@ -444,6 +445,30 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
     return { result: null, didTransition: false, broke: false };
   }
 
+  // ── The addon's model calls run with its output limit (#889, #920). ──
+  // Plugins call `llm` as before; this wrapper adds the limit and notes
+  // every call that stopped at it. A plugin that set its own maxTokens
+  // keeps it unless the author chose a limit on the addon.
+  const outputLimit = outputLimitOf(instance);
+  const chosenLimit = chosenLimitOf(instance);
+  const modelCalls = { count: 0, cutOff: 0 };
+  const addonLlm = Object.create(llm);
+  addonLlm.sendOneShot = async (system, message, opts = {}) => {
+    const maxTokens = chosenLimit ?? opts.maxTokens ?? outputLimit;
+    modelCalls.count++;
+    const r = await llm.sendOneShot(system, message, {
+      ...opts,
+      maxTokens,
+      ...(maxTokens > STREAM_ABOVE ? { stream: true } : {}),
+      withMeta: true,
+    });
+    if (!r || typeof r !== 'object' || !('stopReason' in r)) return r; // tool-use shape
+    if (r.stopReason === 'max_tokens') modelCalls.cutOff++;
+    return r.text;
+  };
+  addonLlm.sendMessageStreamWithPrompt = (message, convId, config = {}) =>
+    llm.sendMessageStreamWithPrompt(message, convId, { ...config, maxTokens: chosenLimit ?? config.maxTokens ?? outputLimit });
+
   // ── Call the plugin. The plugin owns LLM-call shape + parsing. ──
   const usageProcess = instance.pluginId;
   const usageCrew    = crewLabel;
@@ -462,7 +487,7 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
       memory,
       historyMessages,
       emit,
-      llm,
+      llm: addonLlm,
       logUsage,
       usageProcess,
       usageCrew,
@@ -484,6 +509,52 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
       instanceId: instance.instanceId,
       error: { code: 'plugin_run_failed', message: err.message },
     }, err);
+    return { result: null, didTransition: false, broke: false };
+  }
+
+  // ── A cut-off or empty answer is a failure, never a success (#920). ──
+  // Nothing is written: the addon's previous memory stays as it was, so
+  // downstream addons never read half an answer. The run is kept, with
+  // what the model did return, so the run card shows why.
+  const failure = outputFailureOf({ instance, result, modelCalls, outputLimit });
+  if (failure) {
+    const err = new Error(failure.message);
+    err.code = failure.code;
+    emit('addon.error', {
+      instanceId: instance.instanceId,
+      error: failure,
+      label: meta.label,
+      modelLabel,
+      rawOutput: result?.rawOutput ?? '',
+      durationMs: result?.durationMs ?? (Date.now() - addonStart),
+    }, err);
+    try {
+      await addonRunsStore.insertRun({
+        conversationId,
+        messageId: assistantMessageId,
+        instance,
+        status: 'error',
+        startedAt: new Date(addonStart),
+        endedAt: new Date(),
+        durationMs: result?.durationMs ?? (Date.now() - addonStart),
+        runData: {
+          instanceId: instance.instanceId,
+          label: meta.label,
+          modelLabel,
+          prompt,
+          rawOutput: result?.rawOutput ?? '',
+          parsedOutput: null,
+          memoryWrites: [],
+          error: failure,
+          ...(result?.parseError ? { parseError: result.parseError } : {}),
+          historyMode: historyResolution,
+          historyCount: visibleCount,
+          lane: instance.lane,
+        },
+      });
+    } catch (e) {
+      console.error('[addonRunner] failed addon_run insert failed:', e.message);
+    }
     return { result: null, didTransition: false, broke: false };
   }
 
@@ -668,4 +739,29 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
   };
 }
 
-module.exports = { runAddon };
+/**
+ * Why a run that returned must still count as failed, or null (#920).
+ * Only judged when the plugin actually called a model — a plugin that
+ * skipped its call (nothing to do) returns empty output legitimately.
+ */
+function outputFailureOf({ instance, result, modelCalls, outputLimit }) {
+  if (!modelCalls.count) return null;
+  const limit = outputLimit.toLocaleString('en-US');
+  if (modelCalls.cutOff > 0) {
+    return {
+      code: 'output_cut_off',
+      message: `Stopped at the output limit (${limit} tokens, thinking included) before finishing. Nothing was saved — raise "Max output" on this addon.`,
+    };
+  }
+  const raw = String(result?.rawOutput ?? '');
+  if ((instance.outputType || 'json-to-memory') !== 'json-to-memory') return null;
+  if (!raw.trim()) {
+    return { code: 'empty_output', message: 'The model returned nothing. Nothing was saved.' };
+  }
+  if (result?.parseError && (result.parsedOutput === null || result.parsedOutput === undefined)) {
+    return { code: 'bad_json', message: `The answer is not valid JSON (${result.parseError}). Nothing was saved.` };
+  }
+  return null;
+}
+
+module.exports = { runAddon, outputFailureOf };

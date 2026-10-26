@@ -210,7 +210,11 @@ class LLMService {
     }
     const durationMs = Date.now() - start;
 
-    // Providers return { text, usage } — log usage and return just text for backward compat
+    // Providers return { text, usage, stopReason } — log usage and return just
+    // the text for backward compat. `withMeta: true` returns { text,
+    // stopReason, usage } instead, for callers that must tell a complete
+    // answer from one cut off at the output limit (stopReason 'max_tokens',
+    // in every provider's case — task #920).
     if (result && typeof result === 'object' && 'text' in result) {
       if (result.usage) {
         logUsage({
@@ -225,7 +229,13 @@ class LLMService {
           userId: options.userId,
         });
       }
+      if (options.withMeta) {
+        return { text: result.text, stopReason: result.stopReason || null, usage: result.usage || null };
+      }
       return result.text;
+    }
+    if (options.withMeta && typeof result === 'string') {
+      return { text: result, stopReason: null, usage: null };
     }
     return result; // fallback if provider returns raw string
   }

@@ -120,6 +120,8 @@ function toPromptInstance(panel) {
       name:      panel.title,
       prompt:    src.prompt || '',
       model:     src.model,
+      // The panel's output limit (#889) — addonRunner reads config.maxOutputTokens.
+      ...(src.maxOutputTokens ? { maxOutputTokens: src.maxOutputTokens } : {}),
       render:    panel.render,
       tagMode:   panel.tags?.mode,
       tagLabels: panel.tags?.labels,
