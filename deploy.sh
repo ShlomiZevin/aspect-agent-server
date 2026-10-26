@@ -74,14 +74,15 @@ echo "   Cloud SQL: $CLOUD_SQL_INSTANCES"
 echo "   Env file:  $ENV_FILE"
 echo ""
 
-# Production targets keep the old behaviour (set the active project).
-# Staging names its project per command, so the active gcloud project and
-# account — what the other deploys rely on — are never changed.
-if [ "$TARGET" = "staging" ]; then
-  PROJECT_FLAG="--project=$PROJECT_ID"
-else
+# Origin's targets (aspect, freeda) keep the old behaviour (set the active
+# project). Every Lybi environment (staging, lybi-<customer>, …) names its
+# project per command, so the active gcloud project and account — what the
+# origin deploys rely on — are never changed.
+if [ "$TARGET" = "aspect" ] || [ "$TARGET" = "freeda" ]; then
   gcloud config set project $PROJECT_ID
   PROJECT_FLAG=""
+else
+  PROJECT_FLAG="--project=$PROJECT_ID"
 fi
 
 # Generate a YAML env vars file

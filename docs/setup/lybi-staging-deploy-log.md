@@ -1,8 +1,11 @@
 # Lybi staging — deploy log
 
-The recipe for standing up a Lybi environment (staging now; `lybi-prod` and
-`lybi-<customer>` later). Written while doing it: every step, who did it, what
-went wrong. Task #913. Guide for the human part: `lybi-google-cloud-setup.html`.
+The first time we stood up a Lybi environment (staging), written while doing it:
+every step, who did it, what went wrong. Task #913. Guide for the human part:
+`lybi-google-cloud-setup.html`. **To build the next one, use the skill
+`.claude/skills/new-environment/SKILL.md`** — this recipe generalized, with
+`scripts/make-env-file.js` for the settings file. "origin" = the existing
+environment (lybi.ai, Boostart's `aspect-agents`) — called "production" in older notes below.
 
 ## Where things live
 
@@ -267,11 +270,11 @@ One console account (Lybi's), the **Default** workspace, one key per environment
   3. Google Auth Platform → Audience → must be **In production**, External (it was).
   These three are console-only — no command or API — so a human clicks them.
 
-### 17. Copy an agent's setup from production — skill `copy-agent`
+### 17. Copy an agent's setup from origin — skill `copy-agent`
 How-to lives in the skill (`.claude/skills/copy-agent/SKILL.md`):
 ```bash
-node scripts/copy-agent-to-env.js <slug> --from prod --to staging --dry
-node scripts/copy-agent-to-env.js <slug> --from prod --to staging [--replace]
+node scripts/copy-agent-to-env.js <slug> --from origin --to staging --dry
+node scripts/copy-agent-to-env.js <slug> --from origin --to staging [--replace]
 ```
 Environments are named in `scripts/environments.json` — **a new environment adds an
 entry there** (DB public IP, credentials file, API/site URLs, isProduction).
@@ -300,7 +303,7 @@ and a Lybi account would mean re-uploading every knowledge base. Staging reads t
 same index/namespaces, so copied agents keep their knowledge.
 
 ### 16. Still open
-- **Anthropic credit** (Shlomi) — the key is in, calls fail until billing is set up.
+- ~~Anthropic credit~~ — done 2026-10-25 (Claude add-ons answer on staging).
 - ~~Google sign-in, Lybi's own~~ — done: staging serves its own client
   `700084613835-20k7…` (see "Sign-in" above).
 - **Google Cloud free trial:** the Lybi billing account runs on the trial (₪921,
