@@ -25,7 +25,9 @@ const APP_URL = String(process.env.LYBI_APP_URL || 'https://lybi.ai').replace(/\
 
 /** Should this written error alert? Pure — exported for the battery. */
 function isAlertable(w) {
-  if (!errorRules.ruleFor(w.kind).alert) return false;
+  const rule = errorRules.ruleFor(w.kind);
+  if (!rule.alert) return false;
+  if (rule.alertAnySource) return true; // e.g. out of credit — stops every conversation
   return w.source === 'customer' || (w.source == null && w.area === 'server') || (w.source == null && !w.conversationId);
 }
 

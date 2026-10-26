@@ -28,6 +28,14 @@
 const DEFAULT_USER_MESSAGE = 'Sorry — something went wrong on my side. Please send that again.';
 
 const RULES = {
+  // The provider account ran out of prepaid credit (task #925). Never
+  // retried; alerts from ANY conversation — builder and simulations
+  // included — because it stops everything until someone adds credit.
+  model_no_credit: {
+    alert: true,
+    alertAnySource: true,
+    userMessage: 'Sorry — I can\'t answer right now. Please try again a little later.',
+  },
   model_rate_limit: {
     retry: { times: 2, waitMs: [2000, 6000] },
     alert: false,

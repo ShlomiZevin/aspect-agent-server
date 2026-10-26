@@ -44,6 +44,9 @@ check('normalise blanks numbers', normalise('took 4312 ms') === 'took # ms');
 console.log('\nKind');
 const kindOf = (msg, extra = {}) => errorCenter.classify(Object.assign(new Error(msg), extra));
 check('429 → model_rate_limit', kindOf('Too Many Requests', { status: 429 }) === 'model_rate_limit');
+check('OpenAI out of credit (a 429) → model_no_credit, not a rate limit', kindOf('429 You have no credits remaining. Add credits to continue using the API', { status: 429 }) === 'model_no_credit');
+check('Anthropic out of credit → model_no_credit', kindOf('Your credit balance is too low to access the Anthropic API', { status: 400 }) === 'model_no_credit');
+check('a cut-off add-on answer (#920) → model_bad_answer', kindOf('Stopped at the output limit', { code: 'output_cut_off' }) === 'model_bad_answer');
 check('rate limit text → model_rate_limit', kindOf('Rate limit reached for gpt-5') === 'model_rate_limit');
 check('timeout → model_timeout', kindOf('Request timed out') === 'model_timeout');
 check('statement timeout (57014) → database', kindOf('canceling statement due to statement timeout', { code: '57014' }) === 'database');
@@ -74,6 +77,7 @@ check('our-code error in a customer conversation alerts', isAlertable({ kind: 'c
 check('…the same in the Builder test chat does not', !isAlertable({ kind: 'code', source: 'builder', area: 'turn', conversationId: 5 }));
 check('…nor in a simulation (load tests make errors on purpose)', !isAlertable({ kind: 'code', source: 'simulation', area: 'turn', conversationId: 5 }));
 check('a rate limit never alerts (it is retried)', !isAlertable({ kind: 'model_rate_limit', source: 'customer', area: 'model', conversationId: 5 }));
+check('out of credit alerts even from a simulation', isAlertable({ kind: 'model_no_credit', source: 'simulation', area: 'model', conversationId: 5 }));
 check('a server crash alerts', isAlertable({ kind: 'code', source: null, area: 'server', conversationId: null }));
 
 const runAsync = async () => {

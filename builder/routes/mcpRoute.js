@@ -540,6 +540,15 @@ Scripts are for assistants that can run commands. Run them in the
 background and carry on talking to the person; check on them when they
 finish. Run a handful of conversations at once, not hundreds.
 
+**Simulations cost money and have daily limits.** Before a batch, read
+\`${base}/simulations/limits\`: today's turns, simulated-user lines and
+estimated spend against the team's limits (one set for all agents, reset at
+midnight UTC). A refused turn (429) means a limit was reached — stop and
+tell the person; don't retry. If a model call fails with "no credits
+remaining", the provider account itself is out of money: nothing on that
+provider works until someone adds credit, so stop the whole batch. What a
+run actually cost: \`${base}/agents/<slug>/usage\`.
+
 **Release a simulation — the server runs it by itself**
 
 One call with everything inside. It answers at once with an id; the
@@ -626,7 +635,7 @@ problem is one line with its count:
 
 | To see | Fetch |
 |---|---|
-| The agent's errors, one line per problem | \`${base}/agents/<slug>/errors\` — optional \`?status=new\`, \`&source=customer\` (or \`builder\`, \`simulation\`), \`&kind=model_rate_limit\`, \`&area=addon\`, \`&sort=frequent\` |
+| The agent's errors, one line per problem | \`${base}/agents/<slug>/errors\` — optional \`?status=new\`, \`&source=customer\` (or \`builder\`, \`simulation\`), \`&kind=model_rate_limit\` (or \`model_no_credit\` — the provider account is out of credit; nothing runs until someone adds it), \`&area=addon\`, \`&sort=frequent\` |
 | One problem: every time it happened, with the conversation and technical details | the \`details\` link on its line |
 
 Read only. A person marks a problem looking-at-it / handled / ignored in
@@ -1737,6 +1746,30 @@ router.post('/simulations', async (req, res) => {
     res.status(201).json(await simulationJobs.releaseJob({ slug, by, body: b }));
   } catch (err) {
     simFail(res, err, 'release the simulation');
+  }
+});
+
+/** Today's simulation limits and use (#926) — check before releasing many. */
+router.get('/simulations/limits', async (_req, res) => {
+  try {
+    const s = await require('../services/simulationLimits').summary();
+    const l = s.limits;
+    sendText(res, [
+      '## Simulation limits — this environment, all agents (days reset at midnight UTC)',
+      '',
+      '| | today | limit |', '|---|---|---|',
+      `| Simulated conversation turns | ${s.today.turns} | ${l.turnsPerDay} |`,
+      `| Lines written as the simulated user | ${s.today.userReplies} | ${l.userRepliesPerDay} |`,
+      `| Estimated spend of simulations | $${s.today.usd.toFixed(2)} | ${l.usdPerDay == null ? 'no dollar cap' : `$${l.usdPerDay}`} |`,
+      `| Turns one persona simulation may run | — | ${l.maxTurnsPerSimulation} |`,
+      '',
+      'Reaching a limit refuses further simulated turns (429) until midnight UTC. The team changes',
+      'these in Admin → Simulations → Limits — you cannot, and should not ask around them: tell the',
+      'person what is left before releasing a large batch.',
+    ].join('\n'));
+  } catch (err) {
+    console.error('[builder-mcp] simulation limits failed:', err);
+    res.status(500).type('text/plain').send(`Could not read the limits: ${err.message}`);
   }
 });
 

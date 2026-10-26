@@ -4,6 +4,9 @@
  *   GET  /api/simulations?agentSlug=<slug>   the agent's jobs, newest first
  *   GET  /api/simulations/:id                one job
  *   POST /api/simulations                    release a job
+ *   GET  /api/simulations/limits             the limits + today's use (#926)
+ *   PUT  /api/simulations/limits             change them { turnsPerDay?, userRepliesPerDay?,
+ *                                            maxTurnsPerSimulation?, usdPerDay? (null = none), by }
  *
  * Two callers use the POST: the Admin screen's "New simulation" form, and
  * the main server forwarding a release to the dedicated simulation
@@ -14,6 +17,7 @@
 
 const express = require('express');
 const simulationJobs = require('../services/simulationJobs');
+const simulationLimits = require('../services/simulationLimits');
 const { publicBaseOf } = require('./publicBase');
 
 const router = express.Router();
@@ -31,6 +35,25 @@ router.get('/', async (req, res) => {
     res.json({ simulations: await simulationJobs.listJobs({ slug: String(agentSlug), limit }) });
   } catch (err) {
     fail(res, err, 'list');
+  }
+});
+
+// Before '/:id', so "limits" is never read as a job id.
+router.get('/limits', async (_req, res) => {
+  try {
+    res.json(await simulationLimits.summary());
+  } catch (err) {
+    fail(res, err, 'read limits');
+  }
+});
+
+router.put('/limits', async (req, res) => {
+  try {
+    const { by, ...patch } = req.body || {};
+    await simulationLimits.setLimits(patch, by ? String(by).trim().slice(0, 60) : null);
+    res.json(await simulationLimits.summary());
+  } catch (err) {
+    fail(res, err, 'save limits');
   }
 });
 

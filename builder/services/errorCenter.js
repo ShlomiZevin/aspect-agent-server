@@ -46,7 +46,7 @@ const STACK_LINES = 8;
 const AREAS = ['turn', 'addon', 'model', 'offline', 'trigger', 'profiler', 'live-brain', 'simulation', 'server'];
 // server_unavailable: our own server / its front door could not take the request
 // (Cloud Run 429/5xx under load) — set by the caller that knows, never guessed.
-const KINDS = ['model_rate_limit', 'model_timeout', 'model_refusal', 'model_bad_answer', 'model_other', 'database', 'external', 'server_unavailable', 'user_input', 'code'];
+const KINDS = ['model_no_credit', 'model_rate_limit', 'model_timeout', 'model_refusal', 'model_bad_answer', 'model_other', 'database', 'external', 'server_unavailable', 'user_input', 'code'];
 const SOURCES = ['builder', 'customer', 'simulation'];
 
 // ─── Context and "already recorded" ────────────────────────────────
@@ -94,6 +94,14 @@ function classify(err) {
   // Postgres SQLSTATE codes are five characters (e.g. 23505, 42P01, 57014
   // statement timeout) — checked first so a slow query is not a "model timeout".
   if (/^[0-9A-Z]{5}$/.test(code) || /relation .* does not exist|duplicate key|violates .* constraint|database|connection terminated|too many clients/i.test(msg)) return 'database';
+  // Out of prepaid credit at the provider (task #925). OpenAI sends it as a
+  // 429, so it must be caught BEFORE the rate limit: retrying is pointless,
+  // and it stops every conversation until someone adds credit.
+  if (code === 'insufficient_quota' || code === 'credit_balance_exhausted'
+      || /insufficient_quota|credit_balance_exhausted|no credits remaining|credit balance is too low|exceeded your current quota|billing_hard_limit/i.test(msg)) return 'model_no_credit';
+  // An addon run that returned but failed our checks (#920) — the model's
+  // answer was cut off, empty or not JSON. A setup problem, not a bug.
+  if (['output_cut_off', 'empty_output', 'bad_json'].includes(code)) return 'model_bad_answer';
   if (status === 429 || /rate.?limit|too many requests|quota/i.test(msg)) return 'model_rate_limit';
   if (/ETIMEDOUT|ESOCKETTIMEDOUT/.test(code) || e.name === 'AbortError' || /timed? ?out|timeout/i.test(msg)) return 'model_timeout';
   if (/refus|content.?(policy|filter)|safety/i.test(msg)) return 'model_refusal';

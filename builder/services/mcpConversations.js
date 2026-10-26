@@ -42,8 +42,8 @@ const llmService = require('../../services/llm');
 const models = require('../../services/models.service');
 
 const VERSIONS = ['active', 'published'];
-const DAILY_TURN_CAP = Number(process.env.MCP_SIM_DAILY_TURNS) || 2000;
-const DAILY_USER_REPLY_CAP = Number(process.env.MCP_SIM_DAILY_USER_REPLIES) || 2000;
+// Daily caps come from simulationLimits (set in Admin → Simulations → Limits, #926).
+const simulationLimits = require('./simulationLimits');
 
 function drizzle() {
   return db.getDrizzle();
@@ -72,8 +72,11 @@ function todayKey() {
   return `mcp_sim_usage:${new Date().toISOString().slice(0, 10)}`;
 }
 
-/** Count one use of `kind`; throws 429 once today's cap is reached. */
-async function countUse(kind, cap) {
+/** Count one use of `kind`; throws 429 once today's cap (or dollar budget) is reached. */
+async function countUse(kind) {
+  const limits = await simulationLimits.getLimits();
+  const cap = kind === 'turns' ? limits.turnsPerDay : limits.userRepliesPerDay;
+  await simulationLimits.checkBudget();
   const d = drizzle();
   const key = todayKey();
   const [row] = await d.select().from(providerConfig).where(eq(providerConfig.key, key)).limit(1);
@@ -81,7 +84,7 @@ async function countUse(kind, cap) {
   try { usage = JSON.parse(row?.value || '{}') || {}; } catch { usage = {}; }
   const used = Number(usage[kind]) || 0;
   if (used >= cap) {
-    throw refuse(429, `Today's limit for simulated ${kind === 'turns' ? 'conversation turns' : 'user replies'} (${cap}) is used up. It resets at midnight UTC — tell the person, and ask Shlomi if more is needed.`);
+    throw refuse(429, `Today's limit for simulated ${kind === 'turns' ? 'conversation turns' : 'user replies'} (${cap}) is used up. It resets at midnight UTC — tell the person; the limit is set in Admin → Simulations → Limits.`);
   }
   const value = JSON.stringify({ ...usage, [kind]: used + 1 });
   await d.insert(providerConfig).values({ key, value })
@@ -213,7 +216,7 @@ async function sendMessage({ conversationId, text, base, timeoutMs }) {
   const message = String(text || '').trim();
   if (!message) throw refuse(400, 'Send { "text": "what the user says" }.');
   const { id, sim, slug } = await loadSimulation(conversationId);
-  await countUse('turns', DAILY_TURN_CAP);
+  await countUse('turns');
 
   const res = await fetch(selfUrl(`/api/agents/${encodeURIComponent(slug)}/conversations/${id}/messages`, base), {
     method: 'POST',
@@ -356,7 +359,7 @@ async function userReply({ persona, goal, conversationId, transcript, model }) {
   }
   turns = turns.filter(m => (m.role === 'user' || m.role === 'assistant') && String(m.text || '').trim());
 
-  await countUse('userReplies', DAILY_USER_REPLY_CAP);
+  await countUse('userReplies');
 
   const lines = turns.map(m => `${m.role === 'user' ? 'PERSON' : 'ASSISTANT'}: ${m.text}`).join('\n\n');
   const input = [

@@ -58,6 +58,7 @@ const { testRuns } = require('../../db/schema');
 const mcpConversations = require('./mcpConversations');
 const errorCenter = require('./errorCenter');
 const models = require('../../services/models.service');
+const simulationLimits = require('./simulationLimits');
 
 const TYPE = 'simulation';
 const DEFAULT_MAX_TURNS = 12;
@@ -176,7 +177,9 @@ function readSetup(b) {
   } else {
     setup.persona = persona;
     if (b.goal) setup.goal = String(b.goal).trim();
-    setup.maxTurns = Math.max(1, Math.min(Number(b.maxTurns) || DEFAULT_MAX_TURNS, MAX_TURNS_CAP));
+    // The cap is the team's setting (Admin → Simulations → Limits, #926).
+    const cap = simulationLimits.limitsNow().maxTurnsPerSimulation || MAX_TURNS_CAP;
+    setup.maxTurns = Math.max(1, Math.min(Number(b.maxTurns) || Math.min(DEFAULT_MAX_TURNS, cap), cap));
     if (b.model) {
       const modelId = String(b.model).trim();
       if (!models.getModel(modelId)) {

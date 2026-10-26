@@ -540,6 +540,9 @@ async function removeIfPresent(slug) {
     const usageAgent = await get(`/agents/${TEST_SLUG}/usage?days=30`);
     check('one agent\'s cost reads', usageAgent.status === 200 && usageAgent.text.includes('LLM usage'));
     check('unknown agent\'s cost → 404', (await get('/agents/zz-no-such-agent/usage')).status === 404);
+    const lim = await get('/simulations/limits');
+    check('simulation limits read (today vs limit, incl. spend)', lim.status === 200 && lim.text.includes('Estimated spend of simulations'));
+    check('entry page tells assistants to check the limits before a batch', doc.text.includes(`${base}/simulations/limits`));
 
     // ── errors (task #903) — read only ──
     section('errors');
