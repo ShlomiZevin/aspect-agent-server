@@ -417,6 +417,17 @@ async function removeIfPresent(slug) {
       const ed = await patch(`/tasks/${testTaskId}`, { name: 'Claude', priority: 'high' });
       check('edit by the opener → 200', ed.status === 200, ed.text.slice(0, 80));
       check('…and it stuck', (await taskService.getTask(testTaskId))?.priority === 'high');
+
+      // #931: Codex writes Markdown, and once wrote a <messageId> placeholder
+      // that made the whole text pass for HTML and land as one block.
+      const md = '## Steps\n1. Open the run\n2. Read <messageId> and the **raw** output\n\n- uses `overrideCrewBody`';
+      const mdEd = await patch(`/tasks/${testTaskId}`, { name: 'Claude', description: md });
+      const mdStored = (await taskService.getTask(testTaskId))?.description;
+      check('Markdown description → board HTML (heading, numbered list, bold, code, bullets)',
+        mdEd.status === 200 && mdStored === '<h3>Steps</h3><ol><li>Open the run</li><li>Read &lt;messageId&gt; and the <b>raw</b> output</li></ol><ul><li>uses <code>overrideCrewBody</code></li></ul>',
+        mdStored);
+      check('…reads back as Markdown-shaped text',
+        (await get(`/tasks/${testTaskId}`)).text.includes('- Read <messageId> and the **raw** output'));
     }
     check('unknown task → 404', (await get('/tasks/999999999')).status === 404);
 

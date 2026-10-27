@@ -770,7 +770,9 @@ Only \`opener\` and \`title\` are required — fill in the rest yourself from
 what they told you. The assignee is either Shlomi (the default) or the
 opener themself. \`type\` is one of ${TASK_TYPES.join(', ')};
 \`priority\` one of ${TASK_PRIORITIES.join(', ')}. Write the description
-as plain text; blank lines become paragraphs. Assigning to Shlomi
+in Markdown: headings, bullet and numbered lists, \`**bold**\`,
+\`code\` and links become the board's own formatting, and a blank line
+starts a new paragraph. Assigning to Shlomi
 notifies him, so read the title and description back to them before you
 open it.
 
@@ -1419,28 +1421,9 @@ async function unknownPerson(res, name) {
   );
 }
 
-/** Board descriptions are rich-text HTML; show the words. */
-function htmlToText(html) {
-  return String(html || '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li)>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-/**
- * Plain text in, the board's HTML out — otherwise every line break an
- * assistant writes collapses into one paragraph in the board's editor.
- * Text that already contains tags is trusted as HTML.
- */
-function textToHtml(text) {
-  const s = String(text || '').trim();
-  if (!s || /<[a-z][\s\S]*>/i.test(s)) return s;
-  const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return s.split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('');
-}
+// Board descriptions are HTML; assistants write Markdown. Both directions
+// live in one module so the conversion can be tested on its own (#931).
+const { textToBoardHtml: textToHtml, boardHtmlToText: htmlToText } = require('../services/boardHtml');
 
 function taskLine(t) {
   const bits = [`#${t.id} ${t.title}`, t.status, t.type, t.priority];

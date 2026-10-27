@@ -482,6 +482,7 @@ the assistant never thinks to use.
 | Codex on Windows concluded the server was down | Folder instructions used `curl -s`; in PowerShell `curl` is `Invoke-WebRequest` and `-s` swallows the URL | §5 — the instructions file now lists endpoints, no shell syntax |
 | Folder copy flagged stale "with no deploy" | Another session deployed at 17:24 | §5 fingerprint note |
 | Page links would have been `http://…` behind a proxy | `trust proxy` is not set app-wide | §4 `urls(req)` |
+| A task Codex opened (#920) showed on the board as one unformatted block (#931) | Its text held a `<messageId>` placeholder; the "already HTML?" test matched any tag-shaped text, so the description was stored raw. Assistants also write Markdown whatever they are told | Task text goes through `builder/services/boardHtml.js`: HTML only if it holds a real board tag, otherwise Markdown → board HTML with everything else escaped. Battery asserts it |
 
 ---
 
