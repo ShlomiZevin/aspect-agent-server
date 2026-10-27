@@ -56,6 +56,15 @@ async function resolveLegacyAgentId(slug) {
   return created.id;
 }
 
+/** Shown to a suspended user (#909) instead of an answer. */
+const SUSPENDED_MESSAGE = "This account is paused, so I can't reply right now. Please contact whoever gave you access.";
+
+/** True when an admin suspended this user (Admin → Users, #909). */
+async function isSuspended(userId) {
+  const [u] = await drizzle().select({ metadata: users.metadata }).from(users).where(eq(users.id, userId)).limit(1);
+  return !!(u && u.metadata && u.metadata.suspendedAt);
+}
+
 async function resolveUserId(ownerUserId) {
   const d = drizzle();
   if (!ownerUserId) throw new Error('Missing ownerUserId');
@@ -92,6 +101,7 @@ router.post('/:slug/conversations', async (req, res) => {
     if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
     const agentId = await resolveLegacyAgentId(slug);
     const userId = await resolveUserId(ownerUserId);
+    if (await isSuspended(userId)) return res.status(403).json({ error: SUSPENDED_MESSAGE, code: 'user_suspended' });
     // metadata.kind records which V2 surface the conversation was born in:
     // 'live' = customer-facing chat, 'builder-preview' = builder chat,
     // 'simulation' = started by an outside AI through /builder/mcp to
@@ -960,6 +970,13 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
 
     // Resolve internal user id (memory persistence + future logging).
     const userId = await resolveUserId(ownerUserId);
+
+    // A suspended user (#909) gets a clear note and nothing else: the
+    // message isn't stored and no add-on runs.
+    if (await isSuspended(userId)) {
+      emit('addon.error', { instanceId: null, error: { code: 'user_suspended', message: SUSPENDED_MESSAGE } });
+      return res.end();
+    }
 
     // Persist the user's message first so we have an id to emit.
     const [userMsg] = await d.insert(messages).values({

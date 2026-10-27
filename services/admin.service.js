@@ -222,6 +222,25 @@ class AdminService {
    * @param {Object} updates - Fields to update
    * @returns {Promise<Object>} - Updated user
    */
+  /**
+   * Suspend or reactivate a user (#909). Kept in metadata.suspendedAt so
+   * nothing about the user or their conversations is removed: a suspended
+   * user simply can't start conversations or send messages until reactivated.
+   */
+  async setSuspended(userId, suspended) {
+    if (!this.drizzle) this.initialize();
+    const [row] = await this.drizzle.select({ metadata: users.metadata }).from(users).where(eq(users.id, userId)).limit(1);
+    if (!row) throw new Error('User not found');
+    const metadata = { ...(row.metadata || {}) };
+    if (suspended) metadata.suspendedAt = new Date().toISOString();
+    else delete metadata.suspendedAt;
+    const [updated] = await this.drizzle.update(users)
+      .set({ metadata, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
+    return updated;
+  }
+
   async updateUser(userId, updates) {
     if (!this.drizzle) this.initialize();
 

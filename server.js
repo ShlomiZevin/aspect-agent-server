@@ -4586,6 +4586,18 @@ app.delete('/api/admin/users/:userId/link', async (req, res) => {
   }
 });
 
+// Suspend / reactivate a user — keeps the user and every conversation (#909)
+app.post('/api/admin/users/:userId/suspend', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    const updated = await adminService.setSuspended(userId, req.body?.suspended !== false);
+    res.json(updated);
+  } catch (err) {
+    console.error('❌ Error suspending user:', err.message);
+    res.status(500).json({ error: 'Error suspending user: ' + err.message });
+  }
+});
+
 // Delete user and all their conversations/messages
 app.delete('/api/admin/users/:userId', async (req, res) => {
   try {
