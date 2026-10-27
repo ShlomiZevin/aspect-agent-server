@@ -167,7 +167,11 @@ class CommentsService {
     // Also fetch tasks to check opener and read tasks
     const allTasks = await this.drizzle.select({ id: tasks.id, opener: tasks.opener, type: tasks.type, assignee: tasks.assignee, isCompleted: tasks.isCompleted }).from(tasks);
     const openerMap = new Map();
+    // Closed tasks never wait on anyone (#907) — the emails already skipped them;
+    // the board's button didn't, so it filtered to a list of finished tasks.
+    const closed = new Set();
     for (const t of allTasks) {
+      if (t.isCompleted) closed.add(t.id);
       if (t.opener) openerMap.set(t.id, t.opener.toLowerCase());
       // Unread "read" tasks assigned to this identity need attention
       if (t.type === 'read' && !t.isCompleted && t.assignee && t.assignee.toLowerCase() === identityLower) {
@@ -176,6 +180,7 @@ class CommentsService {
     }
 
     for (const [taskId, comments] of byTask) {
+      if (closed.has(taskId)) continue;
       const lastComment = comments[comments.length - 1];
       const lastAuthorLower = lastComment.author.toLowerCase();
 
