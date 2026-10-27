@@ -1694,6 +1694,44 @@ broken outer one and saved it as the whole answer, as `success`.
 - **Parser** — `extractJSON` no longer searches past an outer object that
   never closes: `JSON is cut off — it never closes`.
 
+### 52. Admin → Conversations: list + conversation reader (tasks #922, #917, #924)
+Admin is per agent — only this agent's conversations. Designed with Leonardo after
+two rounds (`lybi-website/art-source/ui/conversation-reader/`, Shlomi picked the
+"playback" direction and asked for the chain reaction as the hero).
+
+- **List** — id (#924), start, kind, user, messages, last activity, "Open in Builder"
+  (`/<slug>/builder?c=<id>`, the Builder's existing deep link). Search by id/user,
+  last-activity range, kind with counts, 50 a page; state in the URL.
+- **Reader** (`?c=<id>&turn=<n>`), three columns, left to right (Leonardo round 3 "C2"):
+  - **Conversation** — one card per turn, messages only ("👤 User" / "🤖 Agent" + time,
+    15px text, `dir="auto"` per message — #917). Click a turn to select it. No chain
+    controls here: the chain lives in the middle column.
+  - **Agent chain for turn N** — the trigger quote, then numbered steps in run order,
+    each row: add-on emoji (the same as the Builder's `builder/addons/*.addon.json`)
+    + name + type, time, status (Done / Skipped / Failed / Cut off / Running),
+    Conclusion (`oneLineOf()` server-side), Fields filled or Saved to thinking chips.
+    Parallel steps sit in one "Ran in parallel" box (started within 50 ms while the
+    other was still running). The talker is followed by the **Agent reply** card;
+    the offline lane sits under "After the reply". Opening a step shows, in order:
+    **Input** (assembled prompt, folded) → **Output** read as a document (short values
+    as a fact grid, each object as its own card with a headline, long text with
+    "more", lists of objects as numbered items showing 2 then "Show N more", big
+    nested objects like product terms folded) → **Saved for later** (the step's
+    `memoryWrites`, profile field vs thinking · area) → **Raw model answer** (folded).
+    Built from the output's own shape, so it works for every add-on.
+  - **Agent's view after turn N** — "X of Y fields known" + "N new this turn", fields
+    grouped by domain in cards (open when they hold data), Yes/No for booleans,
+    snake_case values in words, thinking areas in amber, Profiler panels on the last turn.
+  - Columns: Chain / Agent's view toggle (persisted, `builder:readerLayers`); the
+    dividers drag to change the ratio (min 280px a column, persisted in
+    `builder:readerColumns`), double-click a divider or "Reset columns" to restore.
+  - A strip of all turns at the bottom: numbered step dots per turn, crew moves,
+    Done / Failed / Skipped legend.
+- Data: `builder/routes/adminConversationsRoute.js` — `/admin/conversation-list`,
+  `/admin/conversations/:id/overview` (runs with `lane`, `group`, `summary`, `writes`,
+  `transitionTo`, `turn`), `/admin/runs/:runId`. Client: `ConversationsTab.tsx`
+  (`ConversationDetail` bubbles are shared with Admin → Simulations).
+
 ---
 
 ## Stability: the error center and load tests (tasks #903, #902)

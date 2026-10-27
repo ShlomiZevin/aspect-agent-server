@@ -26,6 +26,9 @@ const errorRules = require('../services/errorRules');
 
 const router = express.Router({ mergeParams: true });
 
+// Admin → Conversations list + conversation screen (#922, #917, #924).
+router.use(require('./adminConversationsRoute'));
+
 function drizzle() {
   return db.getDrizzle();
 }
