@@ -35,6 +35,7 @@
 const errorCenter = require('../services/errorCenter');
 const { runAddon } = require('./addonRunner');
 const offlineTriggerState = require('./offlineTriggerState');
+const { transitionMatches } = require('./transitionTrigger');
 
 /** Walk the agent cortex + current crew's addons, return every
  *  offline-lane addon that's enabled. */
@@ -63,7 +64,7 @@ function collectOfflineAddons(runnable) {
  *        in this turn's blocking chain.
  * @returns {boolean}
  */
-function shouldFire({ instance, nextCounter, didTransition }) {
+function shouldFire({ instance, nextCounter, didTransition, fromCrewIds }) {
   const trigger = instance.context?.trigger;
   if (!trigger || typeof trigger !== 'object') {
     // No trigger configured — that's a misconfiguration, not a
@@ -76,7 +77,7 @@ function shouldFire({ instance, nextCounter, didTransition }) {
     return nextCounter >= n;
   }
   if (trigger.kind === 'on_transition') {
-    return !!didTransition;
+    return transitionMatches(trigger, didTransition, fromCrewIds);
   }
   // Unknown trigger kind — forward-compat: skip silently rather than
   // throwing. Adding new kinds is a server-only concern; old clients
@@ -112,7 +113,7 @@ async function dispatchOfflineAddons({ ctx, didTransition }) {
   for (const instance of offline) {
     const current  = offlineTriggerState.readCounter(state, instance.instanceId);
     const next     = current + 1;
-    const willFire = shouldFire({ instance, nextCounter: next, didTransition });
+    const willFire = shouldFire({ instance, nextCounter: next, didTransition, fromCrewIds: ctx.transitionFromCrewIds });
     if (willFire) {
       // Reset the counter to 0 — the addon is firing on THIS turn,
       // so the next interval starts fresh from the next turn.

@@ -48,14 +48,16 @@ function resolveModelLabel(modelRef) {
   return { providerName: PROVIDER_LABELS_BY_ID[m.providerId] || m.providerId, modelName: m.name };
 }
 
+const { transitionMatches } = require('./transitionTrigger');
+
 /** Trigger evaluation — mirrors offlineDispatcher.shouldFire. */
-function shouldFire(trigger, nextCounter, didTransition) {
+function shouldFire(trigger, nextCounter, didTransition, fromCrewIds) {
   if (!trigger || typeof trigger !== 'object') return false;
   if (trigger.kind === 'every_n_messages') {
     const n = Math.max(1, Math.floor(trigger.n || 0));
     return nextCounter >= n;
   }
-  if (trigger.kind === 'on_transition') return !!didTransition;
+  if (trigger.kind === 'on_transition') return transitionMatches(trigger, didTransition, fromCrewIds);
   return false;
 }
 
@@ -275,7 +277,7 @@ async function dispatchProfilerPanelsInner({ ctx, didTransition }) {
       const counterKey = `profiler:${panel.id}`;
       const current  = offlineTriggerState.readCounter(state, counterKey);
       const next     = current + 1;
-      if (shouldFire(panel.source.trigger, next, didTransition)) {
+      if (shouldFire(panel.source.trigger, next, didTransition, ctx.transitionFromCrewIds)) {
         offlineTriggerState.writeCounter(state, counterKey, 0);
         dispatches.push(panel);
       } else {

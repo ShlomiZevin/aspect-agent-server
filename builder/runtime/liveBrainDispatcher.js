@@ -34,15 +34,16 @@ const offlineTriggerState = require('./offlineTriggerState');
 const { runAddon } = require('./addonRunner');
 const addonRunsStore = require('./addonRunsStore');
 const { evaluateConditions } = require('./conditionMatcher');
+const { transitionMatches } = require('./transitionTrigger');
 
 /** Trigger evaluation — mirrors offlineDispatcher.shouldFire. */
-function shouldFire(trigger, nextCounter, didTransition) {
+function shouldFire(trigger, nextCounter, didTransition, fromCrewIds) {
   if (!trigger || typeof trigger !== 'object') return false;
   if (trigger.kind === 'every_n_messages') {
     const n = Math.max(1, Math.floor(trigger.n || 0));
     return nextCounter >= n;
   }
-  if (trigger.kind === 'on_transition') return !!didTransition;
+  if (trigger.kind === 'on_transition') return transitionMatches(trigger, didTransition, fromCrewIds);
   return false;
 }
 
@@ -283,7 +284,7 @@ async function dispatchLiveBrainPanelsInner({ ctx, didTransition }) {
     for (const panel of promptPanels) {
       const current  = offlineTriggerState.readCounter(state, panel.id);
       const next     = current + 1;
-      if (shouldFire(panel.source.trigger, next, didTransition)) {
+      if (shouldFire(panel.source.trigger, next, didTransition, ctx.transitionFromCrewIds)) {
         offlineTriggerState.writeCounter(state, panel.id, 0);
         dispatches.push(panel);
       } else {

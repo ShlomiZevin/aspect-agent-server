@@ -80,8 +80,10 @@ fires. The first two trigger kinds:
 
 - `every_n_messages: N` — fires after the N-th user-message-plus-reply
   pair on the conversation.
-- `on_transition` — fires after a crew transition completes (optional
-  per-crew filter later).
+- `on_transition` — fires after a crew transition completes. Optional
+  `fromCrewId`: only when the conversation leaves that crew (#921 — the
+  "From" picker on add-ons, Profiler and Live Brain panels). Any target
+  crew counts; a `toCrewId` may follow.
 
 `when_field_equals` and `time_elapsed` are obvious next entries — the
 discriminated-union shape leaves room.
@@ -103,7 +105,7 @@ Shared by every offline addon. Lives on `AddonInstance.context.trigger`
 ```ts
 type OfflineTrigger =
   | { kind: 'every_n_messages'; n: number }
-  | { kind: 'on_transition' }                     // any transition
+  | { kind: 'on_transition'; fromCrewId?: ID | null } // any transition, or only out of one crew
   // Future:
   // | { kind: 'when_field_equals'; field: string; value: string }
   // | { kind: 'time_elapsed'; minutes: number };

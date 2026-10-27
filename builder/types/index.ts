@@ -196,14 +196,17 @@ export type HistoryMode =
  *                         lives in `context_data` per (conversation,
  *                         instance).
  *  - `on_transition`    — fire whenever a crew transition is emitted
- *                         in the same turn.
+ *                         in the same turn. `fromCrewId` (optional)
+ *                         limits it to transitions OUT of that crew
+ *                         (#921); unset = from any crew. The target
+ *                         crew is not filtered (yet).
  *
  * Designed as a discriminated union so future kinds (`when_field_equals`,
  * `time_elapsed`, …) can be added without breaking existing data.
  */
 export type OfflineTrigger =
   | { kind: 'every_n_messages'; n: number }
-  | { kind: 'on_transition' };
+  | { kind: 'on_transition'; fromCrewId?: ID | null };
 
 /**
  * Universal reading knobs every addon has, regardless of plugin.

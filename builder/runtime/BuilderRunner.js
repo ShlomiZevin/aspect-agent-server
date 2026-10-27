@@ -418,6 +418,9 @@ async function runOnce({
 
   let assistantText = '';
   let anyTransition = false;
+  /** The crews this turn transitioned OUT of — `on_transition` triggers can
+   *  be limited to one of them (`fromCrewId`, #921). */
+  const transitionFrom = new Set();
 
   /** Max transition cascades we'll follow in one turn. A guard against
    *  loops, not a soft limit — authors shouldn't be relying on chained
@@ -438,9 +441,13 @@ async function runOnce({
   // Agent cortex does NOT re-run on cascades — it already produced its
   // outputs in the first pass, and its purpose is "pre-crew" work.
   {
+    const firstCrewId = ctx.runnable?.crew?.id;
     const first = await runChain(blockingAddons);
     if (first.chainText) assistantText = first.chainText;
-    if (first.chainTransition) anyTransition = true;
+    if (first.chainTransition) {
+      anyTransition = true;
+      if (firstCrewId) transitionFrom.add(firstCrewId);
+    }
 
     let cascadeTo = first.cascadeTo;
     let hops = 0;
@@ -489,7 +496,10 @@ async function runOnce({
           ? `${assistantText}\n\n${next.chainText}`
           : next.chainText;
       }
-      if (next.chainTransition) anyTransition = true;
+      if (next.chainTransition) {
+        anyTransition = true;
+        if (nextRunnable.crew?.id) transitionFrom.add(nextRunnable.crew.id);
+      }
       cascadeTo = next.cascadeTo;
     }
 
@@ -556,6 +566,7 @@ async function runOnce({
   // the same timeline.
   ctx.historyExcludeFromMessageId = undefined;
   ctx.historyCache = new Map(); // the reply text was just written
+  ctx.transitionFromCrewIds = [...transitionFrom];
   await dispatchOfflineAddons({ ctx, didTransition: anyTransition });
 
   // ── 7. Compute the Live Brain panels. Same non-blocking phase as the
