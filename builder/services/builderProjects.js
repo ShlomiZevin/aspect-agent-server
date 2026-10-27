@@ -462,7 +462,23 @@ async function saveAgentVersion({ agentId, versionId, body }) {
     ));
 }
 
-async function saveAgentVersionAs({ agentId, versionId, body, description }) {
+/**
+ * The number the next whole-agent version gets (#923): one past the highest
+ * number on the agent OR any of its crews, so the agent and every crew saved
+ * with it share it — "v7" means the agent's v7 and each crew's v7.
+ */
+async function nextAgentWideNumber(agentId) {
+  const d = drizzle();
+  const [a] = await d.select({ n: sql`coalesce(max(${builderAgentVersions.number}), 0)` })
+    .from(builderAgentVersions).where(eq(builderAgentVersions.agentId, agentId));
+  const [c] = await d.select({ n: sql`coalesce(max(${builderCrewVersions.number}), 0)` })
+    .from(builderCrewVersions)
+    .innerJoin(builderCrews, eq(builderCrews.id, builderCrewVersions.crewId))
+    .where(eq(builderCrews.agentId, agentId));
+  return Math.max(Number(a?.n) || 0, Number(c?.n) || 0) + 1;
+}
+
+async function saveAgentVersionAs({ agentId, versionId, body, description, number }) {
   const d = drizzle();
   await d.transaction(async tx => {
     // Compute next version number atomically by counting existing.
@@ -471,7 +487,8 @@ async function saveAgentVersionAs({ agentId, versionId, body, description }) {
       .where(eq(builderAgentVersions.agentId, agentId))
       .orderBy(desc(builderAgentVersions.number))
       .limit(1);
-    const nextNumber = (existing[0]?.number || 0) + 1;
+    // A whole-agent save passes the shared number (#923); never reuse one.
+    const nextNumber = Math.max((existing[0]?.number || 0) + 1, Number(number) || 0);
     await tx.insert(builderAgentVersions).values({
       id:          versionId,
       agentId,
@@ -594,7 +611,7 @@ async function saveCrewVersion({ crewId, versionId, body }) {
     ));
 }
 
-async function saveCrewVersionAs({ crewId, versionId, body, description }) {
+async function saveCrewVersionAs({ crewId, versionId, body, description, number }) {
   const d = drizzle();
   await d.transaction(async tx => {
     const existing = await tx.select({ number: builderCrewVersions.number })
@@ -602,7 +619,8 @@ async function saveCrewVersionAs({ crewId, versionId, body, description }) {
       .where(eq(builderCrewVersions.crewId, crewId))
       .orderBy(desc(builderCrewVersions.number))
       .limit(1);
-    const nextNumber = (existing[0]?.number || 0) + 1;
+    // A whole-agent save passes the shared number (#923); never reuse one.
+    const nextNumber = Math.max((existing[0]?.number || 0) + 1, Number(number) || 0);
     await tx.insert(builderCrewVersions).values({
       id:          versionId,
       crewId,
@@ -1165,6 +1183,7 @@ module.exports = {
   deleteAgentVersion,
   deleteCrewVersion,
   saveAgentVersion,
+  nextAgentWideNumber,
   saveAgentVersionAs,
   setAgentActive,
   setAgentPublished,

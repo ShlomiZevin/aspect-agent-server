@@ -187,9 +187,9 @@ router.get('/agents/:agentId/listing', async (req, res) => {
 router.post('/agents/:agentId/versions', async (req, res) => {
   try {
     const { agentId } = req.params;
-    const { versionId, body, description } = req.body || {};
+    const { versionId, body, description, number } = req.body || {};
     if (!versionId || !body) return res.status(400).json({ error: 'Missing versionId or body' });
-    await projects.saveAgentVersionAs({ agentId, versionId, body, description });
+    await projects.saveAgentVersionAs({ agentId, versionId, body, description, number });
     res.json({ ok: true });
   } catch (err) {
     console.error('[builder] POST agent version failed:', err);
@@ -338,9 +338,9 @@ router.delete('/crews/:crewId', async (req, res) => {
 router.post('/crews/:crewId/versions', async (req, res) => {
   try {
     const { crewId } = req.params;
-    const { versionId, body, description } = req.body || {};
+    const { versionId, body, description, number } = req.body || {};
     if (!versionId || !body) return res.status(400).json({ error: 'Missing versionId or body' });
-    await projects.saveCrewVersionAs({ crewId, versionId, body, description });
+    await projects.saveCrewVersionAs({ crewId, versionId, body, description, number });
     res.json({ ok: true });
   } catch (err) {
     console.error('[builder] POST crew version failed:', err);

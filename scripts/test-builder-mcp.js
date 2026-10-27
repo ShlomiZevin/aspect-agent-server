@@ -347,12 +347,22 @@ async function removeIfPresent(slug) {
     const wc = await post(`/agents/${TEST_SLUG}/crews/${c0.id}`, { body: crewEdited, description: 'battery' });
     check('200', wc.status === 200, `status ${wc.status}`);
 
-    const c1 = (await hydrate(TEST_SLUG)).agents[0].crews.find(c => c.id === c0.id);
+    const a2 = (await hydrate(TEST_SLUG)).agents[0];
+    const c1 = a2.crews.find(c => c.id === c0.id);
     check('one new version', c1.versions.length === c0.versions.length + 1);
     check('ACTIVE moved', c1.activeVersionId !== c0.activeVersionId);
     check('PUBLISHED did not move', (c1.publishedVersionId ?? null) === (c0.publishedVersionId ?? null));
     check('THE BUILDER SHOWS THE EDIT', c1.spec === crewEdited.spec);
     check('no phantom "unsaved changes"', !crewDirty(c1));
+    // #923: one version number per agent — the crew's new version and the
+    // agent's share the next number, past anything either had.
+    const num = (e, id) => e.versions.find(v => v.id === id)?.number;
+    const agentNum = num(a2, a2.activeVersionId);
+    const crewNum = num(c1, c1.activeVersionId);
+    const priorMax = Math.max(...a1.versions.map(v => v.number), ...a1.crews.flatMap(c => c.versions.map(v => v.number)));
+    check('agent and crew share one new version number', agentNum === crewNum && crewNum === priorMax + 1,
+      `agent v${agentNum}, crew v${crewNum}, previous highest v${priorMax}`);
+    check('…and the agent kept its setup', a2.spec === edited.spec);
 
     // ── create ──
     section('create');

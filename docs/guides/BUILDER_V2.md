@@ -512,6 +512,11 @@ Footer: [Remove] ········ [📄 Prompt template] [⬆️ Export] [Done]
 
 ## Versioning
 
+> **One version number per agent (task #923, §53).** Storage below is unchanged —
+> agent and crew rows, three pointers each — but every save-as gives the agent
+> and all its crews ONE shared number, and every activate / preview / publish
+> moves them together. Read the rest of this section with that in mind.
+
 **Independent histories** on agent and crew. Each has its own
 `versions[]`, an **active pointer**, and a **viewing pointer**.
 Project has no versions.
@@ -1889,3 +1894,25 @@ universal **Context** + **Output** sections appear under its config,
 etc.). The Output section automatically lists the writes derived from
 its `fields` and shows the `⚙ field schema` + `⚙ current values`
 chips because of `fieldMode: 'extractor'`.
+
+### 53. One version number per agent (task #923)
+Crew numbers had drifted from the agent's (account-opening: agent v6, one crew
+on v2) because single-crew saves and per-crew publish still existed. Shlomi:
+keep the storage, change only how saves and buttons act.
+- **One number.** "Save all as a new version" gives the agent and every crew
+  the same number: one past the highest on the agent or any crew
+  (`nextAgentWideNumber`, client and server; the save-as endpoints take an
+  optional `number` and never reuse one). Agent vN = each crew's vN.
+- **A crew's version for vN** is its own vN, or its latest below N if it was
+  not saved with that version (`crewVersionAt`). Preview, Edit this version,
+  Set as active and Publish all use it, so the whole agent moves together.
+- **Removed:** "Save only this crew / the agent's setup" (and their save-as),
+  per-crew publish and "Publish all" (Publish is the whole agent now), the
+  crew version pill on the crew canvas and the `vN` chip on sidebar crew rows
+  (a dot still marks unsaved changes). The TopBar menu is the agent's on every
+  screen. An agent-version preview stays on while moving between its crews.
+- **MCP:** an agent write gets the next shared number; a crew write saves the
+  crew AND an unchanged copy of the agent under it, so the Builder opens on one
+  vN. Battery asserts it.
+- **Old history** is left as it is; account-opening lines up on its next
+  "Save all as a new version" (v7).

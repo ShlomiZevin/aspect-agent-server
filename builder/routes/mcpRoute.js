@@ -446,7 +446,9 @@ opens showing "unsaved changes" before anyone has touched it.
 - On screen those read String, Integer, Boolean; an \`enum\` shows as a
   Choice or a Targeted KB. Say the screen's words when you talk to the
   person, not the JSON spellings.
-- Crews are separate entities with their own versions. Adding one means
+- Crews are separate entities, saved one at a time, but the agent has ONE
+  version number: every save — the agent or one crew — becomes the agent's
+  next version (v7 = the agent and each crew as of v7). Adding a crew means
   adding to \`crews\`, not a key inside the agent.
 - Deleting a crew is not yours to do — say so and let them do it.
 - An agent-cortex addon (\`agent.cortex[]\`) runs in every crew unless its
@@ -1009,7 +1011,7 @@ router.get('/addons', (_req, res) => {
  * which service function they call — the rules, the response and the
  * reason it is safe are identical.
  */
-async function saveAsNewVersion({ res, kind, id, body, description, normalize, saveFn, activateFn }) {
+async function saveAsNewVersion({ res, kind, id, body, description, normalize, saveFn, activateFn, number }) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return res.status(400).type('text/plain').send(
       'Send { "body": { ... } } — the whole edited body as an object, not a patch and not a string.',
@@ -1020,6 +1022,7 @@ async function saveAsNewVersion({ res, kind, id, body, description, normalize, s
     versionId,
     body: normalize(body),
     description: description || 'Changed by an AI assistant',
+    number,
   });
 
   // Point ACTIVE at the new version, not just viewing.
@@ -1132,6 +1135,8 @@ router.post('/agents/:slug', async (req, res) => {
       body: req.body?.body,
       description: req.body?.description,
       normalize: b => normalizeAgentBody(b, agent),
+      // One version number for the whole agent (#923).
+      number: await builderProjects.nextAgentWideNumber(agent.id),
       saveFn: args => builderProjects.saveAgentVersionAs({ agentId: agent.id, ...args }),
       activateFn: ({ versionId }) => builderProjects.setAgentActive({ agentId: agent.id, versionId }),
     });
@@ -1155,6 +1160,12 @@ router.post('/agents/:slug/crews/:crewId', async (req, res) => {
         `No crew "${req.params.crewId}" on ${agent.name || agent.slug}. Its crews are: ${have}`,
       );
     }
+    // One version number for the whole agent (#923): the crew's new version
+    // and an unchanged copy of the agent share the next number, so the
+    // Builder opens on "vN" for the agent and this crew alike. The other
+    // crews keep their versions — vN means "their latest at or below N".
+    const number = await builderProjects.nextAgentWideNumber(agent.id);
+    const agentBody = (agent.versions || []).find(v => v.id === agent.activeVersionId)?.body;
     await saveAsNewVersion({
       res,
       kind: 'Crew',
@@ -1162,7 +1173,15 @@ router.post('/agents/:slug/crews/:crewId', async (req, res) => {
       body: req.body?.body,
       description: req.body?.description,
       normalize: normalizeCrewBody,
-      saveFn: args => builderProjects.saveCrewVersionAs({ crewId: crew.id, ...args }),
+      number,
+      saveFn: async args => {
+        await builderProjects.saveCrewVersionAs({ crewId: crew.id, ...args });
+        if (agentBody) {
+          const agentVersionId = newVersionId();
+          await builderProjects.saveAgentVersionAs({ agentId: agent.id, versionId: agentVersionId, body: agentBody, description: args.description, number });
+          await builderProjects.setAgentActive({ agentId: agent.id, versionId: agentVersionId });
+        }
+      },
       activateFn: ({ versionId }) => builderProjects.setCrewActive({ crewId: crew.id, versionId }),
     });
   } catch (err) {
