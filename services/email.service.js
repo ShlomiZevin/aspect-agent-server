@@ -8,6 +8,9 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Task links open the board of the environment that sent the email.
+const APP_URL = String(process.env.LYBI_APP_URL || 'https://lybi.ai').replace(/\/+$/, '');
+
 async function sendLybiContactEmail({ name, email, company, message }) {
   const recipients = 'noa@lybi.ai, hila@lybi.ai';
 
@@ -119,7 +122,7 @@ async function sendTaskAttentionEmail({ recipientEmail, recipientName, notificat
       <tr>
         <td style="padding:16px;border-bottom:1px solid #E5E7EB;vertical-align:top;">
           <div style="font-weight:600;font-size:15px;margin-bottom:6px;">
-            <a href="https://lybi.ai/tasks/${task.id}" style="color:#2563EB;text-decoration:none;font-weight:600;">${task.title}</a>
+            <a href="${APP_URL}/tasks/${task.id}" style="color:#2563EB;text-decoration:none;font-weight:600;">${task.title}</a>
             <span style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;background:${statusBadge};color:#fff;font-size:11px;font-weight:500;vertical-align:middle;">${task.status.replace('_', ' ')}</span>
           </div>
           <ul style="margin:0;padding-left:18px;">${eventLines}</ul>
@@ -182,7 +185,7 @@ async function sendTaskAttentionEmail({ recipientEmail, recipientName, notificat
                 return `
                   <tr>
                     <td style="padding:12px 16px;border-bottom:1px solid #E5E7EB;">
-                      <a href="https://lybi.ai/tasks/${t.task_id}" style="color:#2563EB;text-decoration:none;font-weight:600;font-size:14px;">${t.task_title}</a>
+                      <a href="${APP_URL}/tasks/${t.task_id}" style="color:#2563EB;text-decoration:none;font-weight:600;font-size:14px;">${t.task_title}</a>
                       <span style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;background:${badge};color:#fff;font-size:11px;font-weight:500;vertical-align:middle;">${t.task_status.replace('_', ' ')}</span>
                     </td>
                   </tr>`;
@@ -311,7 +314,7 @@ async function sendDeployedDigestEmail({ recipientEmail, recipientName, tasks })
     return `
       <tr>
         <td style="padding:14px 16px;border-bottom:1px solid #E5E7EB;">
-          <a href="https://lybi.ai/tasks/${t.task_id}" style="color:#2563EB;text-decoration:none;font-weight:600;font-size:14px;">${t.task_title}</a>
+          <a href="${APP_URL}/tasks/${t.task_id}" style="color:#2563EB;text-decoration:none;font-weight:600;font-size:14px;">${t.task_title}</a>
           <span style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:999px;background:${badge};color:#fff;font-size:11px;font-weight:500;vertical-align:middle;">${t.task_status.replace('_', ' ')}</span>
           <div style="margin-top:4px;color:#9CA3AF;font-size:11px;">Deployed ${deployedDate}</div>
         </td>

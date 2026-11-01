@@ -7,6 +7,9 @@ const boardEventsService = require('./boardEvents.service');
 // Sidebar items, never shipped — kept out of the Release list and What's New.
 const NON_RELEASE_TYPES = ['goal', 'agenda'];
 
+// A team member's first What's New shows this many of the latest releases.
+const WHATS_NEW_START = 25;
+
 /**
  * Task Board Service
  *
@@ -425,7 +428,8 @@ class TaskService {
     if (!identity) return { tasks: [], seenUntil: null };
 
     const person = await this._findPerson(identity);
-    const seenUntil = person?.seenUntil || null;
+    if (!person) return { tasks: [], seenUntil: null };
+    const seenUntil = person.seenUntil || await this._startWatermark(person.id);
     if (!seenUntil) return { tasks: [], seenUntil: null };
 
     const items = await this.drizzle
@@ -445,6 +449,25 @@ class TaskService {
       .orderBy(desc(tasks.deployedAt));
 
     return { tasks: items, seenUntil };
+  }
+
+  /**
+   * A team member's first What's New: start their watermark just below the last
+   * WHATS_NEW_START releases, so they see those and nothing older. Set in SQL so
+   * deployed_at keeps its full precision; `seen_until IS NULL` keeps it one-time.
+   */
+  async _startWatermark(personId) {
+    await this.drizzle.execute(sql`
+      UPDATE task_assignees
+      SET seen_until = COALESCE((
+        SELECT deployed_at FROM tasks
+        WHERE deployed_at IS NOT NULL AND is_draft = false
+          AND type NOT IN (${sql.join(NON_RELEASE_TYPES.map(t => sql`${t}`), sql`, `)})
+        ORDER BY deployed_at DESC OFFSET ${WHATS_NEW_START} LIMIT 1
+      ), TIMESTAMP '2000-01-01')
+      WHERE id = ${personId} AND seen_until IS NULL`);
+    const [person] = await this.drizzle.select().from(taskAssignees).where(eq(taskAssignees.id, personId));
+    return person?.seenUntil || null;
   }
 
   /**
