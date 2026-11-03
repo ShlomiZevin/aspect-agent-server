@@ -400,7 +400,7 @@ Finance reports are in Hebrew — write the whole answer in Hebrew. Do NOT call 
             // The table itself is deliberately kept OUT of the model's context:
             // `_`-prefixed keys are stripped by every provider, so the report
             // reaches the user through the card and cannot be re-typed,
-            // rounded or half-pasted on the way (task #116). The model keeps
+            // rounded or half-pasted on the way (task #112). The model keeps
             // the title, the periods and `highlights` to comment from.
             const { view, report_markdown: _markdown, ...rest } = r;
             return {

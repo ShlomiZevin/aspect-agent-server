@@ -71,7 +71,7 @@ async function headlineFor(descriptor, datasetId) {
 }
 
 /**
- * The DEMO's financial statements (task #116) — the P&L, the balance sheet and
+ * The DEMO's financial statements (task #112) — the P&L, the balance sheet and
  * the cash flow as their own screens, drawn like a company report rather than
  * a grid of rows.
  *

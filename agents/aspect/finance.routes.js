@@ -1,5 +1,5 @@
 /**
- * The Aspect demo's financial statements, for the Apps screens (task #116).
+ * The Aspect demo's financial statements, for the Apps screens (task #112).
  *
  * Same engine as the chat tool — `finance-reports.js`, straight from the demo
  * books — but handed over as STRUCTURE (sections, their lines, their totals)

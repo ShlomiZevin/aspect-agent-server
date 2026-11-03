@@ -199,7 +199,7 @@ app.use('/api/modules', require('./modules/routes/modules.routes'));
 app.use('/api/otto', require('./otto/routes/otto.routes'));
 
 // The Aspect DEMO's financial statements as structure, for the Apps screens
-// that draw them like a company report (task #116). Read-only, and hardcoded
+// that draw them like a company report (task #112). Read-only, and hardcoded
 // to the demo's own schema — no other client can reach it.
 app.use('/api/aspect-finance', require('./agents/aspect/finance.routes'));
 

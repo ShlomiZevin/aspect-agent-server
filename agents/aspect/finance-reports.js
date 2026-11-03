@@ -207,7 +207,7 @@ async function pnl(pool, a, b, branch) {
   const out = [];
   // The same rows a second time, GROUPED: the chat renders the statement as
   // collapsible sections (a total line you open to see its detail), the way a
-  // financial report is read, instead of one long flat table (task #116).
+  // financial report is read, instead of one long flat table (task #112).
   // `out` is untouched so the markdown table stays byte-identical for the
   // report/Otto callers.
   const blocks = [];
@@ -610,7 +610,7 @@ async function getFinanceReport(params = {}, pool = getPool()) {
     periods: { a: a.label, b: b.label, data_closed_through: periodLabel(range.last, range.last) },
     report_markdown: `**${r.title}**\n\n${markdownTable(r.columns, r.rows)}`,
     // The same report as structure, for a surface that can render a statement
-    // rather than a flat table (the chat's finance card, task #116). Callers
+    // rather than a flat table (the chat's finance card, task #112). Callers
     // that only want the table keep using `report_markdown` and ignore this.
     view: { columns: r.columns, blocks: r.blocks || deriveBlocks(r.rows) },
     highlights: r.highlights,

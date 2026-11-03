@@ -188,12 +188,18 @@ router.put('/:datasetId/quick-questions', async (req, res) => {
       .filter(q => q && typeof q === 'object' && String(q.text || '').trim() && String(q.question || '').trim())
       .map(q => {
         const out = { icon: String(q.icon || '').slice(0, 8), text: String(q.text).trim().slice(0, 60), question: String(q.question).trim().slice(0, 300) };
+        // `group` is the topic the tile sits under on the welcome screen
+        // ("Sales", "Inventory"). Optional: a list where nobody carries one
+        // renders as the single grid it always was.
+        const group = String(q.group || '').trim().slice(0, 40);
+        if (group) out.group = group;
         const i18n = {};
         for (const [lang, v] of Object.entries(q.i18n && typeof q.i18n === 'object' ? q.i18n : {})) {
           if (!/^[a-z]{2}$/.test(lang) || !v || typeof v !== 'object') continue;
           const text = String(v.text || '').trim().slice(0, 60);
           const question = String(v.question || '').trim().slice(0, 300);
-          if (text && question) i18n[lang] = { text, question };
+          const langGroup = String(v.group || '').trim().slice(0, 40);
+          if (text && question) i18n[lang] = { text, question, ...(langGroup ? { group: langGroup } : {}) };
         }
         if (Object.keys(i18n).length) out.i18n = i18n;
         return out;
