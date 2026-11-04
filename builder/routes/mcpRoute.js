@@ -781,6 +781,20 @@ opened under the wrong name is invisible to its owner.
 | **"Does anything need my attention?"** | \`GET ${base}/tasks/attention?name=<their name>\` |
 | Open a task | \`POST ${base}/tasks\` |
 | Edit a task they opened | \`PATCH ${base}/tasks/<id>\` |
+| **Attach a file to a task** — a conversation export, a screenshot, a spec | \`POST ${base}/tasks/<id>/files\` |
+| Remove a file from a task | \`DELETE ${base}/tasks/<id>/files/<fileId>\` |
+
+**Attaching a file** (25 MB at most) — it shows under the task's
+description on the board, and \`GET ${base}/tasks/<id>\` lists each file
+with its address:
+
+\`\`\`
+POST ${base}/tasks/<id>/files
+{ "by": "Noa", "fileName": "conversation-4614.json", "text": "..." }    text
+{ "by": "Noa", "fileName": "screenshot.png", "base64": "..." }          any file
+\`\`\`
+
+\`by\` is a name from \`${base}/people\` — whoever asked you to attach it.
 
 **Opening a task:**
 
@@ -1006,10 +1020,14 @@ router.get('/code', (_req, res) => {
  */
 const ADDONS_DIR = path.join(__dirname, '..', 'addons');
 
-router.get('/addons', (_req, res) => {
+router.get('/addons', (req, res) => {
   let files;
+  // Add-ons this environment no longer offers (#955) are left out, so an
+  // assistant never adds one the Builder's own picker would not.
+  const retired = new Set(environments.retiredAddons(urls(req).origin));
   try {
-    files = fs.readdirSync(ADDONS_DIR).filter(f => f.endsWith('.addon.json')).sort();
+    files = fs.readdirSync(ADDONS_DIR).filter(f => f.endsWith('.addon.json')).sort()
+      .filter(f => !retired.has(JSON.parse(fs.readFileSync(path.join(ADDONS_DIR, f), 'utf8')).pluginId));
   } catch (err) {
     console.error('[builder-mcp] addons failed:', err);
     return res.status(500).type('text/plain').send(`Could not read the addons: ${err.message}`);
@@ -1019,6 +1037,11 @@ router.get('/addons', (_req, res) => {
     '',
     `${files.length} addons, complete. Everything you need to configure any of`,
     'them is on this page — you should never have to guess a key name.',
+    ...(retired.size ? [
+      '',
+      `Not offered on this environment: ${[...retired].join(', ')}. Never add one. An agent that`,
+      'already has one keeps running it — leave it as it is unless they ask.',
+    ] : []),
     '',
     ...files.map(f => alfredTools.readPlatformFile(`builder/addons/${f}`)),
   ].join('\n\n'));
@@ -1576,6 +1599,19 @@ router.delete('/domains', async (req, res) => {
 
 const taskService = require('../../services/task.service');
 const commentsService = require('../../services/comments.service');
+const taskAttachments = require('../../services/taskAttachments.service');
+
+const fileSize = n => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+/** Content type from the extension — assistants send bytes, not a type. */
+const MIME_BY_EXT = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+  pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', html: 'text/html',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  zip: 'application/zip', mp4: 'video/mp4', mp3: 'audio/mpeg',
+};
 
 const TASK_TYPES = ['bug', 'feature', 'task', 'idea', 'test', 'read'];
 const TASK_PRIORITIES = ['low', 'medium', 'high', 'critical'];
@@ -1702,6 +1738,7 @@ router.get('/tasks/:id', async (req, res) => {
     const t = await taskService.getTask(Number(req.params.id));
     if (!t) return res.status(404).type('text/plain').send(`No task #${req.params.id} on the LYBI board.`);
     const comments = await commentsService.getComments(t.id);
+    const files = await taskAttachments.list(t.id);
     sendText(res, [
       `# #${t.id} ${t.title}`,
       '',
@@ -1712,6 +1749,8 @@ router.get('/tasks/:id', async (req, res) => {
       '',
       htmlToText(t.description) || '(none)',
       ...(t.whatChanged ? ['', '## What changed', '', t.whatChanged] : []),
+      ...(files.length ? ['', `## Files (${files.length})`, '',
+        ...files.map(f => `- file ${f.id} · ${f.fileName} · ${fileSize(f.sizeBytes)} · ${f.uploadedBy || 'unknown'}, ${new Date(f.createdAt).toISOString().slice(0, 16).replace('T', ' ')} · ${urls(req).origin}/api/tasks/${t.id}/attachments/${f.id}`)] : []),
       '',
       `## Comments (${comments.length})`,
       '',
@@ -1787,6 +1826,45 @@ router.post('/tasks', async (req, res) => {
  * assistant that tried to move a task to Done learns that it can't instead
  * of reporting success.
  */
+/** Attach a file to a task (#954) — the same files the board shows under the description. */
+router.post('/tasks/:id/files', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const by = await resolvePerson(b.by);
+    if (!by) return unknownPerson(res, b.by);
+    const fileName = String(b.fileName || '').trim();
+    if (!fileName || /[\/\\]/.test(fileName)) {
+      return res.status(400).type('text/plain').send('Send { "by": "<name>", "fileName": "name.ext", "text": "..." } — or "base64" in place of "text" for any file.');
+    }
+    if ((b.text == null) === (b.base64 == null)) {
+      return res.status(400).type('text/plain').send('Send exactly one of "text" or "base64".');
+    }
+    const buffer = b.text != null ? Buffer.from(String(b.text), 'utf8') : Buffer.from(String(b.base64), 'base64');
+    const ext = (fileName.split('.').pop() || '').toLowerCase();
+    let file;
+    try {
+      file = await taskAttachments.add(Number(req.params.id), { fileName, mimeType: MIME_BY_EXT[ext], buffer, uploadedBy: by });
+    } catch (err) {
+      return res.status(/^No task/.test(err.message) ? 404 : 400).type('text/plain').send(err.message);
+    }
+    sendText(res, `Attached "${file.fileName}" (file ${file.id}, ${fileSize(file.sizeBytes)}) to #${req.params.id}. It shows under the task's description on the board.`);
+  } catch (err) {
+    console.error('[builder-mcp] attach file failed:', err);
+    res.status(500).type('text/plain').send(`Could not attach the file: ${err.message}`);
+  }
+});
+
+router.delete('/tasks/:id/files/:fileId', async (req, res) => {
+  try {
+    const name = await taskAttachments.remove(Number(req.params.id), Number(req.params.fileId));
+    if (name === null) return res.status(404).type('text/plain').send(`No file ${req.params.fileId} on #${req.params.id}. GET ../tasks/${req.params.id} lists its files.`);
+    sendText(res, `Removed "${name}" from #${req.params.id}.`);
+  } catch (err) {
+    console.error('[builder-mcp] remove file failed:', err);
+    res.status(500).type('text/plain').send(`Could not remove the file: ${err.message}`);
+  }
+});
+
 router.patch('/tasks/:id', async (req, res) => {
   try {
     const b = req.body || {};

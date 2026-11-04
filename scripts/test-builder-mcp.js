@@ -457,6 +457,25 @@ async function removeIfPresent(slug) {
       stored?.description === '<p>First paragraph.</p><p>Second paragraph.</p>', stored?.description);
     check('readable back', testTaskId && (await get(`/tasks/${testTaskId}`)).text.includes('Second paragraph.'));
 
+    // #954: files on a task — attached here, listed on the task, gone with it.
+    if (testTaskId) {
+      check('entry page teaches attaching a file', doc.text.includes('/tasks/<id>/files'));
+      check('attach: unknown person → 400', (await post(`/tasks/${testTaskId}/files`, { by: 'Nobody', fileName: 'a.txt', text: 'x' })).status === 400);
+      check('attach: no content → 400', (await post(`/tasks/${testTaskId}/files`, { by: 'Claude', fileName: 'a.txt' })).status === 400);
+      check('attach to an unknown task → 404', (await post('/tasks/999999999/files', { by: 'Claude', fileName: 'a.txt', text: 'x' })).status === 404);
+      const att = await post(`/tasks/${testTaskId}/files`, { by: 'claude', fileName: 'zz-export.json', text: '{"battery":true}' });
+      check('attach a text file', att.status === 200 && att.text.includes('Attached "zz-export.json"'), att.text.slice(0, 100));
+      const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64');
+      check('attach a base64 image', (await post(`/tasks/${testTaskId}/files`, { by: 'Claude', fileName: 'zz-dot.png', base64: png.toString('base64') })).status === 200);
+      const withFiles = await get(`/tasks/${testTaskId}`);
+      check('the task lists its files with an address', withFiles.text.includes('## Files (2)') && withFiles.text.includes(`/api/tasks/${testTaskId}/attachments/`), withFiles.text.slice(0, 200));
+      const attList = await require('../services/taskAttachments.service').list(testTaskId);
+      check('…stored with the roster spelling and the right type', attList[0]?.uploadedBy === 'Claude' && attList[1]?.mimeType === 'image/png');
+      const rm = await fetch(`${base}/tasks/${testTaskId}/files/${attList[0].id}`, { method: 'DELETE' });
+      check('remove a file', rm.status === 200 && (await require('../services/taskAttachments.service').list(testTaskId)).length === 1);
+      check('remove an unknown file → 404', (await fetch(`${base}/tasks/${testTaskId}/files/1`, { method: 'DELETE' })).status === 404);
+    }
+
     if (testTaskId) {
       check('edit by someone else → 403',
         (await patch(`/tasks/${testTaskId}`, { name: 'Shlomi', priority: 'high' })).status === 403);

@@ -35,6 +35,17 @@ router.get('/projects/list', async (req, res) => {
 });
 
 /**
+ * GET /api/builder/environment
+ *   What the Builder needs to know about this environment: today the
+ *   add-ons it no longer offers (#955).
+ */
+router.get('/environment', (req, res) => {
+  const { currentEnvironment, retiredAddons } = require('../environments');
+  const origin = `${req.get('x-forwarded-proto') || req.protocol}://${req.get('x-forwarded-host') || req.get('host')}`;
+  res.json({ id: currentEnvironment(origin)?.id || 'local', retiredAddons: retiredAddons(origin) });
+});
+
+/**
  * GET /api/builder/projects/head?agentSlug=:slug
  *   The agent's and crews' current version ids, no bodies. Polled by an
  *   open Builder to notice saves made elsewhere (#952).

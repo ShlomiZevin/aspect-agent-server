@@ -12,8 +12,8 @@
  *
  *   origin   The first installation: Boostart's Google Cloud project
  *            `aspect-agents`. Everything built before Lybi had its own
- *            cloud lives here — every agent so far, lybi.ai, the LYBI
- *            task board. Called Origin because it came first, not
+ *            cloud lives here — every agent so far, lybi.ai. (The LYBI
+ *            task board moved to staging on 2026-11-01.) Called Origin because it came first, not
  *            because it is going away.
  *   staging  `lybi-staging`, the first environment on Lybi's own cloud
  *            (task #913). Started empty on 2026-10-25.
@@ -31,7 +31,7 @@
  * ── Origin is frozen (2026-10-26) ──────────────────────────────────
  *
  * Shlomi: no more deploys to Origin. Its server keeps running exactly as
- * it is — agents, conversations and the LYBI task board all work — but
+ * it is — agents and conversations all work — but
  * it gets no new features, so its own Builder MCP page is an older
  * version that does not know about the other environments.
  */
@@ -40,7 +40,7 @@ const ENVIRONMENTS = [
   {
     id: 'origin',
     name: 'Origin',
-    what: 'The first environment (Boostart\'s Google Cloud, Belgium). Every agent built so far, all their conversations, and the LYBI task board live here.',
+    what: 'The first environment (Boostart\'s Google Cloud, Belgium). Every agent built so far and all their conversations live here. Its old task board is retired — the LYBI board is on Lybi Staging.',
     app: 'https://lybi.ai',
     mcp: 'https://lybi.ai/builder/mcp',
     server: 'https://aspect-agent-server-1018338671074.europe-west1.run.app',
@@ -60,10 +60,19 @@ const ENVIRONMENTS = [
     server: 'https://lybi-server-700084613835.me-west1.run.app',
     hosts: ['lybi-staging.web.app', 'lybi-staging.firebaseapp.com', 'lybi-server-700084613835.me-west1.run.app'],
     service: 'lybi-server',
+    // Add-ons not offered here (#955): left out of the Builder's picker and
+    // the MCP's add-on list. An agent that already has one keeps running it.
+    retiredAddons: ['vibe-extractor', 'transition-router', 'field-interviewer'],
   },
 ];
 
-const BOARD_ENV = 'origin';
+// The LYBI task board moved here from Origin on 2026-11-01; Origin's refuses new tasks.
+const BOARD_ENV = 'staging';
+
+/** Add-on ids this environment does not offer (#955). */
+function retiredAddons(origin) {
+  return currentEnvironment(origin)?.retiredAddons || [];
+}
 
 /** The environment a request reached, or null for a local/unknown server. */
 function currentEnvironment(origin) {
@@ -173,4 +182,4 @@ function environmentsJson(origin) {
   };
 }
 
-module.exports = { ENVIRONMENTS, currentEnvironment, environmentsSection, environmentsJson, environmentsBrief };
+module.exports = { ENVIRONMENTS, currentEnvironment, retiredAddons, environmentsSection, environmentsJson, environmentsBrief };

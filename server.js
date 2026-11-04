@@ -61,6 +61,10 @@ const upload = multer({
   }
 });
 
+// Files on board tasks (task #954) — the service enforces the same cap with a readable message.
+const taskAttachments = require('./services/taskAttachments.service');
+const uploadTaskFile = multer({ storage: multer.memoryStorage(), limits: { fileSize: taskAttachments.MAX_BYTES } });
+
 // Separate multer instance for large podcast/audio files (up to 500MB)
 const uploadAudio = multer({
   storage: multer.memoryStorage(),
@@ -5099,6 +5103,60 @@ app.delete('/api/tasks/:taskId/comments/:commentId', async (req, res) => {
   } catch (err) {
     console.error('❌ Error deleting comment:', err.message);
     res.status(500).json({ error: 'Error deleting comment: ' + err.message });
+  }
+});
+
+// ─── Task files (task #954) ──────────────────────────────────────────────────
+// Files on a board task, kept in the database (services/taskAttachments.service).
+
+app.get('/api/tasks/:taskId/attachments', async (req, res) => {
+  try {
+    res.json({ attachments: await taskAttachments.list(parseInt(req.params.taskId)) });
+  } catch (err) {
+    console.error('❌ Error listing task files:', err.message);
+    res.status(500).json({ error: 'Error listing files: ' + err.message });
+  }
+});
+
+app.post('/api/tasks/:taskId/attachments', uploadTaskFile.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const attachment = await taskAttachments.add(parseInt(req.params.taskId), {
+      fileName: fixUploadName(req.file.originalname),
+      mimeType: req.file.mimetype,
+      buffer: req.file.buffer,
+      uploadedBy: req.body.uploadedBy,
+    });
+    res.status(201).json({ attachment });
+  } catch (err) {
+    console.error('❌ Error attaching task file:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Opens in the browser when it can (images, PDF, text); downloads otherwise.
+app.get('/api/tasks/:taskId/attachments/:id', async (req, res) => {
+  try {
+    const file = await taskAttachments.get(parseInt(req.params.taskId), parseInt(req.params.id));
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    const inline = /^(image\/|application\/pdf|text\/plain)/.test(file.mimeType) && !req.query.download;
+    res.set('Content-Type', file.mimeType);
+    res.set('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.fileName)}`);
+    res.send(file.data);
+  } catch (err) {
+    console.error('❌ Error reading task file:', err.message);
+    res.status(500).json({ error: 'Error reading file: ' + err.message });
+  }
+});
+
+app.delete('/api/tasks/:taskId/attachments/:id', async (req, res) => {
+  try {
+    const name = await taskAttachments.remove(parseInt(req.params.taskId), parseInt(req.params.id));
+    if (name === null) return res.status(404).json({ error: 'File not found' });
+    res.json({ success: true, fileName: name });
+  } catch (err) {
+    console.error('❌ Error deleting task file:', err.message);
+    res.status(500).json({ error: 'Error deleting file: ' + err.message });
   }
 });
 
