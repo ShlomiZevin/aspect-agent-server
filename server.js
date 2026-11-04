@@ -6117,6 +6117,7 @@ app.put('/api/admin/test-runs/config/:agentName', async (req, res) => {
 const chunkerService = require('./services/kb.chunker.service');
 const embeddingService = require('./services/kb.embedding.service');
 const pineconeService = require('./services/kb.pinecone.service');
+const kbLibrary = require('./services/kbLibrary.service');
 const { libraryFiles, kbLinks, builderAgents, builderAgentVersions } = require('./db/schema');
 const { eq, and: drizzleAnd, desc: drizzleDesc } = require('drizzle-orm');
 
@@ -6308,52 +6309,11 @@ app.post('/api/pinecone/index-bulk', upload.array('files', 200), async (req, res
     for (const file of req.files) {
       try {
         file.originalname = fixUploadName(file.originalname);
-        const { chunks } = await chunkerService.processFile(
-          file.buffer, file.originalname, file.mimetype,
-          { chunkSize, chunkOverlap }
-        );
-
-        console.log(`📄 [index] "${file.originalname}" → ${chunks.length} chunks (size ${chunkSize}/${chunkOverlap})`);
-
-        if (chunks.length === 0) {
-          const ext = (file.originalname.split('.').pop() || '').toLowerCase();
-          throw new Error(
-            ext === 'pdf'
-              ? 'No text could be extracted — this looks like a scanned/image PDF (no text layer). OCR is needed to index it.'
-              : 'No text could be extracted from this file.'
-          );
-        }
-
-        const { embeddings, totalTokens, cost } = await embeddingService.embedTexts(chunks.map(c => c.text));
-        const fileId = Date.now() + Math.floor(Math.random() * 10000);
-
-        const { vectorCount } = await pineconeService.indexFile({
-          kbId: kbId ? parseInt(kbId) : 0,
-          namespace: namespace || undefined,
-          fileId,
-          fileName: file.originalname,
-          fileType: file.originalname.split('.').pop().toLowerCase(),
-          agentId: parseInt(agentId) || 0,
-          chunks,
-          embeddings,
+        const { fileId, vectorCount, embeddingTokens: totalTokens, embeddingCost: cost } = await kbLibrary.indexFile({
+          namespace, kbId, agentId,
+          buffer: file.buffer, fileName: file.originalname, mimetype: file.mimetype, size: file.size,
+          chunkSize, chunkOverlap,
         });
-
-        // Save to DB
-        const drizzle = db.getDrizzle();
-        if (drizzle) {
-          await drizzle.insert(libraryFiles).values({
-            indexName: process.env.PINECONE_INDEX_NAME || 'default',
-            namespace: namespace || `kb-${kbId}`,
-            fileId: String(fileId),
-            fileName: file.originalname,
-            fileSize: file.size,
-            fileType: file.originalname.split('.').pop().toLowerCase(),
-            chunkCount: vectorCount,
-            embeddingTokens: totalTokens,
-            embeddingCost: cost,
-            status: 'completed',
-          });
-        }
 
         totalVectors += vectorCount;
         totalCost += cost;

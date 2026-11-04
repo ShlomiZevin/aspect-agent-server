@@ -24,6 +24,7 @@ const errorCenter = require('../builder/services/errorCenter');
 
 const TEST_SLUG = 'zz-mcp-test';
 const BORN_CLEAN_SLUG = 'zz-mcp-born-clean';
+const TEST_KB = 'zz-mcp-battery-kb'; // made and wiped by the #949 checks
 
 let fails = 0;
 function check(name, cond, extra = '') {
@@ -307,6 +308,30 @@ async function removeIfPresent(slug) {
       await db.query('delete from kb_links where agent_id = $1 and namespace = $2', [kbTestAgent.id, firstKb]);
     }
 
+    // #949: filling a KB and searching it, without the admin screen.
+    section('knowledge-base files + search (#949)');
+    check('entry page teaches upload and search', doc.text.includes('/kbs/<name>/files') && doc.text.includes('/kbs/search'));
+    const kbLibrary = require('../services/kbLibrary.service');
+    const fileIds = async () => (await kbLibrary.listFiles(TEST_KB)).map(f => f.fileId);
+    const up1 = await post(`/kbs/${TEST_KB}/files`, { fileName: 'zz-fruit.md', text: 'The zebra fruit is purple and grows only on Tuesdays in the battery orchard.' });
+    check('first file creates the KB', up1.status === 200 && up1.text.includes('Created knowledge base'), up1.text.slice(0, 120));
+    const firstIds = await fileIds();
+    check('…recorded like an admin upload', firstIds.length === 1);
+    const s1 = await post('/kbs/search', { namespaces: [TEST_KB], query: 'what colour is the zebra fruit?' });
+    check('search finds it, and shows what the prompt gets', s1.status === 200 && s1.text.includes('purple') && s1.text.includes('Relevant Knowledge Base Content'), s1.text.slice(0, 160));
+    const up2 = await post(`/kbs/${TEST_KB}/files`, { fileName: 'zz-fruit.md', text: 'The zebra fruit is orange now.', replace: true });
+    const afterReplace = await fileIds();
+    check('replace swaps the file of that name', up2.status === 200 && up2.text.includes('Replaced') && afterReplace.length === 1 && afterReplace[0] !== firstIds[0], up2.text.slice(0, 120));
+    check('base64 upload', (await post(`/kbs/${TEST_KB}/files`, { fileName: 'zz-b.txt', base64: Buffer.from('Battery base64 file.').toString('base64') })).status === 200);
+    check('upload with no content → 400', (await post(`/kbs/${TEST_KB}/files`, { fileName: 'x.txt' })).status === 400);
+    check('upload with no extension → 400', (await post(`/kbs/${TEST_KB}/files`, { fileName: 'x', text: 'a' })).status === 400);
+    check('upload to hq → refused', (await post('/kbs/hq/files', { fileName: 'x.txt', text: 'a' })).status === 400);
+    check('search with no query → 400', (await post('/kbs/search', { namespaces: [TEST_KB] })).status === 400);
+    check('search as an agent with no such retriever → 400 listing them', (await post('/kbs/search', { query: 'x', agent: TEST_SLUG, retriever: 'zz-none' })).status === 400);
+    const delOne = await fetch(`${base}/kbs/${TEST_KB}/files/${afterReplace[0]}`, { method: 'DELETE' });
+    check('delete a file', delOne.status === 200 && (await fileIds()).length === 1);
+    check('delete an unknown file → 404', (await fetch(`${base}/kbs/${TEST_KB}/files/1`, { method: 'DELETE' })).status === 404);
+
     // ── the Spec (task #870) ──
     section('spec');
     check('entry page offers the spec', doc.text.includes('/spec'));
@@ -363,6 +388,19 @@ async function removeIfPresent(slug) {
     check('agent and crew share one new version number', agentNum === crewNum && crewNum === priorMax + 1,
       `agent v${agentNum}, crew v${crewNum}, previous highest v${priorMax}`);
     check('…and the agent kept its setup', a2.spec === edited.spec);
+
+    // #952: an open Builder spots a save made here by the head's version ids
+    // — ids it has never held. So the head must name exactly the new ones.
+    section('outside-save head (#952)');
+    const head = await bp.agentHead({ agentSlug: TEST_SLUG });
+    const seenBefore = new Set([...a1.versions.map(v => v.id), ...a1.crews.flatMap(c => [c.id, ...c.versions.map(v => v.id)])]);
+    check('head names the active versions', head.activeVersionId === a2.activeVersionId
+      && head.crews.find(c => c.id === c0.id)?.activeVersionId === c1.activeVersionId);
+    const unseen = [head.activeVersionId, ...head.crews.flatMap(c => [c.id, c.activeVersionId])].filter(id => id && !seenBefore.has(id));
+    check('a screen opened before the save sees exactly the new ids', unseen.length === 2
+      && unseen.includes(a2.activeVersionId) && unseen.includes(c1.activeVersionId), unseen.join(', '));
+    check('…with its number', head.number === agentNum, `v${head.number}`);
+    check('head of an unknown agent is null', (await bp.agentHead({ agentSlug: 'zz-no-such-agent' })) === null);
 
     // ── create ──
     section('create');
@@ -594,6 +632,8 @@ async function removeIfPresent(slug) {
     fails++;
   } finally {
     await removeIfPresent(BORN_CLEAN_SLUG).catch(() => {});
+    await require('../services/kb.pinecone.service').deleteNamespaceByName(TEST_KB).catch(() => {});
+    await db.query('delete from library_files where namespace = $1', [TEST_KB]).catch(() => {});
     if (simConvIds.length) {
       const { conversations } = require('../db/schema');
       const { inArray } = require('drizzle-orm');

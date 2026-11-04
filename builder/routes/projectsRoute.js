@@ -35,6 +35,24 @@ router.get('/projects/list', async (req, res) => {
 });
 
 /**
+ * GET /api/builder/projects/head?agentSlug=:slug
+ *   The agent's and crews' current version ids, no bodies. Polled by an
+ *   open Builder to notice saves made elsewhere (#952).
+ */
+router.get('/projects/head', async (req, res) => {
+  try {
+    const { agentSlug } = req.query;
+    if (!agentSlug) return res.status(400).json({ error: 'Missing agentSlug' });
+    const head = await projects.agentHead({ agentSlug });
+    if (!head) return res.status(404).json({ error: 'Not found' });
+    res.json(head);
+  } catch (err) {
+    console.error('[builder] GET projects/head failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/builder/projects?agentSlug=:slug&ownerUserId=:uid
  *   Returns the full nested ProjectDoc, or 404 if not bootstrapped.
  */

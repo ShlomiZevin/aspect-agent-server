@@ -60,6 +60,34 @@ function withPersonas(body) {
   };
 }
 
+/**
+ * Which versions are current on the server — the agent's active version
+ * and each crew's — without the bodies. An open Builder polls this to
+ * notice a save made elsewhere (an AI assistant over the MCP, another
+ * tab), task #952. Null if there is no such agent.
+ */
+async function agentHead({ agentSlug }) {
+  const d = drizzle();
+  const [agent] = await d.select({
+    id: builderAgents.id,
+    activeVersionId: builderAgents.activeVersionId,
+  }).from(builderAgents).where(eq(builderAgents.slug, agentSlug)).limit(1);
+  if (!agent) return null;
+  const [active] = agent.activeVersionId
+    ? await d.select({ number: builderAgentVersions.number, description: builderAgentVersions.description })
+      .from(builderAgentVersions).where(eq(builderAgentVersions.id, agent.activeVersionId)).limit(1)
+    : [];
+  const crews = await d.select({ id: builderCrews.id, activeVersionId: builderCrews.activeVersionId })
+    .from(builderCrews).where(eq(builderCrews.agentId, agent.id));
+  return {
+    agentId: agent.id,
+    activeVersionId: agent.activeVersionId,
+    number: active?.number ?? null,
+    description: active?.description ?? null,
+    crews,
+  };
+}
+
 // ─── Hydration (denormalised "ProjectDoc" matching the client shape) ──
 
 /**
@@ -1172,6 +1200,7 @@ async function duplicateProject({ projectId, newSlug, newName, workspaceId }) {
 
 module.exports = {
   hydrateProject,
+  agentHead,
   listProjects,
   isAgentDelisted,
   setAgentDelisted,

@@ -228,7 +228,9 @@ are genuinely different — say which you are about to use, or ask.**
 | | What it changes |
 |---|---|
 | Edit \`drafts/<slug>.json\` | Their **draft**, on their machine. Nothing reaches the server. The Builder spots it within seconds and asks whether to load it; they decide, and they save it. |
-| POST to the API (below) | The **server**, immediately. A new version, and it becomes the one the Builder opens. Undone by switching back a version, not by declining. |
+| POST to the API (below) | The **server**, immediately. A new version, and it becomes the one the Builder opens. An open Builder notices within seconds and offers to load it — nothing to save, it is saved. Undone by switching back a version, not by declining. |
+
+After every change, tell them which of the two you used — "in your draft, load and save it" or "saved on the server as vN" — so the Builder's prompt is never a surprise.
 
 Prefer the draft file when one exists — it is the more cautious of the
 two and the Builder is already watching it — but the choice is theirs,
@@ -423,8 +425,28 @@ they are reading the diff on screen.
    crew, or the agent cortex, with the KB's name in \`config.kbNamespaces\`,
    and POST the body as above. Without this the agent never reads it.
 
-Creating a knowledge base or uploading files to one is done in the admin
-screen, not through this door — say so if they ask.
+**Filling a knowledge base, and testing what it returns** — all here, never
+through the browser. A KB is created by its first file.
+
+\`\`\`
+POST ${base}/kbs/<name>/files
+{ "fileName": "prices.md", "text": "..." }      text files: .txt .md .csv .json
+{ "fileName": "guide.pdf", "base64": "..." }    any file: .pdf .docx .xlsx too
+  optional: "replace": true   (swap the file of the same name)
+            "chunkSize": 1000, "chunkOverlap": 200   (the defaults)
+
+DELETE ${base}/kbs/<name>/files/<fileId>
+
+POST ${base}/kbs/search
+{ "query": "...", "namespaces": ["<name>"] }                       plain search
+{ "query": "...", "agent": "<slug>", "retriever": "<addon name>" }
+    exactly as that KB Retriever searches: its KBs, topK, minScore and
+    maxTokens, and the text its prompt gets
+\`\`\`
+
+Files are chunked and embedded exactly as in the admin screen. After
+changing a KB, search for a question the agent will really get, and say
+which files you added, replaced or deleted.
 
 **A brand-new agent** — ask before making one, it is a bigger thing than
 an edit:
@@ -1292,7 +1314,7 @@ router.post('/agents/:slug/kbs', async (req, res) => {
     if (!(await alfredTools.kbExists(namespace))) {
       return res.status(404).type('text/plain').send(
         `There is no knowledge base "${namespace}" to connect — nothing was changed. ` +
-        'Fetch ../kbs for the ones that exist. A KB is created by uploading files in the admin screen, not here.',
+        'Fetch ../kbs for the ones that exist. A KB is created by its first file: POST ../kbs/<name>/files.',
       );
     }
     const { kbLinks } = require('../../db/schema');
@@ -1312,6 +1334,151 @@ router.post('/agents/:slug/kbs', async (req, res) => {
   } catch (err) {
     console.error('[builder-mcp] connect kb failed:', err);
     res.status(500).type('text/plain').send(`Could not connect that knowledge base: ${err.message}`);
+  }
+});
+
+// ─── Knowledge-base files and test search (task #949) ─────────────
+//
+// Before these, creating a KB or uploading to one was admin-screen only,
+// so an assistant asked to do it drove the browser. Same pipeline as the
+// screen (services/kbLibrary.service) — a file indexed here is chunked,
+// embedded and recorded exactly like one dropped there.
+
+/** A KB name an assistant may write to: not HQ's, not a path. */
+function badKbName(namespace) {
+  if (!namespace || namespace.length > 64 || /[\/\\]/.test(namespace) || namespace === '__default__') {
+    return 'A knowledge base name is 1–64 characters, without slashes.';
+  }
+  if (namespace === 'hq') return '"hq" is Lybi HQ\'s internal knowledge, not an agent knowledge base.';
+  return null;
+}
+
+router.post('/kbs/:namespace/files', async (req, res) => {
+  try {
+    const namespace = String(req.params.namespace || '').trim();
+    const bad = badKbName(namespace);
+    if (bad) return res.status(400).type('text/plain').send(bad);
+    const b = req.body || {};
+    const fileName = String(b.fileName || '').trim();
+    if (!fileName || /[\/\\]/.test(fileName) || !fileName.includes('.')) {
+      return res.status(400).type('text/plain').send(
+        'Send { "fileName": "name.ext", "text": "..." } for a text file (.txt, .md, .csv, .json), ' +
+        'or { "fileName": "name.ext", "base64": "..." } for any file (.pdf, .docx, .xlsx too). ' +
+        'The extension decides how it is read.');
+    }
+    if ((b.text == null) === (b.base64 == null)) {
+      return res.status(400).type('text/plain').send('Send exactly one of "text" or "base64".');
+    }
+    const buffer = b.text != null ? Buffer.from(String(b.text), 'utf8') : Buffer.from(String(b.base64), 'base64');
+    if (!buffer.length) return res.status(400).type('text/plain').send('The file is empty.');
+
+    const kbLibrary = require('../../services/kbLibrary.service');
+    const before = await kbLibrary.listFiles(namespace);
+    const replacing = b.replace ? before.filter(f => f.fileName === fileName) : [];
+    const sameName = !b.replace && before.some(f => f.fileName === fileName);
+
+    const out = await kbLibrary.indexFile({
+      namespace, buffer, fileName, mimetype: '', size: buffer.length,
+      chunkSize: parseInt(b.chunkSize) || 1000,
+      chunkOverlap: parseInt(b.chunkOverlap) || 200,
+    });
+    // Only after the new copy is in — a failed upload never loses the old one.
+    for (const f of replacing) await kbLibrary.deleteFile(namespace, f.fileId);
+
+    sendText(res, [
+      before.length
+        ? `Added "${fileName}" to "${namespace}" — file ${out.fileId}, ${out.vectorCount} chunks.`
+        : `Created knowledge base "${namespace}" with "${fileName}" — file ${out.fileId}, ${out.vectorCount} chunks.`,
+      replacing.length ? `Replaced the previous "${fileName}" (${replacing.map(f => `file ${f.fileId}`).join(', ')}).` : '',
+      sameName ? `Note: "${fileName}" was already in this KB, so it is there twice now. Send "replace": true to swap it instead, or delete the old file id.` : '',
+      before.length ? '' : `An agent reads it only once it is connected (POST ../agents/<slug>/kbs) and a KB Retriever lists "${namespace}" in config.kbNamespaces.`,
+      `Try it: POST ${urls(req).base}/kbs/search { "namespaces": ["${namespace}"], "query": "..." }`,
+    ].filter(Boolean).join('\n'));
+  } catch (err) {
+    console.error('[builder-mcp] kb upload failed:', err);
+    res.status(500).type('text/plain').send(`Could not add that file: ${err.message}`);
+  }
+});
+
+router.delete('/kbs/:namespace/files/:fileId', async (req, res) => {
+  try {
+    const namespace = String(req.params.namespace || '').trim();
+    const bad = badKbName(namespace);
+    if (bad) return res.status(400).type('text/plain').send(bad);
+    const gone = await require('../../services/kbLibrary.service').deleteFile(namespace, req.params.fileId);
+    if (!gone) {
+      return res.status(404).type('text/plain').send(`No file ${req.params.fileId} in "${namespace}". Fetch ../kbs/${namespace}/files for the ids.`);
+    }
+    sendText(res, `Deleted "${gone.fileName}" (file ${req.params.fileId}) from "${namespace}".`);
+  } catch (err) {
+    console.error('[builder-mcp] kb file delete failed:', err);
+    res.status(500).type('text/plain').send(`Could not delete that file: ${err.message}`);
+  }
+});
+
+/** Every KB Retriever on the agent — cortex and crews — with where it sits. */
+function retrieversOf(agent) {
+  const out = [];
+  const take = (where, addons) => {
+    for (const a of Array.isArray(addons) ? addons : []) {
+      if (a?.pluginId === 'kb-retriever') out.push({ where, name: a.config?.name || a.config?.domain || 'KB Retriever', config: a.config || {} });
+    }
+  };
+  take('agent cortex', agent.cortex);
+  for (const c of agent.crews || []) take(`crew "${c.name || c.id}"`, c.addons);
+  return out;
+}
+
+router.post('/kbs/search', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const query = String(b.query || '').trim();
+    if (!query) {
+      return res.status(400).type('text/plain').send('Send { "query": "...", "namespaces": ["<kb>"] } — or "agent" + "retriever" to search exactly as one of its KB Retrievers does.');
+    }
+
+    // Defaults are the KB Retriever's own; a named retriever supplies its config.
+    let cfg = { kbNamespaces: [], topK: 5, minScore: 0.3, maxTokens: 3000, format: 'text' };
+    let from = '';
+    if (b.agent) {
+      const project = await builderProjects.hydrateProject({ agentSlug: String(b.agent) });
+      const agent = project && project.agents[0];
+      if (!agent) return res.status(404).type('text/plain').send(`No agent with slug "${b.agent}".`);
+      const all = retrieversOf(agent);
+      // Names are typed by people — "Account opening " is a real one.
+      const pick = b.retriever ? all.filter(r => r.name.trim() === String(b.retriever).trim()) : all;
+      if (pick.length !== 1) {
+        const list = all.map(r => `- "${r.name}" (${r.where}) → ${(r.config.kbNamespaces || []).join(', ') || 'no KB'}`).join('\n');
+        return res.status(400).type('text/plain').send(all.length
+          ? `${agent.name || agent.slug} has these KB Retrievers:\n${list}\nName one in "retriever".`
+          : `${agent.name || agent.slug} has no KB Retriever.`);
+      }
+      cfg = { ...cfg, ...pick[0].config };
+      from = `as "${pick[0].name}" (${pick[0].where}) searches`;
+    }
+    const namespaces = Array.isArray(b.namespaces) && b.namespaces.length ? b.namespaces.map(String) : (cfg.kbNamespaces || []);
+    if (!namespaces.length) return res.status(400).type('text/plain').send('No knowledge base to search: send "namespaces", or a retriever that lists some.');
+    const num = (v, d) => (v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : d);
+    const topK = num(b.topK, num(cfg.topK, 5));
+    const minScore = num(b.minScore, num(cfg.minScore, 0.3));
+    const maxTokens = num(b.maxTokens, num(cfg.maxTokens, 3000));
+
+    const kbService = require('../../services/kb.pinecone.service');
+    const r = await kbService.query(namespaces, query, { topK, scoreThreshold: minScore, maxTokens });
+    const hits = Array.isArray(r.results) ? r.results : [];
+    const { formatHits } = require('../plugins/kbRetriever/addon.kbRetriever');
+    sendText(res, [
+      `Search ${from || `of ${namespaces.join(', ')}`} — "${query}" · topK ${topK} · minScore ${minScore} · maxTokens ${maxTokens}`,
+      `${hits.length} chunk${hits.length === 1 ? '' : 's'}:`,
+      ...hits.map((h, i) => `\n[${i + 1}] ${Number(h.score).toFixed(3)} · ${h.namespace} · ${h.fileName} · chunk ${h.chunkIndex}\n${h.text}`),
+      '',
+      hits.length
+        ? `--- What the prompt gets in {{kb:${cfg.domain || cfg.name || 'NAME'}}} ---\n${formatHits(hits, cfg.format === 'structured')}`
+        : `Nothing passed minScore ${minScore}. The prompt gets: ${cfg.emptyText || 'No relevant information was found in the knowledge base.'}`,
+    ].join('\n'));
+  } catch (err) {
+    console.error('[builder-mcp] kb search failed:', err);
+    res.status(500).type('text/plain').send(`Could not search: ${err.message}`);
   }
 });
 

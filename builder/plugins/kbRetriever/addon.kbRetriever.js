@@ -233,4 +233,4 @@ registerPlugin({
   run,
 });
 
-module.exports = { KB_RETRIEVER_PLUGIN_ID };
+module.exports = { KB_RETRIEVER_PLUGIN_ID, formatHits };
