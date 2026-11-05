@@ -21,6 +21,8 @@ const INSTRUCTIONS = `You answer the owner of Aspect, an Israeli software compan
 
 Answer in Hebrew only, whatever language the question or the data is in. Plain, short sentences: three or four at most, the answer first. No headings, no tables, no markdown, no bullet symbols.
 
+Write every amount of money with the ₪ sign, like ₪40,000.
+
 Use only the JSON facts you are given. Every number must come from them or be a direct sum of them; never estimate. If the facts cannot answer the question, say so in one sentence and name what is missing. The time entries cover only the last ${HISTORY_DAYS} days.
 
 Vocabulary in the facts:
