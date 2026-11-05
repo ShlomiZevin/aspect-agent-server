@@ -250,6 +250,11 @@ app.use('/api/taskboard', require('./taskboard/routes/taskboard.routes'));
 // from the task. See taskboard/routes/release-notes.routes.js.
 app.use('/api/release-notes', require('./taskboard/routes/release-notes.routes'));
 
+// ─── Aspect Management ─────────────────────────────────────────────
+// Itzik's internal operations tool (task #115). Tied to no customer.
+// See aspect-management/README.md.
+app.use('/api/management', require('./aspect-management/routes/management.routes'));
+
 // Files attached in chat (task #100): upload → digest, and filling an attached
 // spreadsheet back in its own structure. See chat-attachments/.
 app.use('/api/chat-attachments', require('./chat-attachments/routes/chat-attachments.routes'));
