@@ -1916,3 +1916,32 @@ keep the storage, change only how saves and buttons act.
   vN. Battery asserts it.
 - **Old history** is left as it is; account-opening lines up on its next
   "Save all as a new version" (v7).
+
+### 54. Admin → LLM Usage: every model call by add-on and interaction (task #953)
+Noa asked to tell apart several Thinkers in one crew and to see what each
+conversation cost. Builder Admin's **LLM Usage** is now its own screen
+(`AdminDashboard/UsageTab.tsx`); the Aspect BI dashboard keeps the shared
+`components/dashboard/LLMUsagePage`.
+- **Two views, one switch.** *By runs*: one row per model call — crew, add-on
+  name + type, model, conversation + interaction, tokens, duration, cost;
+  clicking a conversation id opens it in *By conversations*: one row per
+  conversation (interactions, calls, tokens, cost) that opens into its calls
+  split by interaction. Calls with no conversation are "Unlinked calls".
+- **Filters:** period (today / 7 / 30 / 90 days / all / a day with calls, days
+  in Asia/Jerusalem), crew, add-on, model; the four cards follow them. Kept in
+  the URL (`?view=&period=&crew=&addon=&model=`).
+- **Data:** `GET /api/llm-usage` and `/api/llm-usage/conversation`
+  (`builder/routes/llmUsageRoute.js` → `builder/services/llmUsageReport.js`).
+  Base = `llm_usage` (every call, real tokens, exact model; found by the
+  agent's name or slug, like the MCP's usage). Each call is matched to its
+  `addon_runs` row — same conversation and type, run ended when the call was
+  logged with the same duration; a multi-call run takes the calls inside its
+  window; replayed conversations pair in order — which gives the instance
+  (→ add-on name from the current config, else any older version, else the
+  run's label) and the assistant message (→ interaction n = n-th assistant
+  message; a conversation with none counts user messages). `addon_runs`'
+  own token counts are 0 for most types and are not used.
+- **Cost** = `costOf` at list price; a model with no price shows "—" and is
+  left out of the totals (the card says how many calls).
+- Runs come 100 at a time ("Show 100 more"); a period holds at most the newest
+  20,000 calls (flagged in the footer); the joined period is cached 30 s.

@@ -175,6 +175,9 @@ app.use('/api/load-tests', require('./builder/routes/loadTestsRoute'));
 // Error center — errors on the conversation path, grouped; read by
 // Admin → Errors (task #903). See builder/services/errorCenter.js.
 app.use('/api/errors', require('./builder/routes/errorsRoute'));
+// LLM usage — every model call by add-on and interaction; read by
+// Builder Admin → LLM Usage (task #953). See builder/services/llmUsageReport.js.
+app.use('/api/llm-usage', require('./builder/routes/llmUsageRoute'));
 
 // ─── Aspect BI ─────────────────────────────────────────────────────
 // Standalone Qlik-style BI layer over customer data schemas (hypertoy
