@@ -13,6 +13,9 @@
  *   Whole sections:
  *     {{prompt}}, {{persona}}, {{memory}}, {{thinking}}, {{summary}}
  *
+ *   Date:
+ *     {{today}}  — "Sunday, 8 November 2026, 14:05 (Israel time)" (formatToday)
+ *
  *   Single-domain blocks:
  *     {{memory:NAME}}, {{thinking:NAME}}, {{summary:NAME}}
  *
@@ -39,6 +42,24 @@
  * LLM. The runtime sends history as the message-history parameter,
  * not interpolated into the prompt string.
  */
+
+/**
+ * `{{today}}` (task #967 follow-up): the current date and time in Israel,
+ * as one stable English line — "Sunday, 8 November 2026, 14:05 (Israel
+ * time)". Models do not know the date; a web-search Talker said "today is
+ * Saturday" on a Sunday. Only where the author writes the token — never
+ * injected on its own. Exported for tests.
+ */
+const TODAY_FMT = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Jerusalem',
+  weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+});
+function formatToday(date = new Date()) {
+  const p = {};
+  for (const part of TODAY_FMT.formatToParts(date)) p[part.type] = part.value;
+  return `${p.weekday}, ${p.day} ${p.month} ${p.year}, ${p.hour}:${p.minute} (Israel time)`;
+}
 
 /**
  * Substitute simple `{{name}}` placeholders from a flat values map.
@@ -612,6 +633,8 @@ function assemblePrompt({
     snippets,
     brain,
     kbSlots:        [],   // retrieved KB text, restored after every pass
+    // One value per prompt, so every {{today}} in it (snippets included) agrees.
+    today:          formatToday(),
   };
 
   // {{prompt}} expands first so any token the user authored inside
@@ -687,6 +710,7 @@ function resolveTokens(template, c, depth, stack) {
     summary:        buildSummaryBlock(c.summaries),
     fields_schema:  c.isExtractor ? buildFieldsSchemaBlock(fields, enumsList) : '',
     fields_current: c.isExtractor ? buildFieldsCurrentBlock(fields, fieldValueOf) : '',
+    today:          c.today || formatToday(),
   });
 
   // Single-field inline tokens — `{{this_field}}` and `{{enum_values}}`
@@ -877,4 +901,4 @@ function resolveTokens(template, c, depth, stack) {
   return stripPromptComments(template);
 }
 
-module.exports = { assemblePrompt, stripPromptComments };
+module.exports = { assemblePrompt, stripPromptComments, formatToday };

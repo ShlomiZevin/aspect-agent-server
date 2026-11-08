@@ -500,12 +500,50 @@ export interface FieldInterviewerConfig {
   domain: string;
 }
 
+/**
+ * "Web search" switch on the Talker and the Thinker (task #967). Turns on
+ * the model provider's OWN web search tool — OpenAI Responses `web_search`,
+ * Anthropic server tool `web_search`; no search engine or key of ours.
+ * OpenAI and Anthropic models only: on a Gemini model the setting is kept
+ * but ignored (the Builder shows the switch disabled).
+ *
+ * The model decides by itself, every turn, whether to search. A turn that
+ * does not search pays no search fee — but the tool's description is sent
+ * with every request (measured 2026-11-08: about 2,800 input tokens on
+ * Claude, 4,400 on GPT), so leave it off where it is never needed.
+ *
+ * Cost: about $0.01 per search (both providers, list price) plus the pages
+ * read, billed as input tokens. Searches show live in the chat ("Searching
+ * the web: '…'"), on the run card (queries, sources, count) and in Admin →
+ * LLM Usage as a "Web search" line on the add-on.
+ *
+ * Talker: searches, reads and answers in one call. Thinker: put it on a
+ * Thinker BEFORE the Talker and tell its prompt to write what it found (facts
+ * + links) under a key — the Talker reads it via `{{thinking:DOMAIN}}`.
+ */
+export interface WebSearchConfig {
+  /** On / off. Absent config = off. */
+  enabled: boolean;
+  /**
+   * Only search these sites — plain domains ("gov.il", "bankofisrael.org.il");
+   * subdomains are included. Empty / absent = the whole web. A scheme, "www."
+   * or a path is stripped. Up to 20. A site that blocks Anthropic's crawler
+   * is dropped for Claude models (shown on the run card); if none is left the
+   * turn runs without search — never "the whole web" instead.
+   */
+  allowedDomains?: string[];
+  /** Most searches per turn. Default 3, allowed 1–10. */
+  maxSearches?: number;
+}
+
 export interface TalkerConfig {
   /** User-editable instance name shown on the chain card. */
   name?: string;
   /** The voice prompt — what the crew is supposed to say and how. */
   prompt: string;
   model: ModelRef;
+  /** Web search switch (task #967) — see WebSearchConfig. */
+  webSearch?: WebSearchConfig;
   /**
    * "Max output" (tasks #889, #920): the most the model may write in ONE
    * run, its thinking included. Unset = 16,000 (the default — leave it
@@ -537,6 +575,8 @@ export interface TalkerConfig {
 export interface ThinkerConfig {
   prompt: string;
   model: ModelRef;
+  /** Web search switch (task #967) — see WebSearchConfig. */
+  webSearch?: WebSearchConfig;
   /**
    * "Max output" (tasks #889, #920): the most the model may write in ONE
    * run, its thinking included. Unset = 16,000 (the default — leave it

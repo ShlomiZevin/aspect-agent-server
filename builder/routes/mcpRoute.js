@@ -486,6 +486,25 @@ opens showing "unsaved changes" before anyone has touched it.
   The same for a JSON addon that returns nothing (\`empty_output\`) or
   broken JSON (\`bad_json\`). When you see one, the fix is a higher Max
   output on that addon, not a prompt change.
+- **"Web search"** is \`config.webSearch\` on a **Talker** or **Thinker**:
+  \`{ "enabled": true, "allowedDomains": ["gov.il"], "maxSearches": 3 }\`
+  (\`allowedDomains\` optional — plain domains, subdomains included, empty or
+  absent = the whole web, up to 20; \`maxSearches\` optional, 1–10, default 3).
+  It turns on the model provider's own search tool — **OpenAI and Anthropic
+  models only** (\`/api/models\` → \`providers[].webSearch\`); on Gemini it is
+  ignored. The model decides each turn whether to search. Each search costs
+  about $0.01 plus the pages read (input tokens), and the tool's description
+  adds ~3–4K input tokens to EVERY call even when it does not search — so
+  turn it on only where the agent really needs fresh facts. Put
+  \`{{today}}\` in the prompt so the model knows the date (the current date
+  and time in Israel — models don't know it, nothing adds it for you). On a Talker it
+  searches and answers in one call; on a Thinker before the Talker, tell the
+  Thinker's prompt to write what it found (facts + links) under a key, e.g.
+  \`web_findings\`, which the Talker reads via \`{{thinking:DOMAIN}}\`. A run
+  that searched shows \`webSearch\` (queries, sources) in the conversation
+  export and in a simulated turn's \`addons[].webSearches\`; usage shows a
+  "Web search (OpenAI/Anthropic)" line on that add-on. A site that blocks
+  Anthropic's crawler is dropped on Claude models (\`blockedDomains\`).
 - Models: read \`${origin}/api/models\` for the current list with prices
   — never assume an id. GPT-6.1 Sol and GPT-6 Astra think before they
   answer (~14 s to the first word): fine for a thinker or matcher, wrong
@@ -734,8 +753,11 @@ The response is a Server-Sent Events stream: lines of
 | \`done\` | The turn is over | Re-enable the input |
 
 \`addon.error\` with \`instanceId: null\` means the whole turn failed —
-show its \`error.message\`. Every other event type is the agent's inner
-workings; ignore it. Use \`fetch\` and read the body stream — the
+show its \`error.message\`. Optional, for agents with web search on:
+\`addon.websearch\` (\`id\`, \`status\` searching|done|error, \`query\` — null
+until done on GPT models, \`sources\` when done) — show "Searching the web:
+'<query>'…", one line per \`id\`, until the reply starts. Every other event
+type is the agent's inner workings; ignore it. Use \`fetch\` and read the body stream — the
 browser's \`EventSource\` cannot send a POST.
 
 \`version: "published"\` is what customers should get: the published

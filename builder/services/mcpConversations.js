@@ -271,7 +271,11 @@ async function sendMessage({ conversationId, text, base, timeoutMs }) {
       if (written.length) out.fieldsWritten = written;
       const moved = runs.map(r => r.transition).filter(Boolean);
       if (moved.length) out.transition = moved[moved.length - 1];
-      out.addons = runs.map(r => ({ label: r.label, pluginId: r.pluginId, lane: r.lane, status: r.status }));
+      out.addons = runs.map(r => ({
+        label: r.label, pluginId: r.pluginId, lane: r.lane, status: r.status,
+        // Web search switch (#967): the queries this addon searched.
+        ...(r.webSearch ? { webSearches: r.webSearch.searches.map(s => s.query).filter(Boolean) } : {}),
+      }));
     }
   } catch (err) {
     console.warn('[builder-mcp] turn digest failed:', err.message);

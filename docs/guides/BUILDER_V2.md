@@ -1945,3 +1945,72 @@ conversation cost. Builder Admin's **LLM Usage** is now its own screen
   left out of the totals (the card says how many calls).
 - Runs come 100 at a time ("Show 100 more"); a period holds at most the newest
   20,000 calls (flagged in the footer); the joined period is cached 30 s.
+
+### 55. "Web search" switch on the Talker and the Thinker (task #967)
+An agent can look things up on the web when a turn needs it. No new add-on:
+a **Web search** switch on the add-ons that call a model, Talker and Thinker.
+- **What it is:** the model provider's OWN search tool — OpenAI Responses
+  `web_search`, Anthropic server tool `web_search` (`web_search_20250305`; the
+  newer `_20260209` "dynamic filtering" was measured slower to show the query
+  and 1.7–2.4× the input tokens — see the note in `services/webSearch.js`). No
+  search engine or key of ours. Gemini: the switch is disabled ("Web search
+  works with OpenAI and Anthropic models only.") and a saved setting is ignored.
+- **Config** (`config.webSearch`, `WebSearchConfig` in `builder/types`):
+  `{ enabled, allowedDomains?, maxSearches? }`. Sites are plain domains
+  (subdomains included; scheme / `www.` / path stripped), up to 20, empty = the
+  whole web. `maxSearches` 1–10, default 3 (OpenAI `max_tool_calls`,
+  Anthropic `max_uses`). Settings UI: `components/WebSearch/WebSearchSetting.tsx`
+  — switch · one-line summary · Edit (modal for the sites + cap); the row never
+  changes size.
+- **Who decides:** the model, every turn. A turn that does not search pays no
+  search fee — but the tool description rides on every call (measured
+  2026-11-08: "hi" = 2,844 vs 35 input tokens on claude-sonnet-5-5, 4,464 vs
+  26 on gpt-5.6-terra). Turn it on only where it is needed.
+- **Talker:** searches, reads and answers in one streamed call. **Thinker:**
+  put it before the Talker and have its prompt write what it found (facts +
+  links) under a key — the Talker reads it via `{{thinking:DOMAIN}}`.
+  The Thinker's one-shot call is streamed internally when search is on, so
+  its searches show live too.
+- **Provider traps handled:** OpenAI refuses JSON mode together with web
+  search → with search on, a JSON Thinker relies on the prompt + the lenient
+  parser. OpenAI names a search's query only when it is done (the live line
+  says "Searching the web…" until then) and may *open a page* instead of
+  searching (`kind: 'open_page'`). Anthropic rejects the whole request when an
+  allowed site blocks its crawler (bbc.com, apnews.com did, 2026-11-08) → those
+  sites are dropped and the call retried; with none left it runs WITHOUT
+  search (never the whole web); the run card lists them (`blockedDomains`).
+  Anthropic `pause_turn` is resumed. A Claude answer after a search starts a
+  new paragraph (the "let me look" text before it doesn't run into it); for a
+  one-shot call only the text after the last search is the answer.
+- **Live:** providers yield `{ type: 'web_search', phase: 'started'|'done' }`
+  chunks; the plugins emit SSE `addon.websearch` `{ instanceId, id, status,
+  query, kind, sources? }`. Builder chat (`UserChat`): one line per search
+  above the answer. Customer chat (`live-chat`): the lines sit in the
+  thinking bubble until the answer starts (Hebrew: "מחפש ברשת").
+- **Run card:** `webSearch` on `addon.output` / the persisted run: count,
+  each query with its sources (title + link), the pages the answer cites, the
+  sites and cap. Header pill "🌐 N searches", body section "Web search".
+  Conversation export + MCP simulated turns carry it too.
+- **Cost / usage — no migration:** a turn that searched logs ONE extra
+  `llm_usage` row: model `web-search-openai` / `web-search-anthropic`, input 0,
+  **output = number of searches**, same process / crew / conversation.
+  `models.service` prices these ids per search ($10 per 1,000 → `out` $10,000
+  per "1M"), so `costOf` / `priceOf` and every reader that sums by model get the
+  fee right with no change. LLM Usage shows the row on the add-on that
+  searched ("2 searches" instead of tokens), the cards count searches apart
+  from model calls. Pages read are billed as the model call's input tokens.
+  Also fixed on the way: the Claude stream logged only `message_start`'s input
+  — with server tools the input grows during the message; `message_delta`'s
+  cumulative totals are now used.
+- **Tests (2026-11-08, real calls, scratch scripts):** both providers, both
+  add-ons, allowed site wikipedia.org; "hi" never searched.
+- **`{{today}}`** (follow-up, same task): a prompt placeholder for the current
+  date and time in Israel — one fixed English line, "Sunday, 8 November 2026,
+  14:05 (Israel time)" (`formatToday` in `promptAssembler.js`, mirrored in the
+  client's `previewSegments.ts`). Found on staging: a web-search Talker said
+  "today is Saturday" on a Sunday — models don't know the date. Resolved for
+  every add-on prompt and everything inserted into one (snippets, personas,
+  Targeted KB), one value per prompt; the preview shows the real value. Only
+  where the author writes it — NOT injected automatically when web search is
+  on (Shlomi's call). Registered in `promptPlaceholders.json` (→ MCP), the
+  `/` picker ("Date & time"), the prompt guide, and the MCP's Web search entry.

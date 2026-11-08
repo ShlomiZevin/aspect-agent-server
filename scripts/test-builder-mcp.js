@@ -603,6 +603,13 @@ async function removeIfPresent(slug) {
     section('output limit + environments');
     check('entry page teaches Max output and the cut-off failure',
       doc.text.includes('maxOutputTokens') && doc.text.includes('output_cut_off'));
+    // Web search switch (#967) — the config shape, where it works, the live event.
+    check('entry page teaches the Web search switch',
+      doc.text.includes('config.webSearch') && doc.text.includes('allowedDomains')
+      && doc.text.includes('maxSearches') && doc.text.includes('addon.websearch'));
+    const addonsPage = await get('/addons');
+    check('/addons describes webSearch on the Talker and the Thinker',
+      addonsPage.status === 200 && (addonsPage.text.match(/config\.webSearch/g) || []).length >= 2);
     check('entry page opens with which environment this is', doc.text.includes('## Environments'));
     const envRes = await get('/environments');
     const envs = envRes.status === 200 ? JSON.parse(envRes.text) : null;

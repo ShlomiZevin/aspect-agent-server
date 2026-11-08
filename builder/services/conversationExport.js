@@ -37,7 +37,7 @@ function normalizeLevel(include) {
 
 const FORMAT = {
   messages: 'messages[] in chronological order; each has role (user|assistant|system), text, at (ISO time) and crew when known.',
-  outputs: 'messages[] in chronological order; each has role, text, at, crew when known. Assistant messages carry addonRuns[] — the addons that ran on that turn, in run order: label, pluginId, lane (main|offline), status, output (parsed, else raw), fieldWrites, rejectedWrites, transition, skipReason.',
+  outputs: 'messages[] in chronological order; each has role, text, at, crew when known. Assistant messages carry addonRuns[] — the addons that ran on that turn, in run order: label, pluginId, lane (main|offline), status, output (parsed, else raw), fieldWrites, rejectedWrites, transition, skipReason, webSearch (when the addon searched the web: count + each query with its sources).',
   full: 'Same as the outputs level, plus each addon run carries prompt — the exact assembled prompt the addon\'s LLM received.',
 };
 
@@ -93,6 +93,18 @@ function exportRun(row, level) {
   if (Array.isArray(d.rejectedWrites) && d.rejectedWrites.length > 0) out.rejectedWrites = d.rejectedWrites;
   if (d.transition) out.transition = d.transition;
   if (d.broke) out.brokeChain = true;
+  // Web search switch (#967): what was searched and which pages came back.
+  if (d.webSearch && d.webSearch.count > 0) {
+    out.webSearch = {
+      count: d.webSearch.count,
+      searches: (d.webSearch.searches || []).map(s => ({
+        query: s.query, kind: s.kind,
+        sources: (s.sources || []).slice(0, 8).map(x => ({ title: x.title, url: x.url })),
+        ...(s.error ? { error: s.error } : {}),
+      })),
+      ...(d.webSearch.blockedDomains ? { blockedDomains: d.webSearch.blockedDomains } : {}),
+    };
+  }
   // Non-LLM addons (router, text panels) store an empty prompt.
   if (level === 'full') out.prompt = d.prompt || null;
   return out;

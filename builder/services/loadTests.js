@@ -91,8 +91,9 @@ function topPrice() {
 }
 
 function priceOf(modelId) {
-  const m = models.getModel(modelId);
-  return m && m.price ? { ...m.price, known: true } : { ...topPrice(), known: false };
+  // models.priceOf also knows the per-search price of web-search rows (#967).
+  const p = models.priceOf(modelId);
+  return p ? { ...p, known: true } : { ...topPrice(), known: false };
 }
 
 /** USD for usage rows [{ model, inputTokens, outputTokens }], + which models had no price. */

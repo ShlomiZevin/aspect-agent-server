@@ -77,6 +77,14 @@
   ],
   "values": [
     {
+      "token": "{{today}}",
+      "category": "value",
+      "trigger": "/",
+      "render": "The current date and time in Israel, resolved when the prompt is built, as one fixed English line: \"Sunday, 8 November 2026, 14:05 (Israel time)\". Models do not know today's date — write this token wherever the answer depends on it (\"today\", \"this week\", opening hours, deadlines), above all on an addon with Web search on. Never added on its own.",
+      "example": "Today is {{today}}.",
+      "picker_group": "Date & time"
+    },
+    {
       "token": "{{field:NAME}}",
       "category": "value",
       "trigger": "@",

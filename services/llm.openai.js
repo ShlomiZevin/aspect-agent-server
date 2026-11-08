@@ -2,6 +2,7 @@ const { OpenAI } = require('openai');
 const functionRegistry = require('./function-registry');
 const conversationService = require('./conversation.service');
 const providerConfigService = require('./provider-config.service');
+const webSearchLib = require('./webSearch');
 
 // Some tool handlers (BI crews' fetch_*_data — see table-format.service.js)
 // attach a `_fullData` field carrying the COMPLETE row set purely so server.js
@@ -477,10 +478,14 @@ class OpenAIService {
         topK,
         // Per-customer key routing (task #61) — see _clientFor.
         agentName,
+        // Web search switch (task #967) — normalized settings
+        // { allowedDomains, maxSearches } from services/webSearch.js, or null.
+        webSearch = null,
       } = config;
 
       // Build tools array
       const tools = [];
+      if (webSearch) tools.push(webSearchLib.openaiTool(webSearch));
 
       // Resolve knowledge base: storeIds array (new) or storeId (legacy fallback)
       const storeIds = knowledgeBase?.storeIds?.length > 0
@@ -565,6 +570,9 @@ class OpenAIService {
       let oaiInputTokens = 0;
       let oaiOutputTokens = 0;
       let oaiReasoningTokens = null;
+      // Web search (#967): searches billed this turn + the pages the answer cites.
+      let webSearchCount = 0;
+      const webCitations = [];
 
       while (maxIterations > 0) {
         maxIterations--;
@@ -585,7 +593,10 @@ class OpenAIService {
           temperature: temperature != null ? temperature : undefined,
           top_p: topK != null ? topK : undefined,
           store: false,
-          include: ['file_search_call.results'],
+          include: webSearch
+            ? ['file_search_call.results', 'web_search_call.action.sources']
+            : ['file_search_call.results'],
+          ...(webSearch ? { max_tool_calls: webSearch.maxSearches } : {}),
           stream: true
         };
         const client = this._clientFor(agentName);
@@ -674,6 +685,18 @@ class OpenAIService {
                 arguments: chunk.item.arguments
               });
             }
+          }
+
+          // Web search (#967): one event when a search starts (no query yet —
+          // OpenAI only reports it when the call is done), one when it is done.
+          if (chunk.item?.type === 'web_search_call'
+              && (chunk.type === 'response.output_item.added' || chunk.type === 'response.output_item.done')) {
+            const phase = chunk.type === 'response.output_item.added' ? 'started' : 'done';
+            if (phase === 'done') webSearchCount += 1;
+            yield webSearchLib.fromOpenAIItem(chunk.item, phase);
+          }
+          if (chunk.type === 'response.output_text.annotation.added' && chunk.annotation?.type === 'url_citation') {
+            webSearchLib.addCitations(webCitations, [chunk.annotation]);
           }
 
           // Handle file_search_call results - yield file names found in KB
@@ -779,6 +802,7 @@ class OpenAIService {
               // null when the provider didn't report a split (non-reasoning models).
               reasoningTokens: oaiReasoningTokens,
               durationMs: Date.now() - _streamStart,
+              ...(webSearch ? { webSearches: webSearchCount, webCitations } : {}),
             };
           }
           break;
@@ -1018,6 +1042,11 @@ class OpenAIService {
   async sendOneShot(instructions, message, options = {}) {
     // agentName: per-customer key routing (task #61) — see _clientFor.
     const { model = 'gpt-4o-mini', maxTokens = 8192, jsonOutput = false, knowledgeBase, historyMessages, agentName } = options;
+    // Web search switch (task #967): normalized { allowedDomains, maxSearches }
+    // or null. `onWebSearch(event)` hears each search live (the call is then
+    // streamed internally; the return shape is unchanged).
+    const webSearch = options.webSearch || null;
+    const onWebSearch = typeof options.onWebSearch === 'function' ? options.onWebSearch : null;
 
     try {
       // Build instructions. The current user message used to be
@@ -1058,7 +1087,11 @@ class OpenAIService {
         store: false
       };
 
-      if (jsonOutput) {
+      // OpenAI refuses JSON mode together with web search (400 "Web Search
+      // cannot be used with JSON mode", 2026-11-08) — with search on, the JSON
+      // comes from the instructions alone ("Respond in JSON" + the prod
+      // above); the Builder's parser already reads JSON out of prose (#967).
+      if (jsonOutput && !webSearch) {
         requestParams.text = { format: { type: 'json_object' } };
       }
 
@@ -1072,17 +1105,58 @@ class OpenAIService {
         console.log(`📚 OpenAI OneShot: file_search enabled with stores: ${storeIds.join(', ')}`);
       }
 
-      const response = await this._clientFor(agentName).responses.create(requestParams);
+      if (webSearch) {
+        requestParams.tools = [...(requestParams.tools || []), webSearchLib.openaiTool(webSearch)];
+        requestParams.include = [...(requestParams.include || []), 'web_search_call.action.sources'];
+        requestParams.max_tool_calls = webSearch.maxSearches;
+      }
 
-      const outputItem = response.output.find(item => item.type === 'message');
+      let response;
+      if (webSearch) {
+        // Streamed so each search can be shown live; the final event carries
+        // the same Response object `.create()` returns.
+        const stream = await this._clientFor(agentName).responses.create({ ...requestParams, stream: true });
+        for await (const ev of stream) {
+          if (ev.type === 'error') throw new Error(ev.message || 'OpenAI stream error');
+          if (ev.item?.type === 'web_search_call' && onWebSearch
+              && (ev.type === 'response.output_item.added' || ev.type === 'response.output_item.done')) {
+            try { onWebSearch(webSearchLib.fromOpenAIItem(ev.item, ev.type === 'response.output_item.added' ? 'started' : 'done')); } catch { /* listener */ }
+          }
+          if ((ev.type === 'response.completed' || ev.type === 'response.incomplete' || ev.type === 'response.failed') && ev.response) {
+            response = ev.response;
+          }
+        }
+        if (!response) throw new Error('OpenAI stream ended without a response');
+        if (response.status === 'failed') throw new Error(response.error?.message || 'OpenAI response failed');
+      } else {
+        response = await this._clientFor(agentName).responses.create(requestParams);
+      }
+
+      // The answer is the LAST message item (a web-search turn has search
+      // calls before it).
+      const messages = response.output.filter(item => item.type === 'message');
+      const outputItem = messages[messages.length - 1];
       const text = outputItem?.content.find(c => c.type === 'output_text')?.text || '';
       if (!text) {
         console.warn(`⚠️ OpenAI OneShot: empty response. Status: ${response.status}, output types: ${response.output.map(o => o.type).join(', ')}`);
       }
-      const usage = response.usage ? {
-        inputTokens: response.usage.input_tokens || 0,
-        outputTokens: response.usage.output_tokens || 0,
+      const usage = response.usage || webSearch ? {
+        inputTokens: response.usage?.input_tokens || 0,
+        outputTokens: response.usage?.output_tokens || 0,
       } : null;
+      if (webSearch) {
+        // Searches billed (one per web_search_call) + the pages the answer cites.
+        const calls = response.output.filter(item => item.type === 'web_search_call');
+        const webCitations = [];
+        for (const m of messages) {
+          for (const c of m.content || []) {
+            webSearchLib.addCitations(webCitations, (c.annotations || []).filter(a => a.type === 'url_citation'));
+          }
+        }
+        usage.webSearches = calls.length;
+        usage.webCitations = webCitations;
+        usage.webEvents = calls.map(item => webSearchLib.fromOpenAIItem(item, 'done'));
+      }
       // Same words as Anthropic's stop_reason, so callers check one value.
       // An `incomplete` response hit max_output_tokens (reasoning counts
       // against it) — the text is cut or empty (task #920).

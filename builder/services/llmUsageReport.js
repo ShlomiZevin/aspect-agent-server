@@ -29,6 +29,12 @@
  * Cost = models.service costOf at list price; null for a model with no
  * known price (shown as "—" and left out of the totals).
  *
+ * Web searches (task #967) arrive as their own llm_usage row (model
+ * `web-search-<provider>`, output_tokens = number of searches — see
+ * models.service USAGE_ITEMS). Such a row is matched to the add-on run like
+ * any call, gets `kind: 'web_search'` + `searches`, 0 tokens, and its cost;
+ * the summaries count it in `searches` and cost, not in `calls`.
+ *
  * Agent: rows are found by the agent's display name (what the runtime
  * logs) or its slug — same as the MCP's /agents/<slug>/usage.
  */
@@ -296,6 +302,9 @@ async function buildPeriod(agentSlug, period) {
     }
 
     const cost = models.costOf(c.model, Number(c.i), Number(c.o));
+    // A web-search row (#967) counts searches in output_tokens — it is a
+    // priced line on the add-on that searched, not a model call.
+    const searches = models.isWebSearchUsage(c.model) ? Number(c.o) : 0;
     return {
       id: c.id,
       at: c.at,
@@ -307,11 +316,12 @@ async function buildPeriod(agentSlug, period) {
       // (an agent-level add-on runs in whichever crew is active).
       addonScope: inst ? (inst.crew || 'Agent level') : null,
       model: c.model,
-      modelName: models.MODELS.find(m => m.id === c.model)?.name || c.model,
+      modelName: models.labelOf(c.model),
       conversationId: c.conv || null,
       interaction,
-      input: Number(c.i),
-      output: Number(c.o),
+      ...(searches ? { kind: 'web_search', searches } : {}),
+      input: searches ? 0 : Number(c.i),
+      output: searches ? 0 : Number(c.o),
       durationMs: c.dur,
       cost,
     };
@@ -334,13 +344,15 @@ function applyFilters(rows, { crew, addon, model }) {
     (!model || r.model === model));
 }
 
+/** `calls` = model calls; web-search rows (#967) add to `searches` and cost. */
 function sumUp(rows) {
-  let input = 0; let output = 0; let cost = 0; let unpriced = 0;
+  let input = 0; let output = 0; let cost = 0; let unpriced = 0; let calls = 0; let searches = 0;
   for (const r of rows) {
     input += r.input; output += r.output;
+    if (r.kind === 'web_search') searches += r.searches || 0; else calls += 1;
     if (r.cost == null) unpriced += 1; else cost += r.cost;
   }
-  return { calls: rows.length, input, output, cost, unpriced };
+  return { calls, input, output, cost, unpriced, searches };
 }
 
 function optionsOf(rows) {

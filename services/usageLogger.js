@@ -57,4 +57,28 @@ function logUsage({ process, model, provider, inputTokens, outputTokens, duratio
   }
 }
 
-module.exports = { logUsage, getProviderFromModel };
+/**
+ * Log a turn's web searches (task #967) as ONE llm_usage row: model =
+ * `web-search-<provider>`, input 0, output = the number of searches (priced
+ * per search in models.service). Same process / crew / conversation as the
+ * model call that searched, so the LLM Usage screen puts it on that add-on.
+ * No-op for 0 searches.
+ */
+function logWebSearches({ provider, count, process, durationMs, agentName, crewMember, conversationId, userId }) {
+  const n = Math.round(Number(count) || 0);
+  if (n <= 0 || !provider) return;
+  logUsage({
+    process,
+    model: modelsService.webSearchUsageId(provider),
+    provider,
+    inputTokens: 0,
+    outputTokens: n,
+    durationMs,
+    agentName,
+    crewMember,
+    conversationId,
+    userId,
+  });
+}
+
+module.exports = { logUsage, logWebSearches, getProviderFromModel };

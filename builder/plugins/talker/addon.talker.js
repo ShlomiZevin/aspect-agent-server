@@ -10,6 +10,8 @@
 
 const { registerPlugin } = require('../../runtime/pluginRegistry');
 const descriptor = require('../../addons/talker.addon.json');
+const modelsService = require('../../../services/models.service');
+const { normalizeWebSearch, createCollector } = require('../../../services/webSearch');
 
 const TALKER_PLUGIN_ID = descriptor.pluginId;
 
@@ -35,6 +37,15 @@ async function run(ctx) {
   const start = Date.now();
   let collected = '';
   let usageData = null;
+
+  // Web search switch (task #967): the provider's own search tool, on when
+  // the author turned it on AND the model's provider has one. The model
+  // decides each turn whether to search; each search is shown live
+  // (`addon.websearch`) and lands on the run card.
+  const webSearch = modelsService.supportsWebSearch(modelString)
+    ? normalizeWebSearch(instance.config?.webSearch)
+    : null;
+  const searches = createCollector();
   // Time-to-first-token — perceived latency, the moment text starts
   // appearing in the chat. Distinct from total stream duration
   // (durationMs below), which includes the trailing usage event.
@@ -49,6 +60,7 @@ async function run(ctx) {
     agentName: agentNameForLogs,
     crewMember: usageCrew,
     userId: ownerUserId,
+    ...(webSearch ? { webSearch } : {}),
   });
 
   for await (const chunk of stream) {
@@ -62,7 +74,18 @@ async function run(ctx) {
       if (firstTokenMs === null && chunk.text.length > 0) firstTokenMs = Date.now() - start;
       collected += chunk.text;
       emit('addon.token', { instanceId: instance.instanceId, token: chunk.text });
+    } else if (chunk && chunk.type === 'web_search') {
+      searches.add(chunk);
+      emit('addon.websearch', {
+        instanceId: instance.instanceId,
+        id: chunk.id,
+        status: chunk.phase === 'done' ? (chunk.error ? 'error' : 'done') : 'searching',
+        query: chunk.query || null,
+        kind: chunk.kind || 'search',
+        ...(chunk.phase === 'done' ? { sources: (chunk.sources || []).slice(0, 8) } : {}),
+      });
     } else if (chunk && chunk.type === 'usage') {
+      searches.setUsage(chunk);
       usageData = {
         inputTokens:  chunk.inputTokens  || 0,
         outputTokens: chunk.outputTokens || 0,
@@ -92,8 +115,27 @@ async function run(ctx) {
       userId:        ownerUserId,
     });
   }
+  const webSearchResult = webSearch ? searches.result(webSearch) : null;
+  if (webSearchResult && webSearchResult.count > 0) {
+    // The searches are their own priced llm_usage row (see usageLogger
+    // logWebSearches / models.service USAGE_ITEMS): output = searches.
+    const provider = modelsService.tryProviderOf(modelString);
+    logUsage({
+      process:       usageProcess,
+      model:         modelsService.webSearchUsageId(provider),
+      provider,
+      inputTokens:   0,
+      outputTokens:  webSearchResult.count,
+      durationMs:    usageData ? usageData.durationMs : (Date.now() - start),
+      agentName:     agentNameForLogs,
+      crewMember:    usageCrew,
+      conversationId: String(conversationId),
+      userId:        ownerUserId,
+    });
+  }
 
   return {
+    ...(webSearchResult ? { webSearch: webSearchResult } : {}),
     assistantText: collected,
     rawOutput:     collected,
     parsedOutput:  null,

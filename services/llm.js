@@ -2,7 +2,7 @@ const openaiService = require('./llm.openai');
 const claudeService = require('./llm.claude');
 const googleService = require('./llm.google');
 const functionRegistry = require('./function-registry');
-const { logUsage } = require('./usageLogger');
+const { logUsage, logWebSearches } = require('./usageLogger');
 const modelsService = require('./models.service');
 
 /**
@@ -228,6 +228,19 @@ class LLMService {
           conversationId: options.conversationId,
           userId: options.userId,
         });
+        // Web search switch (#967): the searches are their own priced row.
+        if (result.usage.webSearches) {
+          logWebSearches({
+            provider: modelsService.tryProviderOf(options.model),
+            count: result.usage.webSearches,
+            process: options.context || 'one-shot',
+            durationMs,
+            agentName: options.agentName,
+            crewMember: options.crewMember,
+            conversationId: options.conversationId,
+            userId: options.userId,
+          });
+        }
       }
       if (options.withMeta) {
         return { text: result.text, stopReason: result.stopReason || null, usage: result.usage || null };

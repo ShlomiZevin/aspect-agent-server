@@ -2,6 +2,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const path = require('path');
 const providerConfigService = require('./provider-config.service');
+const webSearchLib = require('./webSearch');
 
 /**
  * Newer Claude models reject `temperature` with a 400 (sampling settings
@@ -250,6 +251,14 @@ class ClaudeService {
       if (stream && !canStream) {
         console.warn('⚠️ Claude OneShot: streaming requested but unavailable on this API surface; buffering instead');
       }
+      // Web search switch (task #967) — not in tool-use mode (that call is
+      // one forced tool, by design).
+      const webSearch = options.webSearch && !(Array.isArray(tools) && tools.length > 0) ? options.webSearch : null;
+      if (webSearch) {
+        const ws = await this._oneShotWithWebSearch(messagesApi, requestParams, webSearch, options.onWebSearch);
+        return { text: ws.text, usage: ws.usage, stopReason: ws.response.stop_reason };
+      }
+
       const response = canStream
         ? await messagesApi.stream(requestParams).finalMessage()
         : await messagesApi.create(requestParams);
@@ -303,6 +312,119 @@ class ClaudeService {
   }
 
   /**
+   * One-shot call with the web search server tool on (task #967). Always
+   * streamed, so each search reaches `onWebSearch` live. Handles the two
+   * things a server tool adds: `pause_turn` (the server's own loop paused —
+   * send the turn back and it resumes) and a 400 for allowed sites that
+   * block Anthropic's crawler (dropped, asked again; no site left = no
+   * search, never "search everywhere").
+   *
+   * @returns {{ text, usage: { inputTokens, outputTokens, webSearches,
+   *   webCitations, webEvents, webBlockedDomains? }, response }}
+   */
+  async _oneShotWithWebSearch(messagesApi, baseParams, webSearchIn, onWebSearch) {
+    let webSearch = { allowedDomains: [...webSearchIn.allowedDomains], maxSearches: webSearchIn.maxSearches };
+    const tell = ev => { if (typeof onWebSearch === 'function') { try { onWebSearch(ev); } catch { /* listener */ } } };
+    const events = new Map();
+    const citations = [];
+    const blockedDomains = [];
+    let messages = baseParams.messages;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let searches = 0;
+    let response = null;
+
+    for (let round = 0; round < 6; round++) {
+      const params = { ...baseParams, messages };
+      if (webSearch) {
+        params.tools = [...(baseParams.tools || []), webSearchLib.anthropicTool(webSearch, baseParams.model, webSearch.maxSearches - searches)];
+      }
+      const stream = messagesApi.stream(params);
+      const blocks = {};
+      try {
+        for await (const event of stream) {
+          if (event.type === 'content_block_start') {
+            const cb = event.content_block || {};
+            blocks[event.index] = { type: cb.type, name: cb.name, id: cb.id, json: '' };
+            if (cb.type === 'server_tool_use' && cb.name === 'web_search' && cb.input?.query) {
+              blocks[event.index].announced = true;
+              events.set(cb.id, { type: 'web_search', phase: 'started', id: cb.id, query: cb.input.query, kind: 'search' });
+              tell(events.get(cb.id));
+            }
+            if (cb.type === 'web_search_tool_result') {
+              const r = webSearchLib.anthropicResult(cb);
+              const ev = {
+                type: 'web_search', phase: 'done', id: cb.tool_use_id,
+                query: events.get(cb.tool_use_id)?.query || null, kind: 'search',
+                sources: r.sources, ...(r.error ? { error: r.error } : {}),
+              };
+              events.set(cb.tool_use_id, ev);
+              tell(ev);
+            }
+          }
+          if (event.type === 'content_block_delta' && event.delta?.type === 'input_json_delta' && blocks[event.index]) {
+            blocks[event.index].json += event.delta.partial_json || '';
+          }
+          if (event.type === 'content_block_stop') {
+            const b = blocks[event.index];
+            if (b && b.type === 'server_tool_use' && b.name === 'web_search' && !b.announced) {
+              let query = null;
+              try { query = JSON.parse(b.json || '{}').query || null; } catch { /* partial */ }
+              b.announced = true;
+              events.set(b.id, { type: 'web_search', phase: 'started', id: b.id, query, kind: 'search' });
+              tell(events.get(b.id));
+            }
+          }
+        }
+        response = await stream.finalMessage();
+      } catch (err) {
+        const blocked = webSearch ? webSearchLib.blockedDomainsFromError(err) : null;
+        if (blocked) {
+          console.warn(`⚠️ Claude web search: sites Anthropic cannot reach, dropped: ${blocked.join(', ')}`);
+          blockedDomains.push(...blocked);
+          webSearch.allowedDomains = webSearch.allowedDomains.filter(d => !blocked.includes(d));
+          if (!webSearch.allowedDomains.length) webSearch = null;
+          continue;
+        }
+        throw err;
+      }
+
+      inputTokens += response.usage?.input_tokens || 0;
+      outputTokens += response.usage?.output_tokens || 0;
+      searches += response.usage?.server_tool_use?.web_search_requests || 0;
+      for (const b of response.content) {
+        if (b.type === 'text') webSearchLib.addCitations(citations, webSearchLib.anthropicCitations(b.citations));
+      }
+      if (response.stop_reason !== 'pause_turn') break;
+      messages = [...messages, { role: 'assistant', content: response.content }];
+    }
+    if (!response) throw new Error('Claude web search: no response');
+
+    // The answer is the text AFTER the last search step; the text before it
+    // ("Let me look that up.") is not part of it. Citations split one answer
+    // into several text blocks — joined back.
+    let lastTool = -1;
+    response.content.forEach((b, i) => {
+      if (b.type === 'server_tool_use' || /_tool_result$/.test(b.type)) lastTool = i;
+    });
+    const text = response.content.slice(lastTool + 1).filter(b => b.type === 'text').map(b => b.text).join('');
+
+    const doneEvents = [...events.values()].map(e => (e.phase === 'done' ? e : { ...e, phase: 'done', sources: [] }));
+    return {
+      text,
+      response,
+      usage: {
+        inputTokens,
+        outputTokens,
+        webSearches: searches,
+        webCitations: citations,
+        webEvents: doneEvents,
+        ...(blockedDomains.length ? { webBlockedDomains: blockedDomains } : {}),
+      },
+    };
+  }
+
+  /**
    * Send a message with conversation history and get a streaming response.
    * Similar to OpenAI's sendMessageStreamWithPrompt.
    *
@@ -331,6 +453,12 @@ class ClaudeService {
       // Per-customer key routing (task #61) — see _clientFor.
       agentName,
     } = config;
+    // Web search switch (task #967): normalized { allowedDomains, maxSearches }
+    // from services/webSearch.js, or null. Copied — a site Anthropic cannot
+    // reach is dropped from it below.
+    let webSearch = config.webSearch
+      ? { allowedDomains: [...config.webSearch.allowedDomains], maxSearches: config.webSearch.maxSearches }
+      : null;
 
     try {
 
@@ -424,6 +552,12 @@ class ClaudeService {
       // invoke the tool in the first place (#62).
       let claudeInputTokens = 0;
       let claudeOutputTokens = 0;
+      // Web search (#967): searches billed this turn, cited pages, sites
+      // Anthropic refused, and the reply so far (for paragraph breaks).
+      let webSearchCount = 0;
+      const webCitations = [];
+      const webBlockedDomains = [];
+      let replySoFar = '';
 
       while (maxIterations > 0) {
         maxIterations--;
@@ -438,9 +572,12 @@ class ClaudeService {
         if (temperature != null && acceptsTemperature(model)) requestParams.temperature = Math.min(temperature, 1.0); // Claude max is 1.0
         if (topK != null) requestParams.top_k = topK;
 
-        // Add tools if provided
-        if (tools.length > 0) {
-          requestParams.tools = tools;
+        // Add tools if provided (+ the web search server tool, #967)
+        const requestTools = webSearch
+          ? [...tools, webSearchLib.anthropicTool(webSearch, model, webSearch.maxSearches - webSearchCount)]
+          : tools;
+        if (requestTools.length > 0) {
+          requestParams.tools = requestTools;
         }
 
         // Use beta.messages when document blocks are present (requires Files API beta)
@@ -456,60 +593,144 @@ class ClaudeService {
 
         let fullReply = '';
         const pendingToolCalls = [];
+        // Per content-block index: what the block is (#967 — a server tool's
+        // input must never be glued onto a client tool's input).
+        const blocks = {};
+        const searchQueries = new Map();
+        let afterToolResult = false;
+        let yieldedThisRequest = false;
+        // This message's usage. message_delta carries CUMULATIVE totals for
+        // the message (input included — with server tools the input grows
+        // past what message_start said), so it replaces, never adds.
+        let msgIn = 0;
+        let msgOut = 0;
+        let msgSearches = 0;
+        let stopReason = null;
 
-        for await (const event of stream) {
-          // Track usage from message events
-          if (event.type === 'message_start' && event.message?.usage) {
-            claudeInputTokens += event.message.usage.input_tokens || 0;
-            claudeOutputTokens += event.message.usage.output_tokens || 0;
-          }
-          if (event.type === 'message_delta' && event.usage) {
-            claudeOutputTokens += event.usage.output_tokens || 0;
-          }
-
-          // Handle text delta
-          if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-            const text = event.delta.text;
-            if (text) {
-              fullReply += text;
-              yield text; // Yield string for backward compatibility
+        try {
+          for await (const event of stream) {
+            // Track usage from message events
+            if (event.type === 'message_start' && event.message?.usage) {
+              msgIn = event.message.usage.input_tokens || 0;
+              msgOut = event.message.usage.output_tokens || 0;
             }
-          }
+            if (event.type === 'message_delta') {
+              if (event.usage) {
+                if (event.usage.input_tokens != null) msgIn = event.usage.input_tokens;
+                if (event.usage.output_tokens != null) msgOut = event.usage.output_tokens;
+                const ws = event.usage.server_tool_use?.web_search_requests;
+                if (typeof ws === 'number') msgSearches = ws;
+              }
+              if (event.delta?.stop_reason) stopReason = event.delta.stop_reason;
+            }
 
-          // Handle tool use
-          if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
-            pendingToolCalls.push({
-              id: event.content_block.id,
-              name: event.content_block.name,
-              input: {}
-            });
-          }
+            if (event.type === 'content_block_start') {
+              const cb = event.content_block || {};
+              blocks[event.index] = { type: cb.type, name: cb.name, id: cb.id, json: '' };
 
-          // Accumulate tool input
-          if (event.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
-            const lastTool = pendingToolCalls[pendingToolCalls.length - 1];
-            if (lastTool) {
-              // Parse incremental JSON (Claude streams JSON as partial strings)
-              try {
-                const partialInput = event.delta.partial_json || '';
-                lastTool.inputStr = (lastTool.inputStr || '') + partialInput;
-              } catch (e) {
-                // Continue accumulating
+              if (cb.type === 'tool_use') {
+                pendingToolCalls.push({ id: cb.id, name: cb.name, input: {} });
+              }
+
+              // Web search started. Called from the model's own code
+              // (dynamic filtering) the query is already here; called
+              // directly it streams in — announced at content_block_stop.
+              if (cb.type === 'server_tool_use' && cb.name === 'web_search' && cb.input?.query) {
+                searchQueries.set(cb.id, cb.input.query);
+                blocks[event.index].announced = true;
+                yieldedThisRequest = true;
+                yield { type: 'web_search', phase: 'started', id: cb.id, query: cb.input.query, kind: 'search' };
+              }
+              if (cb.type === 'web_search_tool_result') {
+                const r = webSearchLib.anthropicResult(cb);
+                afterToolResult = true;
+                yieldedThisRequest = true;
+                yield {
+                  type: 'web_search', phase: 'done', id: cb.tool_use_id,
+                  query: searchQueries.get(cb.tool_use_id) || null, kind: 'search',
+                  sources: r.sources, ...(r.error ? { error: r.error } : {}),
+                };
+              }
+              if (cb.type === 'text') {
+                webSearchLib.addCitations(webCitations, webSearchLib.anthropicCitations(cb.citations));
+                // The answer after a search starts a new paragraph — the
+                // text before it ("Let me look that up.") must not run into it.
+                if (afterToolResult && replySoFar && !/\s$/.test(replySoFar)) {
+                  fullReply += '\n\n';
+                  replySoFar += '\n\n';
+                  yieldedThisRequest = true;
+                  yield '\n\n';
+                }
+                afterToolResult = false;
+              }
+            }
+
+            // Handle text delta
+            if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+              const text = event.delta.text;
+              if (text) {
+                fullReply += text;
+                replySoFar += text;
+                yieldedThisRequest = true;
+                yield text; // Yield string for backward compatibility
+              }
+            }
+            if (event.type === 'content_block_delta' && event.delta?.type === 'citations_delta') {
+              webSearchLib.addCitations(webCitations, webSearchLib.anthropicCitations([event.delta.citation]));
+            }
+
+            // Accumulate tool input — on the block it belongs to.
+            if (event.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
+              const b = blocks[event.index];
+              if (b) b.json += event.delta.partial_json || '';
+            }
+
+            // Block complete
+            if (event.type === 'content_block_stop') {
+              const b = blocks[event.index];
+              if (b && b.type === 'tool_use' && b.json) {
+                const tool = pendingToolCalls.find(t => t.id === b.id);
+                try {
+                  if (tool) tool.input = JSON.parse(b.json);
+                } catch (e) {
+                  console.warn('⚠️ Failed to parse tool input:', e.message);
+                }
+              }
+              if (b && b.type === 'server_tool_use' && b.name === 'web_search' && !b.announced) {
+                let query = null;
+                try { query = JSON.parse(b.json || '{}').query || null; } catch { /* partial */ }
+                if (query) searchQueries.set(b.id, query);
+                b.announced = true;
+                yieldedThisRequest = true;
+                yield { type: 'web_search', phase: 'started', id: b.id, query, kind: 'search' };
               }
             }
           }
-
-          // Tool use complete
-          if (event.type === 'content_block_stop') {
-            const lastTool = pendingToolCalls[pendingToolCalls.length - 1];
-            if (lastTool && lastTool.inputStr) {
-              try {
-                lastTool.input = JSON.parse(lastTool.inputStr);
-              } catch (e) {
-                console.warn('⚠️ Failed to parse tool input:', e.message);
-              }
-            }
+        } catch (err) {
+          // A site in allowed_domains that blocks Anthropic's crawler fails
+          // the whole request (400). Drop those sites and ask again; with no
+          // site left, run without web search rather than search everywhere.
+          const blocked = webSearch && !yieldedThisRequest ? webSearchLib.blockedDomainsFromError(err) : null;
+          if (blocked && maxIterations > 0) {
+            console.warn(`⚠️ Claude web search: sites Anthropic cannot reach, dropped: ${blocked.join(', ')}`);
+            webBlockedDomains.push(...blocked);
+            webSearch.allowedDomains = webSearch.allowedDomains.filter(d => !blocked.includes(d));
+            if (!webSearch.allowedDomains.length) webSearch = null;
+            continue;
           }
+          throw err;
+        }
+
+        claudeInputTokens += msgIn;
+        claudeOutputTokens += msgOut;
+        webSearchCount += msgSearches;
+
+        // The server's own search loop paused (its 10-step limit): send the
+        // turn back as it is and it resumes where it stopped.
+        if (stopReason === 'pause_turn') {
+          const paused = await stream.finalMessage();
+          currentMessages = [...currentMessages, { role: 'assistant', content: paused.content }];
+          continue;
         }
 
         // Handle tool calls
@@ -565,10 +786,15 @@ class ClaudeService {
             }
           }
 
-          // Continue conversation with tool results
+          // Continue conversation with tool results. With web search on the
+          // assistant turn also holds server-tool blocks that must go back
+          // as they came, so the whole message is echoed (#967).
+          const assistantContent = config.webSearch
+            ? (await stream.finalMessage()).content
+            : pendingToolCalls.map(tc => ({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input }));
           currentMessages = [
             ...currentMessages,
-            { role: 'assistant', content: pendingToolCalls.map(tc => ({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input })) },
+            { role: 'assistant', content: assistantContent },
             { role: 'user', content: toolResults }
           ];
         } else {
@@ -576,7 +802,17 @@ class ClaudeService {
           console.log(`✅ Claude streaming complete. Total reply length: ${fullReply.length}`);
           // Yield usage event for tracking
           if (claudeInputTokens || claudeOutputTokens) {
-            yield { type: 'usage', inputTokens: claudeInputTokens, outputTokens: claudeOutputTokens, durationMs: Date.now() - _streamStart };
+            yield {
+              type: 'usage',
+              inputTokens: claudeInputTokens,
+              outputTokens: claudeOutputTokens,
+              durationMs: Date.now() - _streamStart,
+              ...(config.webSearch ? {
+                webSearches: webSearchCount,
+                webCitations,
+                ...(webBlockedDomains.length ? { webBlockedDomains } : {}),
+              } : {}),
+            };
           }
           break;
         }

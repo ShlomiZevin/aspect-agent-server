@@ -464,7 +464,9 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
     });
     if (!r || typeof r !== 'object' || !('stopReason' in r)) return r; // tool-use shape
     if (r.stopReason === 'max_tokens') modelCalls.cutOff++;
-    return r.text;
+    // A plugin that asked for the meta (the Thinker with web search, #967)
+    // gets { text, stopReason, usage } — the usage carries the searches.
+    return opts.withMeta ? r : r.text;
   };
   addonLlm.sendMessageStreamWithPrompt = (message, convId, config = {}) =>
     llm.sendMessageStreamWithPrompt(message, convId, { ...config, maxTokens: chosenLimit ?? config.maxTokens ?? outputLimit });
@@ -527,6 +529,7 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
       modelLabel,
       rawOutput: result?.rawOutput ?? '',
       durationMs: result?.durationMs ?? (Date.now() - addonStart),
+      ...(result?.webSearch ? { webSearch: result.webSearch } : {}),
     }, err);
     try {
       await addonRunsStore.insertRun({
@@ -547,6 +550,7 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
           memoryWrites: [],
           error: failure,
           ...(result?.parseError ? { parseError: result.parseError } : {}),
+          ...(result?.webSearch ? { webSearch: result.webSearch } : {}),
           historyMode: historyResolution,
           historyCount: visibleCount,
           lane: instance.lane,
@@ -706,6 +710,8 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
     ...(typeof result.firstTokenMs === 'number' ? { firstTokenMs: result.firstTokenMs } : {}),
     ...(rejectedWrites.length > 0 ? { rejectedWrites } : {}),
     ...(result.parseError ? { parseError: result.parseError } : {}),
+    // Web search switch (#967): queries, sources, count — for the run card.
+    ...(result.webSearch ? { webSearch: result.webSearch } : {}),
     ...(didTransition ? { transition: { to: result.transition.to, reason: result.transition.reason } } : {}),
     ...(result.breakChain ? { broke: true } : {}),
     // The lane is in addon.start.meta — surfacing it on addon.output

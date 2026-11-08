@@ -62,11 +62,42 @@ const MODELS = [
   { id: 'gemini-2.5-flash', providerId: 'google', name: 'Gemini 2.5 Flash', notes: 'Cheap & fast — closed to NEW Gemini accounts (new environments cannot use it)', price: { in: 0.3, out: 2.5 } },
 ];
 
+// `webSearch`: the provider has a built-in web search tool that the Talker /
+// Thinker "Web search" switch can turn on (task #967). Google's grounding is
+// not wired, so on its models the switch is disabled.
 const PROVIDERS = [
-  { id: 'anthropic', label: 'Anthropic', icon: 'A' },
-  { id: 'openai',    label: 'OpenAI',    icon: 'O' },
-  { id: 'google',    label: 'Google',    icon: 'G' },
+  { id: 'anthropic', label: 'Anthropic', icon: 'A', webSearch: true },
+  { id: 'openai',    label: 'OpenAI',    icon: 'O', webSearch: true },
+  { id: 'google',    label: 'Google',    icon: 'G', webSearch: false },
 ];
+
+/**
+ * Web searches as a billed line in llm_usage (task #967) — no new column.
+ * A turn that searched logs ONE extra row: model = one of these ids,
+ * input_tokens 0, output_tokens = the NUMBER OF SEARCHES. The price is per
+ * search — $10 per 1,000 at both providers (list price, checked 2026-11-08) —
+ * so `out` is $10,000 per "1M" = $0.01 per search, and every reader that
+ * prices rows with costOf() / priceOf() gets the search fee right unchanged.
+ * The pages the model read are billed as ordinary input tokens on the model's
+ * own row. These are NOT models: never offered in a picker, never accepted in
+ * a config (getModel() does not know them).
+ */
+const WEB_SEARCH_USD = 10 / 1000;
+const USAGE_ITEMS = [
+  { id: 'web-search-openai',    providerId: 'openai',    name: 'Web search (OpenAI)',    kind: 'web_search', price: { in: 0, out: WEB_SEARCH_USD * 1e6 } },
+  { id: 'web-search-anthropic', providerId: 'anthropic', name: 'Web search (Anthropic)', kind: 'web_search', price: { in: 0, out: WEB_SEARCH_USD * 1e6 } },
+];
+const _usageItemById = new Map(USAGE_ITEMS.map(m => [m.id, m]));
+
+/** The llm_usage model id a provider's web searches are logged under. */
+function webSearchUsageId(providerId) {
+  return `web-search-${providerId}`;
+}
+
+/** True for an llm_usage row that counts web searches (output = searches), not tokens. */
+function isWebSearchUsage(modelId) {
+  return _usageItemById.get(modelId)?.kind === 'web_search';
+}
 
 /**
  * The current "everyday" GPT model — a step above the cheapest. The ONE
@@ -105,7 +136,13 @@ function providerOf(modelId) {
  * caller has a sensible fallback (logging code, defensive paths).
  */
 function tryProviderOf(modelId) {
-  return _byId.get(modelId)?.providerId || null;
+  return _byId.get(modelId)?.providerId || _usageItemById.get(modelId)?.providerId || null;
+}
+
+/** Can this model's provider run its built-in web search tool? (#967) */
+function supportsWebSearch(modelId) {
+  const pid = _byId.get(modelId)?.providerId;
+  return !!(pid && PROVIDERS.find(p => p.id === pid)?.webSearch);
 }
 
 /**
@@ -132,9 +169,19 @@ function isKnownProvider(providerId) {
  * costs less than this says.
  */
 function costOf(modelId, inputTokens, outputTokens) {
-  const price = _byId.get(modelId)?.price;
+  const price = priceOf(modelId);
   if (!price) return null;
   return ((inputTokens || 0) / 1e6) * price.in + ((outputTokens || 0) / 1e6) * price.out;
+}
+
+/** List price { in, out } per 1M for a model OR a usage item (web search), or null. */
+function priceOf(modelId) {
+  return _byId.get(modelId)?.price || _usageItemById.get(modelId)?.price || null;
+}
+
+/** Display name for an llm_usage model id — a model or a usage item. */
+function labelOf(modelId) {
+  return _byId.get(modelId)?.name || _usageItemById.get(modelId)?.name || modelId;
 }
 
 module.exports = {
@@ -142,6 +189,12 @@ module.exports = {
   providerOf,
   tryProviderOf,
   costOf,
+  priceOf,
+  labelOf,
+  supportsWebSearch,
+  webSearchUsageId,
+  isWebSearchUsage,
+  WEB_SEARCH_USD,
   listForApi,
   isKnownProvider,
   PROVIDERS,
