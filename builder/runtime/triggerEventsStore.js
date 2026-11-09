@@ -66,6 +66,56 @@ async function open({ agentId, triggerId, triggerType, conversationId, matchReas
   return id;
 }
 
+/**
+ * Open an event ONLY if this trigger has none on the conversation at or
+ * after `since` — "at most once per slot" made race-proof.
+ *
+ * The clause evaluation already refuses a conversation with such an
+ * event, but evaluation and insert are two steps: two sweeps running at
+ * once (two Cloud Run copies, the clock and a manual sweep) could both
+ * evaluate before either inserts. Here the check and the insert happen
+ * inside one transaction holding an advisory lock on (trigger,
+ * conversation), so the second one waits, then sees the first one's row
+ * and backs off. No schema change: the lock is transaction-scoped and
+ * the event log stays the only state.
+ *
+ * @returns {Promise<string|null>} the event id, or null when the slot
+ *   was already taken.
+ */
+async function openOnce({ agentId, triggerId, triggerType, conversationId, matchReason, launchedCrewId, source, since }) {
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1), $2::int)',
+      [String(triggerId), Number(conversationId)]);
+    const taken = await client.query(
+      `SELECT 1 FROM trigger_events
+        WHERE trigger_id = $1 AND conversation_id = $2 AND matched_at >= $3::timestamptz
+        LIMIT 1`,
+      [String(triggerId), Number(conversationId), since instanceof Date ? since : new Date(since)]);
+    if (taken.rowCount > 0) {
+      await client.query('COMMIT');
+      return null;
+    }
+    const id = uid();
+    const now = new Date();
+    await client.query(
+      `INSERT INTO trigger_events
+         (id, agent_id, trigger_id, trigger_type, conversation_id, matched_at,
+          status, source, match_reason, launched_crew_id, started_at)
+       VALUES ($1, $2, $3, $4, $5, $6::timestamptz, 'running', $7, $8, $9, $6::timestamptz)`,
+      [id, String(agentId), String(triggerId), String(triggerType), Number(conversationId), now,
+        source === 'manual' ? 'manual' : null, matchReason || null, launchedCrewId || null]);
+    await client.query('COMMIT');
+    return id;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 /** Close an event with its outcome. */
 async function close(eventId, { outcome, filterResult, briefUsed, messageId, error, startedAt }) {
   const endedAt = new Date();
@@ -168,6 +218,7 @@ async function forConversation(conversationId, limit = 100) {
 
 module.exports = {
   open,
+  openOnce,
   close,
   recordEvaluation,
   statusForAgent,

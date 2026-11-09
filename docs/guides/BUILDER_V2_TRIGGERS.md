@@ -2,7 +2,8 @@
 
 > **Status:** BUILT and verified (2026-08-31) — T1 to T5. The proactive
 > turn, the trigger primitive with the Silence type, the clock, the
-> Triggers screen, live push, and the Alfred registrations.
+> Triggers screen, live push, and the Alfred registrations. **T6 —
+> the Schedule type (#950), built 2026-11-09.**
 >
 > **Not yet done:** create the Cloud Scheduler job (one per minute →
 > `POST /api/admin/triggers/tick`) and switch the clock on. Until then
@@ -327,6 +328,173 @@ few extra rows overnight to buy the visibility.
 That also makes "hold until the window opens" free: it's just *skip* —
 the conversation is still quiet in the morning, so it matches again and
 fires then. No holding mechanism, no queue.
+
+---
+
+## Trigger type #2 — Schedule
+
+> **Built 2026-11-09 (task #950)** — server + client + MCP. Not yet
+> deployed. Files: `builder/triggers/schedule.trigger.json`,
+> `builder/triggers/schedule/trigger.schedule.js` (the clauses),
+> `builder/triggers/schedule/scheduleSlots.js` (the wall-clock
+> arithmetic), client `src/builder/triggers/schedule/`. Design:
+> `lybi-website/art-source/ui/schedule-trigger/` (option 3A).
+
+*At set times* — every Sun–Thu at 09:00, at 09:00 and 17:00, or once on
+15 Dec at 09:00. The moment is defined by the calendar, not by anything
+the customer did.
+
+### The card
+
+```
+WHEN
+  Repeats    [Weekly | Once]
+  Days       Sun Mon Tue Wed Thu Fri Sat      (Every day · Sun–Thu · Mon–Fri)
+  Times      [09:00 ×] [17:00 ×] + Add time
+  Dates      (switch) [10/11/2026] – [10/12/2026]       optional
+  — or, for Once —
+  On         [15/12/2026] [09:00]
+  Timezone   [Jerusalem ▾]
+  Result     Sun–Thu at 09:00, 17:00 · next: tomorrow 09:00
+```
+
+The chip on the Triggers screen gets a second line, `next: tomorrow
+09:00`, and Admin → Triggers shows the type, the settings and the next
+fire beside each rule. Weekly and Once rows share one grid cell, so
+switching moves nothing; the date range stays on screen, disabled, while
+its switch is off; a time inside quiet hours turns its own chip amber.
+
+Config (`ScheduleTriggerConfig`):
+`{ repeat: 'weekly'|'once', days: [0..6], times: ['HH:MM'], onceAt:
+'YYYY-MM-DDTHH:MM', startDate?, endDate?, timezone }`. Days, times and
+dates are LOCAL to `timezone` (default `Asia/Jerusalem`). Both modes'
+fields stay in the config while the author switches; the server reads
+only the current `repeat`'s.
+
+### Who receives it
+
+Every conversation of the agent where the customer has written at least
+once, **simulations excluded**, then the envelope exactly as for Silence:
+quiet hours, Filter, message limit. A Schedule with no Filter therefore
+talks to everyone, every slot — the MCP and the type's `purpose` say so.
+
+### The six clauses
+
+```
+Schedule:
+  clause "slot due"             the latest slot is at most 60 min old
+  clause "once per slot"        no event from this trigger here since that slot
+  clause "existed at the slot"  conversation created at or before the slot
+  clause "after switch-on"      the slot is not older than {activeSince}
+  clause "customer has spoken"  at least one customer message, ever
+  clause "not a simulation"     metadata.kind <> 'simulation'
+```
+
+All six are also in `candidateSql`, as plain SQL (clause 2 is a `NOT
+EXISTS` on `trigger_events`). For Silence the SQL could leave clauses
+out; here it must not: a slot addresses the whole agent at once, and
+conversations already handled would otherwise fill `findDue`'s row
+limit and starve the rest. When no slot is due the narrowing is `FALSE`
+— the tick costs one trivial query.
+
+### Exactly one fire per slot — the guard
+
+**The event log, as for Silence.** Any event at or after the slot
+instant — spoke, silent, filtered, quiet_hours, error, by hand — uses
+the slot up. That is clause 2, and it is what the explainer reports.
+
+**Plus an atomic claim**, because clause evaluation and insert are two
+steps and two sweeps can run at once (two Cloud Run copies, the clock
+and a manual sweep). The type exposes `claimSince` (the slot instant);
+`sweepTrigger` passes it to `fireOne`, which opens the event with
+`triggerEventsStore.openOnce`: one transaction holding
+`pg_advisory_xact_lock(hashtext(trigger_id), conversation_id)`, check,
+insert. The second sweep waits, sees the row, backs off
+(`already_handled`, no event). No schema change.
+
+A person pressing **Run it now** on one chat passes no claim — it means
+"pretend it is due" — and the row it writes still uses that slot up.
+
+### No catch-up bursts — the 60-minute grace window
+
+A slot older than 60 minutes is **skipped, never sent late**. If the
+clock was paused from 08:00 to 11:00, the 09:00 slot never goes out;
+after a week-long pause only the current slot (if any) is live. Why 60:
+one sweep acts on at most 25 conversations (`MAX_FIRES_PER_SWEEP`) and
+the tick runs once a minute, so a slot needs real time to reach a few
+hundred people — 30 minutes would cut a large agent's slot short; and a
+09:00 "good morning" landing by 10:00 is still that morning's message,
+one at 11:30 is not. The number is `limits.graceMinutes` in the
+descriptor.
+
+**Throughput ceiling, stated plainly:** 60 ticks × 25 = at most ~1,500
+conversations per slot, fewer when the crew is slow (the sweep is
+sequential and a tick's lease is 5 minutes). Past that, the tail of a
+slot is skipped. Fine for today's agents; a broadcast to thousands needs
+a bigger per-sweep cap or parallel fires first.
+
+### Other rules the author never configures
+
+- **A conversation created after a slot is not owed it** (clause 3). It
+  joins from the next one. `conversations.created_at` is a naive column
+  holding UTC wall-clock, so the evaluator now reads it `AT TIME ZONE
+  'UTC'` (decision 16 again).
+- **Switching on never sends a slot that already passed** (clause 4):
+  on at 09:30, the 09:00 slot is not sent half an hour late.
+- **A slot inside quiet hours is SKIPPED, not delayed.** The dispatcher
+  records `quiet_hours`, which uses the slot up. Opposite of Silence on
+  purpose: Silence simply matches again in the morning; a "hold until
+  08:00" would be a late send. The card's next fire steps over such
+  slots (and says how many), and the editor marks the chip.
+- **DST** (`scheduleSlots.zonedToUtc`, `Intl` only, no tz library): a
+  time that does not exist on the spring-forward night (02:30 on Israel's
+  last-Friday-of-March) runs right after the gap (03:30); a time that
+  happens twice on the fall-back night (01:30 on the last Sunday of
+  October) is one slot, the first one — so nobody gets it twice.
+- **A broken config fires for nobody** and the explainer says why
+  ("schedule set ✗ no days picked / unknown timezone …"). Failing closed:
+  a message at the wrong time is worse than one not sent.
+
+### Next fire — computed on the server, once
+
+`type.nextFire` (new optional contract method) + `nextFireOf` in the
+evaluator (applies quiet hours) + `POST /api/agents/:slug/triggers/next-fires`
+(working copies in, `{ [id]: { at, skippedForQuietHours } }` out). The
+card, the editor's Result line and Admin all read it. Deliberately NOT
+re-implemented in the browser: two implementations of "which instant is
+Sunday 09:00 in Jerusalem" would drift exactly like the explainer and
+the tick would have.
+
+### The status line
+
+New optional contract method `describeZero`: an empty sweep of a
+Schedule reads "no slot due · next: Tue 10 Nov 09:00" or "12
+conversations already had this slot", not Silence's "nobody was quiet
+enough".
+
+### What the explainer prints
+
+```
+09:10 · conversation #412 · Schedule
+  ✅ slot due             the Mon 9 Nov 09:00 slot (Asia/Jerusalem) began 10 minutes ago — inside the 60-minute window
+  ❌ once per slot        already tried here at 09:01 for the Mon 9 Nov 09:00 slot
+  ✅ existed at the slot  the conversation started before the slot
+  ✅ after switch-on      the slot came after the trigger was switched on
+  ✅ customer has spoken  the customer has written at least once
+  ✅ not a simulation     a real conversation
+  → did not fire
+```
+
+Match reason on the event row and the chat badge: `scheduled for Mon 9
+Nov 09:00`.
+
+### Same surfaces as Silence, nothing new to learn
+
+Will it trigger? / Run it now, the agent-wide test panel, the Activity
+panel, the explainer, the event history and Admin → Triggers all work
+through the clause contract unchanged. The Builder MCP gained a
+`/triggers` page (every type + config keys, read from the registry) and
+read-only `/agents/<slug>/triggers`, `…/<id>/due`, `…/<id>/explain`.
 
 ---
 
@@ -847,7 +1015,23 @@ silent: a section that never reaches the prompt, or a key the merge drops.
 
 **Remaining:** the Cloud Scheduler job, and turning the clock on.
 
-**Later, not scheduled:** more trigger types (Schedule, Delay,
+**T6 — Schedule, trigger type #2 (task #950). ✅ BUILT — 2026-11-09, not
+deployed.** `schedule.trigger.json` + `trigger.schedule.js` +
+`scheduleSlots.js`; three optional contract methods (`claimSince`,
+`nextFire`, `describeZero`); `openOnce` (advisory-locked claim);
+`POST /triggers/next-fires`; facts `createdAt` read as UTC and `surface`;
+client form, card "next:" line, Admin rule summaries; MCP `/triggers` +
+three read-only agent views. No migration.
+
+*Verified:* `node scripts/test-triggers.js` — 95/95 offline (the 26
+Silence checks + 69 Schedule: days/times, several a day, once, date
+range, grace and no catch-up, once per slot, the claim's control flow
+on a fake client, created-after-slot, switch-on, midnight, DST March and
+October 2027, quiet hours, message limit, broken configs). UI rendered
+locally against staging with mocked next-fires. The advisory lock itself
+needs Postgres — verify on staging.
+
+**Later, not scheduled:** more trigger types (Delay,
 Field-watch) · the WhatsApp sink · historical-config resolution in the
 explainer.
 
@@ -950,6 +1134,31 @@ trigger clause is that comparison, so the symptom was a trigger that
 matched nobody, silently. Migration 046 converts the columns the engine
 reads to `timestamptz`; the two remaining reads of the still-naive
 `messages.created_at` say `AT TIME ZONE 'UTC'` out loud.
+
+**17. Schedule: skip, never send late.** A slot older than 60 minutes,
+a slot that passed before switch-on, and a slot inside quiet hours are
+all skipped rather than delivered late. A late "good morning" is worse
+than none, and a paused clock must never turn into a burst. 60 minutes
+rather than 30 because one sweep acts on at most 25 conversations a
+minute and a slot must have time to reach a few hundred people.
+
+**18. The event log stays the guard; a lock closes the race.** "At most
+once per slot" is clause 2 over `trigger_events`, exactly like Silence's
+spacing. Because evaluation and insert are two steps, the sweep also
+claims each slot with an advisory-locked check-and-insert
+(`openOnce`). Rejected: a `slot_key` column with a unique index — it
+would need a migration and a second piece of state to keep in step with
+the log.
+
+**19. Next fire is the server's answer.** The card's "next:" comes from
+`POST /triggers/next-fires`, run by the same slot code as the clock,
+rather than a TypeScript copy of the DST arithmetic.
+
+**20. Simulations are out of a Schedule's audience.** Outside AIs start
+hundreds of them; a broadcast must not spend a model call on each, every
+slot. (Silence's sweep still includes them — clause 4 limits it to ones
+active since switch-on. The MCP maintenance guide says triggers skip
+simulations; for Silence that is not what the code does. Open.)
 
 ---
 

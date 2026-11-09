@@ -1,0 +1,74 @@
+{
+  "typeId": "schedule",
+  "displayName": "Schedule",
+  "description": "At set times — every Sun–Thu at 09:00, or once on a date.",
+  "purpose": "Reach every conversation of the agent at fixed clock times: a morning check-in every Sun–Thu at 09:00, a reminder at 09:00 and 17:00, or a single send on 15 Dec at 09:00. Reach for this when the right moment is defined by the CALENDAR, not by anything the customer did or didn't do. The audience is every conversation where the customer has spoken at least once (simulations excluded); narrow it with the trigger's Filter (memory conditions) and cap it with the message limit — a schedule without a Filter talks to everyone, every slot. Each conversation gets at most one attempt per slot; a slot more than 60 minutes in the past is skipped, never sent late; a conversation that started after a slot is not owed it; a slot inside quiet hours is skipped, not delayed. Do NOT reach for this to follow up on a quiet customer (that is Silence) or to react to something said in a turn (that is an addon on the crew's chain). The crew it runs should still be free to stay silent when the message would not fit this conversation.",
+  "icon": "🗓️",
+  "color": "#0ea5e9",
+  "defaultConfig": {
+    "repeat": "weekly",
+    "days": [0, 1, 2, 3, 4],
+    "times": ["09:00"],
+    "timezone": "Asia/Jerusalem"
+  },
+  "limits": {
+    "graceMinutes": 60,
+    "maxTimes": 8
+  },
+  "configReference": [
+    "repeat     \"weekly\" (default) or \"once\".",
+    "days       weekly only. Local days of the week, 0 = Sunday … 6 = Saturday. [0,1,2,3,4] = Sun–Thu, [0,1,2,3,4,5,6] = every day, [1,2,3,4,5] = Mon–Fri.",
+    "times      weekly only. Local times of day, \"HH:MM\" 24h, at most 8, e.g. [\"09:00\", \"17:00\"].",
+    "onceAt     once only. Local date and time, \"YYYY-MM-DDTHH:MM\", e.g. \"2026-12-15T09:00\".",
+    "startDate  weekly only, optional. \"YYYY-MM-DD\", first local day the schedule runs (inclusive).",
+    "endDate    weekly only, optional. \"YYYY-MM-DD\", last local day the schedule runs (inclusive).",
+    "timezone   IANA zone the days and times are read in. Default \"Asia/Jerusalem\". Daylight saving is handled: a time that does not exist on the spring-forward night runs right after the gap; a time that happens twice on the fall-back night runs once, the first time."
+  ],
+  "guide": {
+    "inOneLine": "You want the agent to reach out at set times — on a calendar, not because of anything the customer did.",
+    "goodFor": [
+      "A morning check-in every working day (Sun–Thu at 09:00).",
+      "A reminder twice a day, at 09:00 and 17:00, for the length of a campaign.",
+      "One announcement on a known date — \"once on 15 Dec at 09:00\"."
+    ],
+    "notFor": [
+      "Following up when the customer stopped replying. That is Silence — it counts from their last message.",
+      "Reacting to something the customer just said. That belongs on the crew’s chain as an addon."
+    ],
+    "settings": [
+      {
+        "label": "Repeats",
+        "what": "Weekly, on the days and times you pick — or Once, on one date and time.",
+        "tip": "Two schedules (say, a weekly one plus a one-off announcement) are two triggers."
+      },
+      {
+        "label": "Days",
+        "what": "Which days of the week it runs. Every day, Sun–Thu and Mon–Fri are one click.",
+        "tip": "Days are read in the schedule's timezone, not the customer's."
+      },
+      {
+        "label": "Times",
+        "what": "One or more times of day. Each time is its own send.",
+        "tip": "A time inside quiet hours is skipped that day, not moved — the editor marks it."
+      },
+      {
+        "label": "Dates",
+        "what": "Optional: the first and last day the schedule runs.",
+        "tip": "Leave it off to run until you switch the trigger off."
+      },
+      {
+        "label": "Timezone",
+        "what": "The clock the days and times are read in. Jerusalem by default.",
+        "tip": "Summer and winter time are handled for you."
+      }
+    ],
+    "alsoDoes": [
+      "It reaches every conversation where the customer has spoken at least once — use “Only if…” conditions to narrow that, and the message limit to cap it.",
+      "Each conversation gets at most one try per scheduled time, even if the button is pressed or the clock runs twice.",
+      "If the clock was paused and a time passed more than an hour ago, that time is skipped — nobody gets a late burst of old messages.",
+      "A conversation that started after a scheduled time is not owed that time; it joins from the next one.",
+      "Switching it on never sends for a time that already passed before you switched it on."
+    ],
+    "example": "Sun–Thu at 09:00 with “Only if… plan = trial”: every working morning at 09:00 each trial customer who has ever written to the agent gets one check-in. Someone who starts chatting at 10:00 on Monday gets their first one on Tuesday at 09:00. If the clock was off from 08:00 to 11:00, Monday’s 09:00 is simply skipped."
+  }
+}

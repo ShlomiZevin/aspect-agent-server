@@ -7,5 +7,6 @@
  */
 
 require('./silence/trigger.silence');
+require('./schedule/trigger.schedule');
 
 module.exports = require('./registry');

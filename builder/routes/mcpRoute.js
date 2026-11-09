@@ -68,6 +68,7 @@ const errorCenter = require('../services/errorCenter');
 const { publicBaseOf } = require('./publicBase');
 const modelsService = require('../../services/models.service');
 const environments = require('../environments');
+const mcpTriggers = require('../services/mcpTriggers');
 
 /**
  * The team's shared knowledge repository (task #893) — notes, recipes and
@@ -360,6 +361,9 @@ saved for the others unless the person passes it on.
 | **What the models cost** — every agent's estimated cost over the last N days (default 7, up to 90) | \`${base}/usage?days=7\` |
 | One agent's cost — where it ran (Builder chat / simulations / customers), by day, crew, add-on step and model, and its costliest conversations | \`${base}/agents/<slug>/usage?days=7\` |
 | One conversation's cost, by crew, step and model | \`${base}/conversations/<id>/usage\` |
+| **An agent's triggers** — each one's settings in words, next fire (Schedule), last check, recent events | \`${base}/agents/<slug>/triggers\` |
+| Who a trigger would act on right now, and what blocks the rest — sends nothing | \`${base}/agents/<slug>/triggers/<triggerId>/due\` |
+| Why a trigger did or didn't fire for one conversation at one moment, clause by clause | \`${base}/agents/<slug>/triggers/<triggerId>/explain?conversationId=<id>&at=<ISO time>\` |
 
 Costs are estimates at list price (the model list with prices: \`${origin}/api/models\`);
 cache discounts are not counted, so the real bill can only be lower. They
@@ -376,6 +380,7 @@ The code is the truth. Good places to start:
 |---|---|
 | What shape is an agent or crew body? | \`${base}/code/builder/types/index.ts\` |
 | **What addons exist and how is each configured?** | \`${base}/addons\` — all of them, one page |
+| **Triggers — the agent messaging on its own** (Silence: after a quiet spell; Schedule: at set times). Where they live in the body, every type and its config | \`${base}/triggers\` — one page |
 | What does an addon do at runtime? | \`${base}/code/builder/plugins/\` |
 | What \`{{...}}\` tokens can a prompt use? | \`${base}/code/builder/promptPlaceholders.json\` |
 | How is a prompt assembled and an agent run? | \`${base}/code/builder/runtime/\` |
@@ -462,6 +467,13 @@ parts of a body the Builder expects, and an agent created without them
 opens showing "unsaved changes" before anyone has touched it.
 
 ## Things that are easy to get wrong
+
+- Triggers live ONLY at \`triggers.triggers[]\` in the agent body — never on a
+  crew, never in \`cortex\`. Write new ones with \`enabled: false\`; switching one
+  on (which messages real customers once the clock runs) is the person's call,
+  in the Builder. A Schedule without a Filter reaches every conversation where
+  the customer ever wrote, every slot — say so before adding one. Shapes:
+  \`${base}/triggers\`.
 
 - A field's type is exactly one of \`string\`, \`int\`, \`enum\`,
   \`boolean\`. It is \`int\` — never \`integer\` or \`number\`.
@@ -1067,6 +1079,51 @@ router.get('/addons', (req, res) => {
     '',
     ...files.map(f => alfredTools.readPlatformFile(`builder/addons/${f}`)),
   ].join('\n\n'));
+});
+
+// ─── Triggers (read only) ──────────────────────────────────────────
+//
+// The composed page reads the trigger-type registry, so a new type is
+// described here the moment it is registered. The agent views never
+// write — "due" calls findDue directly rather than the sweep's dry run,
+// which would also stamp the trigger's heartbeat. Readers live in
+// builder/services/mcpTriggers.js (not alfredTools: #950 left Alfred
+// untouched by request; wire them into Alfred when Alfred gets triggers).
+
+router.get('/triggers', (req, res) => {
+  try {
+    sendText(res, mcpTriggers.triggersPage(urls(req)));
+  } catch (err) {
+    console.error('[builder-mcp] triggers page failed:', err);
+    res.status(500).type('text/plain').send(`Could not build the triggers page: ${err.message}`);
+  }
+});
+
+function triggerFail(res, err, what) {
+  if (err.status !== 404 && err.status !== 400) console.error(`[builder-mcp] ${what} failed:`, err);
+  res.status(err.status || 500).type('text/plain').send(err.status ? err.message : `Could not ${what}: ${err.message}`);
+}
+
+router.get('/agents/:slug/triggers', async (req, res) => {
+  try {
+    sendText(res, await mcpTriggers.agentTriggersText(req.params.slug));
+  } catch (err) { triggerFail(res, err, 'read the triggers'); }
+});
+
+router.get('/agents/:slug/triggers/:triggerId/due', async (req, res) => {
+  try {
+    sendText(res, await mcpTriggers.dueText(req.params.slug, req.params.triggerId));
+  } catch (err) { triggerFail(res, err, 'work out who is due'); }
+});
+
+router.get('/agents/:slug/triggers/:triggerId/explain', async (req, res) => {
+  const { conversationId, at } = req.query;
+  if (!conversationId) {
+    return res.status(400).type('text/plain').send('Add ?conversationId=<id> (and optionally &at=<ISO time>, default now).');
+  }
+  try {
+    sendText(res, await mcpTriggers.explainText(req.params.slug, req.params.triggerId, Number(conversationId), at));
+  } catch (err) { triggerFail(res, err, 'explain the trigger'); }
 });
 
 // ─── Writing ───────────────────────────────────────────────────────

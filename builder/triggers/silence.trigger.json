@@ -21,6 +21,10 @@
     "minAfterMinutes": 1,
     "maxAttempts": 20
   },
+  "configReference": [
+    "after        { \"value\": 30, \"unit\": \"minutes\" | \"hours\" | \"days\" } — how long the CUSTOMER must have been quiet (counted from their last message, not ours). Also the gap between attempts.",
+    "maxAttempts  1–20. Attempts per silence, counted whether or not the crew spoke; resets when the customer replies. No unlimited."
+  ],
   "guide": {
     "inOneLine": "The customer stopped replying, and you want the agent to follow up.",
     "goodFor": [

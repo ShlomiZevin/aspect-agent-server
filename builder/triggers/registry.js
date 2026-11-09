@@ -40,6 +40,26 @@
  * from the first — which is the whole reason the contract is shaped
  * this way rather than "each type exposes a query".
  *
+ * ── Optional methods (a type with no use for them leaves them out) ──
+ *
+ *   claimSince({ trigger, config, now }) → Date | null
+ *     For types whose rule is "at most once per X" (Schedule: once per
+ *     slot). The dispatcher's sweep opens the event row only if this
+ *     trigger has no event on the conversation at or after this instant,
+ *     inside an advisory-locked transaction — so two sweeps racing (two
+ *     Cloud Run copies, the clock plus Run now) cannot both act. Returns
+ *     null when nothing is claimable right now.
+ *
+ *   nextFire({ trigger, config, now }) → Date | null
+ *     For types that fire on the CALENDAR rather than per conversation:
+ *     the next moment the trigger will act. Feeds the card's "next:"
+ *     line and the MCP. Silence has none — its next fire differs per
+ *     conversation.
+ *
+ *   describeZero({ blocked, trigger, config, now }) → string | null
+ *     The status-line sentence when a sweep acts on nobody, in this
+ *     type's words. Absent → the dispatcher's own (Silence's) wording.
+ *
  * ── Facts ──────────────────────────────────────────────────────────
  *
  * The evaluator (not the type) fetches these, so a type never touches
@@ -51,7 +71,13 @@
  *   lastEventAt                     Date | null   this trigger's last attempt here
  *   attemptsSinceLastUserMessage    number        this trigger's attempts since
  *                                                 the customer last spoke
- *   createdAt                       Date          conversation start
+ *   createdAt                       Date          conversation start (a real
+ *                                                 instant — the naive column is
+ *                                                 read AT TIME ZONE 'UTC')
+ *   deliveredAt                     Date[]        this trigger's delivered
+ *                                                 messages here, last 90 days
+ *   surface                         string|null   metadata.kind: 'live' |
+ *                                                 'builder-preview' | 'simulation'
  */
 
 const registry = new Map();

@@ -2014,3 +2014,38 @@ a **Web search** switch on the add-ons that call a model, Talker and Thinker.
   where the author writes it — NOT injected automatically when web search is
   on (Shlomi's call). Registered in `promptPlaceholders.json` (→ MCP), the
   `/` picker ("Date & time"), the prompt guide, and the MCP's Web search entry.
+
+### 56. Schedule — a second trigger type: at set times (task #950)
+
+A trigger that fires on the calendar: every Sun–Thu at 09:00, at 09:00
+and 17:00, or once on 15 Dec at 09:00. Full design, clauses and
+decisions: `BUILDER_V2_TRIGGERS.md`, "Trigger type #2 — Schedule".
+
+- **Body:** `agent.triggers.triggers[]` with `typeId: 'schedule'` and
+  `config: ScheduleTriggerConfig` — `{ repeat: 'weekly'|'once', days
+  (0 = Sun), times ['HH:MM'], onceAt 'YYYY-MM-DDTHH:MM', startDate?,
+  endDate?, timezone (default Asia/Jerusalem) }`. The envelope (quiet
+  hours, message limit, Filter, crew + brief) is unchanged.
+- **Audience:** every conversation where the customer has written at
+  least once, simulations excluded, narrowed by the Filter.
+- **Rules:** one attempt per conversation per slot (event log + an
+  advisory-locked claim in `triggerEventsStore.openOnce`); a slot more
+  than 60 minutes old is skipped, never sent late; a conversation created
+  after a slot is not owed it; switching on never sends a past slot; a
+  slot inside quiet hours is skipped; DST handled (spring gap → right
+  after it, autumn double hour → the first).
+- **Registry contract** gained three OPTIONAL methods — `claimSince`,
+  `nextFire`, `describeZero` — Silence uses none of them. The evaluator's
+  facts gained `surface` and now read `createdAt` as UTC.
+- **New endpoint:** `POST /api/agents/:slug/triggers/next-fires` (working
+  copies in; the card's "next: tomorrow 09:00" out, quiet hours applied).
+- **UI:** the Schedule form in the trigger editor (Weekly/Once, day pills
+  with quick picks, time chips, optional date range, timezone, Result
+  line), a "next:" line on the chip, type + settings + next on Admin →
+  Triggers. Design: `lybi-website/art-source/ui/schedule-trigger/` (3A).
+- **MCP:** `/builder/mcp/triggers` (every type and its config, from the
+  registry) and read-only `/agents/<slug>/triggers`, `…/<id>/due`,
+  `…/<id>/explain`.
+- **No migration.** Alfred files untouched; the patch generator's
+  trigger catalogue picks the new JSON up by itself.
+- **Tests:** `node scripts/test-triggers.js` — 95/95 offline.

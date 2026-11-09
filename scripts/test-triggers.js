@@ -1,5 +1,5 @@
 /**
- * test-triggers.js — the Silence rule's arithmetic, checked offline.
+ * test-triggers.js — the trigger rules' arithmetic (Silence, Schedule), checked offline.
  *
  * Pure functions against synthetic facts. No database, no LLM, nothing
  * to clean up, instant. This is where the rules actually live, so this
@@ -175,8 +175,236 @@ function partA() {
     failing.clauses.map(c => `${c.ok ? '✓' : '✗'} ${c.name}`).join(' · '));
 }
 
+// ────────────────────────────────────────────────────────────────────
+// PART B — the Schedule type (#950): slots, grace, once-per-slot, DST
+// ────────────────────────────────────────────────────────────────────
+//
+// Times below are UTC instants; the comments give Jerusalem wall time.
+// Israel is UTC+2 in winter, UTC+3 in summer. 2026-11-09 is a Monday.
+async function partB() {
+  console.log('\nPART B — Schedule (offline)\n');
+  const slots = require('../builder/triggers/schedule/scheduleSlots');
+  const T = (iso) => new Date(iso);
+
+  function strig(config, overrides = {}) {
+    return {
+      id: 'trg_sched', typeId: 'schedule', enabled: true,
+      activeSince: '2026-01-01T00:00:00Z',
+      config: { repeat: 'weekly', days: [0, 1, 2, 3, 4], times: ['09:00'], timezone: 'Asia/Jerusalem', ...config },
+      run: { crewId: CREW_ID },
+      ...overrides,
+    };
+  }
+  function sfacts(overrides = {}) {
+    return {
+      conversationId: 7,
+      lastUserMessageAt: T('2026-11-01T10:00:00Z'),
+      lastMessageAt: T('2026-11-01T10:00:00Z'),
+      lastEventAt: null,
+      attemptsSinceLastUserMessage: 0,
+      createdAt: T('2026-11-01T09:00:00Z'),
+      deliveredAt: [],
+      surface: 'live',
+      ...overrides,
+    };
+  }
+  const ev = (t, f, now) => schedule.evaluate({ facts: f, trigger: t, config: t.config, now });
+  const evAll = (t, f, now) => triggerEvaluator.evaluateAll({ type: { evaluate: schedule.evaluate }, facts: f, trigger: t, now });
+  const cl = (r, name) => (r.clauses.find(c => c.name === name) || { ok: null, why: '(absent)' });
+  const nextOf = (t, now) => { const n = schedule.nextFire({ trigger: t, config: t.config, now }); return n ? n.toISOString() : null; };
+
+  console.log('[B1] days and times');
+  const sunThu = strig({});
+  const monAt0910 = T('2026-11-09T07:10:00Z');                    // Mon 09:10
+  check('Sun–Thu 09:00: due on Monday at 09:10', ev(sunThu, sfacts(), monAt0910).ok, ev(sunThu, sfacts(), monAt0910).reason);
+  check('the reason names the slot in local time', ev(sunThu, sfacts(), monAt0910).reason === 'scheduled for Mon 9 Nov 09:00', ev(sunThu, sfacts(), monAt0910).reason);
+  check('not due at 08:59 (the slot has not come)', !ev(sunThu, sfacts(), T('2026-11-09T06:59:00Z')).ok,
+    cl(ev(sunThu, sfacts(), T('2026-11-09T06:59:00Z')), 'slot due').why);
+  check('not due on Friday (Fri is not picked)', !ev(sunThu, sfacts(), T('2026-11-13T07:10:00Z')).ok,
+    cl(ev(sunThu, sfacts(), T('2026-11-13T07:10:00Z')), 'slot due').why);
+  check('next fire from Mon 09:10 is Tue 09:00', nextOf(sunThu, monAt0910) === '2026-11-10T07:00:00.000Z', nextOf(sunThu, monAt0910));
+  check('next fire from Thu 10:00 jumps the weekend to Sun 09:00',
+    nextOf(sunThu, T('2026-11-12T08:00:00Z')) === '2026-11-15T07:00:00.000Z', nextOf(sunThu, T('2026-11-12T08:00:00Z')));
+
+  console.log('\n[B2] several times a day');
+  const twice = strig({ times: ['17:00', '09:00'] });
+  check('17:00 slot due at 17:05', ev(twice, sfacts(), T('2026-11-09T15:05:00Z')).reason === 'scheduled for Mon 9 Nov 17:00',
+    ev(twice, sfacts(), T('2026-11-09T15:05:00Z')).reason);
+  check('an attempt at 09:01 does not block the 17:00 slot',
+    ev(twice, sfacts({ lastEventAt: T('2026-11-09T07:01:00Z') }), T('2026-11-09T15:05:00Z')).ok);
+  check('at 12:00 the 09:00 slot is 3 hours old — skipped, not sent late',
+    !ev(twice, sfacts(), T('2026-11-09T10:00:00Z')).ok, cl(ev(twice, sfacts(), T('2026-11-09T10:00:00Z')), 'slot due').why);
+  check('next fire from 12:00 is 17:00 the same day', nextOf(twice, T('2026-11-09T10:00:00Z')) === '2026-11-09T15:00:00.000Z');
+
+  console.log('\n[B3] once');
+  const once = strig({ repeat: 'once', onceAt: '2026-12-15T09:00' });
+  check('once: not due before the date', !ev(once, sfacts(), T('2026-12-14T07:10:00Z')).ok,
+    cl(ev(once, sfacts(), T('2026-12-14T07:10:00Z')), 'slot due').why);
+  check('once: due at 09:20 on the day', ev(once, sfacts(), T('2026-12-15T07:20:00Z')).ok, ev(once, sfacts(), T('2026-12-15T07:20:00Z')).reason);
+  check('once: not due at 11:00 (past the window)', !ev(once, sfacts(), T('2026-12-15T09:00:00Z')).ok);
+  check('once: next fire before = the date; after = none',
+    nextOf(once, T('2026-12-01T00:00:00Z')) === '2026-12-15T07:00:00.000Z' && nextOf(once, T('2026-12-15T07:01:00Z')) === null);
+  check('once: days and times are ignored', ev(strig({ repeat: 'once', onceAt: '2026-12-15T09:00', days: [], times: [] }), sfacts(), T('2026-12-15T07:20:00Z')).ok);
+
+  console.log('\n[B4] start / end dates');
+  const ranged = strig({ startDate: '2026-11-10', endDate: '2026-11-12' });
+  check('before the start date: not due', !ev(ranged, sfacts(), monAt0910).ok);
+  check('before the start date: next fire is the start day', nextOf(ranged, monAt0910) === '2026-11-10T07:00:00.000Z', nextOf(ranged, monAt0910));
+  check('inside the range: due', ev(ranged, sfacts(), T('2026-11-11T07:10:00Z')).ok);
+  check('the end date itself is inclusive', ev(ranged, sfacts(), T('2026-11-12T07:10:00Z')).ok);
+  check('after the end date: never again', !ev(ranged, sfacts(), T('2026-11-15T07:10:00Z')).ok && nextOf(ranged, T('2026-11-12T08:00:00Z')) === null,
+    cl(ev(ranged, sfacts(), T('2026-11-15T07:10:00Z')), 'slot due').why);
+  check('next fire from far before a future start jumps to it',
+    nextOf(strig({ startDate: '2027-02-01' }), monAt0910) === '2027-02-01T07:00:00.000Z', nextOf(strig({ startDate: '2027-02-01' }), monAt0910));
+
+  console.log('\n[B5] the grace window — no catch-up bursts');
+  check(`grace is ${schedule.GRACE_MINUTES} minutes`, schedule.GRACE_MINUTES === 60);
+  check('59 minutes late: still sent', ev(sunThu, sfacts(), T('2026-11-09T07:59:00Z')).ok);
+  check('61 minutes late: skipped', !ev(sunThu, sfacts(), T('2026-11-09T08:01:00Z')).ok,
+    cl(ev(sunThu, sfacts(), T('2026-11-09T08:01:00Z')), 'slot due').why);
+  const paused = schedule.candidateSql({ trigger: sunThu, config: sunThu.config, now: T('2026-11-09T09:00:00Z') });
+  check('clock paused 08:00–11:00 → at 11:00 the query matches nobody (no backlog)', paused.where === 'FALSE');
+  const days3 = schedule.candidateSql({ trigger: twice, config: twice.config, now: T('2026-11-12T07:30:00Z') });
+  check('paused for days → only the current slot is live, the missed ones are gone',
+    days3.where !== 'FALSE' && days3.params.SLOT_AT.toISOString() === '2026-11-12T07:00:00.000Z', days3.params.SLOT_AT && days3.params.SLOT_AT.toISOString());
+
+  console.log('\n[B6] never twice for the same slot');
+  const after = sfacts({ lastEventAt: T('2026-11-09T07:01:00Z') });   // attempt at 09:01
+  check('an event after the slot blocks a second try', !ev(sunThu, after, monAt0910).ok, cl(ev(sunThu, after, monAt0910), 'once per slot').why);
+  check('a silent / filtered / held attempt counts the same (any event)', !ev(sunThu, sfacts({ lastEventAt: T('2026-11-09T07:00:00Z') }), monAt0910).ok,
+    'an event exactly at the slot instant');
+  check('yesterday\'s event does not block today\'s slot', ev(sunThu, sfacts({ lastEventAt: T('2026-11-08T07:01:00Z') }), monAt0910).ok);
+  const claim = schedule.claimSince({ trigger: sunThu, config: sunThu.config, now: monAt0910 });
+  check('the sweep claims exactly the slot instant', claim && claim.toISOString() === '2026-11-09T07:00:00.000Z', claim && claim.toISOString());
+  check('nothing claimable outside a slot', schedule.claimSince({ trigger: sunThu, config: sunThu.config, now: T('2026-11-09T10:00:00Z') }) === null);
+  const sql = schedule.candidateSql({ trigger: sunThu, config: sunThu.config, now: monAt0910 });
+  check('the query drops conversations already handled (NOT EXISTS on the event log)',
+    /NOT EXISTS/.test(sql.where) && /e\.matched_at >= \$SLOT_AT/.test(sql.where) && sql.params.TRIGGER_ID === 'trg_sched');
+
+  // The race guard: check-then-insert under an advisory lock. A fake pg
+  // client stands in for Postgres (offline), proving the control flow:
+  // the second claim of the same slot backs off and inserts nothing.
+  {
+    const db = require('../services/db.pg');
+    const store = require('../builder/runtime/triggerEventsStore');
+    const rows = [];
+    const realGetClient = db.getClient;
+    db.getClient = async () => ({
+      async query(sqlText, params = []) {
+        if (/^SELECT 1 FROM trigger_events/.test(sqlText.trim())) {
+          const hit = rows.some(r => r.trigger === params[0] && r.conv === params[1] && r.at >= params[2].getTime());
+          return { rowCount: hit ? 1 : 0, rows: [] };
+        }
+        if (/^INSERT INTO trigger_events/.test(sqlText.trim())) { rows.push({ trigger: params[2], conv: params[4], at: params[5].getTime() }); return { rowCount: 1 }; }
+        return { rowCount: 0, rows: [] };
+      },
+      release() {},
+    });
+    try {
+      const args = { agentId: 'a', triggerId: 'trg_sched', triggerType: 'schedule', conversationId: 7, matchReason: 'x', since: new Date(Date.now() - 60 * 1000) };
+      const first = await store.openOnce(args);
+      const second = await store.openOnce(args);
+      check('openOnce: first claim opens an event, the second backs off', !!first && second === null && rows.length === 1,
+        `${first ? 'opened' : 'none'} / ${second === null ? 'backed off' : 'opened again'}`);
+    } finally {
+      db.getClient = realGetClient;
+    }
+  }
+
+  console.log('\n[B7] a conversation created after the slot is not owed it');
+  const late = sfacts({ createdAt: T('2026-11-09T07:20:00Z') });     // born 09:20
+  check('born 09:20 → not owed the 09:00 slot (asked at 09:30)', !ev(sunThu, late, T('2026-11-09T07:30:00Z')).ok,
+    cl(ev(sunThu, late, T('2026-11-09T07:30:00Z')), 'existed at the slot').why);
+  check('…but owed the next one', ev(sunThu, late, T('2026-11-10T07:05:00Z')).ok);
+  check('the query applies the same rule (created_at read as UTC)', /c\.created_at AT TIME ZONE 'UTC'\) <= \$SLOT_AT/.test(sql.where));
+
+  console.log('\n[B8] switch-on, audience');
+  const freshlyOn = strig({}, { activeSince: '2026-11-09T07:30:00Z' });  // switched on 09:30
+  check('switched on at 09:30 → the 09:00 slot is not sent', !ev(freshlyOn, sfacts(), T('2026-11-09T07:40:00Z')).ok,
+    cl(ev(freshlyOn, sfacts(), T('2026-11-09T07:40:00Z')), 'after switch-on').why);
+  check('…and the query says so with FALSE', schedule.candidateSql({ trigger: freshlyOn, config: freshlyOn.config, now: T('2026-11-09T07:40:00Z') }).where === 'FALSE');
+  check('a customer who never wrote is not reached', !ev(sunThu, sfacts({ lastUserMessageAt: null }), monAt0910).ok);
+  check('a simulation is not reached', !ev(sunThu, sfacts({ surface: 'simulation' }), monAt0910).ok);
+  check('a builder-preview chat is reached', ev(sunThu, sfacts({ surface: 'builder-preview' }), monAt0910).ok);
+
+  console.log('\n[B9] midnight — the day is the LOCAL day');
+  const tueMidnight = strig({ days: [2], times: ['00:00'] });
+  // 2026-11-09T22:10Z is Tue 00:10 in Jerusalem but still Monday in UTC.
+  check('Tue 00:00 slot due at Tue 00:10 local (Mon 22:10 UTC)', ev(tueMidnight, sfacts(), T('2026-11-09T22:10:00Z')).ok,
+    ev(tueMidnight, sfacts(), T('2026-11-09T22:10:00Z')).reason);
+  check('a Monday-only 00:00 is not due then', !ev(strig({ days: [1], times: ['00:00'] }), sfacts(), T('2026-11-09T22:10:00Z')).ok);
+  const late2359 = strig({ days: [1], times: ['23:59'] });
+  check('Mon 23:59 still due at Tue 00:30 (inside the window, across midnight)', ev(late2359, sfacts(), T('2026-11-09T22:30:00Z')).ok,
+    ev(late2359, sfacts(), T('2026-11-09T22:30:00Z')).reason);
+
+  console.log('\n[B10] daylight saving in Asia/Jerusalem');
+  const every = (times) => strig({ days: [0, 1, 2, 3, 4, 5, 6], times });
+  // Spring forward: Fri 26 Mar 2027, 02:00 → 03:00.
+  check('spring: 09:00 before the change is 07:00 UTC', nextOf(every(['09:00']), T('2027-03-25T00:00:00Z')) === '2027-03-25T07:00:00.000Z');
+  check('spring: 09:00 after the change is 06:00 UTC', nextOf(every(['09:00']), T('2027-03-25T08:00:00Z')) === '2027-03-26T06:00:00.000Z');
+  check('spring: 02:30 (does not exist) runs right after the gap, 03:30 local',
+    nextOf(every(['02:30']), T('2027-03-25T12:00:00Z')) === '2027-03-26T00:30:00.000Z', nextOf(every(['02:30']), T('2027-03-25T12:00:00Z')));
+  check('spring: that run is due and labelled with the authored time',
+    ev(every(['02:30']), sfacts(), T('2027-03-26T00:40:00Z')).reason === 'scheduled for Fri 26 Mar 02:30');
+  // Fall back: Sun 31 Oct 2027, 02:00 → 01:00 (01:00–02:00 happens twice).
+  const fall = every(['01:30']);
+  check('autumn: 01:30 (happens twice) is the FIRST one, 22:30 UTC',
+    nextOf(fall, T('2027-10-30T12:00:00Z')) === '2027-10-30T22:30:00.000Z', nextOf(fall, T('2027-10-30T12:00:00Z')));
+  check('autumn: the second 01:30 is not a new slot — next is Monday',
+    nextOf(fall, T('2027-10-30T22:31:00Z')) === '2027-10-31T23:30:00.000Z', nextOf(fall, T('2027-10-30T22:31:00Z')));
+  check('autumn: tried at the first 01:30 → nothing at the second 01:30',
+    !ev(fall, sfacts({ lastEventAt: T('2027-10-30T22:31:00Z') }), T('2027-10-30T23:35:00Z')).ok,
+    cl(ev(fall, sfacts({ lastEventAt: T('2027-10-30T22:31:00Z') }), T('2027-10-30T23:35:00Z')), 'once per slot').why);
+  check('autumn: 09:00 after the change is 07:00 UTC', nextOf(every(['09:00']), T('2027-10-31T00:30:00Z')) === '2027-10-31T07:00:00.000Z');
+
+  console.log('\n[B11] quiet hours and the message limit');
+  const qh = { from: '22:00', to: '08:00', timezone: 'Asia/Jerusalem' };
+  const early = strig({ times: ['07:30', '09:00'] }, { quietHours: qh });
+  check('the card\'s next fire steps over a time inside quiet hours',
+    (() => { const n = triggerEvaluator.nextFireOf(early, T('2026-11-09T04:00:00Z')); return n.at.toISOString() === '2026-11-09T07:00:00.000Z' && n.skippedForQuietHours === 1; })(),
+    JSON.stringify(triggerEvaluator.nextFireOf(early, T('2026-11-09T04:00:00Z'))));
+  check('the 07:30 slot matches the clauses (the dispatcher then holds it for quiet hours)',
+    ev(early, sfacts(), T('2026-11-09T05:31:00Z')).ok && triggerEvaluator.checkQuietHours(qh, T('2026-11-09T05:31:00Z')).suppressed);
+  check('held at 07:31 → at 08:05 (quiet hours over, still in the window) it is NOT sent late',
+    !ev(early, sfacts({ lastEventAt: T('2026-11-09T05:31:00Z') }), T('2026-11-09T06:05:00Z')).ok,
+    cl(ev(early, sfacts({ lastEventAt: T('2026-11-09T05:31:00Z') }), T('2026-11-09T06:05:00Z')), 'once per slot').why);
+  check('every time inside quiet hours → no next fire', triggerEvaluator.nextFireOf(strig({ times: ['23:00'] }, { quietHours: qh }), monAt0910).at === null);
+  const capped = strig({}, { limits: { perConversation: { max: 1, days: 7 } } });
+  check('message limit reached → blocked by the envelope clause',
+    !evAll(capped, sfacts({ deliveredAt: [T('2026-11-08T07:02:00Z')] }), monAt0910).ok,
+    cl(evAll(capped, sfacts({ deliveredAt: [T('2026-11-08T07:02:00Z')] }), monAt0910), 'message cap').why);
+  check('message limit not reached → the slot fires', evAll(capped, sfacts({ deliveredAt: [T('2026-11-01T07:02:00Z')] }), monAt0910).ok);
+
+  console.log('\n[B12] a hand-edited body never matches by accident');
+  for (const [label, cfg] of [
+    ['no days',           { days: [] }],
+    ['no times',          { times: [] }],
+    ['garbage times only',{ times: ['25:00', 'nine', '9'] }],
+    ['unknown timezone',  { timezone: 'Nowhere/Void' }],
+    ['end before start',  { startDate: '2026-12-01', endDate: '2026-11-01' }],
+    ['once with no date', { repeat: 'once' }],
+  ]) {
+    const r = ev(strig(cfg), sfacts(), monAt0910);
+    check(`${label} → fires for nobody, and says why`, !r.ok && r.clauses[0].name === 'schedule set', r.clauses[0].why);
+  }
+  check('a missing timezone means Asia/Jerusalem', ev(strig({ timezone: undefined }), sfacts(), monAt0910).ok);
+  check('times are tidied: "9:00" works, duplicates collapse',
+    slots.normalizeSchedule({ days: [1], times: ['9:00', '09:00', '17:00'] }).times.join(',') === '09:00,17:00');
+
+  console.log('\n[B13] the status line speaks Schedule');
+  check('nothing due → "no slot due · next: …"',
+    /^no slot due · next: Tue 10 Nov 09:00$/.test(schedule.describeZero({ blocked: {}, trigger: sunThu, config: sunThu.config, now: T('2026-11-09T10:00:00Z') })),
+    schedule.describeZero({ blocked: {}, trigger: sunThu, config: sunThu.config, now: T('2026-11-09T10:00:00Z') }));
+  check('everyone handled → says so', /already had this slot/.test(schedule.describeZero({ blocked: {}, trigger: sunThu, config: sunThu.config, now: monAt0910 })));
+  check('every clause reports, pass or fail (6 clauses)', ev(sunThu, sfacts(), monAt0910).clauses.length === 6,
+    ev(sunThu, sfacts(), monAt0910).clauses.map(c => `${c.ok ? '✓' : '✗'} ${c.name}`).join(' · '));
+}
+
+const schedule = require('../builder/triggers/schedule/trigger.schedule');
+
 async function main() {
   partA();
+  await partB();
 
   const outDir = path.join(__dirname, '..', 'verification', 'triggers');
   fs.mkdirSync(outDir, { recursive: true });

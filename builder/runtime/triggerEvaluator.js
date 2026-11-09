@@ -91,7 +91,11 @@ function factColumns() {
     c.id                    AS conversation_id,
     c.last_user_message_at  AS last_user_message_at,
     c.last_message_at       AS last_message_at,
-    c.created_at            AS created_at,
+    -- A NAIVE column holding UTC wall-clock (decision 16): read as UTC,
+    -- or node-postgres takes it as the process's local time and a
+    -- "created after the 09:00 slot" check is off by hours.
+    (c.created_at AT TIME ZONE 'UTC') AS created_at,
+    c.metadata->>'kind'     AS surface,
     (SELECT MAX(e.matched_at) FROM trigger_events e
       WHERE e.conversation_id = c.id AND e.trigger_id = $2) AS last_event_at,
     (SELECT COUNT(*)::int FROM trigger_events e
@@ -122,6 +126,7 @@ function rowToFacts(row) {
     lastEventAt:                  row.last_event_at,
     attemptsSinceLastUserMessage: Number(row.attempts_since_last_user_message) || 0,
     deliveredAt:                  Array.isArray(row.delivered_at) ? row.delivered_at : [],
+    surface:                      row.surface || null,
   };
 }
 
@@ -299,7 +304,8 @@ async function explainAt({ trigger, conversationId, at }) {
     `
     SELECT
       c.id AS conversation_id,
-      c.created_at AS created_at,
+      (c.created_at AT TIME ZONE 'UTC') AS created_at,
+      c.metadata->>'kind' AS surface,
       -- messages.created_at is a NAIVE timestamp (UTC wall-clock)
       -- while $3 arrives as a real instant. Comparing them directly
       -- is off by the Node process's UTC offset — silently, and in a
@@ -402,10 +408,39 @@ function checkQuietHours(quietHours, now = new Date()) {
   };
 }
 
+/**
+ * When this trigger will next act, for types that fire on the calendar
+ * (`type.nextFire`). Null for types without one (Silence: its next fire
+ * differs per conversation) and for a schedule with nothing left.
+ *
+ * Quiet hours are applied here so the card never promises a send that
+ * will be skipped: a slot inside the window is stepped over and counted
+ * in `skippedForQuietHours`, so the card can say so.
+ *
+ * @returns {{ at: Date|null, skippedForQuietHours: number } | null}
+ */
+function nextFireOf(trigger, now = new Date()) {
+  const type = triggerRegistry.getTriggerType(trigger?.typeId);
+  if (!type || typeof type.nextFire !== 'function') return null;
+  let from = now;
+  let skipped = 0;
+  for (let i = 0; i < 60; i++) {
+    const at = type.nextFire({ trigger, config: trigger.config || {}, now: from });
+    if (!at) return { at: null, skippedForQuietHours: skipped };
+    if (!checkQuietHours(trigger.quietHours, at).suppressed) return { at, skippedForQuietHours: skipped };
+    skipped += 1;
+    from = new Date(at.getTime() + 1);
+  }
+  // Sixty slots in a row inside quiet hours: every time is in the window.
+  return { at: null, skippedForQuietHours: skipped };
+}
+
 module.exports = {
+  nextFireOf,
   findDue,
   checkOne,
   explainAt,
   checkQuietHours,
+  evaluateAll,
   SCOPE_SQL,
 };

@@ -55,6 +55,8 @@ people type and paste this URL.
 | `GET /agents/:slug/errors` `?status&source&kind&area&sort` · `GET /agents/:slug/errors/:fingerprint` | **The error center, read only** (task #903) — one line per problem with its count; one problem's occurrences with conversation + technical details (text) | `builder/services/errorCenter.js` → `listGroups` / `listOccurrences` |
 | `POST /simulate/user-reply` `{ persona, goal?, conversationId \| transcript, model? }` | "What would this persona say next" → `{ text, done, model }`. Stateless; default model is `EVERYDAY_MODEL` | `mcpConversations.userReply` |
 | `GET /addons` | **Every addon descriptor, in one page** | reads `builder/addons/*.addon.json` |
+| `GET /triggers` | **Triggers, in one page** (task #950) — where they live in the body, the envelope, every trigger type with its `purpose`, `configReference` and defaults | `builder/services/mcpTriggers.js` → `triggersPage`, reading the trigger-type registry (`builder/triggers/*.trigger.json`) |
+| `GET /agents/:slug/triggers` · `GET /agents/:slug/triggers/:id/due` · `GET /agents/:slug/triggers/:id/explain?conversationId&at` | One agent's triggers (settings in words, next fire, heartbeat, recent events); who a trigger would act on now (calls `findDue` directly — never the dry-run sweep, which writes the heartbeat); why it did / didn't fire for one conversation at one moment. All read only | `mcpTriggers.agentTriggersText` / `dueText` / `explainText`. Not in `alfredTools` — #950 left Alfred untouched by request; move them there when Alfred learns triggers |
 | `GET /code/<path>` | Any allowlisted source file; directories list | `alfredTools.readPlatformFile` |
 | `POST /agents` | Create an agent (name is enough) | `builderProjects.createProject` |
 | `POST /agents/:slug` | Save an edited agent body | `saveAgentVersionAs` + `setAgentActive` |
@@ -184,6 +186,7 @@ its own. **Restart the server** after any of these.
 | You changed… | Reaches the door via… |
 |---|---|
 | Added / edited an addon (`builder/addons/*.addon.json`) | `/addons` and `/code/builder/addons/` — both read the directory |
+| Added a trigger type (`builder/triggers/*.trigger.json` + its registered server half) | `/triggers` — reads the registry. Give the descriptor a `configReference` (one line per config key) and a `purpose`; the page prints both. If the type has a one-line summary, add it to `summarize()` in `mcpTriggers.js` |
 | Plugin, runtime, trigger code | `/code/builder/...` |
 | `builder/types/index.ts` | `/code/builder/types/index.ts` — the entry page tells the assistant to read it for shapes |
 | `builder/promptPlaceholders.json` | `/code/builder/promptPlaceholders.json` |

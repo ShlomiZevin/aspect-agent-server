@@ -52,6 +52,38 @@ router.get('/:slug/triggers/types', (_req, res) => {
 });
 
 /**
+ * POST /api/agents/:slug/triggers/next-fires
+ *   Body: { triggers? }  — the working copies; saved definitions if absent
+ *
+ *   When each calendar-driven trigger (Schedule) will next act — the
+ *   card's "next: tomorrow 09:00". Computed HERE, by the same slot code
+ *   the clock uses, rather than re-implemented in the browser: two
+ *   implementations of "which instant is Sunday 09:00 in Jerusalem"
+ *   would drift exactly the way the decisions journal warns about.
+ *   Pure arithmetic — reads no conversation, writes nothing. Types with
+ *   no calendar (Silence) are simply absent from the answer.
+ */
+router.post('/:slug/triggers/next-fires', async (req, res) => {
+  try {
+    let list = Array.isArray(req.body?.triggers) ? req.body.triggers : null;
+    if (!list) {
+      const agent = await resolveAgentBody({ agentSlug: req.params.slug, mode: 'viewing' });
+      list = Array.isArray(agent.body?.triggers?.triggers) ? agent.body.triggers.triggers : [];
+    }
+    const now = new Date();
+    const next = {};
+    for (const t of list) {
+      if (!t || !t.id) continue;
+      const n = triggerEvaluator.nextFireOf(t, now);
+      if (n) next[t.id] = { at: n.at ? n.at.toISOString() : null, skippedForQuietHours: n.skippedForQuietHours };
+    }
+    res.json({ now: now.toISOString(), next });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/agents/:slug/triggers/status
  *   One status row per trigger — what each card's heartbeat line shows.
  *   Absent = never evaluated (a brand-new trigger, or the clock has

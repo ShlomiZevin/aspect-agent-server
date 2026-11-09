@@ -43,6 +43,7 @@ const db = require('../../services/db.pg');
 const builderMemory = require('./builderMemory');
 const triggerEvaluator = require('./triggerEvaluator');
 const triggerEventsStore = require('./triggerEventsStore');
+const triggerRegistry = require('../triggers');
 const { evaluateConditions } = require('./conditionMatcher');
 const { runProactive } = require('./BuilderRunner');
 const { resolveAgentBody } = require('../services/builderProjects');
@@ -68,8 +69,18 @@ const MAX_FIRES_PER_SWEEP = 25;
  * Clause names come from the trigger type, so this stays honest for
  * types that don't exist yet.
  */
-function describeZero(matched, blocked) {
+function describeZero(matched, blocked, typeCtx = null) {
   if (matched > 0) return `${matched} matched`;
+  // A type that speaks its own language says it (Schedule: "no slot due
+  // · next: Sun 10 Nov 09:00"). The wording below is Silence's.
+  if (typeCtx && typeCtx.type && typeof typeCtx.type.describeZero === 'function') {
+    try {
+      const own = typeCtx.type.describeZero({
+        blocked, trigger: typeCtx.trigger, config: typeCtx.trigger.config || {}, now: typeCtx.now,
+      });
+      if (own) return own;
+    } catch { /* fall back to the generic wording */ }
+  }
   const entries = Object.entries(blocked || {}).sort((a, b) => b[1] - a[1]);
   if (entries.length === 0) return 'nobody was quiet enough';
   const [name, n] = entries[0];
@@ -166,11 +177,20 @@ async function fireOne({
   // describe something nobody can reproduce. A human pressing a button
   // is the opposite case: what they are looking at IS the question.
   overrideAgentBody = null, overrideCrewBody = null,
+  /**
+   * From a type's `claimSince` (Schedule: the current slot's instant).
+   * When set, the event is opened ONLY if this trigger has no event on
+   * the conversation at or after it — checked and inserted under an
+   * advisory lock, so two sweeps racing cannot both act on one slot.
+   * Only the sweep passes it: a person pressing Run it now on one chat
+   * means "pretend it is due", and the row it writes still uses the slot.
+   */
+  claimSince = null,
 }) {
   const startedAt = new Date();
   let eventId = null;
   try {
-    eventId = await triggerEventsStore.open({
+    const openArgs = {
       agentId,
       triggerId:      trigger.id,
       triggerType:    trigger.typeId,
@@ -178,7 +198,18 @@ async function fireOne({
       matchReason,
       source,
       launchedCrewId: trigger.run?.crewId || null,
-    });
+    };
+    if (claimSince) {
+      eventId = await triggerEventsStore.openOnce({ ...openArgs, since: claimSince });
+      if (!eventId) {
+        // Another sweep got here first. Not an error and not an event:
+        // the conversation already has its row for this slot.
+        console.log(`[triggers]     #${conversationId} -> already handled for this slot by another sweep`);
+        return { outcome: 'already_handled', why: 'another sweep already acted on this slot' };
+      }
+    } else {
+      eventId = await triggerEventsStore.open(openArgs);
+    }
 
     // ── Gate 2: quiet hours ──
     const quiet = triggerEvaluator.checkQuietHours(trigger.quietHours, now);
@@ -265,6 +296,8 @@ async function fireOne({
  * @param {boolean} [args.dryRun]   evaluate and report; launch nothing
  */
 async function sweepTrigger({ agentSlug, agentId, trigger, now = new Date(), dryRun = false, conversationKinds = null }) {
+  const type = triggerRegistry.getTriggerType(trigger.typeId);
+  const typeCtx = { type, trigger, now };
   const legacyAgentId = await resolveLegacyAgentId(agentSlug);
   if (!legacyAgentId) {
     return { triggerId: trigger.id, matched: 0, fired: [], note: 'agent has no conversations yet' };
@@ -285,7 +318,7 @@ async function sweepTrigger({ agentSlug, agentId, trigger, now = new Date(), dry
   // way, and it is what keeps the card's heartbeat honest.
   await triggerEventsStore.recordEvaluation({
     agentId, triggerId: trigger.id, matched: due.length, error,
-    reason: describeZero(due.length, blocked),
+    reason: describeZero(due.length, blocked, typeCtx),
   }).catch(e => console.error('[triggerDispatcher] status write failed:', e.message));
 
   if (error) return { triggerId: trigger.id, matched: 0, fired: [], error };
@@ -297,7 +330,7 @@ async function sweepTrigger({ agentSlug, agentId, trigger, now = new Date(), dry
   // nothing fired is its own kind of bug.
   console.log(`[triggers]   ${agentSlug} · ${trigger.name || trigger.id} — ` + (due.length
     ? `${due.length} due: ${due.map(d => '#' + d.facts.conversationId).join(', ')}`
-    : describeZero(0, blocked)));
+    : describeZero(0, blocked, typeCtx)));
 
   const capped = due.slice(0, MAX_FIRES_PER_SWEEP);
   if (capped.length < due.length) {
@@ -321,6 +354,14 @@ async function sweepTrigger({ agentSlug, agentId, trigger, now = new Date(), dry
     };
   }
 
+  // Computed once for the whole sweep, from the same `now` the clauses
+  // were evaluated at, so the claim and the match name the same slot.
+  let claimSince = null;
+  if (type && typeof type.claimSince === 'function') {
+    try { claimSince = type.claimSince({ trigger, config: trigger.config || {}, now }); }
+    catch { claimSince = null; }
+  }
+
   const fired = [];
   for (const d of capped) {
     fired.push({
@@ -330,6 +371,7 @@ async function sweepTrigger({ agentSlug, agentId, trigger, now = new Date(), dry
         conversationId: d.facts.conversationId,
         matchReason:    d.evaluation.reason,
         now,
+        claimSince,
       })),
     });
   }
@@ -381,6 +423,7 @@ async function sweepAgent({ agentSlug, mode = 'published', now = new Date(), dry
 
 module.exports = {
   describeConversation,
+  resolveLegacyAgentId,
   sweepAgent,
   sweepTrigger,
   fireOne,

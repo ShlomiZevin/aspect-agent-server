@@ -1297,6 +1297,50 @@ export interface SilenceTriggerConfig {
 }
 
 /**
+ * Config for the `schedule` trigger type — "at set times" (#950).
+ *
+ *   Repeats   [Weekly | Once]
+ *   Days      Sun Mon Tue Wed Thu Fri Sat    (quick picks: every day, Sun–Thu, Mon–Fri)
+ *   Times     09:00  17:00  + add
+ *   Dates     optional first / last day
+ *   Timezone  Asia/Jerusalem (default)
+ *
+ * WHO: every conversation of the agent where the customer has written at
+ * least once (simulations excluded), narrowed by the trigger's `filter`
+ * and capped by `limits` — a Schedule with no filter talks to everyone.
+ *
+ * RULES the author never configures (see trigger.schedule.js):
+ *   - at most ONE attempt per conversation per slot — the event log is
+ *     the guard, and the sweep claims each slot under an advisory lock;
+ *   - a slot more than 60 minutes old is SKIPPED, never sent late, so a
+ *     paused clock cannot turn into a burst of old messages;
+ *   - a conversation created after a slot is not owed it;
+ *   - a slot older than `activeSince` is not sent (switching on at 09:30
+ *     does not send the 09:00 slot);
+ *   - a slot inside `quietHours` is skipped, not delayed.
+ *
+ * Days and times are LOCAL to `timezone`; DST is handled (a time that
+ * doesn't exist on the spring-forward night runs right after the gap; a
+ * time that happens twice on the fall-back night runs once, the first).
+ */
+export interface ScheduleTriggerConfig {
+  /** 'weekly' (default) or 'once'. */
+  repeat: 'weekly' | 'once';
+  /** Weekly only. Local days, 0 = Sunday … 6 = Saturday. [0,1,2,3,4] = Sun–Thu. */
+  days?: number[];
+  /** Weekly only. Local "HH:MM" (24h), at most 8. */
+  times?: string[];
+  /** Once only. Local "YYYY-MM-DDTHH:MM". */
+  onceAt?: string;
+  /** Weekly only, optional. "YYYY-MM-DD", first day (inclusive). */
+  startDate?: string;
+  /** Weekly only, optional. "YYYY-MM-DD", last day (inclusive). */
+  endDate?: string;
+  /** IANA zone. Absent = "Asia/Jerusalem". An unknown zone fires for nobody. */
+  timezone?: string;
+}
+
+/**
  * One authored trigger. Structurally close to an {@link AddonInstance}
  * — a registered type id plus a type-defined config blob — so a new
  * trigger type never needs an edit to this union.
@@ -1352,11 +1396,11 @@ export interface AgentTrigger<TConfig = unknown> {
   name: string;
   enabled: boolean;
   /**
-   * Registered trigger type id (`'silence'` today). Decides which
+   * Registered trigger type id (`'silence'` or `'schedule'`). Decides which
    * clauses run and which config UI the card shows.
    */
   typeId: string;
-  /** Type-defined blob. See {@link SilenceTriggerConfig}. */
+  /** Type-defined blob. See {@link SilenceTriggerConfig}, {@link ScheduleTriggerConfig}. */
   config: TConfig;
   /**
    * ISO timestamp, stamped when the trigger is first switched on.
