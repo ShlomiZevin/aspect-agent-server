@@ -44,6 +44,7 @@
 
 const { eq } = require('drizzle-orm');
 const { conversations } = require('../../db/schema');
+const { mergeMetadata } = require('./conversationMeta');
 const { assemblePrompt } = require('./promptAssembler');
 const { getPlugin } = require('./pluginRegistry');
 const builderMemory = require('./builderMemory');
@@ -670,18 +671,19 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
   let didTransition = false;
   if (result.transition && result.transition.to) {
     try {
-      const currentMeta = convRow?.metadata || {};
-      const nextMeta = {
-        ...currentMeta,
+      // Only the keys that change, merged in the database (#968) — the
+      // turn's copy of metadata is from its start, and spreading it back
+      // would undo anything written since (a Real/Test flip included).
+      const patch = {
         currentCrewId: result.transition.to,
         ...(Number.isFinite(assistantMessageId) && assistantMessageId > 0
           ? { lastTransitionMessageId: Number(assistantMessageId) }
           : {}),
       };
       await drizzle.update(conversations)
-        .set({ metadata: nextMeta, updatedAt: new Date() })
+        .set({ metadata: mergeMetadata(patch), updatedAt: new Date() })
         .where(eq(conversations.id, Number(conversationId)));
-      if (convRow) convRow.metadata = nextMeta;
+      if (convRow) convRow.metadata = { ...(convRow.metadata || {}), ...patch };
       didTransition = true;
     } catch (err) {
       console.error('[addonRunner] transition save failed:', err.message);

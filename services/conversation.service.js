@@ -1,6 +1,8 @@
 const db = require('./db.pg');
 const { agents, users, conversations, messages, thinkingSteps, messageFeedback } = require('../db/schema');
 const { eq, and, desc, asc } = require('drizzle-orm');
+// Merge-in-the-database writes for conversations.metadata (#968).
+const { mergeMetadata } = require('../builder/runtime/conversationMeta');
 
 /**
  * Strip UI element markup (e.g. [buttons: a | b]) from message content
@@ -482,15 +484,13 @@ class ConversationService {
       throw new Error(`Conversation not found: ${externalConversationId}`);
     }
 
-    // Merge metadata
-    const currentMetadata = conversation[0].metadata || {};
-    const newMetadata = { ...currentMetadata, ...metadataUpdate };
-
+    // Merge metadata IN the database (#968), not from the copy read above —
+    // a write in between (e.g. a Real/Test mark) must survive.
     // Update conversation (don't update updatedAt - that should only change with new messages)
     const [updated] = await this.drizzle
       .update(conversations)
       .set({
-        metadata: newMetadata
+        metadata: mergeMetadata(metadataUpdate || {})
       })
       .where(eq(conversations.id, conversation[0].id))
       .returning();
@@ -529,19 +529,16 @@ class ConversationService {
       throw new Error(`Conversation not found: ${externalConversationId}`);
     }
 
-    // Update both the dedicated column and metadata
-    const currentMetadata = conversation.metadata || {};
-    const newMetadata = {
-      ...currentMetadata,
-      currentCrewMember: crewMemberName,
-      lastCrewUpdate: new Date().toISOString()
-    };
-
+    // Update both the dedicated column and metadata (merged in the
+    // database, #968 — never the stale copy).
     const [updated] = await this.drizzle
       .update(conversations)
       .set({
         currentCrewMember: crewMemberName,
-        metadata: newMetadata,
+        metadata: mergeMetadata({
+          currentCrewMember: crewMemberName,
+          lastCrewUpdate: new Date().toISOString()
+        }),
         updatedAt: new Date()
       })
       .where(eq(conversations.id, conversation.id))
@@ -609,7 +606,9 @@ class ConversationService {
         currentCrewMember: orig.currentCrewMember,
         channel: orig.channel,
         status: 'active',
-        metadata: { ...orig.metadata, title: newTitle }
+        // A copy is a new conversation: it never inherits a Real
+        // customer mark (#968) — fail closed, it starts as test.
+        metadata: (({ audience, audienceMarkedAt, ...rest }) => ({ ...rest, title: newTitle }))(orig.metadata || {})
       })
       .returning();
 

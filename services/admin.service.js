@@ -241,6 +241,27 @@ class AdminService {
     return updated;
   }
 
+  /**
+   * Mark or unmark a user as a REAL customer (#968, Admin → Users). Kept
+   * in metadata.realCustomer (true, or absent). Read once, when the user
+   * starts a conversation in the customer chat: that conversation is born
+   * `metadata.audience = 'real'` and triggers may reach it. Changing it
+   * later does not rewrite conversations that already exist.
+   */
+  async setRealCustomer(userId, real) {
+    if (!this.drizzle) this.initialize();
+    const [row] = await this.drizzle.select({ metadata: users.metadata }).from(users).where(eq(users.id, userId)).limit(1);
+    if (!row) throw new Error('User not found');
+    const metadata = { ...(row.metadata || {}) };
+    if (real) metadata.realCustomer = true;
+    else delete metadata.realCustomer;
+    const [updated] = await this.drizzle.update(users)
+      .set({ metadata, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
+    return updated;
+  }
+
   async updateUser(userId, updates) {
     if (!this.drizzle) this.initialize();
 

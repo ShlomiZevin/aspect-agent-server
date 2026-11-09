@@ -46,7 +46,8 @@ people type and paste this URL.
 | `GET /runs/:id` | One addon run in full — assembled prompt, raw/parsed output | `alfredTools.readRun` |
 | `POST /agents/:slug/conversations` `{ name, version?, label?, startCrew?, fields? }` | **Start a simulated conversation** (task #894) — a real conversation stamped `metadata.kind = 'simulation'`, owned by a fresh synthetic user. `name` is a roster name; `version` is `active` (default) or `published` | `builder/services/mcpConversations.js` → `startConversation` |
 | `POST /conversations/:id/messages` `{ text }` | **One turn, whole reply, no stream** — `{ reply, crew, fieldsWritten, transition, addons }`. Refuses any conversation without the simulation stamp | `mcpConversations.sendMessage` — posts to the live chat's own endpoint and collects its events |
-| `GET /conversations/:id/state` | Fields / memory / thinking / summaries and the current crew, for ANY Builder conversation (read-only) | `mcpConversations.readState` |
+| `GET /conversations/:id/state` | Fields / memory / thinking / summaries, the current crew and `audience` (`real` / `test`), for ANY Builder conversation (read-only) | `mcpConversations.readState` |
+| `POST /conversations/:id/audience` `{ audience: "real" \| "test" }` | **Mark one of the door's OWN simulations real or test** (task #968) so an outside AI can watch a trigger reach it by itself. Refuses any conversation without the simulation stamp. Jsonb merge, no other change | `mcpConversations.setAudience` |
 | `POST /simulations` `{ name, agent, version?, label?, persona+goal? \| lines?, maxTurns?, model?, startCrew?, fields? }` | **Release a simulation job** (task #897) — answers at once with `{ id, status: "pending", conversationId }`; the server then runs that ONE conversation by itself | `builder/services/simulationJobs.js` → `releaseJob` |
 | `GET /simulations/:id` · `GET /agents/:slug/simulations` | A job's status / result (JSON); an agent's jobs, newest first (text) | `simulationJobs.getJob` / `listJobs` |
 | `POST /load-tests/estimate` `{ agent, conversations, … }` | **What a load test would cost** (task #902) — `{ usd, capUsd, overCap, basis, unpriced }`; nothing starts | `builder/services/loadTests.js` → `estimate` |
@@ -55,7 +56,7 @@ people type and paste this URL.
 | `GET /agents/:slug/errors` `?status&source&kind&area&sort` · `GET /agents/:slug/errors/:fingerprint` | **The error center, read only** (task #903) — one line per problem with its count; one problem's occurrences with conversation + technical details (text) | `builder/services/errorCenter.js` → `listGroups` / `listOccurrences` |
 | `POST /simulate/user-reply` `{ persona, goal?, conversationId \| transcript, model? }` | "What would this persona say next" → `{ text, done, model }`. Stateless; default model is `EVERYDAY_MODEL` | `mcpConversations.userReply` |
 | `GET /addons` | **Every addon descriptor, in one page** | reads `builder/addons/*.addon.json` |
-| `GET /triggers` | **Triggers, in one page** (task #950) — where they live in the body, the envelope, every trigger type with its `purpose`, `configReference` and defaults | `builder/services/mcpTriggers.js` → `triggersPage`, reading the trigger-type registry (`builder/triggers/*.trigger.json`) |
+| `GET /triggers` | **Triggers, in one page** (task #950) — where they live in the body, the envelope (real customers only — #968 — quiet hours, limits, filter), every trigger type with its `purpose`, `configReference` and defaults | `builder/services/mcpTriggers.js` → `triggersPage`, reading the trigger-type registry (`builder/triggers/*.trigger.json`) |
 | `GET /agents/:slug/triggers` · `GET /agents/:slug/triggers/:id/due` · `GET /agents/:slug/triggers/:id/explain?conversationId&at` | One agent's triggers (settings in words, next fire, heartbeat, recent events); who a trigger would act on now (calls `findDue` directly — never the dry-run sweep, which writes the heartbeat); why it did / didn't fire for one conversation at one moment. All read only | `mcpTriggers.agentTriggersText` / `dueText` / `explainText`. Not in `alfredTools` — #950 left Alfred untouched by request; move them there when Alfred learns triggers |
 | `GET /code/<path>` | Any allowlisted source file; directories list | `alfredTools.readPlatformFile` |
 | `POST /agents` | Create an agent (name is enough) | `builderProjects.createProject` |
@@ -99,8 +100,17 @@ fixed script, or loops `user-reply`. Things to keep true:
   `metadata.simulation = { by, version, ownerUserId, label }`. Writing is
   refused without it, so this door can never put words into a customer's
   conversation. The stamp also keeps simulations out of the Users tab and
-  usage queries (`admin.service` lists only `builder-preview` / `live`)
-  and out of proactive triggers (`triggerEvaluator` names its kinds).
+  usage queries (`admin.service` lists only `builder-preview` / `live`).
+- **Simulations are TEST, and triggers reach only REAL conversations**
+  (task #968). That — not the simulation stamp — is what keeps triggers
+  away: every trigger, Silence included, requires `metadata.audience =
+  'real'` (gate-1 SQL + the `real customer` clause), and a conversation
+  born through this door is `test`. (Before #968 this guide said triggers
+  skip simulations; only Schedule did, Silence still reached them.) The
+  door may flip ITS OWN simulations with `POST /conversations/:id/audience`;
+  never anything else. Keep the entry page's "Real or test" paragraph,
+  the "Things that are easy to get wrong" trigger line and `/triggers`'
+  envelope list in step with `BUILDER_V2_TRIGGERS.md` "Real customers only".
 - **Saved versions only** — `active` or `published`. Never `viewing`, and
   never override bodies: unsaved work cannot be tested from outside.
 - **Daily caps** live in `provider_config` under `mcp_sim_usage:<date>`

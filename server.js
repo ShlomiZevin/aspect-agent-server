@@ -4610,6 +4610,19 @@ app.post('/api/admin/users/:userId/suspend', async (req, res) => {
   }
 });
 
+// Real customer or not (#968) — decides whether the user's NEW customer-chat
+// conversations are born 'real' (triggers reach them) or 'test'.
+app.post('/api/admin/users/:userId/real-customer', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    const updated = await adminService.setRealCustomer(userId, req.body?.real === true);
+    res.json(updated);
+  } catch (err) {
+    console.error('❌ Error marking real customer:', err.message);
+    res.status(500).json({ error: 'Error marking real customer: ' + err.message });
+  }
+});
+
 // Delete user and all their conversations/messages
 app.delete('/api/admin/users/:userId', async (req, res) => {
   try {

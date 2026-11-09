@@ -78,6 +78,17 @@
  *                                                 messages here, last 90 days
  *   surface                         string|null   metadata.kind: 'live' |
  *                                                 'builder-preview' | 'simulation'
+ *   audience                        string|null   metadata.audience: 'real' |
+ *                                                 'test' | null (= test). Read by
+ *                                                 the ENVELOPE's "real customer"
+ *                                                 clause, not by types (#968)
+ *
+ * ── The envelope (types never implement it) ────────────────────────
+ *
+ * `triggerEvaluator.evaluateAll` adds clauses every type inherits —
+ * "real customer" (first; also ANDed into gate 1's SQL) and "message
+ * cap" — and `fireOne` applies quiet hours and the Filter. A type
+ * declares only what is specific to it.
  */
 
 const registry = new Map();

@@ -471,9 +471,11 @@ opens showing "unsaved changes" before anyone has touched it.
 - Triggers live ONLY at \`triggers.triggers[]\` in the agent body — never on a
   crew, never in \`cortex\`. Write new ones with \`enabled: false\`; switching one
   on (which messages real customers once the clock runs) is the person's call,
-  in the Builder. A Schedule without a Filter reaches every conversation where
-  the customer ever wrote, every slot — say so before adding one. Shapes:
-  \`${base}/triggers\`.
+  in the Builder. Triggers reach ONLY conversations marked real customer —
+  never test ones (builder chats, simulations, anyone not marked "Real
+  customer" in Admin → Users). A Schedule without a Filter reaches every
+  real customer who ever wrote, every slot — say so before adding one.
+  Shapes: \`${base}/triggers\`.
 
 - A field's type is exactly one of \`string\`, \`int\`, \`enum\`,
   \`boolean\`. It is \`int\` — never \`integer\` or \`number\`.
@@ -581,6 +583,21 @@ Send the next message only after the previous one has returned.
 It is a normal conversation in the system: the person can open it in the
 Builder (Admin → Conversations, marked "Simulated") and see the same
 trail you do. Tell them its id.
+
+**Real or test.** Every conversation you start is a TEST — and triggers
+(Silence, Schedule) reach only conversations marked REAL customer, so the
+clock never touches yours. To watch a trigger reach one of your
+simulations by itself, mark it real, and back to test when done:
+
+\`\`\`
+POST ${base}/conversations/<conversationId>/audience
+{ "audience": "real" }        (or "test")
+\`\`\`
+
+Only your own simulations can be marked here. A real customer is a
+conversation started in the customer chat by a user marked "Real
+customer" in Admin → Users; the person can also flip any conversation in
+the Builder. \`${base}/conversations/<id>/state\` says which it is.
 
 **Three ways to play the user — pick by what they asked for:**
 
@@ -2035,6 +2052,16 @@ router.post('/conversations/:id/messages', async (req, res) => {
     }));
   } catch (err) {
     simFail(res, err, 'send the message');
+  }
+});
+
+// Real or test (#968) — only a simulation this door started can be marked.
+router.post('/conversations/:id/audience', async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json(await mcpConversations.setAudience({ conversationId: req.params.id, audience: b.audience }));
+  } catch (err) {
+    simFail(res, err, 'mark the conversation');
   }
 });
 

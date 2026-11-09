@@ -16,7 +16,16 @@
  * Only the clock, "Step once" and "Run now" should call `sweepTrigger`.
  * Anything that means "just this one conversation" — a test harness, a
  * future per-conversation Fire now — calls `fireOne`, which cannot
- * reach anything else by construction. An earlier version of this file
+ * reach anything else by construction.
+ *
+ * Real customers only (#968): a sweep goes through `findDue`, whose SQL
+ * and clauses both require `metadata.audience = 'real'`, so the clock,
+ * Step once and an agent-wide Run now can only ever reach real
+ * customers. `fireOne` does NOT check the mark — a person pressing a
+ * button on the chat in front of them ("Run it now", "Run them all
+ * now") is testing, and testing happens on test conversations. Its
+ * callers still report the clauses, "real customer" among them, as
+ * `wouldFire`. An earlier version of this file
  * grew an `onlyConversationIds` filter on `sweepTrigger` so a test could
  * use it safely; that was a patch over a caller reaching for the wrong
  * primitive, and it has been removed.
@@ -91,6 +100,17 @@ function describeZero(matched, blocked, typeCtx = null) {
   if (name === 'quiet long enough')  return 'nobody was quiet enough';
   if (name === 'message cap')        return `${conv} quiet, but already at the message cap for this window`;
   return `${conv} blocked by "${name}"`;
+}
+
+/**
+ * "… · 2 test conversations skipped" (#968). Without it, an agent whose
+ * conversations are all tests reads "nobody was quiet enough" — true
+ * of the real ones, and a lie by omission about why nothing happened.
+ */
+function withSkippedTest(line, skippedTest) {
+  const n = Number(skippedTest) || 0;
+  if (n <= 0) return line;
+  return `${line} · ${n} test conversation${n === 1 ? '' : 's'} skipped`;
 }
 
 /** `conversations.agent_id` is the LEGACY agents row for this slug. */
@@ -314,11 +334,22 @@ async function sweepTrigger({ agentSlug, agentId, trigger, now = new Date(), dry
     errorCenter.record(err, { area: 'trigger', code: 'trigger_find_due', agentSlug, group: String(trigger.id), detail: { trigger: { id: trigger.id, name: trigger.name || null } } });
   }
 
+  // One cheap COUNT: the test conversations gate 1 left out (#968).
+  // Informational only — a failure here never stops the sweep.
+  let skippedTest = 0;
+  if (!error) {
+    try {
+      skippedTest = await triggerEvaluator.countSkippedTest({ legacyAgentId, trigger, now, conversationKinds });
+    } catch (err) {
+      console.warn(`[triggerDispatcher] test-conversation count failed for ${trigger.id}:`, err.message);
+    }
+  }
+
   // Status is recorded even on a dry run — "we looked" is true either
   // way, and it is what keeps the card's heartbeat honest.
   await triggerEventsStore.recordEvaluation({
     agentId, triggerId: trigger.id, matched: due.length, error,
-    reason: describeZero(due.length, blocked, typeCtx),
+    reason: withSkippedTest(describeZero(due.length, blocked, typeCtx), skippedTest),
   }).catch(e => console.error('[triggerDispatcher] status write failed:', e.message));
 
   if (error) return { triggerId: trigger.id, matched: 0, fired: [], error };
@@ -330,7 +361,7 @@ async function sweepTrigger({ agentSlug, agentId, trigger, now = new Date(), dry
   // nothing fired is its own kind of bug.
   console.log(`[triggers]   ${agentSlug} · ${trigger.name || trigger.id} — ` + (due.length
     ? `${due.length} due: ${due.map(d => '#' + d.facts.conversationId).join(', ')}`
-    : describeZero(0, blocked, typeCtx)));
+    : describeZero(0, blocked, typeCtx)) + withSkippedTest('', skippedTest));
 
   const capped = due.slice(0, MAX_FIRES_PER_SWEEP);
   if (capped.length < due.length) {
@@ -345,6 +376,7 @@ async function sweepTrigger({ agentSlug, agentId, trigger, now = new Date(), dry
       triggerId: trigger.id,
       matched:   due.length,
       dryRun:    true,
+      skippedTest,
       wouldFire: capped.map(d => ({
         conversationId: d.facts.conversationId,
         reason:         d.evaluation.reason,
@@ -379,6 +411,7 @@ async function sweepTrigger({ agentSlug, agentId, trigger, now = new Date(), dry
   return {
     triggerId: trigger.id,
     matched:   due.length,
+    skippedTest,
     fired,
     cappedAt:  capped.length < due.length ? MAX_FIRES_PER_SWEEP : null,
   };
@@ -424,6 +457,7 @@ async function sweepAgent({ agentSlug, mode = 'published', now = new Date(), dry
 module.exports = {
   describeConversation,
   resolveLegacyAgentId,
+  withSkippedTest,
   sweepAgent,
   sweepTrigger,
   fireOne,

@@ -31,6 +31,9 @@
  *     never an unsaved working copy.
  *   - A daily cap on turns and on user-reply calls (shared counters in
  *     provider_config, so they hold across instances).
+ *   - Conversations born here are TEST (#968): triggers never reach them
+ *     by themselves. `setAudience` can mark one of THEM real to test a
+ *     trigger end to end — only a simulation, never anyone else's.
  */
 
 const db = require('../../services/db.pg');
@@ -44,6 +47,8 @@ const models = require('../../services/models.service');
 const VERSIONS = ['active', 'published'];
 // Daily caps come from simulationLimits (set in Admin → Simulations → Limits, #926).
 const simulationLimits = require('./simulationLimits');
+const conversationAudience = require('../runtime/conversationAudience');
+const { mergeMetadata } = require('../runtime/conversationMeta');
 
 function drizzle() {
   return db.getDrizzle();
@@ -150,13 +155,13 @@ async function startConversation({ slug, by, version, label, startCrew, fields, 
   const d = drizzle();
   const [conv] = await d.select().from(conversations).where(eq(conversations.id, conversationId)).limit(1);
   const cleanLabel = String(label || '').trim().slice(0, 80);
+  // Only the keys this adds, merged in the database (#968).
   await d.update(conversations).set({
-    metadata: {
-      ...(conv.metadata || {}),
+    metadata: mergeMetadata({
       ...(cleanLabel ? { name: cleanLabel } : {}),
       ...(crew ? { currentCrewId: crew.id } : {}),
       simulation: { by, version: ver, ownerUserId, ...(cleanLabel ? { label: cleanLabel } : {}) },
-    },
+    }),
   }).where(eq(conversations.id, conversationId));
   // Shows as the owner in the admin Conversations list.
   await d.update(users).set({ name: `Simulated · ${by}` }).where(eq(users.id, conv.userId));
@@ -314,7 +319,34 @@ async function readState({ conversationId, base }) {
     const c = (agent.crews || []).find(x => x.id === crewId);
     if (c) crew = { id: c.id, name: c.name };
   }
-  return { conversationId: id, agent: meta.agentSlug, kind: meta.kind || null, crew, ...memory };
+  return {
+    conversationId: id, agent: meta.agentSlug, kind: meta.kind || null,
+    // 'real' | 'test' (#968) — triggers reach real conversations only.
+    audience: conversationAudience.audienceOf(meta),
+    crew, ...memory,
+  };
+}
+
+// ─── Real or test (#968) ───────────────────────────────────────────
+
+/**
+ * Mark one of THIS door's simulations real (or back to test), so an
+ * outside assistant can watch a trigger reach it by itself — the clock,
+ * a Silence after the quiet spell, the next Schedule slot. Refused for
+ * any conversation without the simulation stamp: this door marks only
+ * what it created, never a customer's or a person's builder chat.
+ */
+async function setAudience({ conversationId, audience }) {
+  const wanted = conversationAudience.parseAudience(audience);
+  if (!wanted) throw refuse(400, '"audience" is "real" (triggers may reach it) or "test" (they never do).');
+  const { id } = await loadSimulation(conversationId);
+  const patch = { audience: wanted, audienceMarkedAt: new Date().toISOString() };
+  // Merged in the database, so a turn writing metadata at the same
+  // moment keeps its keys.
+  await drizzle().update(conversations).set({
+    metadata: mergeMetadata(patch),
+  }).where(eq(conversations.id, id));
+  return { conversationId: id, audience: wanted };
 }
 
 // ─── The simulated user ────────────────────────────────────────────
@@ -395,4 +427,4 @@ async function userReply({ persona, goal, conversationId, transcript, model }) {
   return { text: parsed.text.trim(), done: parsed.done === true, model: modelId };
 }
 
-module.exports = { startConversation, sendMessage, readState, userReply, VERSIONS };
+module.exports = { startConversation, sendMessage, readState, userReply, setAudience, VERSIONS };

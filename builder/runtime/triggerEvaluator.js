@@ -39,6 +39,7 @@
 
 const db = require('../../services/db.pg');
 const triggerRegistry = require('../triggers');
+const conversationAudience = require('./conversationAudience');
 
 /**
  * Scope: which conversations a trigger may ever touch.
@@ -96,6 +97,7 @@ function factColumns() {
     -- "created after the 09:00 slot" check is off by hours.
     (c.created_at AT TIME ZONE 'UTC') AS created_at,
     c.metadata->>'kind'     AS surface,
+    c.metadata->>'audience' AS audience,
     (SELECT MAX(e.matched_at) FROM trigger_events e
       WHERE e.conversation_id = c.id AND e.trigger_id = $2) AS last_event_at,
     (SELECT COUNT(*)::int FROM trigger_events e
@@ -127,6 +129,9 @@ function rowToFacts(row) {
     attemptsSinceLastUserMessage: Number(row.attempts_since_last_user_message) || 0,
     deliveredAt:                  Array.isArray(row.delivered_at) ? row.delivered_at : [],
     surface:                      row.surface || null,
+    // Raw metadata.audience (#968) — null when the conversation carries
+    // no mark. The clause reads it fail-closed: only 'real' is real.
+    audience:                     row.audience || null,
   };
 }
 
@@ -176,15 +181,23 @@ function limitClauses({ trigger, facts, now }) {
  * Every caller goes through here rather than calling `type.evaluate`
  * directly, so a limit cannot be enforced on the tick and forgotten by
  * the explainer — the failure that would make the explainer lie.
+ *
+ * Envelope clauses, in the order they are shown:
+ *   - "real customer" (#968) — FIRST, because on a test conversation it
+ *     is the whole answer to "will it trigger?"; every type inherits it.
+ *     Also in gate 1's SQL (`REAL_SQL` in `buildFindDueSql`), so the
+ *     sweep never even loads a test conversation.
+ *   - the type's own clauses
+ *   - "message cap" (limits.perConversation), when configured.
  */
 function evaluateAll({ type, facts, trigger, now }) {
   const base = type.evaluate({ facts, trigger, config: trigger.config || {}, now });
+  const audience = conversationAudience.audienceClause(facts);
   const extra = limitClauses({ trigger, facts, now });
-  if (extra.length === 0) return base;
   return {
     ...base,
-    clauses: [...(base.clauses || []), ...extra],
-    ok: base.ok && extra.every(c => c.ok),
+    clauses: [audience, ...(base.clauses || []), ...extra],
+    ok: !!base.ok && audience.ok && extra.every(c => c.ok),
   };
 }
 
@@ -205,6 +218,69 @@ function bindNamed(where, paramsMap, startIndex) {
 }
 
 /**
+ * Gate 1's query, built without touching the database — so the offline
+ * battery can assert its shape (the "real customer" condition above all).
+ *
+ * Scope (agent, active, V2) AND real customers only AND the type's own
+ * narrowing AND, off-cloud, the surface wall.
+ *
+ * @returns {{ sql: string, params: any[] }}
+ */
+function buildFindDueSql({ legacyAgentId, trigger, now = new Date(), limit = 200, conversationKinds = null, countTest = false }) {
+  const type = triggerRegistry.getTriggerType(trigger.typeId);
+  if (!type) throw new Error(`Unknown trigger type "${trigger.typeId}"`);
+
+  const { where, params } = type.candidateSql({ trigger, config: trigger.config || {}, now });
+  const { bound, values } = bindNamed(where, params, 3);
+  // Numbered after the type's own params so a type never has to know
+  // whether a surface restriction is in play.
+  const kinds = kindsClause(conversationKinds, 3 + values.length);
+
+  // REAL_SQL: triggers reach REAL customers only (#968). On the
+  // envelope rather than in each type, like quiet hours and the message
+  // limit, so a new type cannot forget it. It is a column compare on
+  // rows the agent / activity indexes already narrowed — no join.
+  const allParams = [legacyAgentId, String(trigger.id), ...values, ...kinds.values];
+  if (countTest) {
+    // The status line's "N test conversations skipped": the SAME scope
+    // and narrowing with the audience test flipped. One COUNT, no facts.
+    // `$2` is still referenced so the parameter list stays identical.
+    const sql = `
+    SELECT COUNT(*)::int AS n
+      FROM conversations c
+     WHERE ${SCOPE_SQL}
+       AND ${conversationAudience.NOT_REAL_SQL}
+       AND $2::text IS NOT NULL
+       AND (${bound})${kinds.sql}
+  `;
+    return { sql, params: allParams, type };
+  }
+  const sql = `
+    SELECT ${factColumns()}
+      FROM conversations c
+     WHERE ${SCOPE_SQL}
+       AND ${conversationAudience.REAL_SQL}
+       AND (${bound})${kinds.sql}
+     ORDER BY c.last_user_message_at ASC
+     LIMIT ${Number(limit)}
+  `;
+  return { sql, params: allParams, type };
+}
+
+/**
+ * How many TEST conversations the type's narrowing would have picked —
+ * the "N test conversations skipped" on the status line (#968), so
+ * "working, but everything here is a test" doesn't read as "nobody was
+ * quiet enough". Same narrowing as gate 1, so it can over-count exactly
+ * as `candidateSql` over-selects (Silence's spacing / cap are not in SQL).
+ */
+async function countSkippedTest({ legacyAgentId, trigger, now = new Date(), conversationKinds = null }) {
+  const { sql, params } = buildFindDueSql({ legacyAgentId, trigger, now, conversationKinds, countTest: true });
+  const { rows } = await db.query(sql, params);
+  return Number(rows[0] && rows[0].n) || 0;
+}
+
+/**
  * Find the conversations this trigger should act on right now.
  *
  * @param {object} args
@@ -217,25 +293,9 @@ function bindNamed(where, paramsMap, startIndex) {
  *   record WHY it matched.
  */
 async function findDue({ legacyAgentId, trigger, now = new Date(), limit = 200, conversationKinds = null }) {
-  const type = triggerRegistry.getTriggerType(trigger.typeId);
-  if (!type) throw new Error(`Unknown trigger type "${trigger.typeId}"`);
+  const { sql, params, type } = buildFindDueSql({ legacyAgentId, trigger, now, limit, conversationKinds });
 
-  const { where, params } = type.candidateSql({ trigger, config: trigger.config || {}, now });
-  const { bound, values } = bindNamed(where, params, 3);
-  // Numbered after the type's own params so a type never has to know
-  // whether a surface restriction is in play.
-  const kinds = kindsClause(conversationKinds, 3 + values.length);
-
-  const sql = `
-    SELECT ${factColumns()}
-      FROM conversations c
-     WHERE ${SCOPE_SQL}
-       AND (${bound})${kinds.sql}
-     ORDER BY c.last_user_message_at ASC
-     LIMIT ${Number(limit)}
-  `;
-
-  const { rows } = await db.query(sql, [legacyAgentId, String(trigger.id), ...values, ...kinds.values]);
+  const { rows } = await db.query(sql, params);
 
   // `candidateSql` is only ever a superset — `evaluate` decides.
   //
@@ -306,6 +366,9 @@ async function explainAt({ trigger, conversationId, at }) {
       c.id AS conversation_id,
       (c.created_at AT TIME ZONE 'UTC') AS created_at,
       c.metadata->>'kind' AS surface,
+      -- The mark as it is NOW (#968): it has no history, so the
+      -- explainer reports today's mark for a past moment too.
+      c.metadata->>'audience' AS audience,
       -- messages.created_at is a NAIVE timestamp (UTC wall-clock)
       -- while $3 arrives as a real instant. Comparing them directly
       -- is off by the Node process's UTC offset — silently, and in a
@@ -442,5 +505,7 @@ module.exports = {
   explainAt,
   checkQuietHours,
   evaluateAll,
+  buildFindDueSql,
+  countSkippedTest,
   SCOPE_SQL,
 };

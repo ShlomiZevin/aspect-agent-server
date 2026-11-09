@@ -11,7 +11,12 @@
  *   3. existed at the slot   the conversation was created at or before it
  *   4. after switch-on       the slot is not older than `activeSince`
  *   5. customer has spoken   at least one customer message, ever
- *   6. not a simulation      `metadata.kind` is not 'simulation'
+ *
+ * Plus the ENVELOPE every type inherits (triggerEvaluator.evaluateAll):
+ * "real customer" (#968), the message cap. "Real customer" absorbed this
+ * type's old clause 6, "not a simulation": a simulation is born TEST, so
+ * the envelope already keeps it out — and, unlike the old clause, it
+ * also keeps out the builder's own chat and anyone not marked real.
  *
  * Clause 1 is the card. The rest are mechanics, each closing one failure:
  *
@@ -38,10 +43,11 @@
  *   5 — a conversation where the customer never wrote is a page someone
  *   opened and left; there is nothing to talk to.
  *
- *   6 — simulations are tests started by outside AIs through the Builder
- *   MCP, often hundreds of them. A broadcast must not spend a model call
- *   on each, every slot. (They can still be fired by hand — Run it now
- *   and the MCP's own tools name their conversation.)
+ *   (was 6, "not a simulation") — simulations are tests started by
+ *   outside AIs, often hundreds of them; a broadcast must not spend a
+ *   model call on each, every slot. Now the envelope's "real customer"
+ *   clause does this for every type. (Any conversation can still be
+ *   fired by hand — Run it now names its conversation.)
  *
  * A slot inside QUIET HOURS is skipped, not delayed: the dispatcher
  * writes a `quiet_hours` event, which uses the slot up (clause 2). That
@@ -91,7 +97,9 @@ function currentSlot({ trigger, config, now }) {
  * which matters more for this type than for Silence: a slot addresses
  * the whole agent at once, and if handled conversations stayed in the
  * candidate list they would fill `findDue`'s row limit and starve the
- * rest. Clause 2 is therefore a NOT EXISTS on the event log.
+ * rest. Clause 2 is therefore a NOT EXISTS on the event log. The
+ * envelope's "real customer" condition is ANDed in by the evaluator
+ * (`buildFindDueSql`), for every type alike.
  *
  * No slot due → `FALSE`: the tick costs one trivial query.
  */
@@ -104,7 +112,6 @@ function candidateSql({ trigger, config, now }) {
     // is compared with a real instant.
     where: `(c.created_at AT TIME ZONE 'UTC') <= $SLOT_AT::timestamptz
             AND c.last_user_message_at IS NOT NULL
-            AND COALESCE(c.metadata->>'kind', '') <> 'simulation'
             AND NOT EXISTS (
               SELECT 1 FROM trigger_events e
                WHERE e.conversation_id = c.id
@@ -192,14 +199,6 @@ function evaluate({ facts, trigger, config, now }) {
     why: facts.lastUserMessageAt
       ? 'the customer has written at least once'
       : 'the customer never wrote in this conversation',
-  });
-
-  // ── 6. not a simulation ──
-  const sim = facts.surface === 'simulation';
-  clauses.push({
-    name: 'not a simulation',
-    ok: !sim,
-    why: sim ? 'a simulated conversation — schedules skip them' : 'a real conversation',
   });
 
   return {

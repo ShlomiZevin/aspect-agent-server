@@ -85,6 +85,11 @@ function triggersPage({ base }) {
     '```',
     '',
     'The envelope (every type gets it unchanged):',
+    '- **real customers only** — a trigger reaches a conversation only when it is marked REAL (`metadata.audience = "real"`).',
+    '  Everything is TEST unless marked: the Builder chat, simulations (yours included), anyone not marked "Real customer"',
+    '  in Admin → Users. A conversation is born real when a user marked "Real customer" starts it in the customer chat; any',
+    '  conversation can be flipped by hand in the Builder, and your own simulations with POST ../conversations/<id>/audience.',
+    '  Shown as the clause "real customer" in due / explain. Pressing "Run it now" on one chat in the Builder ignores it (testing).',
     '- **quietHours** — inside the window nothing is sent. Silence just tries again later; a Schedule slot inside it is SKIPPED.',
     '- **limits.perConversation** — at most `max` DELIVERED messages per `days` (rolling) to one conversation. Does not reset on reply.',
     '- **filter** — memory conditions checked per conversation before the crew runs (`conditionMatcher`, the addon Filter shape).',
@@ -148,7 +153,7 @@ async function agentTriggersText(slug) {
         (next.skippedForQuietHours ? ` (skipping ${next.skippedForQuietHours} time(s) inside quiet hours)` : ''));
     }
     lines.push(st
-      ? `- Last checked ${iso(st.lastEvaluatedAt)}: ${st.lastResult === 'matched' ? `${st.lastMatched} matched` : (st.lastReason || st.lastResult)}`
+      ? `- Last checked ${iso(st.lastEvaluatedAt)}: ${st.lastResult === 'matched' ? (st.lastReason || `${st.lastMatched} matched`) : (st.lastReason || st.lastResult)}`
       : '- Never checked yet');
     if (events.length) {
       lines.push('- Recent events (newest first):');
@@ -185,6 +190,7 @@ async function dueText(slug, triggerId) {
     `# Who "${trigger.name || trigger.id}" would act on right now`,
     `Read only — nothing was sent. Settings: ${summarize(trigger)}.`,
     trigger.enabled ? '' : '(This trigger is switched OFF, so the clock will not actually run it.)',
+    `Only conversations marked real customer are considered — test ones never appear here.`,
     `${considered} conversation(s) passed the cheap query; ${due.length} pass every clause.`,
   ];
   for (const d of due.slice(0, 50)) lines.push(`- conversation ${d.facts.conversationId} — ${d.evaluation.reason}`);

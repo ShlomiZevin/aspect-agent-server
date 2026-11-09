@@ -3,7 +3,9 @@
 > **Status:** BUILT and verified (2026-08-31) — T1 to T5. The proactive
 > turn, the trigger primitive with the Silence type, the clock, the
 > Triggers screen, live push, and the Alfred registrations. **T6 —
-> the Schedule type (#950), built 2026-11-09.**
+> the Schedule type (#950), built 2026-11-09.** **Real customers only
+> (#968), built 2026-11-09:** every trigger reaches only conversations
+> marked real — see "Real customers only" below.
 >
 > **Not yet done:** create the Cloud Scheduler job (one per minute →
 > `POST /api/admin/triggers/tick`) and switch the clock on. Until then
@@ -373,12 +375,13 @@ only the current `repeat`'s.
 
 ### Who receives it
 
-Every conversation of the agent where the customer has written at least
-once, **simulations excluded**, then the envelope exactly as for Silence:
-quiet hours, Filter, message limit. A Schedule with no Filter therefore
-talks to everyone, every slot — the MCP and the type's `purpose` say so.
+Every **real-customer** conversation of the agent (the envelope, #968)
+where the customer has written at least once, then the rest of the
+envelope exactly as for Silence: quiet hours, Filter, message limit. A
+Schedule with no Filter therefore talks to every real customer, every
+slot — the MCP and the type's `purpose` say so.
 
-### The six clauses
+### The five clauses
 
 ```
 Schedule:
@@ -387,10 +390,12 @@ Schedule:
   clause "existed at the slot"  conversation created at or before the slot
   clause "after switch-on"      the slot is not older than {activeSince}
   clause "customer has spoken"  at least one customer message, ever
-  clause "not a simulation"     metadata.kind <> 'simulation'
 ```
 
-All six are also in `candidateSql`, as plain SQL (clause 2 is a `NOT
+(A sixth, "not a simulation", existed until #968; the envelope's "real
+customer" clause absorbed it — see decision 21.)
+
+All five are also in `candidateSql`, as plain SQL (clause 2 is a `NOT
 EXISTS` on `trigger_events`). For Silence the SQL could leave clauses
 out; here it must not: a slot addresses the whole agent at once, and
 conversations already handled would otherwise fill `findDue`'s row
@@ -476,12 +481,12 @@ enough".
 
 ```
 09:10 · conversation #412 · Schedule
+  ✅ real customer        a real customer's conversation
   ✅ slot due             the Mon 9 Nov 09:00 slot (Asia/Jerusalem) began 10 minutes ago — inside the 60-minute window
   ❌ once per slot        already tried here at 09:01 for the Mon 9 Nov 09:00 slot
   ✅ existed at the slot  the conversation started before the slot
   ✅ after switch-on      the slot came after the trigger was switched on
   ✅ customer has spoken  the customer has written at least once
-  ✅ not a simulation     a real conversation
   → did not fire
 ```
 
@@ -495,6 +500,83 @@ panel, the explainer, the event history and Admin → Triggers all work
 through the clause contract unchanged. The Builder MCP gained a
 `/triggers` page (every type + config keys, read from the registry) and
 read-only `/agents/<slug>/triggers`, `…/<id>/due`, `…/<id>/explain`.
+
+---
+
+## Real customers only — the envelope's first clause (#968)
+
+Every trigger, of every type, reaches **only conversations marked real**.
+Everything else is a **test**: the builder's own chat, simulations started
+through the Builder MCP, a teammate trying the customer chat, every
+conversation that existed before this rule. A trigger never spends a
+model call on a test conversation by itself, and never messages one.
+
+**The mark** — `conversations.metadata.audience = 'real' | 'test'`, in
+the existing jsonb. No column, no migration, no backfill: no mark means
+test. Only the exact string `'real'` is real (fail closed —
+`builder/runtime/conversationAudience.js`).
+
+**How a conversation becomes real**
+
+| | |
+|---|---|
+| At creation | `POST /api/agents/:slug/conversations` stamps it ONCE: `'real'` when the surface is the customer chat (`source: 'live'` → `metadata.kind = 'live'`) AND the owner has `users.metadata.realCustomer === true` — the **Real customer** checkbox in Admin → Users (`POST /api/admin/users/:id/real-customer`). Everything else `'test'`. Customers reach the customer chat only through users created there. |
+| By hand | the **Real / Test pill** in the builder chat header and in Admin → Conversations (list and reader) → `PATCH /api/agents/:slug/conversations/:id/audience { audience }` (marking real asks first; marking test does not). |
+| MCP | an outside AI may mark ITS OWN simulations: `POST /builder/mcp/conversations/:id/audience` (refused for anything without the simulation stamp). |
+
+**The mark is the conversation's, not the user's.** Unchecking "Real
+customer" later does NOT rewrite the user's past conversations — they
+keep the mark they were born with (flip them by hand if needed). Checking
+it later does not upgrade old ones either. That is also why the tick
+never joins `users`.
+
+**Where it is enforced — twice, from one declaration**
+
+- **Gate 1, in SQL.** `buildFindDueSql` (evaluator) ANDs
+  `c.metadata->>'audience' = 'real'` after the scope, before the type's
+  own narrowing. A plain jsonb text compare on rows the agent / activity
+  indexes already narrowed — no join, no subquery. A test conversation is
+  never even loaded by a sweep.
+- **The clause.** `evaluateAll` puts `real customer` FIRST in every
+  verdict (then the type's clauses, then `message cap`). So Check / "Will
+  it trigger?", "Will any trigger?", the explainer, the MCP's `/due` and
+  `/explain` all show it with no code of their own; on a test chat it is
+  the first ✗ and the whole answer. The explainer reads the mark as it is
+  NOW (it has no history).
+
+Same pattern as the message limit: on the envelope, so a type written
+next year inherits it without knowing it exists.
+
+**What still reaches a test conversation — testing by hand.** Only
+agent-wide sweeps require real. A person pressing a button on ONE named
+conversation is testing, and testing happens on test conversations:
+
+| Button / path | Endpoint → primitive | Requires real? |
+|---|---|---|
+| The clock (Cloud Scheduler tick, local interval) | `runTick` → `sweepAgent` → `sweepTrigger` → `findDue` | **yes** |
+| Step once (clock, admin) — no button in the UI today | `POST /triggers/clock/step` → `runTick` | **yes** |
+| Agent-wide sweep / dry run ("Run now" per trigger, "Step once" per agent) — no buttons in the UI today | `POST /triggers/:id/sweep`, `POST /triggers/sweep` → `sweepTrigger` | **yes** |
+| MCP `/agents/<slug>/triggers/<id>/due` | `findDue` (read only) | **yes** (lists real only) |
+| **Run it now** (trigger editor, the open chat) | `POST /triggers/:id/fire` → `fireOne` | no — bypasses; `wouldFire` still reports `real customer ✗` |
+| **Run them all now** (agent test panel, the open chat) | `POST /triggers/round` `mode: force` → `fireOne` | no — bypasses; `notDueWhy` reports it |
+| Test fire (runs a crew, no trigger at all) | `POST /conversations/:id/proactive` | no — not a trigger |
+| **Will it trigger?** / **Will any trigger?** / Explain | `/check`, `/round` `simulate`, `/explain` | reports it, sends nothing |
+
+**The status line counts what it skipped.** Each sweep runs one extra
+COUNT — the same narrowing with the audience flipped
+(`countSkippedTest`) — and the card reads e.g. "nobody was quiet enough ·
+3 test conversations skipped". Without it an agent whose chats are all
+tests looks broken.
+
+**The mark cannot be undone by a turn in flight.** Every runtime write to
+`conversations.metadata` is a jsonb merge of only its own keys
+(`runtime/conversationMeta.js`); before, the transition router, crew
+override and auto-name wrote back the copy the turn read at its start,
+which could put a real→test flip back to real.
+
+To watch the CLOCK reach a builder chat, mark that chat real (pill) — and
+remember the local environment wall still applies (off-cloud, only
+`builder-preview` conversations).
 
 ---
 
@@ -1031,6 +1113,21 @@ October 2027, quiet hours, message limit, broken configs). UI rendered
 locally against staging with mocked next-fires. The advisory lock itself
 needs Postgres — verify on staging.
 
+**T7 — Real customers only (task #968). ✅ BUILT — 2026-11-09, not
+deployed.** `runtime/conversationAudience.js`; the mark stamped at
+creation (`runtimeRoute` POST /conversations); `real customer` envelope
+clause + gate-1 SQL (`evaluateAll`, `buildFindDueSql`); Schedule's "not a
+simulation" removed; `GET`/`PATCH …/conversations/:id/audience`; `POST
+/api/admin/users/:id/real-customer`; client Real/Test pill (builder chat
+header, Admin → Conversations) + "Real customer" column in Admin → Users;
+MCP: `POST /conversations/:id/audience` (own simulations), `/state`
+carries `audience`, `/triggers` + entry page teach it. No migration.
+*Verified:* `node scripts/test-triggers.js` — 157/157 offline (Part C:
+the clause for both types, real / test / no mark, gate 1's SQL shape,
+findDue / Check / explain against a fake `db.query`, the creation mark;
+Part D: stale-copy writes no longer revert the mark, every turn-path
+writer merges, the skipped-test count on the status line).
+
 **Later, not scheduled:** more trigger types (Delay,
 Field-watch) · the WhatsApp sink · historical-config resolution in the
 explainer.
@@ -1156,9 +1253,34 @@ rather than a TypeScript copy of the DST arithmetic.
 
 **20. Simulations are out of a Schedule's audience.** Outside AIs start
 hundreds of them; a broadcast must not spend a model call on each, every
-slot. (Silence's sweep still includes them — clause 4 limits it to ones
-active since switch-on. The MCP maintenance guide says triggers skip
-simulations; for Silence that is not what the code does. Open.)
+slot. (Silence's sweep still included them at the time, while the MCP
+maintenance guide said triggers skip simulations. Closed by decision 21:
+now NO trigger reaches a simulation unless someone marks it real.)
+
+**21. Real customers only — a mark on the conversation, on the envelope
+(#968).** Every conversation is TEST unless marked `metadata.audience =
+'real'`; every trigger reaches real ones only.
+- *On the conversation, decided at creation* — not looked up on the user
+  at tick time. The tick stays one table, and unchecking a user does not
+  silently change the past (nor checking one silently arm years of old
+  chats). Hand-flips cover the exceptions.
+- *Jsonb, no column.* A text compare on rows already narrowed by the
+  agent index is cheap; a partial index is easy later if one agent ever
+  holds enough test rows to matter. No migration, no backfill — absent =
+  test is the whole point.
+- *On the envelope, in SQL AND as a clause.* SQL so a sweep never loads a
+  test row; the clause so every surface that explains a verdict says
+  "real customer ✗" instead of a confusing timing reason — and so a row
+  that ever slipped past the SQL is still refused.
+- *Absorbs Schedule's "not a simulation".* A simulation is born test, so
+  the old clause was a strict subset of the new one; keeping both would
+  print two ✗ for one reason. Silence otherwise behaves exactly as before
+  (same clauses, same arithmetic) — it just no longer reaches builder
+  chats, simulations or unmarked conversations.
+- *Manual one-conversation runs bypass it.* `fireOne` stays the narrow
+  primitive and does not check the mark: "Run it now" on the chat you are
+  testing must work on a test chat. Only agent-wide sweeps require real.
+- *Fail closed.* Only the exact string `'real'` is real.
 
 ---
 

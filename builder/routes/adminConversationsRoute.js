@@ -8,6 +8,8 @@
  *       from/to — ISO dates on LAST ACTIVITY (updatedAt), inclusive days
  *       source — live | builder | simulation
  *       → { conversations, total, counts: { all, live, builder, simulation }, agent }
+ *       each conversation carries `audience`: 'real' | 'test' (#968); the
+ *       mark is changed through PATCH /:slug/conversations/:id/audience.
  *
  *   GET /:slug/admin/conversations/:id/overview
  *       → { conversation, profile: { fields, panels }, runs }
@@ -25,6 +27,7 @@ const { agents, conversations, messages, users, addonRuns } = require('../../db/
 const builderProjects = require('../services/builderProjects');
 const builderMemory = require('../runtime/builderMemory');
 const { resolveProfilerPanelsForClient } = require('../runtime/profilerDispatcher');
+const { audienceOf } = require('../runtime/conversationAudience');
 
 const router = express.Router({ mergeParams: true });
 const drizzle = () => db.getDrizzle();
@@ -107,6 +110,8 @@ router.get('/:slug/admin/conversation-list', async (req, res) => {
         id: r.id,
         name: r.metadata?.name || null,
         source: sourceOf(r.metadata),
+        // 'real' | 'test' (#968) — fail closed: no mark reads as test.
+        audience: audienceOf(r.metadata),
         createdAt: iso(r.created_at),
         updatedAt: iso(r.updated_at),
         messageCount: msgCounts[r.id] || 0,
@@ -290,6 +295,7 @@ router.get('/:slug/admin/conversations/:id/overview', async (req, res) => {
         id: conv.id,
         name: meta.name || null,
         source: sourceOf(meta),
+        audience: audienceOf(meta),
         agentName: agentDisplayName || agent.name,
         createdAt: conv.createdAt,
         updatedAt: conv.updatedAt,

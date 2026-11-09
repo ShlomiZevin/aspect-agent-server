@@ -2027,7 +2027,8 @@ decisions: `BUILDER_V2_TRIGGERS.md`, "Trigger type #2 — Schedule".
   endDate?, timezone (default Asia/Jerusalem) }`. The envelope (quiet
   hours, message limit, Filter, crew + brief) is unchanged.
 - **Audience:** every conversation where the customer has written at
-  least once, simulations excluded, narrowed by the Filter.
+  least once, narrowed by the Filter — and, since #968 (entry 57), only
+  conversations marked real customer (this replaced "simulations excluded").
 - **Rules:** one attempt per conversation per slot (event log + an
   advisory-locked claim in `triggerEventsStore.openOnce`); a slot more
   than 60 minutes old is skipped, never sent late; a conversation created
@@ -2049,3 +2050,60 @@ decisions: `BUILDER_V2_TRIGGERS.md`, "Trigger type #2 — Schedule".
 - **No migration.** Alfred files untouched; the patch generator's
   trigger catalogue picks the new JSON up by itself.
 - **Tests:** `node scripts/test-triggers.js` — 95/95 offline.
+
+### 57. Real customer vs test conversations — triggers reach real customers only (task #968)
+
+Every conversation is **test** unless marked **real**; triggers (Silence,
+Schedule, any future type) reach real ones only. Full design and the
+button-by-button table: `BUILDER_V2_TRIGGERS.md`, "Real customers only"
+and decision 21.
+
+- **Mark:** `conversations.metadata.audience = 'real' | 'test'` (jsonb, no
+  migration, no backfill — absent = test; only the exact `'real'` is real).
+  Logic: `builder/runtime/conversationAudience.js`.
+- **Born real** only in the customer chat (`metadata.kind = 'live'`) when the
+  owner is marked **Real customer** in Admin → Users (`users.metadata.realCustomer
+  === true`; checkbox column shown for builder agents only, off by default;
+  `POST /api/admin/users/:id/real-customer { real }`). Stamped once in
+  `POST /api/agents/:slug/conversations`. Builder chats and MCP simulations are
+  born test. **Unchecking a user later does not rewrite their past
+  conversations** (nor does checking upgrade them) — flip those by hand.
+- **By hand:** a Real / Test pill (`components/AudiencePill`) in the builder
+  chat header (always there; disabled = a new chat, test) and in Admin →
+  Conversations (an "Audience" column + the reader header). Marking real asks
+  first (builder Confirm modal); marking test is immediate. Fixed width — no
+  layout shift. `GET` / `PATCH /api/agents/:slug/conversations/:id/audience`
+  (the conversation must be this agent's; the write is a jsonb merge, not
+  read-modify-write; `updatedAt` untouched). Admin list + overview carry
+  `audience`.
+- **Triggers:** the envelope's `real customer` clause, FIRST in every verdict
+  (`evaluateAll`), and `c.metadata->>'audience' = 'real'` ANDed into gate 1's
+  SQL (`buildFindDueSql`). Schedule's own "not a simulation" clause is gone
+  (absorbed). Silence's rule is otherwise unchanged.
+- **Testing still works:** "Run it now" and "Run them all now" (one named
+  chat → `fireOne`) bypass the mark; "Will it trigger?" / "Will any trigger?"
+  / Explain show `real customer ✗` on a test chat. Only agent-wide sweeps —
+  the clock, Step once, agent-wide sweep/dry run (no UI buttons for the last
+  two today) and the MCP's `/due` — require real.
+- **MCP:** simulations are test; `POST /builder/mcp/conversations/:id/audience`
+  marks one of the door's own simulations real/test (refused otherwise);
+  `/conversations/:id/state` returns `audience`; `/triggers` and the entry page
+  state the rule. Descriptors' `purpose` / `guide.alsoDoes` updated; the
+  in-builder Triggers guide gained "Real customers only".
+- **Metadata writes are merges now (safety).** Every writer of
+  `conversations.metadata` in the turn path sends only its keys and the
+  database merges them (`builder/runtime/conversationMeta.js` →
+  `mergeMetadata`, `COALESCE(metadata,'{}') || $patch`): transition router
+  (`addonRunner`), crew override (`BuilderRunner` + `runtimeRoute` pre-run),
+  auto-name, rename, MCP simulation start, the audience writes, and V1
+  `conversation.service` (`updateConversationMetadata`,
+  `updateCurrentCrewMember`). Before, a turn wrote back the copy it read at
+  its start — a real→test flip during that turn went back to real. A V1
+  duplicated conversation no longer inherits the mark. (Alfred's own chats,
+  `alfred/services/alfredChats.js`, still spread a copy — untouched by rule;
+  they are never trigger targets.)
+- **Status line:** every sweep also counts the TEST conversations its
+  narrowing would have picked (`countSkippedTest`, one COUNT) and the card /
+  Admin → Triggers / MCP line ends "· N test conversations skipped".
+- **Not touched:** Alfred.
+- **Tests:** `node scripts/test-triggers.js` — 157/157 offline (Parts C, D).

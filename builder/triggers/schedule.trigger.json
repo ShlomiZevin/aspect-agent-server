@@ -2,7 +2,7 @@
   "typeId": "schedule",
   "displayName": "Schedule",
   "description": "At set times — every Sun–Thu at 09:00, or once on a date.",
-  "purpose": "Reach every conversation of the agent at fixed clock times: a morning check-in every Sun–Thu at 09:00, a reminder at 09:00 and 17:00, or a single send on 15 Dec at 09:00. Reach for this when the right moment is defined by the CALENDAR, not by anything the customer did or didn't do. The audience is every conversation where the customer has spoken at least once (simulations excluded); narrow it with the trigger's Filter (memory conditions) and cap it with the message limit — a schedule without a Filter talks to everyone, every slot. Each conversation gets at most one attempt per slot; a slot more than 60 minutes in the past is skipped, never sent late; a conversation that started after a slot is not owed it; a slot inside quiet hours is skipped, not delayed. Do NOT reach for this to follow up on a quiet customer (that is Silence) or to react to something said in a turn (that is an addon on the crew's chain). The crew it runs should still be free to stay silent when the message would not fit this conversation.",
+  "purpose": "Reach every conversation of the agent at fixed clock times: a morning check-in every Sun–Thu at 09:00, a reminder at 09:00 and 17:00, or a single send on 15 Dec at 09:00. Reach for this when the right moment is defined by the CALENDAR, not by anything the customer did or didn't do. The audience is every conversation marked REAL customer where the customer has spoken at least once (builder chats and simulations are tests and are never reached); narrow it with the trigger's Filter (memory conditions) and cap it with the message limit — a schedule without a Filter talks to every real customer, every slot. Each conversation gets at most one attempt per slot; a slot more than 60 minutes in the past is skipped, never sent late; a conversation that started after a slot is not owed it; a slot inside quiet hours is skipped, not delayed. Do NOT reach for this to follow up on a quiet customer (that is Silence) or to react to something said in a turn (that is an addon on the crew's chain). The crew it runs should still be free to stay silent when the message would not fit this conversation.",
   "icon": "🗓️",
   "color": "#0ea5e9",
   "defaultConfig": {
@@ -63,7 +63,7 @@
       }
     ],
     "alsoDoes": [
-      "It reaches every conversation where the customer has spoken at least once — use “Only if…” conditions to narrow that, and the message limit to cap it.",
+      "It reaches every real customer who has spoken at least once — use “Only if…” conditions to narrow that, and the message limit to cap it. Builder chats and simulations are tests and never get it by themselves.",
       "Each conversation gets at most one try per scheduled time, even if the button is pressed or the clock runs twice.",
       "If the clock was paused and a time passed more than an hour ago, that time is skipped — nobody gets a late burst of old messages.",
       "A conversation that started after a scheduled time is not owed that time; it joins from the next one.",

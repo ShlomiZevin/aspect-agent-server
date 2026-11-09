@@ -14,7 +14,19 @@
  * instead; the code path a single conversation needs is `fireOne`,
  * which can only ever touch the id it is handed.
  *
+ * PART C (#968) — real customers only: the "real customer" envelope
+ * clause for both types, gate 1's SQL shape, the explainer / Check /
+ * findDue paths against a FAKE `db.query` (nothing connects), and the
+ * mark a new conversation is born with.
+ *
+ * PART D (#968 follow-up) — a write built from a STALE metadata copy no
+ * longer reverts the mark (real writers against a fake drizzle that
+ * applies what they send), every turn-path writer merges, and the status
+ * line counts the test conversations a sweep skipped (fake db.query).
+ *
  * Usage:  node scripts/test-triggers.js
+ *         (safest: DB_HOST=127.0.0.255 node scripts/test-triggers.js —
+ *          any accidental connection then fails instead of reaching a DB)
  * Writes: verification/triggers/results.json
  */
 
@@ -205,6 +217,7 @@ async function partB() {
       createdAt: T('2026-11-01T09:00:00Z'),
       deliveredAt: [],
       surface: 'live',
+      audience: 'real',
       ...overrides,
     };
   }
@@ -324,8 +337,11 @@ async function partB() {
     cl(ev(freshlyOn, sfacts(), T('2026-11-09T07:40:00Z')), 'after switch-on').why);
   check('…and the query says so with FALSE', schedule.candidateSql({ trigger: freshlyOn, config: freshlyOn.config, now: T('2026-11-09T07:40:00Z') }).where === 'FALSE');
   check('a customer who never wrote is not reached', !ev(sunThu, sfacts({ lastUserMessageAt: null }), monAt0910).ok);
-  check('a simulation is not reached', !ev(sunThu, sfacts({ surface: 'simulation' }), monAt0910).ok);
-  check('a builder-preview chat is reached', ev(sunThu, sfacts({ surface: 'builder-preview' }), monAt0910).ok);
+  // #968: "not a simulation" was absorbed by the envelope's "real customer".
+  check('a simulation (born test) is not reached — by the envelope', !evAll(sunThu, sfacts({ surface: 'simulation', audience: 'test' }), monAt0910).ok,
+    cl(evAll(sunThu, sfacts({ surface: 'simulation', audience: 'test' }), monAt0910), 'real customer').why);
+  check('the type no longer has its own "not a simulation" clause', cl(ev(sunThu, sfacts(), monAt0910), 'not a simulation').ok === null);
+  check('a builder-preview chat marked real is reached', evAll(sunThu, sfacts({ surface: 'builder-preview', audience: 'real' }), monAt0910).ok);
 
   console.log('\n[B9] midnight — the day is the LOCAL day');
   const tueMidnight = strig({ days: [2], times: ['00:00'] });
@@ -396,15 +412,339 @@ async function partB() {
     /^no slot due · next: Tue 10 Nov 09:00$/.test(schedule.describeZero({ blocked: {}, trigger: sunThu, config: sunThu.config, now: T('2026-11-09T10:00:00Z') })),
     schedule.describeZero({ blocked: {}, trigger: sunThu, config: sunThu.config, now: T('2026-11-09T10:00:00Z') }));
   check('everyone handled → says so', /already had this slot/.test(schedule.describeZero({ blocked: {}, trigger: sunThu, config: sunThu.config, now: monAt0910 })));
-  check('every clause reports, pass or fail (6 clauses)', ev(sunThu, sfacts(), monAt0910).clauses.length === 6,
+  check('every clause reports, pass or fail (5 type clauses)', ev(sunThu, sfacts(), monAt0910).clauses.length === 5,
     ev(sunThu, sfacts(), monAt0910).clauses.map(c => `${c.ok ? '✓' : '✗'} ${c.name}`).join(' · '));
 }
 
 const schedule = require('../builder/triggers/schedule/trigger.schedule');
 
+// ────────────────────────────────────────────────────────────────────
+// PART C — real customers only (#968)
+// ────────────────────────────────────────────────────────────────────
+async function partC() {
+  console.log('\nPART C — real customers only (offline)\n');
+  const audience = require('../builder/runtime/conversationAudience');
+  const db = require('../services/db.pg');
+  const T = (iso) => new Date(iso);
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // Both types, set up so the TYPE's own clauses all pass — the only
+  // thing that varies below is the audience mark.
+  const silenceT = trig();
+  const silenceFacts = (a) => facts(a === undefined ? {} : { audience: a });
+  const schedT = {
+    id: 'trg_sched', typeId: 'schedule', enabled: true, activeSince: '2026-01-01T00:00:00Z',
+    config: { repeat: 'weekly', days: [0, 1, 2, 3, 4], times: ['09:00'], timezone: 'Asia/Jerusalem' },
+    run: { crewId: CREW_ID },
+  };
+  const schedNow = T('2026-11-09T07:10:00Z');                         // Mon 09:10 Jerusalem
+  const schedFacts = (a) => ({
+    conversationId: 7, lastUserMessageAt: T('2026-11-01T10:00:00Z'), lastMessageAt: T('2026-11-01T10:00:00Z'),
+    lastEventAt: null, attemptsSinceLastUserMessage: 0, createdAt: T('2026-11-01T09:00:00Z'),
+    deliveredAt: [], surface: 'live', ...(a === undefined ? {} : { audience: a }),
+  });
+  const types = [
+    ['Silence',  silenceT, silenceFacts, NOW,      { evaluate: silence.evaluate }],
+    ['Schedule', schedT,   schedFacts,   schedNow, { evaluate: schedule.evaluate }],
+  ];
+  const cl = (r, name) => (r.clauses.find(c => c.name === name) || { ok: null, why: '(absent)' });
+
+  console.log('[C1] the envelope clause — both types inherit it');
+  for (const [label, t, f, now, type] of types) {
+    const real = triggerEvaluator.evaluateAll({ type, facts: f('real'), trigger: t, now });
+    const test = triggerEvaluator.evaluateAll({ type, facts: f('test'), trigger: t, now });
+    const none = triggerEvaluator.evaluateAll({ type, facts: f(undefined), trigger: t, now });
+    const junk = triggerEvaluator.evaluateAll({ type, facts: f('REAL'), trigger: t, now });
+    check(`${label}: real → fires, "real customer" ✓`, real.ok && cl(real, 'real customer').ok === true, cl(real, 'real customer').why);
+    check(`${label}: test → does not fire`, !test.ok && cl(test, 'real customer').ok === false, cl(test, 'real customer').why);
+    check(`${label}: no mark → does not fire (fail closed)`, !none.ok && cl(none, 'real customer').ok === false, cl(none, 'real customer').why);
+    check(`${label}: anything but exactly "real" is test`, !junk.ok);
+    check(`${label}: the clause is shown FIRST`, real.clauses[0].name === 'real customer' && test.clauses[0].name === 'real customer');
+    check(`${label}: the type's own clauses still all pass on the test one`,
+      test.clauses.filter(c => c.name !== 'real customer').every(c => c.ok));
+  }
+  check('Silence: real + message cap reached → still blocked (clauses stack)',
+    !triggerEvaluator.evaluateAll({ type: { evaluate: silence.evaluate }, facts: facts({ audience: 'real', deliveredAt: [ago(MIN)] }),
+      trigger: trig({ limits: { perConversation: { max: 1, days: 7 } } }), now: NOW }).ok);
+
+  console.log('\n[C2] gate 1 — the SQL itself requires real');
+  const REAL = "c.metadata->>'audience' = 'real'";
+  check('REAL_SQL is the plain jsonb compare', audience.REAL_SQL === REAL, audience.REAL_SQL);
+  const shapes = [
+    ['Silence', triggerEvaluator.buildFindDueSql({ legacyAgentId: 1, trigger: silenceT, now: NOW })],
+    ['Schedule (slot due)', triggerEvaluator.buildFindDueSql({ legacyAgentId: 1, trigger: schedT, now: schedNow })],
+    ['Schedule (no slot → FALSE)', triggerEvaluator.buildFindDueSql({ legacyAgentId: 1, trigger: schedT, now: T('2026-11-09T10:00:00Z') })],
+    ['Silence, local surface wall', triggerEvaluator.buildFindDueSql({ legacyAgentId: 1, trigger: silenceT, now: NOW, conversationKinds: ['builder-preview'] })],
+  ];
+  for (const [label, q] of shapes) {
+    const where = q.sql.slice(q.sql.indexOf('FROM conversations c'), q.sql.lastIndexOf('ORDER BY'));
+    check(`${label}: WHERE ANDs the real-customer condition`, new RegExp(`AND ${esc(REAL)}\\s+AND \\(`).test(where),
+      where.replace(/\s+/g, ' ').trim().slice(0, 170));
+  }
+  const kinds = shapes[3][1];
+  check('the placeholders still line up with the params (surface wall last)',
+    /= ANY\(\$5\)/.test(kinds.sql) && kinds.params.length === 5 && Array.isArray(kinds.params[4]), `${kinds.params.length} params`);
+  check('the facts select the mark', /c\.metadata->>'audience' AS audience/.test(shapes[0][1].sql));
+  check('Schedule\'s own narrowing no longer names simulations',
+    !/simulation/.test(schedule.candidateSql({ trigger: schedT, config: schedT.config, now: schedNow }).where));
+
+  console.log('\n[C3] findDue / Check / the explainer, against a fake db.query');
+  const realQuery = db.query;
+  const seen = [];
+  // A DB row whose facts pass every TYPE clause for `t` at its `now`.
+  const row = (a, f = schedFacts()) => ({
+    conversation_id: 7, last_user_message_at: f.lastUserMessageAt, last_message_at: f.lastMessageAt,
+    created_at: f.createdAt, surface: 'live', audience: a, last_event_at: null,
+    attempts_since_last_user_message: 0, delivered_at: [],
+  });
+  let nextRows = [];
+  db.query = async (text, params) => { seen.push({ text, params }); return { rows: nextRows }; };
+  try {
+    nextRows = [row('real')];
+    const due = await triggerEvaluator.findDue({ legacyAgentId: 1, trigger: schedT, now: schedNow });
+    check('findDue sends the real-customer condition to the database', seen[0].text.includes(REAL));
+    check('findDue: a real row comes back due', due.due.length === 1 && due.due[0].facts.audience === 'real');
+
+    // The SQL would never return a test row; if one slipped through,
+    // evaluate still refuses it — two locks, not one.
+    nextRows = [row('test'), row(null)];
+    const leak = await triggerEvaluator.findDue({ legacyAgentId: 1, trigger: schedT, now: schedNow });
+    check('findDue: a test / unmarked row that slipped through is still refused',
+      leak.due.length === 0 && leak.blocked['real customer'] === 2, JSON.stringify(leak.blocked));
+
+    for (const [label, t, f, now] of types) {
+      for (const a of ['real', 'test', null]) {
+        nextRows = [row(a, f())];
+        const chk = await triggerEvaluator.checkOne({ trigger: t, conversationId: 7, now });
+        const ex = await triggerEvaluator.explainAt({ trigger: t, conversationId: 7, at: now });
+        const c1 = cl(chk.evaluation, 'real customer');
+        const c2 = cl(ex.evaluation, 'real customer');
+        const want = a === 'real';
+        check(`${label} · ${a || 'no mark'}: Check ("Will it trigger?") and the explainer both say ${want ? '✓' : '✗'} real customer`,
+          c1.ok === want && c2.ok === want && c1.why === c2.why && chk.evaluation.ok === want, c2.why);
+      }
+    }
+    check('the explainer\'s own query selects the mark',
+      seen.some(q => /c\.metadata->>'audience' AS audience/.test(q.text) && /m\.created_at AT TIME ZONE 'UTC'/.test(q.text)));
+  } finally {
+    db.query = realQuery;
+  }
+
+  console.log('\n[C4] the mark a conversation is born with');
+  const realUser = { metadata: { realCustomer: true } };
+  check('customer chat + user marked "Real customer" → real', audience.audienceAtCreation({ surface: 'live', user: realUser }) === 'real');
+  check('customer chat + user not marked → test', audience.audienceAtCreation({ surface: 'live', user: { metadata: {} } }) === 'test');
+  check('customer chat + no metadata → test', audience.audienceAtCreation({ surface: 'live', user: { metadata: null } }) === 'test');
+  check('customer chat + "true" as a string → test (strictly true)',
+    audience.audienceAtCreation({ surface: 'live', user: { metadata: { realCustomer: 'true' } } }) === 'test');
+  check('customer chat + unknown user → test', audience.audienceAtCreation({ surface: 'live', user: null }) === 'test');
+  check('builder chat, even by a real customer → test', audience.audienceAtCreation({ surface: 'builder-preview', user: realUser }) === 'test');
+  check('MCP simulation, even by a real customer → test', audience.audienceAtCreation({ surface: 'simulation', user: realUser }) === 'test');
+  check('nothing given → test', audience.audienceAtCreation() === 'test');
+  check('reading a mark: only "real" is real', audience.audienceOf({ audience: 'real' }) === 'real'
+    && ['test', 'Real', '', undefined].every(a => audience.audienceOf({ audience: a }) === 'test')
+    && audience.audienceOf(null) === 'test');
+  check('setting a mark: only "real" / "test" are accepted', audience.parseAudience(' REAL ') === 'real'
+    && audience.parseAudience('test') === 'test' && audience.parseAudience('yes') === null && audience.parseAudience(null) === null);
+
+  // Wiring: the create route stamps the mark from the owner, and the MCP
+  // never creates anything but a simulation (born test).
+  const routeSrc = fs.readFileSync(path.join(__dirname, '..', 'builder', 'routes', 'runtimeRoute.js'), 'utf8');
+  check('POST /conversations stamps metadata.audience from audienceAtCreation({ surface, user: owner })',
+    /audience: conversationAudience\.audienceAtCreation\(\{ surface, user: owner \}\)/.test(routeSrc));
+  const mcpSrc = fs.readFileSync(path.join(__dirname, '..', 'builder', 'services', 'mcpConversations.js'), 'utf8');
+  check('MCP conversations are created as simulations (so: test)', /source: 'simulation'/.test(mcpSrc));
+  check('the MCP can mark only its own simulations', /async function setAudience[\s\S]{0,600}loadSimulation\(conversationId\)/.test(mcpSrc));
+}
+
+// ────────────────────────────────────────────────────────────────────
+// PART D — a mark can never be reverted by a stale write; the status
+// line counts the test conversations it skipped (#968 follow-up)
+// ────────────────────────────────────────────────────────────────────
+async function partD() {
+  console.log('\nPART D — stale writes, skipped-test count (offline)\n');
+  const { PgDialect } = require('drizzle-orm/pg-core');
+  const { mergeMetadata } = require('../builder/runtime/conversationMeta');
+  const db = require('../services/db.pg');
+  const dialect = new PgDialect();
+  const render = (expr) => dialect.sqlToQuery(expr);
+  const isSqlExpr = (v) => v && typeof v === 'object' && Array.isArray(v.queryChunks);
+
+  console.log('[D1] the merge expression');
+  const q = render(mergeMetadata({ currentCrewId: 'crew_b', lastTransitionMessageId: 42 }));
+  check('it merges into the row\'s CURRENT metadata in SQL', q.sql === `COALESCE("conversations"."metadata", '{}'::jsonb) || $1::jsonb`, q.sql);
+  check('it sends only the changed keys — no audience, nothing copied',
+    q.params.length === 1 && q.params[0] === JSON.stringify({ currentCrewId: 'crew_b', lastTransitionMessageId: 42 }), q.params[0]);
+  let threw = false;
+  try { mergeMetadata(null); } catch { threw = true; }
+  check('a non-object patch is refused', threw);
+
+  // A fake drizzle over ONE row. `update().set()` applies what the code
+  // sent the way Postgres would: a merge expression → current || patch;
+  // a plain object → the whole column replaced (the old, unsafe way).
+  function fakeDb(row, staleCopy) {
+    const writes = [];
+    const apply = (set) => {
+      writes.push(set);
+      for (const [k, v] of Object.entries(set)) {
+        if (k !== 'metadata') { row[k] = v; continue; }
+        if (isSqlExpr(v)) {
+          const r = render(v);
+          row.metadata = { ...(row.metadata || {}), ...JSON.parse(r.params[r.params.length - 1]) };
+        } else {
+          row.metadata = v;
+        }
+      }
+    };
+    const chain = (result) => {
+      const p = Promise.resolve(result);
+      return Object.assign(p, { limit: async () => result, returning: async () => [{ ...row }], orderBy: () => chain(result) });
+    };
+    return {
+      writes,
+      select: () => ({ from: () => ({ where: () => chain([{ ...staleCopy() }]), leftJoin: () => ({ where: () => chain([{ conv: staleCopy(), slug: 'agent-x' }]) }) }) }),
+      update: () => ({ set: (set) => ({ where: () => { apply(set); return chain([{ ...row }]); } }) }),
+      insert: () => ({ values: () => ({ returning: async () => [{ ...row }] }) }),
+    };
+  }
+
+  console.log('\n[D2] real writers, fed a STALE copy that still says "real"');
+  // The race: the turn read metadata when audience was 'real'; a person
+  // has since marked it 'test'; now the turn writes.
+  const STALE = () => ({ id: 5, externalId: 'ext5', agentId: 1, metadata: { kind: 'live', agentSlug: 'agent-x', audience: 'real', currentCrewId: 'crew_a' } });
+
+  // V1 service writers, called for real with the fake drizzle.
+  const convService = require('../services/conversation.service');
+  {
+    const row = { id: 5, metadata: { kind: 'live', agentSlug: 'agent-x', audience: 'test', currentCrewId: 'crew_a' } };
+    const fake = fakeDb(row, STALE);
+    const saved = convService.drizzle;
+    convService.drizzle = fake;
+    try {
+      await convService.updateCurrentCrewMember('ext5', 'Greeter');
+      check('conversation.service.updateCurrentCrewMember keeps the newer "test"',
+        row.metadata.audience === 'test' && row.metadata.currentCrewMember === 'Greeter', JSON.stringify(row.metadata));
+      await convService.updateConversationMetadata('ext5', { title: 'x' });
+      check('conversation.service.updateConversationMetadata keeps the newer "test"',
+        row.metadata.audience === 'test' && row.metadata.title === 'x', JSON.stringify(row.metadata));
+      check('…and both sent a merge, not an object', fake.writes.every(w => isSqlExpr(w.metadata)));
+    } finally {
+      convService.drizzle = saved;
+    }
+  }
+
+  // The builder route's rename, through Express, with the fake drizzle.
+  {
+    const row = { id: 5, metadata: { kind: 'live', agentSlug: 'agent-x', audience: 'test' } };
+    const fake = fakeDb(row, STALE);
+    const savedGet = db.getDrizzle;
+    db.getDrizzle = () => fake;
+    try {
+      const express = require('express');
+      const app = express();
+      app.use(express.json());
+      app.use('/api/agents', require('../builder/routes/runtimeRoute'));
+      const server = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
+      const base = `http://127.0.0.1:${server.address().port}/api/agents/agent-x/conversations/5`;
+      const res = await fetch(base, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'renamed' }) });
+      check('PATCH rename (builder) keeps the newer "test"', res.ok && row.metadata.audience === 'test' && row.metadata.name === 'renamed', JSON.stringify(row.metadata));
+      // And the mark itself, written while the copy says otherwise.
+      row.metadata.audience = 'real';
+      const res2 = await fetch(`${base}/audience`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ audience: 'test' }) });
+      check('PATCH audience writes only the mark (merge)', res2.ok && row.metadata.audience === 'test' && row.metadata.name === 'renamed', JSON.stringify(row.metadata));
+      server.close();
+    } finally {
+      db.getDrizzle = savedGet;
+    }
+  }
+
+  // The old way, for contrast: spreading the stale copy reverts the mark.
+  {
+    const row = { id: 5, metadata: { audience: 'test' } };
+    const fake = fakeDb(row, STALE);
+    await fake.update().set({ metadata: { ...STALE().metadata, currentCrewId: 'crew_b' } }).where();
+    check('(control) the old spread-the-copy write WOULD have reverted it to "real"', row.metadata.audience === 'real');
+  }
+
+  // Every writer in the turn path, by source: after `update(conversations)`
+  // any `metadata:` in the `.set({…})` must be `mergeMetadata(`.
+  const files = [
+    'builder/runtime/addonRunner.js',      // transition router
+    'builder/runtime/BuilderRunner.js',    // crew override
+    'builder/routes/runtimeRoute.js',      // auto-name, pre-run override, rename, audience
+    'builder/services/mcpConversations.js',// simulation start, setAudience
+    'services/conversation.service.js',    // V1 metadata + crew member
+  ];
+  let writers = 0;
+  const offenders = [];
+  for (const f of files) {
+    const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
+    const re = /update\(conversations\)\s*\.set\(\{([\s\S]*?)\}\)\s*\.where/g;
+    let m;
+    while ((m = re.exec(src))) {
+      if (!/metadata\s*:/.test(m[1])) continue;
+      writers += 1;
+      if (!/metadata\s*:\s*mergeMetadata\(/.test(m[1])) offenders.push(`${f}: ${m[1].trim().slice(0, 60)}`);
+    }
+  }
+  check(`every conversations.metadata writer in the turn path merges (${writers} found)`, writers >= 9 && offenders.length === 0,
+    offenders.join(' | ') || `${writers} writers`);
+  const v1 = fs.readFileSync(path.join(__dirname, '..', 'services', 'conversation.service.js'), 'utf8');
+  check('a duplicated conversation never inherits the mark', /\(\{ audience, audienceMarkedAt, \.\.\.rest \}\) => \(\{ \.\.\.rest, title: newTitle \}\)/.test(v1));
+
+  console.log('\n[D3] "N test conversations skipped" on the status line');
+  const audience = require('../builder/runtime/conversationAudience');
+  const dispatcher = require('../builder/runtime/triggerDispatcher');
+  const store = require('../builder/runtime/triggerEventsStore');
+  const silenceT = trig();
+  const schedT = {
+    id: 'trg_sched', typeId: 'schedule', enabled: true, activeSince: '2026-01-01T00:00:00Z',
+    config: { repeat: 'weekly', days: [0, 1, 2, 3, 4], times: ['09:00'], timezone: 'Asia/Jerusalem' }, run: { crewId: CREW_ID },
+  };
+  const schedNow = new Date('2026-11-09T07:10:00Z');
+  for (const [label, t, now] of [['Silence', silenceT, NOW], ['Schedule', schedT, schedNow]]) {
+    const main = triggerEvaluator.buildFindDueSql({ legacyAgentId: 1, trigger: t, now });
+    const cnt = triggerEvaluator.buildFindDueSql({ legacyAgentId: 1, trigger: t, now, countTest: true });
+    check(`${label}: the count is the same narrowing with the audience flipped`,
+      /SELECT COUNT\(\*\)::int AS n/.test(cnt.sql) && cnt.sql.includes(audience.NOT_REAL_SQL) && !cnt.sql.includes(audience.REAL_SQL + '\n')
+        && JSON.stringify(cnt.params) === JSON.stringify(main.params) && /\$2::text/.test(cnt.sql));
+  }
+  check('NOT_REAL_SQL counts unmarked rows as test', audience.NOT_REAL_SQL === "COALESCE(c.metadata->>'audience', '') <> 'real'");
+  check('wording: one / many / none',
+    dispatcher.withSkippedTest('nobody was quiet enough', 1) === 'nobody was quiet enough · 1 test conversation skipped'
+      && dispatcher.withSkippedTest('3 matched', 4) === '3 matched · 4 test conversations skipped'
+      && dispatcher.withSkippedTest('x', 0) === 'x');
+
+  // A real dry-run sweep against a fake db.query: what lands on the card.
+  const realQuery = db.query;
+  const realRecord = store.recordEvaluation;
+  const recorded = [];
+  store.recordEvaluation = async (a) => { recorded.push(a); };
+  db.query = async (text) => {
+    if (/FROM agents WHERE url_slug/.test(text)) return { rows: [{ id: 1 }] };
+    if (/COUNT\(\*\)::int AS n/.test(text)) return { rows: [{ n: 3 }] };
+    return { rows: [] };                       // findDue: no real conversation due
+  };
+  const realLog = console.log;
+  try {
+    console.log = () => {};
+    const r1 = await dispatcher.sweepTrigger({ agentSlug: 'agent-x', agentId: 'a1', trigger: silenceT, now: NOW, dryRun: true });
+    const r2 = await dispatcher.sweepTrigger({ agentSlug: 'agent-x', agentId: 'a1', trigger: schedT, now: schedNow, dryRun: true });
+    console.log = realLog;
+    check('Silence: the status line says it', recorded[0].reason === 'nobody was quiet enough · 3 test conversations skipped' && r1.skippedTest === 3, recorded[0].reason);
+    check('Schedule: the status line says it', /· 3 test conversations skipped$/.test(recorded[1].reason) && r2.skippedTest === 3, recorded[1].reason);
+  } finally {
+    console.log = realLog;
+    db.query = realQuery;
+    store.recordEvaluation = realRecord;
+  }
+}
+
 async function main() {
   partA();
   await partB();
+  await partC();
+  await partD();
 
   const outDir = path.join(__dirname, '..', 'verification', 'triggers');
   fs.mkdirSync(outDir, { recursive: true });

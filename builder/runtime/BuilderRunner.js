@@ -34,6 +34,7 @@ const { eq } = require('drizzle-orm');
 const db = require('../../services/db.pg');
 const stopRegistry = require('./stopRegistry');
 const { conversations, messages } = require('../../db/schema');
+const { mergeMetadata } = require('./conversationMeta');
 const { resolveRunnable } = require('../services/builderProjects');
 const { logUsage } = require('../../services/usageLogger');
 const builderMemory = require('./builderMemory');
@@ -261,12 +262,12 @@ async function runOnce({
   // idempotent retry in case that pre-persist failed.)
   if (overrideCrewId && overrideCrewId !== metaCrewId) {
     try {
-      const currentMeta = convRow?.metadata || {};
-      const nextMeta = { ...currentMeta, currentCrewId: overrideCrewId };
+      // Merged in the database (#968): never write back the turn's copy.
+      const patch = { currentCrewId: overrideCrewId };
       await drizzle.update(conversations)
-        .set({ metadata: nextMeta, updatedAt: new Date() })
+        .set({ metadata: mergeMetadata(patch), updatedAt: new Date() })
         .where(eq(conversations.id, Number(conversationId)));
-      if (convRow) convRow.metadata = nextMeta;
+      if (convRow) convRow.metadata = { ...(convRow.metadata || {}), ...patch };
     } catch (err) {
       console.error('[BuilderRunner] override crew persist failed:', err.message);
     }

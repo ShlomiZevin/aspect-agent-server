@@ -23,6 +23,8 @@ const stopRegistry = require('../runtime/stopRegistry');
 const conversationPush = require('../../services/conversation-push.service');
 const errorCenter = require('../services/errorCenter');
 const errorRules = require('../services/errorRules');
+const conversationAudience = require('../runtime/conversationAudience');
+const { mergeMetadata } = require('../runtime/conversationMeta');
 
 const router = express.Router({ mergeParams: true });
 
@@ -59,9 +61,15 @@ async function resolveLegacyAgentId(slug) {
 /** Shown to a suspended user (#909) instead of an answer. */
 const SUSPENDED_MESSAGE = "This account is paused, so I can't reply right now. Please contact whoever gave you access.";
 
+/** The user's metadata — suspension (#909) and "Real customer" (#968) live there. */
+async function userRowOf(userId) {
+  const [u] = await drizzle().select({ metadata: users.metadata }).from(users).where(eq(users.id, userId)).limit(1);
+  return u || null;
+}
+
 /** True when an admin suspended this user (Admin → Users, #909). */
 async function isSuspended(userId) {
-  const [u] = await drizzle().select({ metadata: users.metadata }).from(users).where(eq(users.id, userId)).limit(1);
+  const u = await userRowOf(userId);
   return !!(u && u.metadata && u.metadata.suspendedAt);
 }
 
@@ -101,7 +109,9 @@ router.post('/:slug/conversations', async (req, res) => {
     if (!ownerUserId) return res.status(400).json({ error: 'Missing ownerUserId' });
     const agentId = await resolveLegacyAgentId(slug);
     const userId = await resolveUserId(ownerUserId);
-    if (await isSuspended(userId)) return res.status(403).json({ error: SUSPENDED_MESSAGE, code: 'user_suspended' });
+    const owner = await userRowOf(userId);
+    if (owner && owner.metadata && owner.metadata.suspendedAt) return res.status(403).json({ error: SUSPENDED_MESSAGE, code: 'user_suspended' });
+    const surface = source === 'live' ? 'live' : source === 'simulation' ? 'simulation' : 'builder-preview';
     // metadata.kind records which V2 surface the conversation was born in:
     // 'live' = customer-facing chat, 'builder-preview' = builder chat,
     // 'simulation' = started by an outside AI through /builder/mcp to
@@ -114,8 +124,14 @@ router.post('/:slug/conversations', async (req, res) => {
       status: 'active',
       kind: 'user',
       metadata: {
-        kind: source === 'live' ? 'live' : source === 'simulation' ? 'simulation' : 'builder-preview',
+        kind: surface,
         agentSlug: slug,
+        // Real customer or test (#968) — decided HERE, once, and kept:
+        // 'real' only for the customer chat by a user marked "Real
+        // customer" in Admin → Users; everything else 'test'. Triggers
+        // reach real conversations only. Unchecking the user later does
+        // not rewrite this. See runtime/conversationAudience.js.
+        audience: conversationAudience.audienceAtCreation({ surface, user: owner }),
       },
     }).returning();
     if (Array.isArray(seedMemory) && seedMemory.length > 0) {
@@ -269,13 +285,68 @@ router.patch('/:slug/conversations/:convId', async (req, res) => {
       .where(eq(conversations.id, Number(convId))).limit(1);
     if (!conv) return res.status(404).json({ error: 'Not found' });
     const trimmed = name.trim();
-    const nextMeta = { ...(conv.metadata || {}), name: trimmed };
     await d.update(conversations)
-      .set({ metadata: nextMeta, updatedAt: new Date() })
+      .set({ metadata: mergeMetadata({ name: trimmed }), updatedAt: new Date() })
       .where(eq(conversations.id, Number(convId)));
     res.json({ ok: true, name: trimmed });
   } catch (err) {
     console.error('[builder] PATCH conversation failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** This agent's V2 conversation, or null — a guessed id must not reach a stranger's. */
+async function agentConversation(slug, convId) {
+  const id = Number(convId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const [row] = await drizzle().select({ conv: conversations, slug: agents.urlSlug })
+    .from(conversations)
+    .leftJoin(agents, eq(conversations.agentId, agents.id))
+    .where(eq(conversations.id, id)).limit(1);
+  if (!row || row.slug !== slug || !(row.conv.metadata && row.conv.metadata.kind)) return null;
+  return row.conv;
+}
+
+/** GET …/audience → { audience: 'real' | 'test' } — the builder chat header's pill. */
+router.get('/:slug/conversations/:convId/audience', async (req, res) => {
+  try {
+    const conv = await agentConversation(req.params.slug, req.params.convId);
+    if (!conv) return res.status(404).json({ error: `No conversation ${req.params.convId} on this agent.` });
+    res.json({ conversationId: conv.id, audience: conversationAudience.audienceOf(conv.metadata) });
+  } catch (err) {
+    console.error('[builder] GET conversation audience failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PATCH /api/agents/:slug/conversations/:convId/audience
+ *   Body: { audience: 'real' | 'test' }
+ *   Mark a conversation as a real customer's or as a test, by hand
+ *   (#968) — the builder chat header and Admin → Conversations. Triggers
+ *   reach real conversations only, so this is how a builder chat is
+ *   pointed at the clock for testing, or a customer chat taken out of it.
+ *   Writes metadata.audience; nothing else changes.
+ */
+router.patch('/:slug/conversations/:convId/audience', async (req, res) => {
+  try {
+    const audience = conversationAudience.parseAudience((req.body || {}).audience);
+    if (!audience) return res.status(400).json({ error: 'audience is "real" or "test"' });
+    const d = drizzle();
+    const conv = await agentConversation(req.params.slug, req.params.convId);
+    if (!conv) return res.status(404).json({ error: `No conversation ${req.params.convId} on this agent.` });
+    const id = conv.id;
+    const patch = { audience, audienceMarkedAt: new Date().toISOString() };
+    // Merged IN the database (jsonb ||), not read-modify-written, so a
+    // turn writing its own keys at the same moment is not overwritten.
+    // updatedAt is left alone: marking is not activity, and the lists
+    // sort by it.
+    await d.update(conversations)
+      .set({ metadata: mergeMetadata(patch) })
+      .where(eq(conversations.id, id));
+    res.json({ ok: true, conversationId: id, audience });
+  } catch (err) {
+    console.error('[builder] PATCH conversation audience failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -998,11 +1069,11 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       if (convRow && !(convRow.metadata && convRow.metadata.name)) {
         const auto = userMessage.replace(/\s+/g, ' ').trim().slice(0, 60);
         if (auto) {
-          const nextMeta = { ...(convRow.metadata || {}), name: auto };
+          // Merged in the database (#968) — see runtime/conversationMeta.js.
           await d.update(conversations)
-            .set({ metadata: nextMeta })
+            .set({ metadata: mergeMetadata({ name: auto }) })
             .where(eq(conversations.id, Number(convId)));
-          convRow.metadata = nextMeta;
+          convRow.metadata = { ...(convRow.metadata || {}), name: auto };
         }
       }
     } catch (err) {
@@ -1016,11 +1087,10 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       try {
         const meta = convRow.metadata || {};
         if (meta.currentCrewId !== overrideCrewId) {
-          const nextMeta = { ...meta, currentCrewId: overrideCrewId };
           await d.update(conversations)
-            .set({ metadata: nextMeta, updatedAt: new Date() })
+            .set({ metadata: mergeMetadata({ currentCrewId: overrideCrewId }), updatedAt: new Date() })
             .where(eq(conversations.id, Number(convId)));
-          convRow.metadata = nextMeta;
+          convRow.metadata = { ...meta, currentCrewId: overrideCrewId };
         }
       } catch (err) {
         console.warn('[builder] pre-run override persist failed:', err.message);

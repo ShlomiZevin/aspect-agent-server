@@ -1305,9 +1305,9 @@ export interface SilenceTriggerConfig {
  *   Dates     optional first / last day
  *   Timezone  Asia/Jerusalem (default)
  *
- * WHO: every conversation of the agent where the customer has written at
- * least once (simulations excluded), narrowed by the trigger's `filter`
- * and capped by `limits` — a Schedule with no filter talks to everyone.
+ * WHO: every REAL-customer conversation of the agent where the customer
+ * has written at least once, narrowed by the trigger's `filter` and capped
+ * by `limits` — a Schedule with no filter talks to every real customer.
  *
  * RULES the author never configures (see trigger.schedule.js):
  *   - at most ONE attempt per conversation per slot — the event log is
@@ -1344,6 +1344,12 @@ export interface ScheduleTriggerConfig {
  * One authored trigger. Structurally close to an {@link AddonInstance}
  * — a registered type id plus a type-defined config blob — so a new
  * trigger type never needs an edit to this union.
+ *
+ * REAL CUSTOMERS ONLY (#968): every trigger, whatever its type, reaches
+ * only conversations with `metadata.audience = 'real'` — born real when a
+ * user marked "Real customer" (Admin → Users) starts it in the customer
+ * chat, or flipped by hand. Builder chats and simulations are test. Not a
+ * setting: there is nothing to author.
  *
  * @typeParam TConfig the trigger type's own config (e.g.
  *   {@link SilenceTriggerConfig} for `typeId: 'silence'`).
