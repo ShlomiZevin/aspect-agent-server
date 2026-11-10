@@ -493,7 +493,7 @@ internal process notes, not how the product works.
 | "What does a finished agent look like?" | `BUILDER_V2_EXAMPLE_CARDLY.md`, or read a live agent |
 | "Why did it behave that way at runtime?" | the `/runs` endpoint above, then `builder/runtime/` |
 
-Three things that are easy to get wrong:
+Four things that are easy to get wrong:
 
 - A field's `type` is exactly one of `string`, `int`, `enum`, `boolean`.
   It is `int` — never `integer` or `number`. In the UI these read String,
@@ -506,6 +506,11 @@ Three things that are easy to get wrong:
   the "Runs in" ✓/✕ chips. Take the ids from `crews[]` in the draft (never
   invent one), and omit the key to mean "all crews", never `[]`. Crew
   addons never carry it.
+- `agent.crewTree` is only how the Builder's CREWS list is grouped (which
+  crew is shown under which) — it never changes which crew runs, and the
+  Builder ignores it in a folder draft. To change the grouping, use the
+  door's `/agents/<slug>/crew-tree` or let the person drag crews; otherwise
+  leave it alone.
 
 ---
 

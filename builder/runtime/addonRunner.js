@@ -53,6 +53,7 @@ const addonRunsStore = require('./addonRunsStore');
 const historyService = require('./historyService');
 const { evaluateConditions } = require('./conditionMatcher');
 const { chosenLimitOf, outputLimitOf, STREAM_ABOVE } = require('./outputLimit');
+const { webSearchFor, withWebSearchRule, promptAsShown } = require('../../services/webSearch');
 
 /** `{}`, `[]`, or blank text — a value that says nothing. */
 function isEmptyValue(v) {
@@ -376,6 +377,22 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
     return { result: null, didTransition: false, broke: false };
   }
 
+  // ── Web search permission rule (#967). With the switch on, the model ──
+  // may search only where this prompt allows it — the rule is appended
+  // HERE (not in the plugin) so the prompt the run card shows is the one
+  // the model got. Same decision as the plugin's tool: webSearchFor().
+  // `shownPrompt` = what the run card / export show: on OpenAI it also
+  // carries a marked copy of the rule for the extra input item that
+  // llm.openai.js sends right before the user's message.
+  let shownPrompt = prompt;
+  if (plugin.webSearch) {
+    const m = instance.config?.model;
+    const wsModel = typeof m === 'string' ? m : (m?.modelId || null);
+    const ws = webSearchFor(instance, wsModel);
+    prompt = withWebSearchRule(prompt, ws);
+    shownPrompt = promptAsShown(prompt, wsModel, ws);
+  }
+
   // ── Fetch history per the instance's history config. Empty when ──
   // `mode === 'none'`. Passed as a separate LLM parameter — NOT
   // interpolated into the prompt string. The brain blob is passed so
@@ -409,7 +426,7 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
 
   emit('addon.prompt', {
     instanceId:    instance.instanceId,
-    prompt,
+    prompt: shownPrompt,
     historyCount:  visibleCount,
     historyMode:   historyResolution,
   });
@@ -545,7 +562,7 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
           instanceId: instance.instanceId,
           label: meta.label,
           modelLabel,
-          prompt,
+          prompt: shownPrompt,
           rawOutput: result?.rawOutput ?? '',
           parsedOutput: null,
           memoryWrites: [],
@@ -696,7 +713,7 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
     instanceId:   instance.instanceId,
     label:        meta.label,
     modelLabel,
-    prompt,
+    prompt:        shownPrompt,
     rawOutput:    result.rawOutput ?? '',
     parsedOutput: result.parsedOutput ?? null,
     memoryWrites,

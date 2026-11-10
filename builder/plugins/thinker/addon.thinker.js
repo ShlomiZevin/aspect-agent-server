@@ -16,8 +16,7 @@
 const { registerPlugin } = require('../../runtime/pluginRegistry');
 const { parseOutput } = require('../../runtime/outputParser');
 const descriptor = require('../../addons/thinker.addon.json');
-const modelsService = require('../../../services/models.service');
-const { normalizeWebSearch, createCollector } = require('../../../services/webSearch');
+const { webSearchFor, createCollector } = require('../../../services/webSearch');
 
 const THINKER_PLUGIN_ID = descriptor.pluginId;
 
@@ -48,9 +47,8 @@ async function run(ctx) {
   // model found goes wherever the prompt asks for it in the JSON — so it
   // lands in this Thinker's domain and the Talker reads it via
   // {{thinking:DOMAIN}}. Each search is shown live (`addon.websearch`).
-  const webSearch = modelsService.supportsWebSearch(modelString)
-    ? normalizeWebSearch(cfg.webSearch)
-    : null;
+  // The runner has already appended the permission rule to `prompt`.
+  const webSearch = webSearchFor(instance, modelString);
   const searches = createCollector();
   const onWebSearch = ev => {
     searches.add(ev);
@@ -126,6 +124,8 @@ async function run(ctx) {
 registerPlugin({
   id:                 descriptor.pluginId,
   allowedOutputTypes: descriptor.allowedOutputTypes,
+  // #967: the runner appends the web search permission rule to the prompt.
+  webSearch:          true,
   run,
 });
 

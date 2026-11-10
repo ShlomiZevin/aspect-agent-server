@@ -57,6 +57,7 @@ people type and paste this URL.
 | `POST /simulate/user-reply` `{ persona, goal?, conversationId \| transcript, model? }` | "What would this persona say next" → `{ text, done, model }`. Stateless; default model is `EVERYDAY_MODEL` | `mcpConversations.userReply` |
 | `GET /addons` | **Every addon descriptor, in one page** | reads `builder/addons/*.addon.json` |
 | `GET /triggers` | **Triggers, in one page** (task #950) — where they live in the body, the envelope (real customers only — #968 — quiet hours, limits, filter), every trigger type with its `purpose`, `configReference` and defaults | `builder/services/mcpTriggers.js` → `triggersPage`, reading the trigger-type registry (`builder/triggers/*.trigger.json`) |
+| `GET /agents/:slug/crew-tree` · `POST /agents/:slug/crew-tree` `{ parents?, replace?, order? }` | **The CREWS sidebar hierarchy** (task #855) — read it as an indented tree; change which crew is shown under which (`parents` merges, `null` = top level, `replace: true` = whole tree) and the sidebar order (`order`). Display only — the runtime never reads it. Refuses unknown crew ids and loops. **Written in place** into the active (and viewing) agent version — no new version (§4 exception) | `builder/services/crewTree.js` (validate / render) + `builderProjects.setAgentCrewTree` (jsonb_set of the one key) + `reorderCrews` |
 | `GET /agents/:slug/triggers` · `GET /agents/:slug/triggers/:id/due` · `GET /agents/:slug/triggers/:id/explain?conversationId&at` | One agent's triggers (settings in words, next fire, heartbeat, recent events); who a trigger would act on now (calls `findDue` directly — never the dry-run sweep, which writes the heartbeat); why it did / didn't fire for one conversation at one moment. All read only | `mcpTriggers.agentTriggersText` / `dueText` / `explainText`. Not in `alfredTools` — #950 left Alfred untouched by request; move them there when Alfred learns triggers |
 | `GET /code/<path>` | Any allowlisted source file; directories list | `alfredTools.readPlatformFile` |
 | `POST /agents` | Create an agent (name is enough) | `builderProjects.createProject` |
@@ -373,9 +374,10 @@ may name an agent that lives elsewhere). The list is
 | Invariant | Why |
 |---|---|
 | **Never move `publishedVersionId`.** | It is the customer gate. Everything else here is undoable; that is not. |
-| **A write = new version + `setXActive`.** Never `saveAgentVersion` (in place). | `hydrateProject` builds the working copy from **active** and reports `viewingVersionId` *as* active on load. `saveAgentVersionAs` alone moves only viewing — the version exists but the Builder never shows it. This was a real bug, caught only by testing the working copy. |
+| **A write = new version + `setXActive`.** Never `saveAgentVersion` (in place). One deliberate exception: `POST /agents/:slug/crew-tree` (#855) writes ONLY `crewTree` in place (`setAgentCrewTree`), into active AND viewing — it is display-only organisation, and the Builder saves it the same way when someone drags a crew. | `hydrateProject` builds the working copy from **active** and reports `viewingVersionId` *as* active on load. `saveAgentVersionAs` alone moves only viewing — the version exists but the Builder never shows it. This was a real bug, caught only by testing the working copy. |
 | **Normalise every body** (`normalizeAgentBody` / `normalizeCrewBody`), adding absent keys only. | Otherwise the Builder shows phantom "unsaved changes" (§3.1). |
-| **No validator on writes.** | See §1. Versioning is the safety. |
+| **No validator on writes.** | See §1. Versioning is the safety. Exception: `crewTree` (#855) is checked (unknown crew ids, loops → `400`, nothing saved) — it is saved in place, so there is no version to undo to. |
+| **A body save that leaves a key out must not wipe it — for `crewTree`.** `POST /agents/:slug` carries the current `crewTree` over when the body doesn't mention it; `"crewTree": null` removes it. | The tree is the author's hand-made organisation; an assistant re-posting an older body (the #965 shape — `defaultCrewId` is still exposed to this) would silently flatten it. |
 | **Text goes out as `text/plain`.** JSON only for `GET /agents/:slug`. | Chat reader tools refuse `text/markdown` outright. ChatGPT reached the page and then declined to show it. The content is still Markdown. |
 | **Every URL on the entry page comes from `urls(req)`.** Never hardcode a host. | The same page is served on the Cloud Run host, through the lybi.ai redirect, and on localhost. |
 | **One allowlist** — `alfredTools.READABLE_PREFIXES`. | Two lists drift. |
@@ -440,6 +442,13 @@ Exits `1` on any failure. What it covers:
   `POST /agents` (that one is deleted afterwards).
 - **Refusals** — malformed body `400`, unknown crew `404` with the real
   crew list.
+- **Crew tree (#855)** — on two throwaway crews of `zz-mcp-test` (deleted
+  in `finally`, tree emptied): write → stored as `crewTree.parents`, **no
+  new version**, no phantom dirty; read renders the indented tree; a loop
+  and an unknown crew are refused; a whole-body save WITHOUT `crewTree`
+  keeps it; a bad `crewTree` in a body is refused; `null` + `order` move
+  and reorder; `replace: {}` clears it (empty == absent); nothing under
+  `builder/runtime/` mentions it.
 - **Talking to an agent** — a simulated conversation is created with the
   stamp and the right version; unknown person / bad version / unknown crew
   are refused with a sentence; a real conversation cannot be written to;
@@ -526,7 +535,8 @@ aspect-agent-server/
   server.js                           app.use('/builder/mcp', …)
   builder/environments.js             the environments (Origin, Lybi Staging, …) — §3.10
   alfred/services/alfredTools.js      the readers it wraps + READABLE_PREFIXES (shared allowlist)
-  builder/services/builderProjects.js hydrateProject · createProject · save*VersionAs · set*Active
+  builder/services/builderProjects.js hydrateProject · createProject · save*VersionAs · set*Active · setAgentCrewTree
+  builder/services/crewTree.js        the CREWS sidebar tree (#855): validate · merge · remap · render
   builder/services/mcpConversations.js  talking to an agent: start · one turn · state · user-reply
   builder/services/simulationJobs.js    simulation jobs: release · run in the background · status
   builder/routes/simulationsRoute.js    /api/simulations — Admin's list + the forward target

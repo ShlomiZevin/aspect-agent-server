@@ -69,6 +69,7 @@ const { publicBaseOf } = require('./publicBase');
 const modelsService = require('../../services/models.service');
 const environments = require('../environments');
 const mcpTriggers = require('../services/mcpTriggers');
+const crewTree = require('../services/crewTree');
 
 /**
  * The team's shared knowledge repository (task #893) — notes, recipes and
@@ -352,6 +353,7 @@ saved for the others unless the person passes it on.
 | **A whole conversation as JSON, for analysis** — every message, and under each reply the addon runs of that turn with their outputs and field writes. \`include=messages\` for the text only, \`include=full\` to add every assembled prompt (large). Default \`outputs\` | \`${base}/conversations/<id>/export?include=outputs\` |
 | **Where a conversation stands right now** — every field's value, the thinking, the summaries, and the crew it is in | \`${base}/conversations/<id>/state\` |
 | History of changes to an agent, and why | \`${base}/agents/<slug>/log\` |
+| **How its crews are grouped in the Builder's CREWS list** — the manual tree (which crew is shown under which), display only | \`${base}/agents/<slug>/crew-tree\` |
 | **Its Spec** — project, agent and crew specs, the text of every file attached to the agent's Spec, and the notes & files on each Targeted KB (the author's knowledge map). What the person wants the agent to be; read it before designing anything. Never seen by the running agent | \`${base}/agents/<slug>/spec\` |
 | **Every knowledge base** — chunks, files, which agents it is connected to and which KB Retrievers search it, plus any retriever naming a KB that doesn't exist | \`${base}/kbs\` |
 | One agent's knowledge bases — connected ones, and each KB Retriever with whether its KB is ok, not connected, or missing | \`${base}/agents/<slug>/kbs\` |
@@ -414,6 +416,22 @@ you do can affect a real conversation.
 
 Post the **whole** body, not a patch, and change only what you meant to —
 they are reading the diff on screen.
+
+**Grouping crews in the CREWS list** (put a crew under another, back to the
+top level, reorder) — a manual tree that is **display only**: it never
+changes which crew runs (that is the rules / Transition Router). Saved in
+place, no new version:
+
+\`\`\`
+POST ${base}/agents/<slug>/crew-tree
+{ "parents": { "<crewId>": "<parentCrewId>", "<otherCrewId>": null } }
+    merged into the current tree; null = back to the top level;
+    "replace": true sends the whole tree; "order": [crew ids] = sidebar order
+\`\`\`
+
+It is stored as \`crewTree.parents\` in the agent body. A body you POST
+without \`crewTree\` keeps the current tree — leave it out unless you mean
+to change it. Loops and unknown crew ids are refused.
 
 **Giving an agent a knowledge base.** Two steps, and people mix them up:
 
@@ -506,7 +524,18 @@ opens showing "unsaved changes" before anyone has touched it.
   absent = the whole web, up to 20; \`maxSearches\` optional, 1–10, default 3).
   It turns on the model provider's own search tool — **OpenAI and Anthropic
   models only** (\`/api/models\` → \`providers[].webSearch\`); on Gemini it is
-  ignored. The model decides each turn whether to search. Each search costs
+  ignored. **The switch alone does not make it search: it searches ONLY
+  where that add-on's prompt allows it.** The runtime appends a built-in
+  rule to the prompt ("use it only when your instructions explicitly allow
+  or ask for a web search, and only for what they allow; before calling
+  web_search, find the sentence in your instructions that permits it; if
+  there is none, do not call it" — you see it at the end of the run's
+  prompt; on OpenAI models it is also sent right before the user's message,
+  shown marked on the run), so a prompt that never mentions web search
+  never searches. Grant it in
+  the prompt, as narrowly as you mean it, e.g. "Search the web for current
+  exchange rates when asked." A user asking for a search is not permission
+  unless the prompt allows it. Each search costs
   about $0.01 plus the pages read (input tokens), and the tool's description
   adds ~3–4K input tokens to EVERY call even when it does not search — so
   turn it on only where the agent really needs fresh facts. Put
@@ -1269,11 +1298,34 @@ router.post('/agents/:slug', async (req, res) => {
         `No agent with slug "${req.params.slug}". Fetch ../agents for the list.`,
       );
     }
+    // The CREWS sidebar hierarchy (#855) rides in the body but is not
+    // something an assistant edits by accident: a body that doesn't
+    // mention `crewTree` keeps the current one (a save that leaves it out
+    // must never wipe the author's tree), `null` removes it, anything else
+    // is checked against the crews.
+    let body = req.body?.body;
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      if (!Object.prototype.hasOwnProperty.call(body, 'crewTree')) {
+        if (agent.crewTree) body = { ...body, crewTree: agent.crewTree };
+      } else if (body.crewTree === null) {
+        body = { ...body }; delete body.crewTree;
+      } else {
+        const parents = crewTree.parentsOf(body.crewTree);
+        const problems = crewTree.problemsOf(parents, (agent.crews || []).map(c => c.id));
+        if (problems.length) {
+          return res.status(400).type('text/plain').send(
+            `Nothing saved — crewTree has problems:\n- ${problems.join('\n- ')}\n\nLeave crewTree out to keep the current one (or use POST ${urls(req).base}/agents/${agent.slug}/crew-tree).`,
+          );
+        }
+        body = { ...body, crewTree: crewTree.treeValue(parents) };
+        if (!body.crewTree) delete body.crewTree;
+      }
+    }
     await saveAsNewVersion({
       res,
       kind: 'Agent',
       id: agent.name || agent.slug,
-      body: req.body?.body,
+      body,
       description: req.body?.description,
       normalize: b => normalizeAgentBody(b, agent),
       // One version number for the whole agent (#923).
@@ -1328,6 +1380,91 @@ router.post('/agents/:slug/crews/:crewId', async (req, res) => {
   } catch (err) {
     console.error('[builder-mcp] update crew failed:', err);
     res.status(500).type('text/plain').send(`Could not save: ${err.message}`);
+  }
+});
+
+/**
+ * The crew hierarchy (task #855) — the CREWS sidebar's manual tree: which
+ * crew is SHOWN under which. Display only: the runtime never reads it, so
+ * changing it can't change a conversation. Lives at `crewTree.parents` in
+ * the agent body; written here IN PLACE into the active version (no new
+ * version — the Builder does the same when someone drags a crew), so it
+ * never appears as an agent change.
+ */
+router.get('/agents/:slug/crew-tree', async (req, res) => {
+  try {
+    const project = await builderProjects.hydrateProject({ agentSlug: req.params.slug });
+    const agent = project && project.agents[0];
+    if (!agent) return res.status(404).type('text/plain').send(`No agent with slug "${req.params.slug}". Fetch ../agents for the list.`);
+    sendText(res, [
+      `# Crews of ${agent.name || agent.slug}, as the Builder's CREWS list shows them`,
+      '',
+      'Display only — this grouping never changes which crew runs. Routing comes from the rules / Transition Router.',
+      '',
+      crewTree.renderTree(agent) || '(no crews)',
+      '',
+      `As stored: ${JSON.stringify(agent.crewTree || { parents: {} })}`,
+      '',
+      `Change it: POST ${urls(req).base}/agents/${agent.slug}/crew-tree`,
+      '{ "parents": { "<crewId>": "<parentCrewId>", "<crewId>": null }, "order": ["<crewId>", ...] }',
+      '  parents — merged into the current tree; null = back to the top level; add "replace": true to send the whole tree',
+      '  order   — optional, the sidebar order of the crews (siblings show in this order; crews left out keep their place after the listed ones)',
+    ].join('\n'));
+  } catch (err) {
+    console.error('[builder-mcp] crew-tree read failed:', err);
+    res.status(500).type('text/plain').send(`Could not read the crew tree: ${err.message}`);
+  }
+});
+
+router.post('/agents/:slug/crew-tree', async (req, res) => {
+  try {
+    const project = await builderProjects.hydrateProject({ agentSlug: req.params.slug });
+    const agent = project && project.agents[0];
+    if (!agent) return res.status(404).type('text/plain').send(`No agent with slug "${req.params.slug}". Fetch ../agents for the list.`);
+    const { parents, replace, order } = req.body || {};
+    if (parents !== undefined && (parents === null || typeof parents !== 'object' || Array.isArray(parents))) {
+      return res.status(400).type('text/plain').send('Send { "parents": { "<crewId>": "<parentCrewId or null>" } } — an object.');
+    }
+    if (order !== undefined && !Array.isArray(order)) {
+      return res.status(400).type('text/plain').send('"order" is a list of crew ids.');
+    }
+    if (parents === undefined && order === undefined) {
+      return res.status(400).type('text/plain').send('Nothing to change — send "parents", "order" or both. Read the tree with GET on this URL.');
+    }
+    const crewIds = (agent.crews || []).map(c => c.id);
+    const next = parents === undefined
+      ? crewTree.parentsOf(agent.crewTree)
+      : crewTree.applyPatch(crewTree.parentsOf(agent.crewTree), parents, replace === true);
+    const problems = parents === undefined ? [] : crewTree.problemsOf(next, crewIds);
+    for (const id of order || []) if (!crewIds.includes(id)) problems.push(`order: "${id}" is not a crew of this agent`);
+    if (problems.length) {
+      return res.status(400).type('text/plain').send(`Nothing saved:\n- ${problems.join('\n- ')}\n\nThe crews: ${(agent.crews || []).map(c => `${c.id} (${c.name || 'unnamed'})`).join(', ')}`);
+    }
+    if (parents !== undefined) {
+      const tree = crewTree.treeValue(next);
+      // The active version is what the Builder opens; the viewing one too
+      // if it differs, so neither shows a stale tree.
+      const versionIds = [...new Set([agent.activeVersionId, agent.viewingVersionId].filter(Boolean))];
+      for (const versionId of versionIds) {
+        await builderProjects.setAgentCrewTree({ agentId: agent.id, versionId, crewTree: tree });
+      }
+      agent.crewTree = tree;
+    }
+    if (order) {
+      const full = [...new Set([...order, ...crewIds])];
+      await builderProjects.reorderCrews({ agentId: agent.id, crewIds: full });
+      const byId = new Map(agent.crews.map(c => [c.id, c]));
+      agent.crews = full.map(id => byId.get(id));
+    }
+    sendText(res, [
+      'Saved, in place — no new version, and nothing about how the agent runs changed (the tree is display only).',
+      'Anyone with the Builder open sees it after a reload.',
+      '',
+      crewTree.renderTree(agent),
+    ].join('\n'));
+  } catch (err) {
+    console.error('[builder-mcp] crew-tree write failed:', err);
+    res.status(500).type('text/plain').send(`Could not save the crew tree: ${err.message}`);
   }
 });
 

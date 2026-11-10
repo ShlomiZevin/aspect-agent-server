@@ -236,6 +236,9 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       // vanishes on the next load. Any new AgentBody section needs a
       // line here as well as in the client's `bodyOfAgent`.
       triggers:        agentBody.triggers,
+      // CREWS sidebar hierarchy (#855) — display only, the runtime never
+      // reads it. Same one-by-one rule as triggers above.
+      crewTree:        agentBody.crewTree,
       crews,
       versions: agentVersions.map(v => ({
         id:           v.id,
@@ -481,6 +484,25 @@ async function createProject({
 // ─── Agent version actions ────────────────────────────────────────
 
 async function saveAgentVersion({ agentId, versionId, body }) {
+  await drizzle()
+    .update(builderAgentVersions)
+    .set({ body, updatedAt: new Date() })
+    .where(and(
+      eq(builderAgentVersions.id, versionId),
+      eq(builderAgentVersions.agentId, agentId),
+    ));
+}
+
+/**
+ * Write ONLY `crewTree` (the CREWS sidebar hierarchy, #855) into one agent
+ * version body, in place — every other key untouched, merged in SQL so it
+ * can't race a read-modify-write. `crewTree` null/undefined removes the key
+ * (empty == absent). Display only: no new version, nothing the runtime reads.
+ */
+async function setAgentCrewTree({ agentId, versionId, crewTree }) {
+  const body = crewTree
+    ? sql`jsonb_set(${builderAgentVersions.body}, '{crewTree}', ${JSON.stringify(crewTree)}::jsonb, true)`
+    : sql`${builderAgentVersions.body} - 'crewTree'`;
   await drizzle()
     .update(builderAgentVersions)
     .set({ body, updatedAt: new Date() })
@@ -1051,7 +1073,9 @@ async function resolveRunnable({
  * Crews are new DB rows, so every crew-id reference inside the copied
  * JSON is remapped to the new crew ids:
  *   - agentBody.defaultCrewId
+ *   - agentBody.crewTree (the sidebar hierarchy, #855)
  *   - Transition Router addon `config.target` (crew id)
+ *   - Rules addon `transition` actions' `target` (crew id)
  *
  * Field / enum / snippet ids and addon instanceIds are kept as-is —
  * they're internal JSON keys, consistent within the copy. KB namespace
@@ -1088,7 +1112,9 @@ async function duplicateProject({ projectId, newSlug, newName, workspaceId }) {
   if (!srcAgentVer) { const e = new Error('Agent has no active version'); e.code = 'not_found'; throw e; }
 
   const srcCrews = await d.select().from(builderCrews)
-    .where(eq(builderCrews.agentId, srcAgent.id));
+    .where(eq(builderCrews.agentId, srcAgent.id))
+    // Sidebar order, same as hydrateProject — the copy gets it as `position`.
+    .orderBy(sql`${builderCrews.position} ASC NULLS LAST`, builderCrews.createdAt);
 
   // Build crew-id remap + grab each crew's active body up front.
   const crewIdMap = {};       // oldCrewId -> newCrewId
@@ -1115,6 +1141,16 @@ async function duplicateProject({ projectId, newSlug, newName, workspaceId }) {
       if (Array.isArray(a.excludedCrewIds) && a.excludedCrewIds.length > 0) {
         out = { ...out, excludedCrewIds: a.excludedCrewIds.map(id => crewIdMap[id]).filter(Boolean) };
       }
+      // A Rules addon's `transition` actions name a crew too. Unmapped, the
+      // copy's rules sent its conversations to the SOURCE agent's crews
+      // (found while testing #855 on a duplicate: the turn produced no reply).
+      if (a.pluginId === 'rules' && Array.isArray(a.config?.rules)) {
+        out = { ...out, config: { ...out.config, rules: a.config.rules.map(r => (!r || !Array.isArray(r.actions)) ? r : {
+          ...r,
+          actions: r.actions.map(act => (act && act.type === 'transition' && crewIdMap[act.target])
+            ? { ...act, target: crewIdMap[act.target] } : act),
+        }) } };
+      }
       return out;
     });
   };
@@ -1132,6 +1168,11 @@ async function duplicateProject({ projectId, newSlug, newName, workspaceId }) {
     agentBody.defaultCrewId = crewIdMap[agentBody.defaultCrewId];
   }
   if (Array.isArray(agentBody.cortex)) agentBody.cortex = remapAddons(agentBody.cortex);
+  // The CREWS sidebar hierarchy (#855) names crews on both sides.
+  if (agentBody.crewTree) {
+    const remapped = require('./crewTree').remapTree(agentBody.crewTree, crewIdMap);
+    if (remapped) agentBody.crewTree = remapped; else delete agentBody.crewTree;
+  }
 
   const resolvedWorkspaceId = workspaceId !== undefined
     ? (workspaceId || null)
@@ -1171,6 +1212,10 @@ async function duplicateProject({ projectId, newSlug, newName, workspaceId }) {
         agentId:          newAgentId,
         activeVersionId:  newCrewVerId,
         viewingVersionId: newCrewVerId,
+        // Keep the sidebar order (#855): the copy's crews are created in
+        // one transaction with ~equal createdAt, so without this their
+        // order — and the crew tree's sibling order — came out arbitrary.
+        position:         srcCrews.indexOf(c),
       });
       await tx.insert(builderCrewVersions).values({
         id: newCrewVerId,
@@ -1212,6 +1257,7 @@ module.exports = {
   deleteAgentVersion,
   deleteCrewVersion,
   saveAgentVersion,
+  setAgentCrewTree,
   nextAgentWideNumber,
   saveAgentVersionAs,
   setAgentActive,

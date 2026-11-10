@@ -560,7 +560,12 @@ class OpenAIService {
       console.log(`🤖 Crew streaming with inline prompt (${fullInstructions.length} chars), ${tools.length} tools, ${historyMessages.length} history messages`);
 
       let maxIterations = 10;
-      let currentInput = [...historyMessages, currentUserMessage];
+      // Web search (#967): the permission rule again as the LAST instruction
+      // before the user message — gpt-5.6-terra ignored it in `instructions`
+      // alone (staging, 2026-11-10). See services/webSearch.js.
+      let currentInput = webSearch
+        ? [...historyMessages, webSearchLib.openaiRuleItem(), currentUserMessage]
+        : [...historyMessages, currentUserMessage];
 
       // Accumulated ACROSS every iteration of the tool loop, not reset per
       // iteration — a turn that calls a tool (every BI chat agent's single
@@ -1069,6 +1074,9 @@ class OpenAIService {
           input.push({ role: m.role, content: [{ type: contentType, text: m.content }] });
         }
       }
+      // Web search (#967): the permission rule again, right before the user
+      // message (see the streaming path).
+      if (webSearch) input.push(webSearchLib.openaiRuleItem());
       if (message) {
         input.push({ role: 'user', content: [{ type: 'input_text', text: message }] });
       }

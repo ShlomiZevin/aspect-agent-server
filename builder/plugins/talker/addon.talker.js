@@ -11,7 +11,7 @@
 const { registerPlugin } = require('../../runtime/pluginRegistry');
 const descriptor = require('../../addons/talker.addon.json');
 const modelsService = require('../../../services/models.service');
-const { normalizeWebSearch, createCollector } = require('../../../services/webSearch');
+const { webSearchFor, createCollector } = require('../../../services/webSearch');
 
 const TALKER_PLUGIN_ID = descriptor.pluginId;
 
@@ -39,12 +39,11 @@ async function run(ctx) {
   let usageData = null;
 
   // Web search switch (task #967): the provider's own search tool, on when
-  // the author turned it on AND the model's provider has one. The model
-  // decides each turn whether to search; each search is shown live
-  // (`addon.websearch`) and lands on the run card.
-  const webSearch = modelsService.supportsWebSearch(modelString)
-    ? normalizeWebSearch(instance.config?.webSearch)
-    : null;
+  // the author turned it on AND the model's provider has one. The runner
+  // has already appended the permission rule to `prompt` (search only where
+  // the prompt allows it). Each search is shown live (`addon.websearch`)
+  // and lands on the run card.
+  const webSearch = webSearchFor(instance, modelString);
   const searches = createCollector();
   // Time-to-first-token — perceived latency, the moment text starts
   // appearing in the chat. Distinct from total stream duration
@@ -156,6 +155,8 @@ async function run(ctx) {
 registerPlugin({
   id:                 descriptor.pluginId,
   allowedOutputTypes: descriptor.allowedOutputTypes,
+  // #967: the runner appends the web search permission rule to the prompt.
+  webSearch:          true,
   run,
 });
 

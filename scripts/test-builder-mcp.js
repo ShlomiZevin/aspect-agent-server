@@ -25,6 +25,7 @@ const errorCenter = require('../builder/services/errorCenter');
 const TEST_SLUG = 'zz-mcp-test';
 const BORN_CLEAN_SLUG = 'zz-mcp-born-clean';
 const TEST_KB = 'zz-mcp-battery-kb'; // made and wiped by the #949 checks
+const TREE_CREWS = ['crew_zzmcptree1', 'crew_zzmcptree2']; // made and deleted by the #855 checks
 
 let fails = 0;
 function check(name, cond, extra = '') {
@@ -63,6 +64,7 @@ function bodyOfAgent(a) {
       ? { profiler: a.profiler } : {}),
     ...((a.triggers?.triggers?.length || a.triggers?.enabled === false)
       ? { triggers: a.triggers } : {}),
+    ...(Object.keys(a.crewTree?.parents ?? {}).length ? { crewTree: a.crewTree } : {}),
   };
 }
 
@@ -402,6 +404,50 @@ async function removeIfPresent(slug) {
     check('…with its number', head.number === agentNum, `v${head.number}`);
     check('head of an unknown agent is null', (await bp.agentHead({ agentSlug: 'zz-no-such-agent' })) === null);
 
+    // ── crew tree (#855) — the CREWS sidebar's display-only hierarchy ──
+    // Two extra crews on the test agent (deleted again in `finally`).
+    section('crew tree (#855)');
+    check('entry page teaches the crew tree', doc.text.includes(`${base}/agents/<slug>/crew-tree`) && doc.text.includes('display only'));
+    const t0 = (await hydrate(TEST_SLUG)).agents[0];
+    const parentId = t0.crews[0].id;
+    for (const id of TREE_CREWS) {
+      await bp.createCrew({ agentId: t0.id, crewId: id, versionId: `ver_${id.slice(5)}`, body: { name: id, description: '', spec: '', addons: [], fields: [] } });
+    }
+    const [kidA, kidB] = TREE_CREWS;
+    const tv0 = (await hydrate(TEST_SLUG)).agents[0];
+    const nested = await post(`/agents/${TEST_SLUG}/crew-tree`, { parents: { [kidA]: parentId, [kidB]: kidA } });
+    const tv1 = (await hydrate(TEST_SLUG)).agents[0];
+    check('write → 200, shows the tree', nested.status === 200 && nested.text.includes(`  - ${kidA}`) && nested.text.includes(`    - ${kidB}`), nested.text.slice(0, 200));
+    check('stored as crewTree.parents', tv1.crewTree?.parents?.[kidA] === parentId && tv1.crewTree?.parents?.[kidB] === kidA, JSON.stringify(tv1.crewTree));
+    check('in place — no new version', tv1.versions.length === tv0.versions.length && tv1.activeVersionId === tv0.activeVersionId);
+    check('no phantom "unsaved changes" after a tree write', agentDirty(tv1).length === 0, agentDirty(tv1).join(', '));
+    const treeRead = await get(`/agents/${TEST_SLUG}/crew-tree`);
+    check('read → indented tree', treeRead.status === 200 && treeRead.text.includes(`    - ${kidB}`));
+    const loop = await post(`/agents/${TEST_SLUG}/crew-tree`, { parents: { [parentId]: kidB } });
+    check('a loop is refused, nothing changed', loop.status === 400 && /loop/.test(loop.text)
+      && !(await hydrate(TEST_SLUG)).agents[0].crewTree.parents[parentId], loop.text.slice(0, 120));
+    check('an unknown crew is refused', (await post(`/agents/${TEST_SLUG}/crew-tree`, { parents: { crew_nope: parentId } })).status === 400);
+    // A whole-body save that does not mention crewTree must keep it (#965-style wipe).
+    const keepBody = JSON.parse(JSON.stringify(tv1.versions.find(v => v.id === tv1.activeVersionId).body));
+    delete keepBody.crewTree;
+    keepBody.spec = `Tree battery at ${stamp}`;
+    const kept = await post(`/agents/${TEST_SLUG}`, { body: keepBody, description: 'battery (tree kept)' });
+    const tv2 = (await hydrate(TEST_SLUG)).agents[0];
+    check('a body save without crewTree KEEPS the tree', kept.status === 200 && tv2.crewTree?.parents?.[kidB] === kidA, JSON.stringify(tv2.crewTree));
+    const badBody = { ...keepBody, crewTree: { parents: { [kidA]: kidA } } };
+    check('a body save with a bad crewTree is refused', (await post(`/agents/${TEST_SLUG}`, { body: badBody })).status === 400);
+    const moved = await post(`/agents/${TEST_SLUG}/crew-tree`, { parents: { [kidB]: null }, order: [kidB, parentId, kidA] });
+    const tv3 = (await hydrate(TEST_SLUG)).agents[0];
+    check('null = back to top level; order reorders', moved.status === 200 && !tv3.crewTree.parents[kidB]
+      && tv3.crews.map(c => c.id).filter(id => [kidB, parentId, kidA].includes(id)).join() === [kidB, parentId, kidA].join(), tv3.crews.map(c => c.id).join());
+    const cleared = await post(`/agents/${TEST_SLUG}/crew-tree`, { parents: {}, replace: true });
+    const tv4 = (await hydrate(TEST_SLUG)).agents[0];
+    check('replace with {} clears it (empty == absent)', cleared.status === 200 && tv4.crewTree === undefined
+      && !('crewTree' in tv4.versions.find(v => v.id === tv4.activeVersionId).body));
+    const runtimeDir = require('path').join(__dirname, '..', 'builder', 'runtime');
+    check('the runtime never reads it', !require('fs').readdirSync(runtimeDir).filter(f => f.endsWith('.js'))
+      .some(f => /crewTree/.test(require('fs').readFileSync(require('path').join(runtimeDir, f), 'utf8'))));
+
     // ── create ──
     section('create');
     await removeIfPresent(BORN_CLEAN_SLUG);
@@ -607,9 +653,15 @@ async function removeIfPresent(slug) {
     check('entry page teaches the Web search switch',
       doc.text.includes('config.webSearch') && doc.text.includes('allowedDomains')
       && doc.text.includes('maxSearches') && doc.text.includes('addon.websearch'));
+    // #967 (Noa's review): the switch is not enough — the prompt must allow it.
+    check('entry page teaches that web search needs permission in the prompt',
+      /searches ONLY\s+where that add-on's prompt allows it/.test(doc.text)
+      && doc.text.includes('Search the web for current'));
     const addonsPage = await get('/addons');
     check('/addons describes webSearch on the Talker and the Thinker',
       addonsPage.status === 200 && (addonsPage.text.match(/config\.webSearch/g) || []).length >= 2);
+    check('/addons says the Talker and the Thinker search only where the prompt allows it',
+      (addonsPage.text.match(/searches ONLY where this prompt allows it/g) || []).length >= 2);
     check('entry page opens with which environment this is', doc.text.includes('## Environments'));
     const envRes = await get('/environments');
     const envs = envRes.status === 200 ? JSON.parse(envRes.text) : null;
@@ -658,6 +710,10 @@ async function removeIfPresent(slug) {
     fails++;
   } finally {
     await removeIfPresent(BORN_CLEAN_SLUG).catch(() => {});
+    for (const id of TREE_CREWS) await bp.deleteCrew({ crewId: id }).catch(() => {});
+    // Leave the test agent's tree empty again (the tree names the deleted crews).
+    const tAgent = (await hydrate(TEST_SLUG).catch(() => null))?.agents?.[0];
+    if (tAgent?.crewTree) await bp.setAgentCrewTree({ agentId: tAgent.id, versionId: tAgent.activeVersionId, crewTree: null }).catch(() => {});
     await require('../services/kb.pinecone.service').deleteNamespaceByName(TEST_KB).catch(() => {});
     await db.query('delete from library_files where namespace = $1', [TEST_KB]).catch(() => {});
     if (simConvIds.length) {

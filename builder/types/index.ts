@@ -507,7 +507,11 @@ export interface FieldInterviewerConfig {
  * OpenAI and Anthropic models only: on a Gemini model the setting is kept
  * but ignored (the Builder shows the switch disabled).
  *
- * The model decides by itself, every turn, whether to search. A turn that
+ * The switch only makes the tool available: the model searches ONLY where
+ * the add-on's prompt allows it (e.g. "Search the web for current exchange
+ * rates when asked."). The runtime appends a built-in rule saying so
+ * (`WEB_SEARCH_RULE`, services/webSearch.js); a prompt that never mentions
+ * web search never searches. A turn that
  * does not search pays no search fee — but the tool's description is sent
  * with every request (measured 2026-11-08: about 2,800 input tokens on
  * Claude, 4,400 on GPT), so leave it off where it is never needed.
@@ -1224,8 +1228,32 @@ export type AgentBody = Pick<
   'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
   | 'fields' | 'domains' | 'tags' | 'parameters' | 'enums'
   | 'cortex' | 'snippets' | 'personas' | 'liveBrain' | 'profiler'
-  | 'triggers'
+  | 'triggers' | 'crewTree'
 >;
+
+/**
+ * The crew hierarchy in the Builder's CREWS sidebar (task #855) — a
+ * MANUAL, DISPLAY-ONLY organisation: which crew is shown under which.
+ *
+ * It never changes routing, transitions or anything the runtime does.
+ * The runtime does not read it; transitions come from the rules and
+ * Transition Router addons exactly as before. It exists only so an
+ * author with many crews can see "these come after the routing crew".
+ *
+ * `parents` maps a crew id to the crew it is shown under. A crew not
+ * listed (or whose parent no longer exists, or that sits in a loop) is
+ * shown at the top level. Sibling ORDER is not here — it is the crews'
+ * order (`AgentDoc.crews`, the `position` column the sidebar drag
+ * already writes).
+ *
+ * Saved IN PLACE into the agent's current version body (no new version,
+ * no "unsaved changes") — organising the list is not an edit to the
+ * agent. It still travels with the body, so duplicate / copy-agent /
+ * new versions carry it. Empty == absent.
+ */
+export interface CrewTreeDef {
+  parents: Record<ID, ID>;
+}
 
 // ─── Triggers (proactive) ──────────────────────────────────────────
 // Rules that make the agent act with NO user message. Authored on the
@@ -1799,6 +1827,11 @@ export interface AgentDoc {
    * `{ triggers: [] }`.
    */
   triggers?: TriggersDef;
+  /**
+   * The CREWS sidebar hierarchy — display only, the runtime ignores it.
+   * See {@link CrewTreeDef}. Optional; absence = every crew top level.
+   */
+  crewTree?: CrewTreeDef;
   /**
    * The crews that belong to this agent. NOT part of the agent
    * version body — crews are their own versioned entities and live

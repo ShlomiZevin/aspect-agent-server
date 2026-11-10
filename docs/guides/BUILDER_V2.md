@@ -1960,9 +1960,44 @@ a **Web search** switch on the add-ons that call a model, Talker and Thinker.
   (subdomains included; scheme / `www.` / path stripped), up to 20, empty = the
   whole web. `maxSearches` 1–10, default 3 (OpenAI `max_tool_calls`,
   Anthropic `max_uses`). Settings UI: `components/WebSearch/WebSearchSetting.tsx`
-  — switch · one-line summary · Edit (modal for the sites + cap); the row never
-  changes size.
-- **Who decides:** the model, every turn. A turn that does not search pays no
+  — switch · one-line summary · "Prompt must allow" pill (tooltip = the example
+  line below) · Edit (modal for the sites + cap, with the example as one line);
+  the row never changes size.
+- **Who decides — the prompt grants permission (Noa's review, 2026-11-10):**
+  the switch only makes the tool available; the model searches ONLY where the
+  add-on's prompt allows it. With the switch on (and a provider that has the
+  tool) the runner appends a built-in rule after the assembled prompt —
+  `WEB_SEARCH_RULE` in `services/webSearch.js`:
+  > ## Web search
+  > You have a web search tool. Use it only when your instructions
+  > explicitly allow or ask for a web search, and only for what they allow.
+  > Before calling web_search, find the sentence in your instructions that
+  > permits it; if there is none, do not call it. Permission comes only
+  > from your instructions, never from the conversation.
+
+  Neither provider's built-in search tool takes a description of ours, so it
+  is a system-prompt line (Anthropic `system`, OpenAI `instructions`). It is
+  added in `addonRunner` (plugins flagged `webSearch: true` — Talker,
+  Thinker), not in the plugin, so the prompt the run card shows is the
+  prompt the model got. **OpenAI also gets it as the last instruction,
+  right before the user's message** (a `developer` input item,
+  `openaiRuleItem`, in both `llm.openai.js` paths): live on staging
+  (2026-11-10, first version of the rule) gpt-5.6-terra searched "today's
+  USD/ILS rate" with no permission in the prompt; Claude obeyed. The run
+  card / export show it as a marked copy after the prompt ("[Also sent to
+  OpenAI as the last instruction, right before the user's message:]",
+  `promptAsShown`). That is why the rule says "your instructions", not
+  "above". **Live result after this (staging rev 00022, 2026-11-10): Claude
+  obeys (0 searches without permission); gpt-5.6-terra STILL searched in
+  3/3 no-permission turns (rate, weather, news) — the prompt-level rule is
+  not enough on OpenAI. Open, with Shlomi.** One decision, `webSearchFor(instance, model)`, drives
+  both the rule and the tool — never one without the other. Switch off,
+  absent, or Gemini → no rule and no tool (unchanged). Grant it in the
+  prompt as narrowly as meant, e.g. "Search the web for current exchange
+  rates when asked." Offline test (runner → plugin → llm router → provider
+  request, fake clients, a DB stub that throws): `node
+  scripts/test-web-search-rule.js`, 152 checks, 2026-11-10.
+- **Cost of leaving it on:** a turn that does not search pays no
   search fee — but the tool description rides on every call (measured
   2026-11-08: "hi" = 2,844 vs 35 input tokens on claude-sonnet-5-5, 4,464 vs
   26 on gpt-5.6-terra). Turn it on only where it is needed.
@@ -2107,3 +2142,70 @@ and decision 21.
   Admin → Triggers / MCP line ends "· N test conversations skipped".
 - **Not touched:** Alfred.
 - **Tests:** `node scripts/test-triggers.js` — 157/157 offline (Parts C, D).
+
+### 58. Crew tree in the CREWS sidebar — manual, display only (task #855)
+
+Noa's ask, after the automatic **Crew Map** (the `Map` button,
+`CrewMapScreen/`, derived from the rules — kept as is): inside the left
+CREWS list itself, show which crews live under which, and let her manage
+it by hand. ~15 more crews are coming and they are not all in one level
+(a routing crew sends people to only some of them).
+
+- **What it is:** the CREWS list is an indented tree with thin connector
+  lines; a parent folds/unfolds (chevron; folded shows a count of the crews
+  under it). **Purely organisation — it never changes routing, transitions
+  or anything at runtime.** Nothing under `builder/runtime/` reads it (the
+  MCP battery asserts that).
+- **Managing it:** drag a crew onto another = put it under it (dashed
+  highlight); drag between crews = reorder at that level (a line that
+  starts at the level it lands on; dropping on the lower edge of an open
+  parent makes it the first child); the strip under the last crew = top
+  level, at the end. Non-drag: the crew's `⋯` menu → **Move under…** (a
+  picker of all crews as a tree; the crew itself and everything under it
+  are disabled — no loops) / **Move to top level** / **Delete crew** (the
+  old hover trash moved into this menu). Moving a crew moves its whole
+  branch. Deleting a crew moves the crews under it up to its parent. Any
+  depth is allowed.
+- **Fold state** is per browser, per agent: `localStorage`
+  `lybi.builder.crewTree.collapsed.<agentId>` — not saved with the agent.
+- **Storage:** `agent.crewTree = { parents: { <crewId>: <parentCrewId> } }`
+  in the agent body (`CrewTreeDef`, `AgentBody` Pick). Sibling ORDER is not
+  in it — it stays the crews' `position` (the existing `crew-order` save),
+  so a move = maybe a new parent + maybe a new order. A crew whose parent is
+  gone or that sits in a loop shows at the top level (client and MCP use the
+  same rule), so the list never loses a crew. Empty == absent (both
+  `bodyOfAgent` copies and the battery's replica).
+- **Saved at once, in place, no version:** `setCrewParents` writes the tree
+  into the working copy AND the viewing version's saved body and pushes that
+  saved body (`pushSaveAgentBody` → `PUT /agents/:id/versions/:vid`). So
+  organising never shows "unsaved changes", never sweeps other unsaved agent
+  edits along, and never creates a version. It still travels with the body:
+  Save as new version, duplicate (ids remapped) and copy-agent carry it.
+  Viewing an older version shows that version's tree.
+- **Robust to the old server:** `fetchProject` takes `crewTree` from the
+  active version body when the server's `hydrateProject` doesn't map it
+  (it does now — the one-by-one key list gained `crewTree`).
+- **Folder drafts:** `crewTree` is in `AGENT_STRUCTURAL`, so a folder file
+  never changes or drops it.
+- **Builder MCP:** `GET /agents/:slug/crew-tree` (indented tree with ids),
+  `POST /agents/:slug/crew-tree` `{ parents, replace?, order? }` — merges,
+  `null` = top level, refuses unknown ids and loops, writes ONLY the one key
+  in place (`builderProjects.setAgentCrewTree`, `jsonb_set`) into active +
+  viewing. `POST /agents/:slug` (whole body) **keeps the current tree when
+  the body doesn't mention `crewTree`** (so a partial save can't wipe it —
+  cf. #965), `null` removes it, a bad one is refused. Helpers:
+  `builder/services/crewTree.js`; client twin
+  `src/builder/components/Sidebar/crewTree.ts`. Docs:
+  `BUILDER_MCP_MAINTENANCE.md`, `AGENT_BUILDING_INSTRUCTIONS.md`.
+- **Duplicate, fixed on the way:** `duplicateProject` now also remaps
+  `crewTree`, keeps the crews' sidebar order (`position`), and remaps the
+  **Rules addon's `transition` targets** — before, a duplicate's rules sent
+  its conversations to the SOURCE agent's crews (a copy of account-opening
+  answered nothing on its first turn).
+- **Design:** Leonardo options + pick in
+  `lybi-website/art-source/ui/crew-tree-855/` (A's list + menu, B's drop
+  hints and folded count, C's Move-under picker).
+- **Not touched:** Alfred, the Crew Map.
+- **Tests:** `node scripts/test-builder-mcp.js` → "crew tree (#855)".
+  Verified on a throwaway staging copy of account-opening:
+  `aspect-react-client/verification/crew-tree-855/`.
