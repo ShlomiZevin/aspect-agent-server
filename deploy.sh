@@ -27,10 +27,17 @@ MEMORY=4Gi
 
 case "$TARGET" in
   aspect)
+    # Aspect's own server (2026-11-11). The Origin service it replaced,
+    # aspect-agent-server, stays frozen as Lybi's benchmark: no target deploys it.
+    # Half the production size: by day the old 2 vCPU / 4 GiB box used under
+    # 30% CPU and 15% memory; only the nightly imports fill it, and they still
+    # finish before morning on one vCPU (30-day metrics, 2026-11-11).
     PROJECT_ID="aspect-agents"
-    SERVICE_NAME="aspect-agent-server"
+    SERVICE_NAME="aspect-server"
     CLOUD_SQL_INSTANCES="aspect-agents:europe-west1:aspect-agents-db,aspect-agents:europe-west1:aspect-data-db"
     ENV_FILE=".env.production.aspect"
+    CPU=1
+    MEMORY=2Gi
     ;;
   freeda)
     PROJECT_ID="menopause-bot"
