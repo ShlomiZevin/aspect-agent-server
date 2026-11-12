@@ -5,7 +5,7 @@ reporting, projects, clients, quotes. Task #115, version 0. It replaces Monday
 and the like. **It is not related to any customer**, so it has no dataset, no
 customer schema and no agent.
 
-The UI is at `/management`, in `aspect-agent-client-react/src/aspect-management/`.
+The UI is at `/aspect/management` (under `/aspect/` like every Aspect page — the client is shared with Lybi), in `aspect-agent-client-react/src/aspect-management/`.
 It is Hebrew only, and so are the messages this server sends back to it.
 
 ## Layout
@@ -60,10 +60,13 @@ open route that creates accounts would widen the gap to the rest of the platform
   engine would run generated SQL on the platform DB, where nothing stops a question
   reaching `users` or conversations, and these routes are open. It also answers
   on the last 45 days of time entries only.
-- The look is the platform's own (2026-11-12, Kosta): the dashboard's sidebar,
-  the shared AdminPage frame and buttons, theme-aspect colours, Heebo. The spec's
-  "Smart Ledger" look (ivory paper, serif, handwriting buttons) was dropped
-  because it did not read as part of the site.
+- The look is the "Smart Ledger" Itzik chose, built to the concept images
+  (`public/aspect-management/look/ledger-1..6.jpg`); a switch to the platform's
+  own look on 2026-11-12 was undone the same day. Screens with no concept
+  (sign-in, clients, team, settings) were drawn with GPT Image 2.5 flare /
+  sunburst on Leonardo first (`ledger-7..10`, prompts beside them).
+- Handwriting is Playpen Sans Hebrew. The spec's example, Amatic SC, was barely
+  legible in Hebrew at button size.
 - The nav has a seventh item, שואלים את המערכת, since the spec's nav list gives
   screen 6 no way in.
 
