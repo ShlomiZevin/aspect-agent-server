@@ -2209,3 +2209,58 @@ it by hand. ~15 more crews are coming and they are not all in one level
 - **Tests:** `node scripts/test-builder-mcp.js` → "crew tree (#855)".
   Verified on a throwaway staging copy of account-opening:
   `aspect-react-client/verification/crew-tree-855/`.
+
+### 59. Model taglines, a refreshed model list, and legacy models (task #975)
+
+Noa asked for every model's tagline to say what it is good and bad at, how
+fast it is and what it costs — relative to the other models in the list.
+
+- **Tagline format** (`notes` in `services/models.service.js`):
+  `<strength> — <weakness> · <speed> · <cost tier>`. The tier is computed
+  (`costTier()`), never typed: one typical live-chat call (4,000 input +
+  300 output tokens) at list price, cut at $0.0025 / $0.009 / $0.018 /
+  $0.035 → `$`…`$$$$$`. A price change moves the tier.
+- **Speed = time to the first word a chat customer sees**, thinking
+  included: Very fast < 1 s · Fast 1–2.5 s · Medium 2.5–5 s · Slow > 5 s;
+  "slow to start" = thinks before answering. Measured 2026-11-12 through
+  our own runtime (runAddon → Talker → `services/llm.js`, staging keys),
+  on a short question and on a real account-opening judgement turn. Claude
+  5.x and GPT-6.1 / 6 Astra think first (adaptive thinking / reasoning
+  effort default): 3–9 s on the judgement turn; Claude 4.x, GPT-5.6 Terra,
+  GPT-4o / 4o mini start in under 1–2.5 s. Shlomi's daily-use verdicts
+  win over a single measurement (Sonnet = Medium, Haiku = Fast, Opus =
+  Slow, Fable = only for complex code-heavy jobs).
+- **New:** `claude-fable-5-2` ($8/$40, replaces Fable 5.1) and
+  `gpt-6.1-terra` ($1/$5). Both proven through our adapters: streaming
+  Talker, Talker with web search, Thinker JSON one-shot. No adapter change
+  was needed (Fable is already in `acceptsTemperature`'s no-temperature
+  list; OpenAI's `reasoning: {}` = the model's default effort).
+- **`legacy: true`** — replaced by a newer model. Unlike `deprecated`
+  (hidden), a legacy model stays in `/api/models` and in every picker
+  (existing agents use it) but comes after the current ones, grey + italic:
+  `ModelPicker` puts them in a "Legacy" `<optgroup>` and greys the closed
+  select + caption ("Legacy · …") when one is chosen; the Admin "Model that
+  plays the user" pickers (Simulations, Load tests) list them last with a
+  "(legacy)" suffix. Native `<option>` styling works in Chromium on
+  Windows/Linux, not in macOS menus — hence the group / suffix. A provider
+  switch snaps to the first CURRENT model (`firstCurrentModel`).
+- **Add-on defaults are never legacy** (`gpt-5.6-terra` Talker,
+  `gpt-4o-mini` extractors, `claude-sonnet-4-6` Thinker / reasoner) — even
+  where a newer model exists. Moving a default is a separate decision.
+- **Gemini:** Google deprecated 2.5 Pro / 2.5 Flash (closed to new
+  accounts; from 2026-12-01 Google routes them to `gemini-3.8-flash` /
+  `gemini-3.5-flash-lite`). Both are legacy here. The successors are NOT
+  added: the staging Gemini key is out of prepaid credit (402), so they
+  could not be proven through `llm.google.js` (whose thinking-model check
+  only knows 2.5). Candidates, list price 2026-11-12: `gemini-4-argon`
+  ($2/$10 until 2026-11-30, then $4/$20), `gemini-3.8-flash` ($0.75/$3.75
+  until 2026-12-31, then $1.50/$7.50), `gemini-3.5-flash-lite`
+  ($0.30/$2.50). The 402 is now classified `model_no_credit` (error center).
+- **Also in step:** the Builder MCP entry page (how to read `notes` and
+  `legacy`), `src/pages/LybiCostPage.tsx` (its own price table — prices
+  re-verified, current models added).
+- **Not touched:** Alfred (its model advice in `alfredContext.js` still
+  names Fable 5.1 and suggests Sonnet / Haiku 5.5 as Talkers).
+- **Tests:** `scripts/test-builder-mcp.js` → "talking to an agent" (#975
+  checks: every listed model ends in a tier, legacy listed, current first,
+  defaults not legacy); `scripts/test-error-center.js` (Gemini 402).

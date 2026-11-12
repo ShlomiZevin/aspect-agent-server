@@ -549,9 +549,14 @@ opens showing "unsaved changes" before anyone has touched it.
   "Web search (OpenAI/Anthropic)" line on that add-on. A site that blocks
   Anthropic's crawler is dropped on Claude models (\`blockedDomains\`).
 - Models: read \`${origin}/api/models\` for the current list with prices
-  — never assume an id. GPT-6.1 Sol and GPT-6 Astra think before they
-  answer (~14 s to the first word): fine for a thinker or matcher, wrong
-  for a talker.
+  — never assume an id. Each model's \`notes\` is one line: strength —
+  weakness · speed · cost tier (\`$\`…\`$$$$$\`, relative to the list).
+  Speed is the wait until a chat customer sees the first word; "slow to
+  start" means it thinks before answering (Claude Opus / Fable / Sonnet
+  5.x, GPT-6.1 Sol / Terra, GPT-6 Astra: about 2–9 s on a real turn) —
+  fine for a Thinker or matcher, wrong for a Talker. \`legacy: true\` =
+  replaced by a newer model: it still runs (existing agents use it), but
+  don't pick it for new work unless the person asks.
 
 ## Testing an agent — talk to it yourself
 
@@ -597,8 +602,10 @@ POST ${base}/conversations/<conversationId>/messages
 \`reply\` is what the user would see. The rest is what the turn did:
 the crew that answered, the fields it wrote, a crew transition if one
 happened, and which addons ran. It is one ordinary request — no stream —
-and it returns when the turn is over, which can take half a minute.
-Send the next message only after the previous one has returned.
+and it returns when the turn is over — including the add-ons that run
+after the reply. A turn can take a minute or more on a big agent (several
+minutes on a heavy recommendation turn). Send the next message only after
+the previous one has returned.
 
 **3. Look at what happened**
 
@@ -639,7 +646,15 @@ the Builder. \`${base}/conversations/<id>/state\` says which it is.
 
 Scripts are for assistants that can run commands. Run them in the
 background and carry on talking to the person; check on them when they
-finish. Run a handful of conversations at once, not hundreds.
+finish.
+
+**Run the conversations of a batch at the same time, not one or two at a
+time.** A simulation is slow because each turn waits for the agent's models,
+not because of the server — conversations side by side don't slow each
+other. Ten conversations at once take about as long as one; two at a time
+take five times longer. Release every scenario of the batch together
+(10–15 at once is fine; it doubles as a robustness check), or have your
+script run all of them in parallel. Not hundreds — mind the limits below.
 
 **Simulations cost money and have daily limits.** Before a batch, read
 \`${base}/simulations/limits\`: today's turns, simulated-user lines and
@@ -681,8 +696,10 @@ and \`"maxTurns"\` (default 12, at most 30).
 \`status\` goes \`pending\` → \`running\` → \`completed\`, or \`failed\`
 (the reason is in \`error\`), or \`interrupted\` if the server restarted
 mid-run — the conversation up to then is kept; release it again. A turn
-takes up to half a minute, so check back every so often rather than in a
-tight loop, and talk to the person meanwhile.
+can take a minute or more, and a whole conversation often 10 minutes or
+more, so check back every minute or two rather than in a tight loop, and
+talk to the person meanwhile. Releasing a batch? Release all of it first,
+then check on all of them together.
 
 **Tell the person where to watch it:** in the Builder, Admin →
 Simulations, each one with its setup — who released it, the version, the

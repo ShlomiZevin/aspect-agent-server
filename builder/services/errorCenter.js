@@ -96,9 +96,10 @@ function classify(err) {
   if (/^[0-9A-Z]{5}$/.test(code) || /relation .* does not exist|duplicate key|violates .* constraint|database|connection terminated|too many clients/i.test(msg)) return 'database';
   // Out of prepaid credit at the provider (task #925). OpenAI sends it as a
   // 429, so it must be caught BEFORE the rate limit: retrying is pointless,
-  // and it stops every conversation until someone adds credit.
+  // and it stops every conversation until someone adds credit. Gemini says it
+  // as a 402 "Your prepayment credits are depleted" (seen on staging, #975).
   if (code === 'insufficient_quota' || code === 'credit_balance_exhausted'
-      || /insufficient_quota|credit_balance_exhausted|no credits remaining|credit balance is too low|exceeded your current quota|billing_hard_limit/i.test(msg)) return 'model_no_credit';
+      || /insufficient_quota|credit_balance_exhausted|no credits remaining|credit balance is too low|exceeded your current quota|billing_hard_limit|prepayment credits are depleted/i.test(msg)) return 'model_no_credit';
   // An addon run that returned but failed our checks (#920) — the model's
   // answer was cut off, empty or not JSON. A setup problem, not a bug.
   if (['output_cut_off', 'empty_output', 'bad_json'].includes(code)) return 'model_bad_answer';

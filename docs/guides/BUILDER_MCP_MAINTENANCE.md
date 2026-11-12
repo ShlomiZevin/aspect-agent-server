@@ -120,6 +120,12 @@ fixed script, or loops `user-reply`. Things to keep true:
 - **The default model for the simulated user is ONE constant** —
   `EVERYDAY_MODEL` in `services/models.service.js`. When the everyday GPT
   model changes, change it there; the entry page reads it.
+- **The model list is `/api/models`, never a copy** (task #975). The entry
+  page only explains how to read it: `notes` = strength — weakness · speed
+  · cost tier, `legacy: true` = replaced (still runs; not for new work).
+  When the tagline format or the legacy meaning changes, change the
+  "Models:" paragraph in `mcpRoute.js` and the #975 checks in
+  `test-builder-mcp.js` ("talking to an agent").
 - **The Admin Conversations screen** shows the kind (`source:
   'simulation'` from `GET /api/agents/:slug/admin/conversations`) as a
   "Simulated" tag and filter.

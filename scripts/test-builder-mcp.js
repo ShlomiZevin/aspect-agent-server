@@ -564,6 +564,17 @@ async function removeIfPresent(slug) {
     section('talking to an agent');
     check('entry page teaches testing', doc.text.includes('## Testing an agent') && doc.text.includes(`POST ${base}/agents/<slug>/conversations`));
     check('entry page names the default model', doc.text.includes(require('../services/models.service').EVERYDAY_MODEL));
+    // #975: model taglines + legacy models
+    check('entry page explains model notes and legacy models', doc.text.includes('strength —') && doc.text.includes('`legacy: true`'));
+    {
+      const ms = require('../services/models.service');
+      const listed = ms.listForApi().models;
+      check('every listed model has a tagline ending in a cost tier', listed.every(m => / · \${1,5}$/.test(m.notes || '')),
+        listed.filter(m => !/ · \${1,5}$/.test(m.notes || '')).map(m => m.id).join(', '));
+      check('legacy models are still listed (selectable)', listed.some(m => m.legacy));
+      check('every provider with a current model offers it first', ms.listForApi().providers.every(p => !p.models.some(m => !m.legacy) || !p.models[0].legacy));
+      check('defaults are current models, not legacy', ['gpt-5.6-terra', 'gpt-4o-mini', 'claude-sonnet-4-6', ms.EVERYDAY_MODEL].every(id => ms.getModel(id) && !ms.getModel(id).legacy));
+    }
     check('entry page teaches the shared knowledge', doc.text.includes('## The shared knowledge') && doc.text.includes('lybi-knowledge'));
     check('agent list ends with the knowledge reminder', (await get('/agents')).text.includes('lybi-knowledge'));
 

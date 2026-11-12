@@ -46,6 +46,7 @@ const kindOf = (msg, extra = {}) => errorCenter.classify(Object.assign(new Error
 check('429 → model_rate_limit', kindOf('Too Many Requests', { status: 429 }) === 'model_rate_limit');
 check('OpenAI out of credit (a 429) → model_no_credit, not a rate limit', kindOf('429 You have no credits remaining. Add credits to continue using the API', { status: 429 }) === 'model_no_credit');
 check('Anthropic out of credit → model_no_credit', kindOf('Your credit balance is too low to access the Anthropic API', { status: 400 }) === 'model_no_credit');
+check('Gemini out of prepaid credit (a 402) → model_no_credit (#975)', kindOf('Failed to stream Google response: {"error":{"code":402,"message":"Your prepayment credits are depleted. Please go to AI Studio","status":"RESOURCE_EXHAUSTED"}}', { status: 402 }) === 'model_no_credit');
 check('a cut-off add-on answer (#920) → model_bad_answer', kindOf('Stopped at the output limit', { code: 'output_cut_off' }) === 'model_bad_answer');
 check('rate limit text → model_rate_limit', kindOf('Rate limit reached for gpt-5') === 'model_rate_limit');
 check('timeout → model_timeout', kindOf('Request timed out') === 'model_timeout');
