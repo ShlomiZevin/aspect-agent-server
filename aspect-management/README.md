@@ -60,8 +60,10 @@ open route that creates accounts would widen the gap to the rest of the platform
   engine would run generated SQL on the platform DB, where nothing stops a question
   reaching `users` or conversations, and these routes are open. It also answers
   on the last 45 days of time entries only.
-- Handwriting is Playpen Sans Hebrew. The spec's example, Amatic SC, was barely
-  legible in Hebrew at button size.
+- The look is the platform's own (2026-11-12, Kosta): the dashboard's sidebar,
+  the shared AdminPage frame and buttons, theme-aspect colours, Heebo. The spec's
+  "Smart Ledger" look (ivory paper, serif, handwriting buttons) was dropped
+  because it did not read as part of the site.
 - The nav has a seventh item, שואלים את המערכת, since the spec's nav list gives
   screen 6 no way in.
 
