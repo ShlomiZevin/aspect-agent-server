@@ -35,6 +35,7 @@ async function ensureIndex({ pool, schema, idx, displayIdx, total, statementTime
   const client = await pool.connect();
   const startTime = Date.now();
   let heartbeat = null;
+  let broken = false;
 
   try {
     await client.query(`SET statement_timeout = ${statementTimeoutMs}`);
@@ -73,16 +74,20 @@ async function ensureIndex({ pool, schema, idx, displayIdx, total, statementTime
       log(`    ${idx.name} still building... (${elapsed}s elapsed)`);
     }, HEARTBEAT_MS);
 
-    await client.query(sql);
+    // Client-side timeout as well: statement_timeout cannot fire when the
+    // socket itself dies, which hung a build for five hours (see mv-builder.js).
+    await client.query({ text: sql, query_timeout: statementTimeoutMs + 60000 });
     clearInterval(heartbeat);
     log(`  [${displayIdx}/${total}] DONE ${idx.name} (${Date.now() - startTime}ms)`);
     return 'built';
   } catch (err) {
     if (heartbeat) clearInterval(heartbeat);
+    // A connection that timed out or died must not go back into the pool.
+    broken = true;
     log(`  [${displayIdx}/${total}] FAILED ${idx.name}: ${err.message}`);
     return 'failed';
   } finally {
-    client.release();
+    client.release(broken);
   }
 }
 

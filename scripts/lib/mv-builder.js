@@ -33,6 +33,15 @@ async function ensureMV({ pool, schema, mv, displayIdx, total, statementTimeoutM
   const client = await pool.connect();
   const startTime = Date.now();
   let heartbeat = null;
+  let broken = false;
+
+  // The long statements also get a CLIENT-side timeout. statement_timeout lives
+  // in Postgres, so it cannot help when the socket itself dies: on 2026-11-12
+  // Cloud Run dropped both DB sockets mid-build, Postgres finished the view and
+  // found nobody to answer, and this await hung for five hours until the run
+  // was reaped, blocking the next client's import behind it. A minute of slack
+  // lets the server-side timeout report first whenever the socket is alive.
+  const long = text => client.query({ text, query_timeout: statementTimeoutMs + 60000 });
 
   try {
     await client.query(`SET statement_timeout = ${statementTimeoutMs}`);
@@ -79,7 +88,7 @@ async function ensureMV({ pool, schema, mv, displayIdx, total, statementTimeoutM
     }, HEARTBEAT_MS);
 
     if (action === 'CREATE') {
-      await client.query(`CREATE MATERIALIZED VIEW ${fqName} AS ${mv.sql}`);
+      await long(`CREATE MATERIALIZED VIEW ${fqName} AS ${mv.sql}`);
       // Index the MV (helps subsequent reads filter without a full MV scan).
       if (mv.indexes && mv.indexes.length > 0) {
         clearInterval(heartbeat);
@@ -94,7 +103,7 @@ async function ensureMV({ pool, schema, mv, displayIdx, total, statementTimeoutM
           // that takes minutes to rebuild that is a partial outage, not a slow
           // moment. Declare one wherever the view has a natural key.
           const includeClause = idx.include ? ` INCLUDE (${idx.include})` : '';
-          await client.query(
+          await long(
             `CREATE${idx.unique ? ' UNIQUE' : ''} INDEX ${idx.name} ON ${fqName} (${idx.col})${includeClause}`
           );
           log(`    indexed ${mv.name}.${idx.name} (${Date.now() - idxStart}ms)`);
@@ -111,7 +120,7 @@ async function ensureMV({ pool, schema, mv, displayIdx, total, statementTimeoutM
           WHERE schemaname = $1 AND tablename = $2 AND indexdef ILIKE 'CREATE UNIQUE%' LIMIT 1`,
         [schema, mv.name]
       );
-      await client.query(`REFRESH MATERIALIZED VIEW ${uniq.length ? 'CONCURRENTLY ' : ''}${fqName}`);
+      await long(`REFRESH MATERIALIZED VIEW ${uniq.length ? 'CONCURRENTLY ' : ''}${fqName}`);
     }
 
     if (heartbeat) clearInterval(heartbeat);
@@ -119,10 +128,12 @@ async function ensureMV({ pool, schema, mv, displayIdx, total, statementTimeoutM
     return action === 'CREATE' ? 'created' : 'refreshed';
   } catch (err) {
     if (heartbeat) clearInterval(heartbeat);
+    // A connection that timed out or died must not go back into the pool.
+    broken = true;
     log(`  [${displayIdx}/${total}] FAILED ${mv.name}: ${err.message}`);
     return 'failed';
   } finally {
-    client.release();
+    client.release(broken);
   }
 }
 

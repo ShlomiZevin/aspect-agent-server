@@ -38,6 +38,11 @@ const EMAIL_RECIPIENTS = {
   Kosta:  { email: 'ziben.konstantin@gmail.com',  domains: ['lybi', 'freeda', 'freeda-1.0', 'banking', 'engine', 'general'] },
 };
 
+// These emails are the LYBI board's. Aspect's own server (aspect-server, since
+// 2026-11-11) shares the platform DB with Origin but is not Lybi's, so it runs
+// with LYBI_TASK_EMAILS_ENABLED=false and sends none of them.
+const ENABLED = process.env.LYBI_TASK_EMAILS_ENABLED !== 'false';
+
 class EmailSchedulerService {
   constructor() {
     // pending[recipient] = { debounceTimer, maxWaitTimer, notificationIds: Set }
@@ -46,6 +51,10 @@ class EmailSchedulerService {
   }
 
   initialize(db) {
+    if (!ENABLED) {
+      console.log('[EmailScheduler] Lybi task emails are off on this server (LYBI_TASK_EMAILS_ENABLED=false)');
+      return;
+    }
     this.db = db;
     // Run once immediately to catch any backlog from before restart
     setTimeout(() => this._sweepBacklog(), 30 * 1000); // 30s after startup
@@ -92,6 +101,7 @@ class EmailSchedulerService {
    * @param {number} notificationId - The new notification's DB id
    */
   schedule(recipient, notificationId) {
+    if (!ENABLED) return;
     if (!EMAIL_RECIPIENTS[recipient]) return; // not subscribed to emails
 
     if (!this.pending[recipient]) {

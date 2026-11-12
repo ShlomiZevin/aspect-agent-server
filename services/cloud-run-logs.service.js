@@ -3,7 +3,9 @@ const path = require('path');
 const fs = require('fs');
 
 const PROJECT_ID = process.env.GCP_PROJECT_ID || 'aspect-agents';
-const SERVICE_NAME = 'aspect-agent-server';
+// The service this code runs as (Cloud Run sets K_SERVICE), so each server's
+// admin screen shows its own logs. The fallback covers a local run.
+const SERVICE_NAME = process.env.K_SERVICE || 'aspect-agent-server';
 const STDOUT_LOG    = `projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstdout`;
 const STDERR_LOG    = `projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstderr`;
 const REQUESTS_LOG  = `projects/${PROJECT_ID}/logs/run.googleapis.com%2Frequests`;
