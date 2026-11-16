@@ -70,6 +70,23 @@ open route that creates accounts would widen the gap to the rest of the platform
 - The nav has a seventh item, שואלים את המערכת, since the spec's nav list gives
   screen 6 no way in.
 
+## The month view (#116)
+
+Itzik's asks once V0 was in use, built without going back to him (Shlomi's
+call), so these are our decisions. Migration 068.
+
+- A report row has "from" and "to" times, and its hours are computed from them,
+  here and in `rules.hoursBetween`. Work past midnight is two rows; overlapping
+  rows in one day are refused. Rows sent before this keep their hours and no
+  times, and can be sent again as they are.
+- Task type is per row: תחזוקה or פיתוח מיוחד. Client work must have one;
+  internal work need not.
+- Billing type (ריטיינר חודשי / תשלום לפי שעות / תשלום פיקס) is set on the
+  client and can be overridden on a project; hours with no project take the
+  client's. A won quote turned into a project starts as פיקס.
+- דוחות: one month, sliced by developer, client or project, filtered by billing
+  type and task type. On screen only, no export.
+
 ## Next, not in V0
 
 Holidays in the "did not report" rule, deleting clients or projects, logo upload,

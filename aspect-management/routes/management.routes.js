@@ -17,6 +17,7 @@
  *   PATCH /api/management/projects/:id      update
  *   GET   /api/management/report            one person's day
  *   PUT   /api/management/report            send one person's day
+ *   GET   /api/management/hours?month=YYYY-MM  one month's hours, for the reports screen
  *   GET   /api/management/quotes            open and closed
  *   POST  /api/management/quotes            add
  *   PATCH /api/management/quotes/:id        update
@@ -65,6 +66,7 @@ router.patch('/projects/:id', handle(req => management.updateProject(req.params.
 
 router.get('/report', handle(req => management.getReport(req.query.personId, req.query.date)));
 router.put('/report', handle(req => management.saveReport(req.body)));
+router.get('/hours', handle(req => management.monthHours(req.query.month)));
 
 router.get('/quotes', handle(() => management.listQuotes()));
 router.post('/quotes', handle(req => management.createQuote(req.body)));

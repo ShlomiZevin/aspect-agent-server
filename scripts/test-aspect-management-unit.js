@@ -106,4 +106,24 @@ check('day counts read as natural Hebrew', () => {
   assert.strictEqual(line('2026-10-31'), 'פרויקט באיחור של 5 ימים');
 });
 
+check('a report row\'s hours come from its start and end', () => {
+  assert.strictEqual(rules.hoursBetween('09:00', '12:30'), 3.5);
+  assert.strictEqual(rules.hoursBetween('09:10', '09:30'), 0.33);
+  assert.strictEqual(rules.hoursBetween('00:00', '23:59'), 23.98);
+  assert.strictEqual(rules.hoursBetween('12:00', '12:00'), null);
+  assert.strictEqual(rules.hoursBetween('18:00', '02:00'), null);
+  assert.strictEqual(rules.hoursBetween('9:00', '12:00'), null);
+  assert.strictEqual(rules.hoursBetween('24:00', '24:30'), null);
+  assert.strictEqual(rules.hoursBetween('', '12:00'), null);
+});
+
+check('overlapping rows in one day are found, touching ones are not', () => {
+  const row = (start, end) => ({ start, end });
+  assert.strictEqual(rules.findOverlap([row('09:00', '12:00'), row('12:00', '14:00')]), null);
+  assert.deepStrictEqual(rules.findOverlap([row('13:00', '15:00'), row('09:00', '12:00'), row('11:30', '12:30')]), [1, 2]);
+  assert.deepStrictEqual(rules.findOverlap([row('10:00', '11:00'), row('09:00', '17:00')]), [0, 1]);
+  // Rows sent before start and end existed carry no times and overlap nothing.
+  assert.strictEqual(rules.findOverlap([row(null, null), row('09:00', '12:00'), row(null, null)]), null);
+});
+
 console.log(process.exitCode ? 'FAILED' : `OK — ${passed} checks passed`);

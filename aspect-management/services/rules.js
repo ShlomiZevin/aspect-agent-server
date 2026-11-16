@@ -44,6 +44,37 @@ function daysText(n) {
   return `${n} ימים`;
 }
 
+/** 'HH:MM' to minutes since midnight, or null if it is not a time of day. */
+function minutesOf(time) {
+  const match = /^(\d{2}):(\d{2})$/.exec(String(time ?? ''));
+  if (!match) return null;
+  const [h, m] = [Number(match[1]), Number(match[2])];
+  return h < 24 && m < 60 ? h * 60 + m : null;
+}
+
+/**
+ * The hours between a report row's start and end, to two decimals. Work past
+ * midnight is two rows, one on each day, so an end before the start is refused.
+ */
+function hoursBetween(start, end) {
+  const from = minutesOf(start);
+  const to = minutesOf(end);
+  if (from === null || to === null || to <= from) return null;
+  return Math.round(((to - from) / 60) * 100) / 100;
+}
+
+/** The first two rows of one day whose times overlap, as indexes, or null. */
+function findOverlap(rows) {
+  const timed = rows
+    .map((row, index) => ({ index, from: minutesOf(row.start), to: minutesOf(row.end) }))
+    .filter(r => r.from !== null && r.to !== null)
+    .sort((a, b) => a.from - b.from);
+  for (let i = 1; i < timed.length; i++) {
+    if (timed[i].from < timed[i - 1].to) return [timed[i - 1].index, timed[i].index].sort((a, b) => a - b);
+  }
+  return null;
+}
+
 /** Hours used against budget and due date. A project with no budget has no %. */
 function projectState(project, today) {
   const budget = project.hoursBudget;
@@ -141,6 +172,9 @@ module.exports = {
   daysBetween,
   previousWorkday,
   monthStart,
+  minutesOf,
+  hoursBetween,
+  findOverlap,
   projectState,
   quoteAgeDays,
   computeAlerts,

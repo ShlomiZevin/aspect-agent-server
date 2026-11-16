@@ -14,6 +14,11 @@ const rules = require('./rules');
 const TENANT = 'aspect';
 const QUOTE_OPEN = ['preparing', 'sent', 'pending'];
 const QUOTE_STATUSES = [...QUOTE_OPEN, 'won', 'lost'];
+const TASK_TYPES = ['maintenance', 'development'];
+const BILLING_TYPES = ['retainer', 'hourly', 'fixed'];
+
+/** A code from a closed list, or null for "not set". */
+const oneOf = (value, list) => (list.includes(value) ? value : null);
 
 function invalid(message) {
   const err = new Error(message);
@@ -147,12 +152,13 @@ async function personReports(personId) {
   const [entries, blockers] = await Promise.all([
     db.query(
       `SELECT t.id, t.entry_date::text AS date, t.hours::float8 AS hours, t.description, t.billable,
-              c.name AS "clientName", pr.name AS "projectName"
+              to_char(t.start_time, 'HH24:MI') AS start, to_char(t.end_time, 'HH24:MI') AS "end",
+              t.task_type AS "taskType", c.name AS "clientName", pr.name AS "projectName"
          FROM am_time_entries t
          LEFT JOIN am_clients c ON c.id = t.client_id
          LEFT JOIN am_projects pr ON pr.id = t.project_id
         WHERE t.person_id = $1 AND t.entry_date >= $2::date
-        ORDER BY t.entry_date DESC, t.id`,
+        ORDER BY t.entry_date DESC, t.start_time NULLS LAST, t.id`,
       [pid, from],
     ),
     db.query(
@@ -169,7 +175,8 @@ async function personReports(personId) {
 const PROJECT_SELECT = `
   SELECT p.id, p.client_id AS "clientId", c.name AS "clientName", p.name,
          p.hours_budget::float8 AS "hoursBudget", p.due_date::text AS "dueDate", p.status,
-         p.amount::float8 AS amount, COALESCE(SUM(t.hours), 0)::float8 AS "hoursUsed"
+         p.amount::float8 AS amount, p.billing_type AS "billingType", c.billing_type AS "clientBillingType",
+         COALESCE(SUM(t.hours), 0)::float8 AS "hoursUsed"
     FROM am_projects p
     JOIN am_clients c ON c.id = p.client_id
     LEFT JOIN am_time_entries t ON t.project_id = p.id`;
@@ -181,7 +188,7 @@ function withState(projects) {
 
 async function listActiveProjects() {
   const { rows } = await db.query(
-    `${PROJECT_SELECT} WHERE p.status = 'active' GROUP BY p.id, c.name ORDER BY p.due_date NULLS LAST, p.id`,
+    `${PROJECT_SELECT} WHERE p.status = 'active' GROUP BY p.id, c.id ORDER BY p.due_date NULLS LAST, p.id`,
   );
   return withState(rows);
 }
@@ -194,6 +201,7 @@ function projectValues(body) {
     date(body.dueDate, 'תאריך היעד'),
     body.status === 'done' ? 'done' : 'active',
     number(body.amount, 'הסכום'),
+    oneOf(body.billingType, BILLING_TYPES),
   ];
 }
 
@@ -211,8 +219,8 @@ async function createProject(body) {
       if (rows[0].project_id) throw invalid('ההצעה הזו כבר הפכה לפרויקט');
     }
     const { rows } = await client.query(
-      `INSERT INTO am_projects (client_id, name, hours_budget, due_date, status, amount)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      `INSERT INTO am_projects (client_id, name, hours_budget, due_date, status, amount, billing_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
       values,
     );
     if (body.quoteId) await client.query('UPDATE am_quotes SET project_id = $2 WHERE id = $1', [body.quoteId, rows[0].id]);
@@ -222,7 +230,8 @@ async function createProject(body) {
 
 async function updateProject(projectId, body) {
   const { rows } = await db.query(
-    `UPDATE am_projects SET client_id = $2, name = $3, hours_budget = $4, due_date = $5, status = $6, amount = $7
+    `UPDATE am_projects SET client_id = $2, name = $3, hours_budget = $4, due_date = $5, status = $6, amount = $7,
+            billing_type = $8
       WHERE id = $1 RETURNING id`,
     [id(projectId, 'פרויקט'), ...projectValues(body)],
   );
@@ -233,7 +242,7 @@ async function updateProject(projectId, body) {
 // --- clients ------------------------------------------------------------------
 
 const CLIENT_COLUMNS = `c.id, c.name, c.logo_url AS "logoUrl", c.package_hours::float8 AS "packageHours",
-  c.services, c.next_step AS "nextStep", c.next_step_date::text AS "nextStepDate"`;
+  c.services, c.next_step AS "nextStep", c.next_step_date::text AS "nextStepDate", c.billing_type AS "billingType"`;
 
 // Only billable hours draw on the monthly package.
 const HOURS_THIS_MONTH = `COALESCE((
@@ -263,7 +272,7 @@ async function getClient(clientId) {
   if (!rows[0]) return null;
 
   const [projects, notes] = await Promise.all([
-    db.query(`${PROJECT_SELECT} WHERE p.client_id = $1 GROUP BY p.id, c.name ORDER BY p.status, p.due_date NULLS LAST, p.id`, [cid]),
+    db.query(`${PROJECT_SELECT} WHERE p.client_id = $1 GROUP BY p.id, c.id ORDER BY p.status, p.due_date NULLS LAST, p.id`, [cid]),
     db.query(
       `SELECT n.note_date::text AS date, n.body, pe.name AS "personName"
          FROM am_client_notes n LEFT JOIN am_people pe ON pe.id = n.person_id
@@ -291,13 +300,14 @@ function clientValues(body) {
     JSON.stringify(services),
     text(body.nextStep, 'הצעד הבא', { required: false }),
     date(body.nextStepDate, 'תאריך הצעד הבא'),
+    oneOf(body.billingType, BILLING_TYPES),
   ];
 }
 
 async function createClient(body) {
   const { rows } = await db.query(
-    `INSERT INTO am_clients (name, logo_url, package_hours, services, next_step, next_step_date)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    `INSERT INTO am_clients (name, logo_url, package_hours, services, next_step, next_step_date, billing_type)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
     clientValues(body),
   );
   return rows[0];
@@ -305,7 +315,8 @@ async function createClient(body) {
 
 async function updateClient(clientId, body) {
   const { rows } = await db.query(
-    `UPDATE am_clients SET name = $2, logo_url = $3, package_hours = $4, services = $5, next_step = $6, next_step_date = $7
+    `UPDATE am_clients SET name = $2, logo_url = $3, package_hours = $4, services = $5, next_step = $6, next_step_date = $7,
+            billing_type = $8
       WHERE id = $1 RETURNING id`,
     [id(clientId, 'לקוח'), ...clientValues(body)],
   );
@@ -328,8 +339,9 @@ async function getReport(personIdRaw, dateRaw) {
   const day = date(dateRaw, 'התאריך') || rules.todayInIsrael();
   const [entries, blocker, clients, projects] = await Promise.all([
     db.query(
-      `SELECT id, client_id AS "clientId", project_id AS "projectId", hours::float8 AS hours, description, billable
-         FROM am_time_entries WHERE person_id = $1 AND entry_date = $2::date ORDER BY id`,
+      `SELECT id, client_id AS "clientId", project_id AS "projectId", hours::float8 AS hours, description, billable,
+              to_char(start_time, 'HH24:MI') AS start, to_char(end_time, 'HH24:MI') AS "end", task_type AS "taskType"
+         FROM am_time_entries WHERE person_id = $1 AND entry_date = $2::date ORDER BY start_time NULLS LAST, id`,
       [personId, day],
     ),
     db.query('SELECT body FROM am_blockers WHERE person_id = $1 AND blocker_date = $2::date', [personId, day]),
@@ -362,18 +374,38 @@ async function saveReport(body) {
   if (day > rules.todayInIsrael()) throw invalid('אי אפשר לדווח על יום שעוד לא הגיע');
 
   const rows = (Array.isArray(body.entries) ? body.entries : []).map((row, i) => {
-    const hours = Number(row.hours);
-    if (!(hours > 0 && hours <= 24)) throw invalid(`שורה ${i + 1}: שעות צריכות להיות בין 0 ל-24`);
+    const line = `שורה ${i + 1}`;
+    const start = row.start || null;
+    const end = row.end || null;
+    let hours;
+    if (start || end) {
+      if (!start || !end) throw invalid(`${line}: חסרה שעת ${start ? 'סיום' : 'התחלה'}`);
+      hours = rules.hoursBetween(start, end);
+      if (hours === null) throw invalid(`${line}: שעת הסיום צריכה להיות אחרי שעת ההתחלה`);
+    } else {
+      // A row sent before start and end existed keeps the hours it had.
+      hours = Number(row.hours);
+      if (!(hours > 0 && hours <= 24)) throw invalid(`${line}: חסרות שעת התחלה ושעת סיום`);
+    }
     const description = String(row.description ?? '').trim();
-    if (!description) throw invalid(`שורה ${i + 1}: חסר מה עשית`);
+    if (!description) throw invalid(`${line}: חסר מה עשית`);
+    const clientId = row.clientId ? id(row.clientId, 'לקוח') : null;
+    const taskType = oneOf(row.taskType, TASK_TYPES);
+    // Internal work is neither, so only client work must say which it was.
+    if (clientId && !taskType) throw invalid(`${line}: חסר סוג המשימה`);
     return {
-      clientId: row.clientId ? id(row.clientId, 'לקוח') : null,
+      clientId,
       projectId: row.projectId ? id(row.projectId, 'פרויקט') : null,
       hours,
+      start,
+      end,
+      taskType,
       description,
       billable: Boolean(row.billable),
     };
   });
+  const overlap = rules.findOverlap(rows);
+  if (overlap) throw invalid(`שורות ${overlap[0] + 1} ו-${overlap[1] + 1} חופפות בזמן`);
   const blocker = String(body.blocker ?? '').trim();
 
   await withTransaction(async client => {
@@ -385,9 +417,10 @@ async function saveReport(body) {
     await client.query('DELETE FROM am_time_entries WHERE person_id = $1 AND entry_date = $2::date', [personId, day]);
     for (const row of rows) {
       await client.query(
-        `INSERT INTO am_time_entries (person_id, entry_date, client_id, project_id, hours, description, billable)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [personId, day, row.clientId, row.projectId, row.hours, row.description, row.billable],
+        `INSERT INTO am_time_entries
+           (person_id, entry_date, client_id, project_id, hours, start_time, end_time, task_type, description, billable)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [personId, day, row.clientId, row.projectId, row.hours, row.start, row.end, row.taskType, row.description, row.billable],
       );
     }
     await client.query('DELETE FROM am_blockers WHERE person_id = $1 AND blocker_date = $2::date', [personId, day]);
@@ -396,6 +429,37 @@ async function saveReport(body) {
     }
   });
   return { saved: rows.length };
+}
+
+// --- the month report ---------------------------------------------------------
+
+/**
+ * One month's hours, summed per developer x client x project x task type. The
+ * screen slices and filters these few rows itself. A project's billing type
+ * wins over its client's; hours with no project take the client's.
+ */
+async function monthHours(monthRaw) {
+  const month = monthRaw || rules.todayInIsrael().slice(0, 7);
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw invalid('החודש לא תקין');
+  const { rows } = await db.query(
+    `SELECT t.person_id AS "personId", pe.name AS "personName",
+            t.client_id AS "clientId", c.name AS "clientName",
+            t.project_id AS "projectId", pr.name AS "projectName",
+            COALESCE(pr.billing_type, c.billing_type) AS "billingType",
+            t.task_type AS "taskType",
+            SUM(t.hours)::float8 AS hours,
+            COALESCE(SUM(t.hours) FILTER (WHERE t.billable), 0)::float8 AS "billableHours"
+       FROM am_time_entries t
+       JOIN am_people pe ON pe.id = t.person_id
+       LEFT JOIN am_clients c ON c.id = t.client_id
+       LEFT JOIN am_projects pr ON pr.id = t.project_id
+      WHERE t.entry_date >= $1::date AND t.entry_date < ($1::date + INTERVAL '1 month')
+      GROUP BY t.person_id, pe.name, t.client_id, c.name, t.project_id, pr.name,
+               COALESCE(pr.billing_type, c.billing_type), t.task_type
+      ORDER BY pe.name, c.name NULLS LAST, pr.name NULLS FIRST`,
+    [`${month}-01`],
+  );
+  return { month, rows };
 }
 
 // --- quotes -------------------------------------------------------------------
@@ -526,6 +590,7 @@ module.exports = {
   addClientNote,
   getReport,
   saveReport,
+  monthHours,
   listQuotes,
   listAllQuotes,
   createQuote,

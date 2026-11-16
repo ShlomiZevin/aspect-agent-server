@@ -6,7 +6,7 @@
  *   node scripts/aspect-management-demo.js wipe   # removes every is_demo row, nothing else
  *
  * Runs against the platform DB through the Cloud SQL proxy, like the migration
- * runners (DB_HOST_PROXY / DB_PORT_PROXY). Needs migration 067 (is_demo).
+ * runners (DB_HOST_PROXY / DB_PORT_PROXY). Needs migrations 067 (is_demo) and 068.
  *
  * Every date is relative to today in Israel, so a seed shows every kind of
  * morning alert whenever it runs: a late project, one over budget, one close
@@ -40,20 +40,21 @@ const PEOPLE = [
 ];
 
 const CLIENTS = [
-  { key: 'alon', name: 'קבוצת אלון', packageHours: 40, services: [{ name: 'סוכן AI', status: 'פעיל' }, { name: 'דשבורד מכירות', status: 'פעיל' }, { name: 'Intelligence Center', status: 'בהטמעה' }], nextStep: 'האישור על סוכן ה-AI עד יום ראשון', nextStepIn: 3, note: { daysAgo: 3, by: 'owner', body: 'פגישה עם רון, המנכ"ל. רוצים להרחיב את הסוכן לסניפים בצפון. לשלוח הצעה עד סוף החודש.' } },
-  { key: 'gal', name: 'מעדני גל', packageHours: 20, services: [{ name: 'דשבורד מכירות', status: 'פעיל' }], nextStep: 'הצגת גרסה ראשונה של הדשבורד', nextStepIn: 2, note: { daysAgo: 6, by: 'owner', body: 'ביקשו להוסיף השוואה לשנה שעברה. אמרתי שנבדוק אחרי הגרסה הראשונה.' } },
-  { key: 'prachi', name: 'רשת פרחי', packageHours: null, services: [{ name: 'Insights', status: 'בהטמעה' }], nextStep: 'שיחת מעקב על הצעת המחיר', nextStepIn: 1, note: { daysAgo: 9, by: 'owner', body: 'נשלחה הצעת מחיר להרחבת Insights לכל הסניפים.' } },
-  { key: 'talor', name: 'טל-אור', packageHours: 30, services: [{ name: 'Intelligence Center', status: 'בהטמעה' }], nextStep: 'הדרכה לצוות הקנייה', nextStepIn: 8, note: { daysAgo: 4, by: 'owner', body: 'הצוות שלהם התחיל לעבוד עם Intelligence. מבקשים הדרכה קצרה לקניינים.' } },
-  { key: 'cafe', name: 'בית הקפה', packageHours: 15, services: [{ name: 'דשבורד סניפים', status: 'פעיל' }], nextStep: null, nextStepIn: null, note: null },
+  { key: 'alon', name: 'קבוצת אלון', packageHours: 40, billing: 'retainer', services: [{ name: 'סוכן AI', status: 'פעיל' }, { name: 'דשבורד מכירות', status: 'פעיל' }, { name: 'Intelligence Center', status: 'בהטמעה' }], nextStep: 'האישור על סוכן ה-AI עד יום ראשון', nextStepIn: 3, note: { daysAgo: 3, by: 'owner', body: 'פגישה עם רון, המנכ"ל. רוצים להרחיב את הסוכן לסניפים בצפון. לשלוח הצעה עד סוף החודש.' } },
+  { key: 'gal', name: 'מעדני גל', packageHours: 20, billing: 'retainer', services: [{ name: 'דשבורד מכירות', status: 'פעיל' }], nextStep: 'הצגת גרסה ראשונה של הדשבורד', nextStepIn: 2, note: { daysAgo: 6, by: 'owner', body: 'ביקשו להוסיף השוואה לשנה שעברה. אמרתי שנבדוק אחרי הגרסה הראשונה.' } },
+  { key: 'prachi', name: 'רשת פרחי', packageHours: null, billing: 'hourly', services: [{ name: 'Insights', status: 'בהטמעה' }], nextStep: 'שיחת מעקב על הצעת המחיר', nextStepIn: 1, note: { daysAgo: 9, by: 'owner', body: 'נשלחה הצעת מחיר להרחבת Insights לכל הסניפים.' } },
+  { key: 'talor', name: 'טל-אור', packageHours: 30, billing: 'retainer', services: [{ name: 'Intelligence Center', status: 'בהטמעה' }], nextStep: 'הדרכה לצוות הקנייה', nextStepIn: 8, note: { daysAgo: 4, by: 'owner', body: 'הצוות שלהם התחיל לעבוד עם Intelligence. מבקשים הדרכה קצרה לקניינים.' } },
+  { key: 'cafe', name: 'בית הקפה', packageHours: 15, billing: 'retainer', services: [{ name: 'דשבורד סניפים', status: 'פעיל' }], nextStep: null, nextStepIn: null, note: null },
 ];
 
 // target = hours the time entries add up to (that is what the % is made of).
+// billing null = the client's billing type applies.
 const PROJECTS = [
-  { key: 'alonAgent', client: 'alon', name: 'פריסת סוכן AI', budget: 120, target: 126, dueIn: -11, amount: 48000, devs: ['yossi', 'ron'], work: ['חיבור הסוכן ל-CRM', 'בדיקות עם נציגי השירות', 'תיקון זרימת ההעברה לנציג', 'כתיבת תסריטי שיחה'] },
-  { key: 'galDash', client: 'gal', name: 'דשבורד מכירות', budget: 80, target: 41, dueIn: -5, amount: 22000, devs: ['dana'], work: ['בניית דשבורד מכירות', 'חיבור לנתוני הקופות', 'גרפים לפי סניף'] },
-  { key: 'prachiInsights', client: 'prachi', name: 'הטמעת Insights', budget: 60, target: 55, dueIn: 30, amount: 18000, devs: ['dana', 'ron'], work: ['הגדרת שאלות Insights', 'טעינת נתוני מלאי', 'בדיקת דוחות מול הלקוח'] },
-  { key: 'talorIc', client: 'talor', name: 'הטמעת Intelligence Center', budget: 100, target: 32, dueIn: 60, amount: 36000, devs: ['yossi'], work: ['חיבור מקורות נתונים', 'הגדרת דוחות ראשונים', 'פגישה עם צוות הקנייה'] },
-  { key: 'cafeDash', client: 'cafe', name: 'דשבורד סניפים', budget: 50, target: 10, dueIn: 45, amount: 12000, devs: ['ron'], work: ['אפיון מסכי הסניפים', 'חיבור נתוני קופה'] },
+  { key: 'alonAgent', client: 'alon', name: 'פריסת סוכן AI', budget: 120, target: 126, dueIn: -11, amount: 48000, billing: 'fixed', devs: ['yossi', 'ron'], work: ['חיבור הסוכן ל-CRM', 'בדיקות עם נציגי השירות', 'תיקון זרימת ההעברה לנציג', 'כתיבת תסריטי שיחה'] },
+  { key: 'galDash', client: 'gal', name: 'דשבורד מכירות', budget: 80, target: 41, dueIn: -5, amount: 22000, billing: 'fixed', devs: ['dana'], work: ['בניית דשבורד מכירות', 'חיבור לנתוני הקופות', 'גרפים לפי סניף'] },
+  { key: 'prachiInsights', client: 'prachi', name: 'הטמעת Insights', budget: 60, target: 55, dueIn: 30, amount: 18000, billing: null, devs: ['dana', 'ron'], work: ['הגדרת שאלות Insights', 'טעינת נתוני מלאי', 'בדיקת דוחות מול הלקוח'] },
+  { key: 'talorIc', client: 'talor', name: 'הטמעת Intelligence Center', budget: 100, target: 32, dueIn: 60, amount: 36000, billing: 'fixed', devs: ['yossi'], work: ['חיבור מקורות נתונים', 'הגדרת דוחות ראשונים', 'פגישה עם צוות הקנייה'] },
+  { key: 'cafeDash', client: 'cafe', name: 'דשבורד סניפים', budget: 50, target: 10, dueIn: 45, amount: 12000, billing: null, devs: ['ron'], work: ['אפיון מסכי הסניפים', 'חיבור נתוני קופה'] },
 ];
 
 const QUOTES = [
@@ -83,9 +84,9 @@ async function seed(db) {
   const clients = {};
   for (const c of CLIENTS) {
     const { rows: [row] } = await db.query(
-      `INSERT INTO am_clients (name, package_hours, services, next_step, next_step_date, created_at, is_demo)
-       VALUES ($1, $2, $3, $4, $5, $6, true) RETURNING id`,
-      [c.name, c.packageHours, JSON.stringify(c.services), c.nextStep, c.nextStepIn === null ? null : day(c.nextStepIn), created]);
+      `INSERT INTO am_clients (name, package_hours, services, next_step, next_step_date, created_at, billing_type, is_demo)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING id`,
+      [c.name, c.packageHours, JSON.stringify(c.services), c.nextStep, c.nextStepIn === null ? null : day(c.nextStepIn), created, c.billing]);
     clients[c.key] = row.id;
     if (c.note) {
       await db.query(
@@ -97,16 +98,17 @@ async function seed(db) {
   const projects = {};
   for (const p of PROJECTS) {
     const { rows: [row] } = await db.query(
-      `INSERT INTO am_projects (client_id, name, hours_budget, due_date, status, amount, created_at, is_demo)
-       VALUES ($1, $2, $3, $4, 'active', $5, $6, true) RETURNING id`,
-      [clients[p.client], p.name, p.budget, day(p.dueIn), p.amount, created]);
+      `INSERT INTO am_projects (client_id, name, hours_budget, due_date, status, amount, created_at, billing_type, is_demo)
+       VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, true) RETURNING id`,
+      [clients[p.client], p.name, p.budget, day(p.dueIn), p.amount, created, p.billing]);
     projects[p.key] = { ...p, id: row.id, left: p.target };
   }
 
   // Three weeks of reports, newest first, so the recent days carry project work.
   // Each developer fills about 7-8 hours a day from their projects until each
   // project reaches its target; the rest of the day is internal work. Dana
-  // skips the previous workday.
+  // skips the previous workday. Each day runs from 09:00, one row after another;
+  // about a third of the project work is maintenance.
   const workdays = [];
   for (let d = 0; d >= -21; d--) if (isWorkday(day(d))) workdays.push(day(d));
   const skip = { dana: rules.previousWorkday(TODAY) };
@@ -116,24 +118,32 @@ async function seed(db) {
       if (skip[person.key] === date) continue;
       if (date === TODAY && person.key !== 'yossi') continue; // only Yossi has reported today
       let capacity = date === TODAY ? 3 : 7 + ((i + person.key.length) % 3) * 0.5;
+      let clock = 9 * 60;
+      const span = hours => {
+        const from = clock;
+        clock += hours * 60;
+        return [from, clock].map(m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
+      };
       const mine = Object.values(projects).filter(p => p.devs.includes(person.key) && p.left > 0);
       for (const project of mine) {
         if (capacity <= 0) break;
         const hours = Math.min(project.left, capacity, 4 + ((i * 3 + project.id) % 3));
         if (hours <= 0) continue;
         await db.query(
-          `INSERT INTO am_time_entries (person_id, entry_date, client_id, project_id, hours, description, billable, is_demo)
-           VALUES ($1, $2, $3, $4, $5, $6, true, true)`,
-          [people[person.key], date, clients[project.client], project.id, hours, project.work[(i + entries) % project.work.length]]);
+          `INSERT INTO am_time_entries
+             (person_id, entry_date, client_id, project_id, hours, start_time, end_time, task_type, description, billable, is_demo)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, true)`,
+          [people[person.key], date, clients[project.client], project.id, hours, ...span(hours),
+            (i + entries) % 3 === 0 ? 'maintenance' : 'development', project.work[(i + entries) % project.work.length]]);
         project.left -= hours;
         capacity -= hours;
         entries++;
       }
       if (capacity >= 1 && date !== TODAY) {
         await db.query(
-          `INSERT INTO am_time_entries (person_id, entry_date, client_id, project_id, hours, description, billable, is_demo)
-           VALUES ($1, $2, NULL, NULL, $3, $4, false, true)`,
-          [people[person.key], date, capacity, ['ישיבת צוות ותכנון', 'למידה ותשתיות', 'עזרה לצוות ותחזוקה'][i % 3]]);
+          `INSERT INTO am_time_entries (person_id, entry_date, client_id, project_id, hours, start_time, end_time, description, billable, is_demo)
+           VALUES ($1, $2, NULL, NULL, $3, $4, $5, $6, false, true)`,
+          [people[person.key], date, capacity, ...span(capacity), ['ישיבת צוות ותכנון', 'למידה ותשתיות', 'עזרה לצוות ותחזוקה'][i % 3]]);
         entries++;
       }
     }

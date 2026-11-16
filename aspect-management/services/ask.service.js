@@ -28,14 +28,17 @@ Use only the JSON facts you are given. Every number must come from them or be a 
 Vocabulary in the facts:
 - "today" and "previousWorkday" are Israeli dates. Aspect works Sunday to Thursday, so "yesterday" in a question means previousWorkday.
 - alerts: what needs the owner's attention or decision today, already computed.
-- A time entry with clientName null is internal work.
+- A time entry with clientName null is internal work. start and end are when the work was done; older entries have none.
+- taskType: maintenance = תחזוקה, development = פיתוח מיוחד, null = not set. billingType: retainer = ריטיינר חודשי, hourly = תשלום לפי שעות, fixed = תשלום פיקס, null = not set.
 - project pct is the share of the hours budget used, so 105 means 5% over the budget, not 105% over it. over = 100 or more, near = 90 or more, late = past its due date.
 - quote status: preparing, sent, pending = open. won = closed. lost = lost. ageDays = days since the last follow-up.`;
 
 async function loadTimeEntries(from) {
   const { rows } = await db.query(
     `SELECT t.entry_date::text AS date, pe.name AS person, c.name AS "clientName", pr.name AS project,
-            t.hours::float8 AS hours, t.billable, t.description
+            t.hours::float8 AS hours, t.billable, t.description,
+            to_char(t.start_time, 'HH24:MI') AS start, to_char(t.end_time, 'HH24:MI') AS "end", t.task_type AS "taskType",
+            COALESCE(pr.billing_type, c.billing_type) AS "billingType"
        FROM am_time_entries t
        JOIN am_people pe ON pe.id = t.person_id
        LEFT JOIN am_clients c ON c.id = t.client_id
