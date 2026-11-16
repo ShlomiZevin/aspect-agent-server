@@ -20,34 +20,72 @@ const BILLING_TYPES = ['retainer', 'hourly', 'fixed'];
 /** A code from a closed list, or null for "not set". */
 const oneOf = (value, list) => (list.includes(value) ? value : null);
 
-function invalid(message) {
-  const err = new Error(message);
+/** The Hebrew names of the fields a message can name; the client has them in English by the same codes. */
+const FIELDS = {
+  person: 'אדם', name: 'שם', email: 'אימייל', client: 'לקוח', clientName: 'שם לקוח', logo: 'לוגו',
+  packageHours: 'שעות החבילה', nextStep: 'הצעד הבא', nextStepDate: 'תאריך הצעד הבא', noteText: 'טקסט',
+  project: 'פרויקט', projectName: 'שם פרויקט', hoursBudget: 'תקציב השעות', dueDate: 'תאריך היעד',
+  amount: 'הסכום', sum: 'סכום', quote: 'הצעה', subject: 'נושא', sentDate: 'תאריך השליחה',
+  followupDate: 'תאריך המעקב', date: 'התאריך', day: 'תאריך',
+};
+
+/**
+ * Every refusal the server sends. The screen shows `error`, in Hebrew; the
+ * client's English view reads `code` and `params` instead.
+ */
+const MESSAGES = {
+  missing: ({ field }) => `חסר ${FIELDS[field]}`,
+  notValid: ({ field }) => `${FIELDS[field]} לא תקין`,
+  emailTaken: () => 'האימייל הזה כבר קיים ברשימה',
+  personNotFound: () => 'האדם לא נמצא',
+  clientNotFound: () => 'הלקוח לא נמצא',
+  projectNotFound: () => 'הפרויקט לא נמצא',
+  quoteNotFound: () => 'ההצעה לא נמצאה',
+  quoteNotWon: () => 'אפשר להפוך לפרויקט רק הצעה שנסגרה',
+  quoteAlreadyProject: () => 'ההצעה הזו כבר הפכה לפרויקט',
+  futureDay: () => 'אי אפשר לדווח על יום שעוד לא הגיע',
+  rowNoStart: ({ row }) => `שורה ${row}: חסרה שעת התחלה`,
+  rowNoEnd: ({ row }) => `שורה ${row}: חסרה שעת סיום`,
+  rowEndBeforeStart: ({ row }) => `שורה ${row}: שעת הסיום צריכה להיות אחרי שעת ההתחלה`,
+  rowNoTimes: ({ row }) => `שורה ${row}: חסרות שעת התחלה ושעת סיום`,
+  rowNoDescription: ({ row }) => `שורה ${row}: חסר מה עשית`,
+  rowNoTaskType: ({ row }) => `שורה ${row}: חסר סוג המשימה`,
+  rowsOverlap: ({ first, second }) => `שורות ${first} ו-${second} חופפות בזמן`,
+  projectNotOfClient: () => 'הפרויקט שנבחר לא שייך ללקוח',
+  monthNotValid: () => 'החודש לא תקין',
+  noQuestion: () => 'מה רצית לשאול?',
+};
+
+function invalid(code, params = {}) {
+  const err = new Error(MESSAGES[code](params));
   err.name = 'ValidationError';
+  err.code = code;
+  err.params = params;
   return err;
 }
 
-function text(value, label, { required = true } = {}) {
+function text(value, field, { required = true } = {}) {
   const clean = String(value ?? '').trim();
-  if (required && !clean) throw invalid(`חסר ${label}`);
+  if (required && !clean) throw invalid('missing', { field });
   return clean || null;
 }
 
-function number(value, label) {
+function number(value, field) {
   if (value === '' || value === null || value === undefined) return null;
   const n = Number(value);
-  if (!Number.isFinite(n) || n < 0) throw invalid(`${label} לא תקין`);
+  if (!Number.isFinite(n) || n < 0) throw invalid('notValid', { field });
   return n;
 }
 
-function date(value, label) {
+function date(value, field) {
   if (!value) return null;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) throw invalid(`${label} לא תקין`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) throw invalid('notValid', { field });
   return value;
 }
 
-function id(value, label) {
+function id(value, field) {
   const n = Number(value);
-  if (!Number.isInteger(n) || n <= 0) throw invalid(`חסר ${label}`);
+  if (!Number.isInteger(n) || n <= 0) throw invalid('missing', { field });
   return n;
 }
 
@@ -112,10 +150,10 @@ async function listPeople() {
 }
 
 function personValues(body) {
-  const email = text(body.email, 'אימייל').toLowerCase();
-  if (!email.includes('@')) throw invalid('אימייל לא תקין');
+  const email = text(body.email, 'email').toLowerCase();
+  if (!email.includes('@')) throw invalid('notValid', { field: 'email' });
   const role = body.role === 'owner' ? 'owner' : 'developer';
-  return [text(body.name, 'שם'), email, role, body.active !== false];
+  return [text(body.name, 'name'), email, role, body.active !== false];
 }
 
 async function createPerson(body) {
@@ -126,7 +164,7 @@ async function createPerson(body) {
     );
     return rows[0];
   } catch (err) {
-    if (err.code === '23505') throw invalid('האימייל הזה כבר קיים ברשימה');
+    if (err.code === '23505') throw invalid('emailTaken');
     throw err;
   }
 }
@@ -135,19 +173,19 @@ async function updatePerson(personId, body) {
   try {
     const { rows } = await db.query(
       `UPDATE am_people SET name = $2, email = $3, role = $4, active = $5 WHERE id = $1 RETURNING ${PERSON_COLUMNS}`,
-      [id(personId, 'אדם'), ...personValues(body)],
+      [id(personId, 'person'), ...personValues(body)],
     );
-    if (!rows[0]) throw invalid('האדם לא נמצא');
+    if (!rows[0]) throw invalid('personNotFound');
     return rows[0];
   } catch (err) {
-    if (err.code === '23505') throw invalid('האימייל הזה כבר קיים ברשימה');
+    if (err.code === '23505') throw invalid('emailTaken');
     throw err;
   }
 }
 
 /** A person's last two weeks, for the owner opening them from the team screen. */
 async function personReports(personId) {
-  const pid = id(personId, 'אדם');
+  const pid = id(personId, 'person');
   const from = rules.addDays(rules.todayInIsrael(), -14);
   const [entries, blockers] = await Promise.all([
     db.query(
@@ -195,12 +233,12 @@ async function listActiveProjects() {
 
 function projectValues(body) {
   return [
-    id(body.clientId, 'לקוח'),
-    text(body.name, 'שם פרויקט'),
-    number(body.hoursBudget, 'תקציב השעות'),
-    date(body.dueDate, 'תאריך היעד'),
+    id(body.clientId, 'client'),
+    text(body.name, 'projectName'),
+    number(body.hoursBudget, 'hoursBudget'),
+    date(body.dueDate, 'dueDate'),
     body.status === 'done' ? 'done' : 'active',
-    number(body.amount, 'הסכום'),
+    number(body.amount, 'amount'),
     oneOf(body.billingType, BILLING_TYPES),
   ];
 }
@@ -214,9 +252,9 @@ async function createProject(body) {
   const values = projectValues(body);
   return withTransaction(async client => {
     if (body.quoteId) {
-      const { rows } = await client.query('SELECT status, project_id FROM am_quotes WHERE id = $1 FOR UPDATE', [id(body.quoteId, 'הצעה')]);
-      if (!rows[0] || rows[0].status !== 'won') throw invalid('אפשר להפוך לפרויקט רק הצעה שנסגרה');
-      if (rows[0].project_id) throw invalid('ההצעה הזו כבר הפכה לפרויקט');
+      const { rows } = await client.query('SELECT status, project_id FROM am_quotes WHERE id = $1 FOR UPDATE', [id(body.quoteId, 'quote')]);
+      if (!rows[0] || rows[0].status !== 'won') throw invalid('quoteNotWon');
+      if (rows[0].project_id) throw invalid('quoteAlreadyProject');
     }
     const { rows } = await client.query(
       `INSERT INTO am_projects (client_id, name, hours_budget, due_date, status, amount, billing_type)
@@ -233,9 +271,9 @@ async function updateProject(projectId, body) {
     `UPDATE am_projects SET client_id = $2, name = $3, hours_budget = $4, due_date = $5, status = $6, amount = $7,
             billing_type = $8
       WHERE id = $1 RETURNING id`,
-    [id(projectId, 'פרויקט'), ...projectValues(body)],
+    [id(projectId, 'project'), ...projectValues(body)],
   );
-  if (!rows[0]) throw invalid('הפרויקט לא נמצא');
+  if (!rows[0]) throw invalid('projectNotFound');
   return rows[0];
 }
 
@@ -262,7 +300,7 @@ async function listClients() {
 
 /** The client card. Open items = active projects plus open quotes. */
 async function getClient(clientId) {
-  const cid = id(clientId, 'לקוח');
+  const cid = id(clientId, 'client');
   const { rows } = await db.query(
     `SELECT ${CLIENT_COLUMNS}, ${HOURS_THIS_MONTH},
             (SELECT COUNT(*)::int FROM am_quotes q WHERE q.client_id = c.id AND q.status = ANY($3)) AS "openQuotes"
@@ -294,12 +332,12 @@ function clientValues(body) {
     .map(s => ({ name: String(s?.name ?? '').trim(), status: String(s?.status ?? '').trim() }))
     .filter(s => s.name);
   return [
-    text(body.name, 'שם לקוח'),
-    text(body.logoUrl, 'לוגו', { required: false }),
-    number(body.packageHours, 'שעות החבילה'),
+    text(body.name, 'clientName'),
+    text(body.logoUrl, 'logo', { required: false }),
+    number(body.packageHours, 'packageHours'),
     JSON.stringify(services),
-    text(body.nextStep, 'הצעד הבא', { required: false }),
-    date(body.nextStepDate, 'תאריך הצעד הבא'),
+    text(body.nextStep, 'nextStep', { required: false }),
+    date(body.nextStepDate, 'nextStepDate'),
     oneOf(body.billingType, BILLING_TYPES),
   ];
 }
@@ -318,16 +356,16 @@ async function updateClient(clientId, body) {
     `UPDATE am_clients SET name = $2, logo_url = $3, package_hours = $4, services = $5, next_step = $6, next_step_date = $7,
             billing_type = $8
       WHERE id = $1 RETURNING id`,
-    [id(clientId, 'לקוח'), ...clientValues(body)],
+    [id(clientId, 'client'), ...clientValues(body)],
   );
-  if (!rows[0]) throw invalid('הלקוח לא נמצא');
+  if (!rows[0]) throw invalid('clientNotFound');
   return rows[0];
 }
 
 async function addClientNote(clientId, body) {
   const { rows } = await db.query(
     `INSERT INTO am_client_notes (client_id, person_id, note_date, body) VALUES ($1, $2, $3, $4) RETURNING id`,
-    [id(clientId, 'לקוח'), body.personId || null, rules.todayInIsrael(), text(body.body, 'טקסט')],
+    [id(clientId, 'client'), body.personId || null, rules.todayInIsrael(), text(body.body, 'noteText')],
   );
   return rows[0];
 }
@@ -335,8 +373,8 @@ async function addClientNote(clientId, body) {
 // --- the daily report ---------------------------------------------------------
 
 async function getReport(personIdRaw, dateRaw) {
-  const personId = id(personIdRaw, 'אדם');
-  const day = date(dateRaw, 'התאריך') || rules.todayInIsrael();
+  const personId = id(personIdRaw, 'person');
+  const day = date(dateRaw, 'date') || rules.todayInIsrael();
   const [entries, blocker, clients, projects] = await Promise.all([
     db.query(
       `SELECT id, client_id AS "clientId", project_id AS "projectId", hours::float8 AS hours, description, billable,
@@ -368,34 +406,34 @@ async function getReport(personIdRaw, dateRaw) {
 
 /** Replaces the person's day with what the screen holds: one send, one state. */
 async function saveReport(body) {
-  const personId = id(body.personId, 'אדם');
-  const day = date(body.date, 'התאריך');
-  if (!day) throw invalid('חסר תאריך');
-  if (day > rules.todayInIsrael()) throw invalid('אי אפשר לדווח על יום שעוד לא הגיע');
+  const personId = id(body.personId, 'person');
+  const day = date(body.date, 'date');
+  if (!day) throw invalid('missing', { field: 'day' });
+  if (day > rules.todayInIsrael()) throw invalid('futureDay');
 
   const rows = (Array.isArray(body.entries) ? body.entries : []).map((row, i) => {
-    const line = `שורה ${i + 1}`;
+    const line = { row: i + 1 };
     const start = row.start || null;
     const end = row.end || null;
     let hours;
     if (start || end) {
-      if (!start || !end) throw invalid(`${line}: חסרה שעת ${start ? 'סיום' : 'התחלה'}`);
+      if (!start || !end) throw invalid(start ? 'rowNoEnd' : 'rowNoStart', line);
       hours = rules.hoursBetween(start, end);
-      if (hours === null) throw invalid(`${line}: שעת הסיום צריכה להיות אחרי שעת ההתחלה`);
+      if (hours === null) throw invalid('rowEndBeforeStart', line);
     } else {
       // A row sent before start and end existed keeps the hours it had.
       hours = Number(row.hours);
-      if (!(hours > 0 && hours <= 24)) throw invalid(`${line}: חסרות שעת התחלה ושעת סיום`);
+      if (!(hours > 0 && hours <= 24)) throw invalid('rowNoTimes', line);
     }
     const description = String(row.description ?? '').trim();
-    if (!description) throw invalid(`${line}: חסר מה עשית`);
-    const clientId = row.clientId ? id(row.clientId, 'לקוח') : null;
+    if (!description) throw invalid('rowNoDescription', line);
+    const clientId = row.clientId ? id(row.clientId, 'client') : null;
     const taskType = oneOf(row.taskType, TASK_TYPES);
     // Internal work is neither, so only client work must say which it was.
-    if (clientId && !taskType) throw invalid(`${line}: חסר סוג המשימה`);
+    if (clientId && !taskType) throw invalid('rowNoTaskType', line);
     return {
       clientId,
-      projectId: row.projectId ? id(row.projectId, 'פרויקט') : null,
+      projectId: row.projectId ? id(row.projectId, 'project') : null,
       hours,
       start,
       end,
@@ -405,14 +443,14 @@ async function saveReport(body) {
     };
   });
   const overlap = rules.findOverlap(rows);
-  if (overlap) throw invalid(`שורות ${overlap[0] + 1} ו-${overlap[1] + 1} חופפות בזמן`);
+  if (overlap) throw invalid('rowsOverlap', { first: overlap[0] + 1, second: overlap[1] + 1 });
   const blocker = String(body.blocker ?? '').trim();
 
   await withTransaction(async client => {
     for (const row of rows) {
       if (!row.projectId) continue;
       const { rows: found } = await client.query('SELECT client_id FROM am_projects WHERE id = $1', [row.projectId]);
-      if (found[0]?.client_id !== row.clientId) throw invalid('הפרויקט שנבחר לא שייך ללקוח');
+      if (found[0]?.client_id !== row.clientId) throw invalid('projectNotOfClient');
     }
     await client.query('DELETE FROM am_time_entries WHERE person_id = $1 AND entry_date = $2::date', [personId, day]);
     for (const row of rows) {
@@ -440,7 +478,7 @@ async function saveReport(body) {
  */
 async function monthHours(monthRaw) {
   const month = monthRaw || rules.todayInIsrael().slice(0, 7);
-  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw invalid('החודש לא תקין');
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw invalid('monthNotValid');
   const { rows } = await db.query(
     `SELECT t.person_id AS "personId", pe.name AS "personName",
             t.client_id AS "clientId", c.name AS "clientName",
@@ -495,19 +533,19 @@ async function listQuotes() {
 function quoteValues(body, previous) {
   const status = QUOTE_STATUSES.includes(body.status) ? body.status : 'preparing';
   const today = rules.todayInIsrael();
-  let sentDate = date(body.sentDate, 'תאריך השליחה');
+  let sentDate = date(body.sentDate, 'sentDate');
   if (!sentDate && ['sent', 'pending'].includes(status)) sentDate = today;
   // Stamped once on closing, and cleared if the quote is reopened.
   const closedDate = ['won', 'lost'].includes(status) ? (previous?.closedDate || today) : null;
-  const amount = number(body.amount, 'הסכום');
-  if (amount === null) throw invalid('חסר סכום');
+  const amount = number(body.amount, 'amount');
+  if (amount === null) throw invalid('missing', { field: 'sum' });
   return [
-    id(body.clientId, 'לקוח'),
-    text(body.subject, 'נושא'),
+    id(body.clientId, 'client'),
+    text(body.subject, 'subject'),
     amount,
     status,
     sentDate,
-    date(body.lastFollowupDate, 'תאריך המעקב'),
+    date(body.lastFollowupDate, 'followupDate'),
     closedDate,
   ];
 }
@@ -522,9 +560,9 @@ async function createQuote(body) {
 }
 
 async function updateQuote(quoteId, body) {
-  const qid = id(quoteId, 'הצעה');
+  const qid = id(quoteId, 'quote');
   const { rows: found } = await db.query('SELECT closed_date::text AS "closedDate" FROM am_quotes WHERE id = $1', [qid]);
-  if (!found[0]) throw invalid('ההצעה לא נמצאה');
+  if (!found[0]) throw invalid('quoteNotFound');
   const { rows } = await db.query(
     `UPDATE am_quotes SET client_id = $2, subject = $3, amount = $4, status = $5, sent_date = $6,
             last_followup_date = $7, closed_date = $8

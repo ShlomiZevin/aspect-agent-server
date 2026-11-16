@@ -113,12 +113,12 @@ function computeAlerts({ today, projects, developers, quotes, blockers }) {
     const state = projectState(project, today);
     const base = { name: project.clientName, detail: project.name, target: { type: 'project', id: project.id } };
     if (state.late) {
-      alerts.push({ ...base, kind: 'late', severity: 'action', action: 'לטיפול', line: `פרויקט באיחור של ${daysText(state.lateDays)}` });
+      alerts.push({ ...base, kind: 'late', severity: 'action', action: 'לטיפול', days: state.lateDays, line: `פרויקט באיחור של ${daysText(state.lateDays)}` });
     }
     if (state.over) {
-      alerts.push({ ...base, kind: 'over', severity: 'action', action: 'לטיפול', line: `חריגה משעות התקציב: ${state.pct}%` });
+      alerts.push({ ...base, kind: 'over', severity: 'action', action: 'לטיפול', pct: state.pct, line: `חריגה משעות התקציב: ${state.pct}%` });
     } else if (state.near) {
-      alerts.push({ ...base, kind: 'near', severity: 'attention', action: 'לעקוב', line: `קרוב לסוף התקציב: ${state.pct}%` });
+      alerts.push({ ...base, kind: 'near', severity: 'attention', action: 'לעקוב', pct: state.pct, line: `קרוב לסוף התקציב: ${state.pct}%` });
     }
   }
 
@@ -129,6 +129,7 @@ function computeAlerts({ today, projects, developers, quotes, blockers }) {
       severity: 'action',
       action: 'לטיפול',
       name: blocker.personName,
+      body: blocker.body,
       line: `משהו תקוע: ${blocker.body}`,
       target: { type: 'person', id: blocker.personId },
     });
@@ -137,12 +138,15 @@ function computeAlerts({ today, projects, developers, quotes, blockers }) {
   for (const dev of developers) {
     // Someone added after that workday could not have reported on it.
     if (dev.hoursOnPreviousWorkday > 0 || dev.createdDate > workday) continue;
-    const when = workday === addDays(today, -1) ? 'אתמול' : `ביום ${WEEKDAYS[toUtc(workday).getUTCDay()]}`;
+    // null is yesterday; otherwise the day of the week, 0 for Sunday.
+    const weekday = workday === addDays(today, -1) ? null : toUtc(workday).getUTCDay();
+    const when = weekday === null ? 'אתמול' : `ביום ${WEEKDAYS[weekday]}`;
     alerts.push({
       kind: 'no_report',
       severity: 'attention',
       action: 'לתזכורת',
       name: dev.name,
+      weekday,
       line: `לא דיווח ${when}`,
       target: { type: 'person', id: dev.id },
     });
@@ -158,6 +162,7 @@ function computeAlerts({ today, projects, developers, quotes, blockers }) {
       action: 'לעקוב',
       name: quote.clientName,
       detail: quote.subject,
+      days: age,
       line: `הצעת מחיר ללא מעקב כבר ${daysText(age)}`,
       target: { type: 'quote', id: quote.id },
     });

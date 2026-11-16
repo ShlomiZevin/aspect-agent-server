@@ -35,9 +35,9 @@ function handle(fn) {
     try {
       res.json(await fn(req));
     } catch (err) {
-      if (err.name === 'ValidationError') return res.status(400).json({ error: err.message });
+      if (err.name === 'ValidationError') return res.status(400).json({ error: err.message, code: err.code, params: err.params });
       console.error(`[aspect-management] ${req.method} ${req.originalUrl}:`, err);
-      res.status(500).json({ error: 'משהו השתבש. נסו שוב.' });
+      res.status(500).json({ error: 'משהו השתבש. נסו שוב.', code: 'failed' });
     }
   };
 }
@@ -54,7 +54,7 @@ router.get('/clients', handle(async () => ({ clients: await management.listClien
 router.post('/clients', handle(req => management.createClient(req.body)));
 router.get('/clients/:id', handle(async req => {
   const client = await management.getClient(req.params.id);
-  if (!client) throw management.invalid('הלקוח לא נמצא');
+  if (!client) throw management.invalid('clientNotFound');
   return client;
 }));
 router.patch('/clients/:id', handle(req => management.updateClient(req.params.id, req.body)));
@@ -72,6 +72,6 @@ router.get('/quotes', handle(() => management.listQuotes()));
 router.post('/quotes', handle(req => management.createQuote(req.body)));
 router.patch('/quotes/:id', handle(req => management.updateQuote(req.params.id, req.body)));
 
-router.post('/ask', handle(req => askService.ask(req.body?.question)));
+router.post('/ask', handle(req => askService.ask(req.body?.question, req.body?.lang)));
 
 module.exports = router;

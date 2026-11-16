@@ -19,7 +19,7 @@ const MAX_QUESTION_CHARS = 500;
 
 const INSTRUCTIONS = `You answer the owner of Aspect, an Israeli software company, about his company's operations.
 
-Answer in Hebrew only, whatever language the question or the data is in. Plain, short sentences: three or four at most, the answer first. No headings, no tables, no markdown, no bullet symbols.
+Answer in {LANGUAGE} only, whatever language the question or the data is in. Plain, short sentences: three or four at most, the answer first. No headings, no tables, no markdown, no bullet symbols.
 
 Write every amount of money with the ₪ sign, like ₪40,000.
 
@@ -73,13 +73,14 @@ async function buildFacts() {
   };
 }
 
-async function ask(questionRaw) {
+async function ask(questionRaw, lang) {
   const question = String(questionRaw ?? '').trim().slice(0, MAX_QUESTION_CHARS);
-  if (!question) throw management.invalid('מה רצית לשאול?');
+  if (!question) throw management.invalid('noQuestion');
 
   const facts = await buildFacts();
   const answer = await llmService.sendOneShot(
-    INSTRUCTIONS,
+    // The English view of the screens asks for English; Itzik's screens never do.
+    INSTRUCTIONS.replace('{LANGUAGE}', lang === 'en' ? 'English' : 'Hebrew'),
     `Facts:\n${JSON.stringify(facts)}\n\nQuestion:\n${question}`,
     { model: MODEL, maxTokens: 800, temperature: 0, context: 'aspect_management_ask' },
   );

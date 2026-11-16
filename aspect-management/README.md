@@ -6,7 +6,15 @@ and the like. **It is not related to any customer**, so it has no dataset, no
 customer schema and no agent.
 
 The UI is at `/aspect/management` (under `/aspect/` like every Aspect page — the client is shared with Lybi), in `aspect-agent-client-react/src/aspect-management/`.
-It is Hebrew only, and so are the messages this server sends back to it.
+It is Hebrew, and so are the messages this server sends back to it.
+
+For the Aspect team there is also a hidden English view: Ctrl+Shift+E switches
+it on and off (`?lang=en` on a phone), and nothing on screen offers it. Its
+words are the `management.*` keys in the client's `i18n/translations.ts`, next
+to the Hebrew. So the server's words reach it too, a refusal carries a `code`
+and `params` beside its Hebrew `error`, a morning alert carries its numbers
+(`days`, `pct`, `body`, `weekday`) beside its Hebrew `line`, and `/ask` takes a
+`lang`.
 
 ## Layout
 
