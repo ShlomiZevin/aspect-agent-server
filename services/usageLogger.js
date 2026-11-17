@@ -7,6 +7,7 @@
 const db = require('./db.pg');
 const { llmUsage } = require('../db/schema');
 const modelsService = require('./models.service');
+const { usageProvider } = require('./modelRoute');
 
 /**
  * Derive provider name from model id by consulting the central
@@ -34,14 +35,20 @@ function getProviderFromModel(model) {
  * @param {string} [params.crewMember] - Crew member name
  * @param {string} [params.conversationId] - Conversation external ID
  * @param {number|string} [params.userId] - User ID
+ * @param {string} [params.route] - Model route (task #984). 'vertex' records
+ *   the provider as '<provider>@vertex' ('anthropic@vertex', …) so a Vertex
+ *   call can be told from a direct one — no schema change. Absent/'direct'
+ *   writes the row exactly as before.
  */
-function logUsage({ process, model, provider, inputTokens, outputTokens, durationMs, agentName, crewMember, conversationId, userId }) {
+function logUsage({ process, model, provider, inputTokens, outputTokens, durationMs, agentName, crewMember, conversationId, userId, route }) {
   try {
     const drizzle = db.getDrizzle();
     drizzle.insert(llmUsage).values({
       process,
       model: model || 'unknown',
-      provider: provider || getProviderFromModel(model),
+      provider: route === 'vertex'
+        ? usageProvider(provider || getProviderFromModel(model), route)
+        : (provider || getProviderFromModel(model)),
       inputTokens: inputTokens || 0,
       outputTokens: outputTokens || 0,
       durationMs: durationMs || null,
@@ -64,7 +71,7 @@ function logUsage({ process, model, provider, inputTokens, outputTokens, duratio
  * model call that searched, so the LLM Usage screen puts it on that add-on.
  * No-op for 0 searches.
  */
-function logWebSearches({ provider, count, process, durationMs, agentName, crewMember, conversationId, userId }) {
+function logWebSearches({ provider, count, process, durationMs, agentName, crewMember, conversationId, userId, route }) {
   const n = Math.round(Number(count) || 0);
   if (n <= 0 || !provider) return;
   logUsage({
@@ -78,6 +85,7 @@ function logWebSearches({ provider, count, process, durationMs, agentName, crewM
     crewMember,
     conversationId,
     userId,
+    ...(route === 'vertex' ? { route } : {}),
   });
 }
 

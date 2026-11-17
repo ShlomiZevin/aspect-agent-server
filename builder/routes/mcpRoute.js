@@ -70,6 +70,7 @@ const modelsService = require('../../services/models.service');
 const environments = require('../environments');
 const mcpTriggers = require('../services/mcpTriggers');
 const crewTree = require('../services/crewTree');
+const modelRoute = require('../../services/modelRoute');
 
 /**
  * The team's shared knowledge repository (task #893) — notes, recipes and
@@ -354,6 +355,7 @@ saved for the others unless the person passes it on.
 | **Where a conversation stands right now** — every field's value, the thinking, the summaries, and the crew it is in | \`${base}/conversations/<id>/state\` |
 | History of changes to an agent, and why | \`${base}/agents/<slug>/log\` |
 | **How its crews are grouped in the Builder's CREWS list** — the manual tree (which crew is shown under which), display only | \`${base}/agents/<slug>/crew-tree\` |
+| **Its model route** — Direct (our provider keys) or Vertex (every model call through Google Vertex AI), whether Vertex is set up on this server, and every add-on whose model can't run on Vertex | \`${base}/agents/<slug>/model-route\` |
 | **Its Spec** — project, agent and crew specs, the text of every file attached to the agent's Spec, and the notes & files on each Targeted KB (the author's knowledge map). What the person wants the agent to be; read it before designing anything. Never seen by the running agent | \`${base}/agents/<slug>/spec\` |
 | **Every knowledge base** — chunks, files, which agents it is connected to and which KB Retrievers search it, plus any retriever naming a KB that doesn't exist | \`${base}/kbs\` |
 | One agent's knowledge bases — connected ones, and each KB Retriever with whether its KB is ok, not connected, or missing | \`${base}/agents/<slug>/kbs\` |
@@ -432,6 +434,29 @@ POST ${base}/agents/<slug>/crew-tree
 It is stored as \`crewTree.parents\` in the agent body. A body you POST
 without \`crewTree\` keeps the current tree — leave it out unless you mean
 to change it. Loops and unknown crew ids are refused.
+
+**Model route — Direct or Vertex (BETA).** Vertex is NOT active yet
+(Google quota / approval pending): an agent switched to Vertex gets no
+answers — every Vertex call fails — until it is. Say so before switching.
+Where the agent's model calls go:
+\`direct\` (our own provider keys — the default) or \`vertex\` (the same
+models and prompts, but every call goes through Google Vertex AI — some
+banks require it). It is \`modelRoute\` in the agent body (absent = Direct).
+Read it, and what would break, before changing it:
+
+\`\`\`
+GET  ${base}/agents/<slug>/model-route
+POST ${base}/agents/<slug>/model-route
+{ "route": "vertex" }        or { "route": "direct" }
+\`\`\`
+
+Switching is a new version (the runtime changes), not live until published —
+like any save. Ask the person first: it is usually a customer's compliance
+decision. On Vertex an add-on whose model isn't on Vertex (or an OpenAI
+add-on with Web search on) **fails** — there is no fallback to the direct
+API — so the answer lists those add-ons; change their models (models with
+\`vertex: true\` in \`${origin}/api/models\`) before or right after
+switching. A body you POST without \`modelRoute\` keeps the current route.
 
 **Giving an agent a knowledge base.** Two steps, and people mix them up:
 
@@ -548,6 +573,13 @@ opens showing "unsaved changes" before anyone has touched it.
   export and in a simulated turn's \`addons[].webSearches\`; usage shows a
   "Web search (OpenAI/Anthropic)" line on that add-on. A site that blocks
   Anthropic's crawler is dropped on Claude models (\`blockedDomains\`).
+- **Model route** (\`modelRoute\` in the agent body, \`${base}/agents/<slug>/model-route\`):
+  on a Vertex agent every add-on must use a model with \`vertex: true\` in
+  \`${origin}/api/models\` — a model that isn't on Vertex makes that add-on
+  fail loudly (it never falls back to the direct API). On Vertex: Claude
+  (all), GPT-6 Luna / 6.1 Sol / 6.1 Terra / 6 Astra only, Gemini 2.5. No
+  Web search on OpenAI models there (Claude's works). Knowledge-base
+  search embeddings still go direct (OpenAI) on either route.
 - Models: read \`${origin}/api/models\` for the current list with prices
   — never assume an id. Each model's \`notes\` is one line: strength —
   weakness · speed · cost tier (\`$\`…\`$$$$$\`, relative to the list).
@@ -1200,7 +1232,7 @@ router.get('/agents/:slug/triggers/:triggerId/explain', async (req, res) => {
  * which service function they call — the rules, the response and the
  * reason it is safe are identical.
  */
-async function saveAsNewVersion({ res, kind, id, body, description, normalize, saveFn, activateFn, number }) {
+async function saveAsNewVersion({ res, kind, id, body, description, normalize, saveFn, activateFn, number, extra }) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return res.status(400).type('text/plain').send(
       'Send { "body": { ... } } — the whole edited body as an object, not a patch and not a string.',
@@ -1236,7 +1268,43 @@ async function saveAsNewVersion({ res, kind, id, body, description, normalize, s
     'It is NOT live to customers: publishing is a separate, deliberate step you',
     'cannot reach, and it did not move. Tell them to look at the Builder. To undo,',
     'they switch back to the previous version from the version menu.',
+    ...(typeof extra === 'function' ? ['', ...extra(normalize(body))] : []),
   ].join('\n'), 'text/plain');
+}
+
+/**
+ * Model route (#984): the lines the door shows about an agent body's route —
+ * where its calls go, whether this server can run Vertex, and everything
+ * in it that would fail on Vertex. Shown on GET/POST model-route and after
+ * any agent save that ends on Vertex.
+ */
+function modelRouteLines(base, agent, agentBody, crews) {
+  const route = modelRoute.routeOfAgentBody(agentBody);
+  const problems = modelRoute.vertexProblems(agentBody, crews);
+  let cfg = null;
+  try { cfg = modelRoute.vertexConfig(); } catch { cfg = null; }
+  const lines = [
+    `Model route: ${route === 'vertex' ? 'VERTEX — every model call of this agent goes through Google Vertex AI' : 'DIRECT — our own provider keys (the default)'}.`,
+    'BETA: Vertex is not active yet (Google quota / approval pending) — on Vertex this agent\'s calls fail and it gets no answers until it is.',
+    cfg
+      ? `Vertex on this server: project ${cfg.projectId}, location ${cfg.location} (OpenAI models: global).`
+      : 'Vertex on this server: NOT set up (VERTEX_PROJECT_ID is empty) — a Vertex agent\'s calls fail here until it is.',
+  ];
+  if (problems.length) {
+    lines.push('', route === 'vertex'
+      ? `These FAIL on Vertex right now (no fallback to the direct API) — ${problems.length}:`
+      : `If this agent is switched to Vertex, these would fail — ${problems.length}:`);
+    for (const p of problems) lines.push(`- ${modelRoute.describeProblem(p)}`);
+    lines.push(`Fix: pick a model with "vertex": true from /api/models for each (or turn the OpenAI web search off).`);
+  } else {
+    lines.push('', 'Every model this agent uses is available on Vertex.');
+  }
+  lines.push(
+    '',
+    'Still direct on either route: knowledge-base search embeddings (OpenAI text-embedding-3-small → Pinecone), file indexing and transcription; the simulated user of simulations; Alfred.',
+    `Change: POST ${base}/agents/${agent.slug}/model-route { "route": "vertex" | "direct" } — a new version, not live until published.`,
+  );
+  return lines;
 }
 
 /**
@@ -1339,6 +1407,19 @@ router.post('/agents/:slug', async (req, res) => {
         body = { ...body, crewTree: crewTree.treeValue(parents) };
         if (!body.crewTree) delete body.crewTree;
       }
+      // Model route (#984): same keep-rule — a body that doesn't mention
+      // `modelRoute` keeps the current route (a save must never quietly
+      // move a Vertex agent back to the direct APIs). 'direct' / null =
+      // Direct (stored as absent, like the Builder); anything else refused.
+      if (!Object.prototype.hasOwnProperty.call(body, 'modelRoute')) {
+        if (agent.modelRoute === 'vertex') body = { ...body, modelRoute: 'vertex' };
+      } else if (body.modelRoute === null || body.modelRoute === 'direct') {
+        body = { ...body }; delete body.modelRoute;
+      } else if (body.modelRoute !== 'vertex') {
+        return res.status(400).type('text/plain').send(
+          `Nothing saved — modelRoute is "direct" or "vertex" (absent = keep the current route), not ${JSON.stringify(body.modelRoute)}.`,
+        );
+      }
     }
     await saveAsNewVersion({
       res,
@@ -1347,6 +1428,7 @@ router.post('/agents/:slug', async (req, res) => {
       body,
       description: req.body?.description,
       normalize: b => normalizeAgentBody(b, agent),
+      extra: b => (modelRoute.isVertex(b.modelRoute) ? modelRouteLines(urls(req).base, agent, b, agent.crews) : []),
       // One version number for the whole agent (#923).
       number: await builderProjects.nextAgentWideNumber(agent.id),
       saveFn: args => builderProjects.saveAgentVersionAs({ agentId: agent.id, ...args }),
@@ -1484,6 +1566,63 @@ router.post('/agents/:slug/crew-tree', async (req, res) => {
   } catch (err) {
     console.error('[builder-mcp] crew-tree write failed:', err);
     res.status(500).type('text/plain').send(`Could not save the crew tree: ${err.message}`);
+  }
+});
+
+/**
+ * Model route (#984) — Direct or Vertex. Read: the route, whether this
+ * server can run Vertex, and every add-on that can't run there. Write: a
+ * NEW agent version with `modelRoute` set (Direct = the key removed, as
+ * the Builder stores it) — it changes the runtime, so it is versioned like
+ * any body save, made active, never published.
+ */
+router.get('/agents/:slug/model-route', async (req, res) => {
+  try {
+    const project = await builderProjects.hydrateProject({ agentSlug: req.params.slug });
+    const agent = project && project.agents[0];
+    if (!agent) return res.status(404).type('text/plain').send(`No agent with slug "${req.params.slug}". Fetch ../agents for the list.`);
+    sendText(res, [
+      `# Model route of ${agent.name || agent.slug}`,
+      '',
+      ...modelRouteLines(urls(req).base, agent, agent, agent.crews),
+    ].join('\n'));
+  } catch (err) {
+    console.error('[builder-mcp] model-route read failed:', err);
+    res.status(500).type('text/plain').send(`Could not read the model route: ${err.message}`);
+  }
+});
+
+router.post('/agents/:slug/model-route', async (req, res) => {
+  try {
+    const project = await builderProjects.hydrateProject({ agentSlug: req.params.slug });
+    const agent = project && project.agents[0];
+    if (!agent) return res.status(404).type('text/plain').send(`No agent with slug "${req.params.slug}". Fetch ../agents for the list.`);
+    const route = req.body && req.body.route;
+    if (route !== 'vertex' && route !== 'direct') {
+      return res.status(400).type('text/plain').send('Send { "route": "vertex" } or { "route": "direct" }.');
+    }
+    const current = (agent.versions || []).find(v => v.id === agent.activeVersionId)?.body;
+    if (!current) return res.status(409).type('text/plain').send('This agent has no active version to change. Open it in the Builder and save once.');
+    if (modelRoute.routeOfAgentBody(current) === route) {
+      return sendText(res, [`Nothing to change — the route is already ${route}.`, '', ...modelRouteLines(urls(req).base, agent, current, agent.crews)].join('\n'));
+    }
+    const body = { ...current };
+    if (route === 'vertex') body.modelRoute = 'vertex'; else delete body.modelRoute;
+    await saveAsNewVersion({
+      res,
+      kind: 'Agent',
+      id: agent.name || agent.slug,
+      body,
+      description: req.body.description || `Model route: ${route === 'vertex' ? 'Vertex' : 'Direct'}`,
+      normalize: b => normalizeAgentBody(b, agent),
+      number: await builderProjects.nextAgentWideNumber(agent.id),
+      saveFn: args => builderProjects.saveAgentVersionAs({ agentId: agent.id, ...args }),
+      activateFn: ({ versionId }) => builderProjects.setAgentActive({ agentId: agent.id, versionId }),
+      extra: b => modelRouteLines(urls(req).base, agent, b, agent.crews),
+    });
+  } catch (err) {
+    console.error('[builder-mcp] model-route write failed:', err);
+    res.status(500).type('text/plain').send(`Could not change the model route: ${err.message}`);
   }
 });
 

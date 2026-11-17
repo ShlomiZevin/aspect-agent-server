@@ -2264,3 +2264,114 @@ fast it is and what it costs — relative to the other models in the list.
 - **Tests:** `scripts/test-builder-mcp.js` → "talking to an agent" (#975
   checks: every listed model ends in a tier, legacy listed, current first,
   defaults not legacy); `scripts/test-error-center.js` (Gemini 402).
+
+### 60. Model route: Direct / Vertex — per agent (task #984)
+
+Banks (Bank Jerusalem, Discount) may require every model call to go through
+Google Vertex AI. An agent now has a setting: **Direct** (our own provider
+keys, exactly as before) or **Vertex** (the same models, prompts and request
+shapes, but the SDK client talks to Vertex AI in a Google Cloud project).
+Generic infrastructure: the project and location are per environment (later a
+bank's own GCP project), all three providers.
+
+- **Where it lives:** `modelRoute` in the agent body — `'vertex'`, or absent
+  (= Direct; `'direct'` is stored as absent, the empty==absent rule, so no
+  agent saved before #984 looks dirty). Versioned with the body: the Builder
+  test chat runs the working copy; customers follow the PUBLISHED version, so
+  a switch reaches them only once that version is published.
+- **How the route reaches a call (explicit, no lookups):** `addonRunner`
+  reads `runnable.agent.body.modelRoute` and adds `modelRoute: 'vertex'` to
+  every `llm.sendOneShot` / `llm.sendMessageStreamWithPrompt` the add-on
+  makes (Direct adds nothing, so Direct calls are byte-for-byte as before).
+  Every add-on call passes through there: blocking + offline lanes,
+  cascades, Live Brain and Profiler panels (incl. a Profiler refresh), KB
+  Retriever trigger/query steps, proactive (trigger) turns. Ask Profiler
+  (`runtimeRoute`) passes it itself. `services/llm.js` checks a Vertex call
+  BEFORE any provider is touched (model on Vertex? server configured?) and
+  the provider files pick the client from the option:
+  - **Claude** — `@anthropic-ai/vertex-sdk` `AnthropicVertex({ projectId,
+    region, googleAuth, apiKey: null, authToken: null })`, same
+    `messages.create/stream`. `apiKey: null` matters: the base client would
+    otherwise send `ANTHROPIC_API_KEY` to Google as `x-api-key`. The
+    `googleAuth` wrapper pre-handles the SDK's constructor-time
+    `getClient()` promise — without credentials it rejected unhandled,
+    which exits this server (error center); each call still fails loudly.
+    **The vertex SDK must match `@anthropic-ai/sdk`'s internals:** pinned
+    `0.14.4` (same era as sdk `0.74`). `0.19.x` on sdk 0.74 sent
+    `/v1/v1/messages` with no auth — bump the two together and re-run the
+    battery (section F checks the real wire URLs).
+  - **OpenAI** — the OpenAI SDK with `baseURL
+    https://aiplatform.googleapis.com/v1/projects/<P>/locations/global/publishers/openai/v1`
+    and a Google access token as the key, fetched per call from
+    google-auth-library (it caches and refreshes the ~1 h token; a new token
+    = a new client). Responses API, `store: false` as before; the stream
+    drops `include: ['file_search_call.results']` (no hosted file search on
+    Vertex). `organization`/`project` are null so `OPENAI_ORG_ID` /
+    `OPENAI_PROJECT_ID` never go to Google. Only the stateless paths
+    (one-shot, `sendMessageStreamWithPrompt`) support Vertex — the legacy
+    Aspect Conversations-API paths never get a route.
+  - **Gemini** — a second `GoogleGenAI({ vertexai: true, project, location })`
+    beside the direct API-key client (explicit project/location win over an
+    env `GEMINI_API_KEY`, so it uses OAuth).
+  - **Model ids:** `services/models.service.js` — `vertex: true` per model,
+    `vertexId` where Vertex names it differently (`claude-haiku-4-5` →
+    `claude-haiku-4-5@20251001`). In `GET /api/models`. On Vertex: every
+    Claude model (each must be ENABLED in the project's Model Garden), GPT-6
+    Luna / 6.1 Sol / 6.1 Terra / 6 Astra only (private preview, global only),
+    Gemini 2.5 Pro / Flash. Usage rows keep OUR model id.
+- **No fallback, ever (Shlomi).** On Vertex these FAIL loudly with a
+  `ModelRouteError` (`code: 'model_route'`, never retried, never sent
+  direct), shown as the add-on's error on the run card: a model that is not
+  on Vertex (the message names it), `VERTEX_PROJECT_ID` not set, no Google
+  credentials, Web search on an OpenAI model, hosted file search (OpenAI
+  vector stores / Gemini file-search stores), the Anthropic Files API (legacy
+  Aspect KB documents). Claude's web search works on Vertex
+  (`web_search_20250305`, the basic tool we already use).
+- **Cost / usage:** same token counts, same list prices (Claude on the
+  global endpoint = direct prices; regional +10% is not modelled). The route
+  is recorded in `llm_usage.provider` — `anthropic@vertex`, `openai@vertex`,
+  `google@vertex` (no schema change; Direct rows unchanged). Admin → LLM
+  Usage rows carry `route: 'vertex'` and show "via Vertex" under the model.
+- **Builder (WYSIWYG):** agent page → Setup card → its own row under the
+  title: **Model route [BETA] [Direct | Vertex]** (`ModelRouteControl.tsx`). On Vertex an amber pill
+  "⚠ N not on Vertex" lists (tooltip) every add-on / panel whose model isn't
+  on Vertex and every OpenAI add-on with Web search on; on Direct the same
+  list is in the Vertex button's tooltip, so it shows BEFORE switching. The
+  pill is always rendered (visibility only) — nothing moves when toggling.
+- **BETA (shipped to staging before Vertex is live):** the label carries a
+  "Beta" badge (tooltip: Vertex isn't active yet, agents on Vertex won't
+  answer), switching TO Vertex asks first in the Builder's confirm modal
+  ("Switch to Vertex" / "Cancel"; back to Direct needs none), and the MCP
+  entry page + `model-route` answers say BETA. Remove all three once Vertex
+  quota / Google approval exist and `check-vertex-route.js --live` passes.
+- **MCP:** `GET /builder/mcp/agents/<slug>/model-route` (route, this server's
+  Vertex config, what fails); `POST … { "route": "vertex" | "direct" }` (a
+  new active version, never published; the answer lists what now fails). A
+  whole-body `POST /agents/<slug>` without `modelRoute` KEEPS the current
+  route (a save must never quietly move a Vertex agent back to direct);
+  `'direct'` / `null` clears it; anything else is refused.
+- **Still DIRECT on both routes (by decision, for now):** knowledge-base
+  embeddings (`kb.embedding.service.js` → OpenAI `text-embedding-3-small` →
+  Pinecone — every KB Retriever search embeds the query directly, and file
+  indexing), transcription, the simulated user of simulations / load tests
+  (`mcpConversations.userReply` — our test harness, default model not on
+  Vertex), Alfred and every other internal helper (`claudeOneShot`,
+  `sendAgentTurn`), the Aspect (non-Builder) chat agents.
+- **Environment:** `VERTEX_PROJECT_ID` (staging: `lybi-staging`) and
+  `VERTEX_LOCATION` (Claude + Gemini; default `global`; OpenAI is always
+  global). Auth: Application Default Credentials — on Cloud Run the service
+  account needs `roles/aiplatform.user`; locally `gcloud auth
+  application-default login`. No API keys for this route. No env-level
+  default route (every agent defaults to Direct).
+- **Code:** `services/modelRoute.js` (route, config, model checks,
+  `vertexProblems`, usage provider), `services/llm*.js`, `addonRunner.js`.
+- **Tests:** `node scripts/test-vertex-route.js` — offline: Direct requests /
+  clients / usage rows identical to a baseline captured from the pre-#984
+  code (`scripts/fixtures/vertex-route-direct-baseline.json`), the Vertex
+  clients and ids per provider, every loud failure, no direct client ever
+  built for a Vertex agent, the MCP door (mounted alone), and the REAL SDKs'
+  wire URLs with intercepted fetch. Live (once quota / GPT-6 access exist):
+  `VERTEX_PROJECT_ID=lybi-staging node scripts/check-vertex-route.js --live`
+  — one tiny Talker turn per provider through `runAddon`, prints every
+  request host, fails on any direct-API hit.
+- **Not touched:** Alfred (taught only after Shlomi approves the feature).

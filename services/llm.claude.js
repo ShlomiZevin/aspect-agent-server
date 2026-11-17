@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const providerConfigService = require('./provider-config.service');
 const webSearchLib = require('./webSearch');
+const modelRoute = require('./modelRoute');
 
 /**
  * Newer Claude models reject `temperature` with a 400 (sampling settings
@@ -55,13 +56,52 @@ class ClaudeService {
    * own key ("Thinking module", task #61) — otherwise the shared key, byte
    * -identical to before this existed.
    */
-  _clientFor(agentName) {
+  _clientFor(agentName, route) {
+    // Model route (#984): a Vertex agent's call gets the Vertex client —
+    // never the direct one, whatever keys exist.
+    if (modelRoute.isVertex(route)) return this._vertexClient();
     const scope = normalizeScope(agentName);
     const apiKey = providerConfigService.getScopedCached('anthropic_api_key', scope) || process.env.ANTHROPIC_API_KEY;
     let client = this._clients.get(apiKey);
     if (!client) {
       client = new Anthropic({ apiKey });
       this._clients.set(apiKey, client);
+    }
+    return client;
+  }
+
+  /**
+   * Claude on Google Vertex AI (#984) — `@anthropic-ai/vertex-sdk`, same
+   * messages.create / .stream surface as the direct client. Auth is Google
+   * Application Default Credentials (the SDK fetches and refreshes the
+   * token itself). One client per project + location. Throws when
+   * VERTEX_PROJECT_ID is not set — never a direct client instead.
+   */
+  _vertexClient() {
+    const { projectId, location } = modelRoute.vertexConfig();
+    if (!this._vertexClients) this._vertexClients = new Map();
+    const key = `${projectId}|${location}`;
+    let client = this._vertexClients.get(key);
+    if (!client) {
+      const { AnthropicVertex } = require('@anthropic-ai/vertex-sdk');
+      const { GoogleAuth } = require('google-auth-library');
+      const auth = new GoogleAuth({ scopes: 'https://www.googleapis.com/auth/cloud-platform' });
+      // The SDK asks for the auth client in its CONSTRUCTOR and keeps the
+      // promise. Without credentials that promise rejects before any call
+      // awaits it — an unhandled rejection, which exits this server (error
+      // center). Pre-handled here; each call still awaits it and fails loudly.
+      const googleAuth = {
+        getClient: () => {
+          const p = auth.getClient();
+          p.catch(() => {});
+          return p;
+        },
+      };
+      // apiKey / authToken null ON PURPOSE: the base client otherwise picks
+      // up ANTHROPIC_API_KEY from the environment and sends our direct key
+      // to Google as `x-api-key` on every Vertex call.
+      client = new AnthropicVertex({ projectId, region: location, googleAuth, apiKey: null, authToken: null });
+      this._vertexClients.set(key, client);
     }
     return client;
   }
@@ -158,7 +198,14 @@ class ClaudeService {
        * 21000. Callers generating big bodies should pass this.
        */
       stream = false,
+      // Model route (#984): 'vertex' = this call goes through Vertex AI.
+      modelRoute: route,
     } = options;
+    const vertex = modelRoute.isVertex(route);
+    // The Files API does not exist on Vertex — fail loudly, never send direct.
+    if (vertex && (knowledgeBase?.anthropicFileIds || []).length > 0) {
+      throw modelRoute.unsupported('Knowledge-base documents (Anthropic Files API)');
+    }
 
     try {
       const anthropicFileIds = knowledgeBase?.anthropicFileIds || [];
@@ -216,7 +263,7 @@ class ClaudeService {
       console.log(`📜 Claude OneShot: system prompt ${promptText.length} chars, ${messages.length} messages, jsonOutput=${jsonOutput}`);
 
       const requestParams = {
-        model,
+        model: vertex ? modelRoute.vertexModelId(model) : model,
         max_tokens: maxTokens,
         system: promptText,
         messages
@@ -239,7 +286,7 @@ class ClaudeService {
       if (useFilesApi) {
         requestParams.betas = ['files-api-2025-04-14'];
       }
-      const client = this._clientFor(agentName);
+      const client = this._clientFor(agentName, route);
       const messagesApi = useFilesApi ? client.beta.messages : client.messages;
 
       // `.stream().finalMessage()` yields the same Message object as
@@ -452,7 +499,14 @@ class ClaudeService {
       topK,
       // Per-customer key routing (task #61) — see _clientFor.
       agentName,
+      // Model route (#984): 'vertex' = this call goes through Vertex AI.
+      modelRoute: route,
     } = config;
+    const vertex = modelRoute.isVertex(route);
+    // The Files API does not exist on Vertex — fail loudly, never send direct.
+    if (vertex && anthropicDocuments && anthropicDocuments.length > 0) {
+      throw modelRoute.unsupported('Knowledge-base documents (Anthropic Files API)');
+    }
     // Web search switch (task #967): normalized { allowedDomains, maxSearches }
     // from services/webSearch.js, or null. Copied — a site Anthropic cannot
     // reach is dropped from it below.
@@ -563,7 +617,7 @@ class ClaudeService {
         maxIterations--;
 
         const requestParams = {
-          model,
+          model: vertex ? modelRoute.vertexModelId(model) : model,
           max_tokens: maxTokens,
           system: systemText,
           messages: currentMessages
@@ -581,7 +635,7 @@ class ClaudeService {
         }
 
         // Use beta.messages when document blocks are present (requires Files API beta)
-        const client = this._clientFor(agentName);
+        const client = this._clientFor(agentName, route);
         const messagesApi = anthropicDocuments && anthropicDocuments.length > 0
           ? client.beta.messages
           : client.messages;

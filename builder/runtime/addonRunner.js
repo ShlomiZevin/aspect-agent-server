@@ -54,6 +54,7 @@ const historyService = require('./historyService');
 const { evaluateConditions } = require('./conditionMatcher');
 const { chosenLimitOf, outputLimitOf, STREAM_ABOVE } = require('./outputLimit');
 const { webSearchFor, withWebSearchRule, promptAsShown } = require('../../services/webSearch');
+const modelRoute = require('../../services/modelRoute');
 
 /** `{}`, `[]`, or blank text — a value that says nothing. */
 function isEmptyValue(v) {
@@ -467,6 +468,15 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
   // Plugins call `llm` as before; this wrapper adds the limit and notes
   // every call that stopped at it. A plugin that set its own maxTokens
   // keeps it unless the author chose a limit on the addon.
+  //
+  // ── Model route (#984): the AGENT's setting (`agent.body.modelRoute`) ──
+  // rides on EVERY model call this add-on makes — the one place all add-on
+  // calls pass through (blocking + offline lanes, cascades, Live Brain /
+  // Profiler panels, proactive turns). Direct (the default) adds nothing,
+  // so those calls are exactly as before. The add-on's own usage rows
+  // (the streaming Talker logs itself) carry the route too.
+  const route = modelRoute.routeOfAgentBody(runnable?.agent?.body);
+  const routeOpt = route === 'vertex' ? { modelRoute: route } : {};
   const outputLimit = outputLimitOf(instance);
   const chosenLimit = chosenLimitOf(instance);
   const modelCalls = { count: 0, cutOff: 0 };
@@ -479,6 +489,7 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
       maxTokens,
       ...(maxTokens > STREAM_ABOVE ? { stream: true } : {}),
       withMeta: true,
+      ...routeOpt,
     });
     if (!r || typeof r !== 'object' || !('stopReason' in r)) return r; // tool-use shape
     if (r.stopReason === 'max_tokens') modelCalls.cutOff++;
@@ -487,7 +498,10 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
     return opts.withMeta ? r : r.text;
   };
   addonLlm.sendMessageStreamWithPrompt = (message, convId, config = {}) =>
-    llm.sendMessageStreamWithPrompt(message, convId, { ...config, maxTokens: chosenLimit ?? config.maxTokens ?? outputLimit });
+    llm.sendMessageStreamWithPrompt(message, convId, { ...config, maxTokens: chosenLimit ?? config.maxTokens ?? outputLimit, ...routeOpt });
+  const addonLogUsage = route === 'vertex' && typeof logUsage === 'function'
+    ? row => logUsage({ ...row, route })
+    : logUsage;
 
   // ── Call the plugin. The plugin owns LLM-call shape + parsing. ──
   const usageProcess = instance.pluginId;
@@ -508,7 +522,7 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
       historyMessages,
       emit,
       llm: addonLlm,
-      logUsage,
+      logUsage: addonLogUsage,
       usageProcess,
       usageCrew,
       extractorFields,

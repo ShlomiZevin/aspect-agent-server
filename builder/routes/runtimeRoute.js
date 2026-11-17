@@ -682,6 +682,7 @@ router.post('/:slug/conversations/:convId/profiler/ask', async (req, res) => {
     const { resolveRunnable } = require('../services/builderProjects');
     const { resolveProfilerPanelsForClient } = require('../runtime/profilerDispatcher');
     const llm = require('../../services/llm');
+    const modelRoute = require('../../services/modelRoute');
 
     const mode = version === 'viewing' ? 'viewing'
       : version === 'published' ? 'published'
@@ -740,6 +741,8 @@ router.post('/:slug/conversations/:convId/profiler/ask', async (req, res) => {
       crewMember:     'profiler',
       conversationId: String(convId),
       userId:         String(ownerUserId),
+      // Model route (#984): Ask Profiler is the agent's own call.
+      ...(modelRoute.isVertex(modelRoute.routeOfAgentBody(runnable.agent.body)) ? { modelRoute: 'vertex' } : {}),
     });
 
     res.json({ answer: typeof answer === 'string' ? answer : (answer?.text || '') });

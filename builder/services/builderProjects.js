@@ -239,6 +239,9 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       // CREWS sidebar hierarchy (#855) — display only, the runtime never
       // reads it. Same one-by-one rule as triggers above.
       crewTree:        agentBody.crewTree,
+      // Model route (#984): 'vertex' or absent (= Direct). Same one-by-one
+      // rule as triggers above — the runtime reads it from the body.
+      modelRoute:      agentBody.modelRoute,
       crews,
       versions: agentVersions.map(v => ({
         id:           v.id,

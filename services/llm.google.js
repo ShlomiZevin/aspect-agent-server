@@ -18,6 +18,7 @@ let client = null;
 let clientApiKey = null;
 
 const providerConfigService = require('./provider-config.service');
+const modelRoute = require('./modelRoute');
 
 /** Drop underscore-prefixed top-level keys from a tool result before it goes
  *  into the model's context — see the functionResponse push below. */
@@ -47,6 +48,36 @@ async function getClient() {
   clientApiKey = currentKey;
   console.log('✅ Google GenAI client initialized');
   return client;
+}
+
+/**
+ * The client for one call on a model route (#984). Direct → `getClient()`,
+ * exactly as before (the one global API-key client). Vertex → a GoogleGenAI
+ * client in Vertex mode (Application Default Credentials, no API key), one
+ * per project + location. Never the direct client for a Vertex call.
+ */
+const vertexClients = new Map();
+async function getClientForRoute(route) {
+  if (!modelRoute.isVertex(route)) return getClient();
+  const { projectId, location } = modelRoute.vertexConfig();
+  const key = `${projectId}|${location}`;
+  if (!vertexClients.has(key)) {
+    const genai = await import('@google/genai');
+    vertexClients.set(key, new genai.GoogleGenAI({ vertexai: true, project: projectId, location }));
+    console.log(`✅ Google GenAI client initialized (Vertex AI, ${projectId}/${location})`);
+  }
+  return vertexClients.get(key);
+}
+
+/** Gemini API file-search stores do not exist on Vertex (#984) — fail loudly. */
+function assertNoFileSearchOnVertex(route, knowledgeBase) {
+  if (!modelRoute.isVertex(route)) return;
+  const corpusIds = knowledgeBase?.corpusIds?.length > 0
+    ? knowledgeBase.corpusIds
+    : (knowledgeBase?.googleCorpusId ? [knowledgeBase.googleCorpusId] : []);
+  if (knowledgeBase?.enabled && corpusIds.length > 0) {
+    throw modelRoute.unsupported('Gemini file search (file search stores)');
+  }
 }
 
 class GoogleService {
@@ -222,10 +253,14 @@ class GoogleService {
       jsonOutput = false,
       knowledgeBase,
       historyMessages,
+      // Model route (#984): 'vertex' = this call goes through Vertex AI.
+      modelRoute: route,
     } = options;
+    assertNoFileSearchOnVertex(route, knowledgeBase);
+    const vertex = modelRoute.isVertex(route);
 
     try {
-      const ai = await getClient();
+      const ai = await getClientForRoute(route);
 
       // Build system instruction. The current user message used to
       // be appended here as `## Context` — that's been replaced with
@@ -275,7 +310,7 @@ class GoogleService {
       console.log(`📜 Google OneShot: ${contents.length} contents items (history=${historyMessages?.length ?? 0} + current=${message ? 1 : 0} + prod=${contents.length - (historyMessages?.length ?? 0) - (message ? 1 : 0)})`);
 
       const response = await ai.models.generateContent({
-        model,
+        model: vertex ? modelRoute.vertexModelId(model) : model,
         contents,
         config,
       });
@@ -320,7 +355,11 @@ class GoogleService {
       knowledgeBase = null,
       temperature,
       topK,
+      // Model route (#984): 'vertex' = this call goes through Vertex AI.
+      modelRoute: route,
     } = config;
+    assertNoFileSearchOnVertex(route, knowledgeBase);
+    const vertex = modelRoute.isVertex(route);
 
     // Gemini 2.5 "thinking" models use part of maxOutputTokens for internal
     // reasoning. Boost the limit so visible output isn't starved.
@@ -336,7 +375,7 @@ class GoogleService {
     let apiCallCount = 0; // Track API calls for debugging
 
     try {
-      const ai = await getClient();
+      const ai = await getClientForRoute(route);
 
       // Convert tools to Gemini format
       const geminiTools = this._convertToolsToGeminiFormat(crewTools);
@@ -404,7 +443,7 @@ class GoogleService {
 
       // Create chat session with the new SDK
       const chat = ai.chats.create({
-        model,
+        model: vertex ? modelRoute.vertexModelId(model) : model,
         history: historyMessages,
         config: {
           systemInstruction: systemPrompt,

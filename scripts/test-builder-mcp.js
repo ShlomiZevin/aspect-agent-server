@@ -65,6 +65,8 @@ function bodyOfAgent(a) {
     ...((a.triggers?.triggers?.length || a.triggers?.enabled === false)
       ? { triggers: a.triggers } : {}),
     ...(Object.keys(a.crewTree?.parents ?? {}).length ? { crewTree: a.crewTree } : {}),
+    // Model route (#984): Direct == absent.
+    ...(a.modelRoute === 'vertex' ? { modelRoute: 'vertex' } : {}),
   };
 }
 
@@ -447,6 +449,28 @@ async function removeIfPresent(slug) {
     const runtimeDir = require('path').join(__dirname, '..', 'builder', 'runtime');
     check('the runtime never reads it', !require('fs').readdirSync(runtimeDir).filter(f => f.endsWith('.js'))
       .some(f => /crewTree/.test(require('fs').readFileSync(require('path').join(runtimeDir, f), 'utf8'))));
+
+    // ── model route (#984) — Direct / Vertex. Versioned writes; the offline
+    // request-level proof is scripts/test-vertex-route.js. ──
+    section('model route (#984)');
+    check('entry page teaches the model route', doc.text.includes(`${base}/agents/<slug>/model-route`) && doc.text.includes('modelRoute'));
+    const mr0 = await get(`/agents/${TEST_SLUG}/model-route`);
+    check('read → 200, says the route', mr0.status === 200 && /Model route: (DIRECT|VERTEX)/.test(mr0.text), mr0.text.slice(0, 160));
+    check('a bad route is refused', (await post(`/agents/${TEST_SLUG}/model-route`, { route: 'sometimes' })).status === 400);
+    const mrV = await post(`/agents/${TEST_SLUG}/model-route`, { route: 'vertex', description: 'battery (vertex)' });
+    const mv1 = (await hydrate(TEST_SLUG)).agents[0];
+    check('set vertex → new active version with modelRoute "vertex"', mrV.status === 200 && mv1.modelRoute === 'vertex'
+      && mv1.versions.find(v => v.id === mv1.activeVersionId).body.modelRoute === 'vertex', mrV.text.slice(0, 200));
+    check('no phantom "unsaved changes" on a Vertex agent', agentDirty(mv1).length === 0, agentDirty(mv1).join(', '));
+    const mvBody = JSON.parse(JSON.stringify(mv1.versions.find(v => v.id === mv1.activeVersionId).body));
+    delete mvBody.modelRoute;
+    mvBody.spec = `Route battery at ${stamp}`;
+    await post(`/agents/${TEST_SLUG}`, { body: mvBody, description: 'battery (route kept)' });
+    check('a body save without modelRoute KEEPS Vertex', (await hydrate(TEST_SLUG)).agents[0].modelRoute === 'vertex');
+    const mrD = await post(`/agents/${TEST_SLUG}/model-route`, { route: 'direct', description: 'battery (direct)' });
+    const mv2 = (await hydrate(TEST_SLUG)).agents[0];
+    check('set direct → the key is removed (Direct == absent)', mrD.status === 200 && mv2.modelRoute === undefined
+      && !('modelRoute' in mv2.versions.find(v => v.id === mv2.activeVersionId).body));
 
     // ── create ──
     section('create');

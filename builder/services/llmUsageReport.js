@@ -44,6 +44,7 @@ const path = require('path');
 const db = require('../../services/db.pg');
 const models = require('../../services/models.service');
 const builderProjects = require('./builderProjects');
+const { routeOfUsageProvider } = require('../../services/modelRoute');
 
 const TZ = process.env.ALFRED_TIMEZONE || 'Asia/Jerusalem';
 const MAX_CALLS = 20000;          // newest first; older calls are left out (flagged)
@@ -156,7 +157,7 @@ async function buildPeriod(agentSlug, period) {
             (extract(epoch from u.created_at) * 1000)::bigint as at,
             u.process, nullif(trim(u.crew_member), '') as crew, u.model,
             coalesce(u.input_tokens, 0) as i, coalesce(u.output_tokens, 0) as o,
-            u.duration_ms as dur, nullif(trim(u.conversation_id), '') as conv
+            u.duration_ms as dur, nullif(trim(u.conversation_id), '') as conv, u.provider as prov
        from llm_usage u
       where u.agent_name = any($1::text[]) and ${where}
       order by u.created_at desc, u.id desc
@@ -324,6 +325,8 @@ async function buildPeriod(agentSlug, period) {
       output: searches ? 0 : Number(c.o),
       durationMs: c.dur,
       cost,
+      // Model route (#984): a call made through Vertex AI ('<provider>@vertex').
+      ...(routeOfUsageProvider(c.prov) === 'vertex' ? { route: 'vertex' } : {}),
     };
   }).sort((a, b) => b.at - a.at || b.id - a.id);
 

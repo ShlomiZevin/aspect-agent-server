@@ -3,6 +3,7 @@ const functionRegistry = require('./function-registry');
 const conversationService = require('./conversation.service');
 const providerConfigService = require('./provider-config.service');
 const webSearchLib = require('./webSearch');
+const modelRoute = require('./modelRoute');
 
 // Some tool handlers (BI crews' fetch_*_data — see table-format.service.js)
 // attach a `_fullData` field carrying the COMPLETE row set purely so server.js
@@ -85,6 +86,51 @@ class OpenAIService {
       this._scopedClients.set(apiKey, client);
     }
     return client;
+  }
+
+  /**
+   * The client for one call on a model route (#984). Direct → `_clientFor`,
+   * exactly as before. Vertex → the OpenAI SDK pointed at Vertex AI's
+   * OpenAI endpoint (Responses API) with a Google access token as the
+   * bearer — fetched per call (google-auth-library caches and refreshes
+   * it), so an hour-old token is never used. Never a direct client.
+   */
+  async _clientForRoute(agentName, route) {
+    if (!modelRoute.isVertex(route)) return this._clientFor(agentName);
+    return this._vertexClient();
+  }
+
+  async _vertexClient() {
+    const { projectId } = modelRoute.vertexConfig();
+    const token = await modelRoute.googleAccessToken();
+    const baseURL = modelRoute.openaiBaseURL(projectId);
+    if (!this._vertexClients) this._vertexClients = new Map();
+    const key = `${baseURL}|${token}`;
+    let client = this._vertexClients.get(key);
+    if (!client) {
+      // A new token = a new client; drop the old ones (one live token at a time).
+      for (const k of this._vertexClients.keys()) if (k.startsWith(`${baseURL}|`)) this._vertexClients.delete(k);
+      // organization / project null ON PURPOSE: the SDK otherwise sends
+      // OPENAI_ORG_ID / OPENAI_PROJECT_ID from the environment to Google.
+      client = new OpenAI({ apiKey: token, baseURL, organization: null, project: null });
+      this._vertexClients.set(key, client);
+    }
+    return client;
+  }
+
+  /**
+   * Vertex (#984) has the Responses API but no hosted tools: no web search,
+   * no file search / vector stores. A Vertex call that needs one fails
+   * loudly before anything is sent.
+   */
+  _assertVertexRequest({ webSearch, knowledgeBase }) {
+    if (webSearch) throw modelRoute.unsupported('Web search on an OpenAI model');
+    const storeIds = knowledgeBase?.storeIds?.length > 0
+      ? knowledgeBase.storeIds
+      : (knowledgeBase?.storeId ? [knowledgeBase.storeId] : []);
+    if (knowledgeBase?.enabled && storeIds.length > 0) {
+      throw modelRoute.unsupported('OpenAI file search (vector stores)');
+    }
   }
 
   /**
@@ -481,7 +527,11 @@ class OpenAIService {
         // Web search switch (task #967) — normalized settings
         // { allowedDomains, maxSearches } from services/webSearch.js, or null.
         webSearch = null,
+        // Model route (#984): 'vertex' = this call goes through Vertex AI.
+        modelRoute: route,
       } = config;
+      const vertex = modelRoute.isVertex(route);
+      if (vertex) this._assertVertexRequest({ webSearch, knowledgeBase });
 
       // Build tools array
       const tools = [];
@@ -584,7 +634,7 @@ class OpenAIService {
 
         // Use Responses API with inline instructions - stateless (no conversation object)
         const request = {
-          model: model,
+          model: vertex ? modelRoute.vertexModelId(model) : model,
           instructions: fullInstructions,
           input: currentInput,
           text: {
@@ -604,7 +654,9 @@ class OpenAIService {
           ...(webSearch ? { max_tool_calls: webSearch.maxSearches } : {}),
           stream: true
         };
-        const client = this._clientFor(agentName);
+        // Vertex (#984): no hosted file search there, so don't ask for its results.
+        if (vertex) delete request.include;
+        const client = await this._clientForRoute(agentName, route);
         let stream;
         try {
           stream = await client.responses.create(request);
@@ -1052,6 +1104,10 @@ class OpenAIService {
     // streamed internally; the return shape is unchanged).
     const webSearch = options.webSearch || null;
     const onWebSearch = typeof options.onWebSearch === 'function' ? options.onWebSearch : null;
+    // Model route (#984): 'vertex' = this call goes through Vertex AI.
+    const route = options.modelRoute;
+    const vertex = modelRoute.isVertex(route);
+    if (vertex) this._assertVertexRequest({ webSearch, knowledgeBase });
 
     try {
       // Build instructions. The current user message used to be
@@ -1088,7 +1144,7 @@ class OpenAIService {
       console.log(`📜 OpenAI OneShot: ${input.length} input items (history=${historyMessages?.length ?? 0} + current=${message ? 1 : 0} + prod=${input.length - (historyMessages?.length ?? 0) - (message ? 1 : 0)})`);
 
       const requestParams = {
-        model,
+        model: vertex ? modelRoute.vertexModelId(model) : model,
         instructions: fullInstructions,
         input,
         max_output_tokens: maxTokens,
@@ -1123,7 +1179,7 @@ class OpenAIService {
       if (webSearch) {
         // Streamed so each search can be shown live; the final event carries
         // the same Response object `.create()` returns.
-        const stream = await this._clientFor(agentName).responses.create({ ...requestParams, stream: true });
+        const stream = await (await this._clientForRoute(agentName, route)).responses.create({ ...requestParams, stream: true });
         for await (const ev of stream) {
           if (ev.type === 'error') throw new Error(ev.message || 'OpenAI stream error');
           if (ev.item?.type === 'web_search_call' && onWebSearch
@@ -1137,7 +1193,7 @@ class OpenAIService {
         if (!response) throw new Error('OpenAI stream ended without a response');
         if (response.status === 'failed') throw new Error(response.error?.message || 'OpenAI response failed');
       } else {
-        response = await this._clientFor(agentName).responses.create(requestParams);
+        response = await (await this._clientForRoute(agentName, route)).responses.create(requestParams);
       }
 
       // The answer is the LAST message item (a web-search turn has search

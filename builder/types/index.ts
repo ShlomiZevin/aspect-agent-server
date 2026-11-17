@@ -30,6 +30,9 @@ export interface ModelRef {
   modelId: string;
 }
 
+/** Where an agent's model calls go — see {@link AgentDoc.modelRoute} (task #984). */
+export type ModelRoute = 'direct' | 'vertex';
+
 // ─── Fields (used by Field Extractor and any future addon that produces fields) ──
 
 export type FieldType = 'string' | 'int' | 'enum' | 'boolean';
@@ -1228,7 +1231,7 @@ export type AgentBody = Pick<
   'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
   | 'fields' | 'domains' | 'tags' | 'parameters' | 'enums'
   | 'cortex' | 'snippets' | 'personas' | 'liveBrain' | 'profiler'
-  | 'triggers' | 'crewTree'
+  | 'triggers' | 'crewTree' | 'modelRoute'
 >;
 
 /**
@@ -1832,6 +1835,28 @@ export interface AgentDoc {
    * See {@link CrewTreeDef}. Optional; absence = every crew top level.
    */
   crewTree?: CrewTreeDef;
+  /**
+   * Model route (task #984) — WHERE this agent's model calls go.
+   *   - absent / `'direct'` — our own provider keys, straight to
+   *     Anthropic / OpenAI / Google. The default; stored as ABSENT
+   *     (empty == absent, so agents saved before #984 never look dirty).
+   *   - `'vertex'` — the same models, prompts and request shapes, but every
+   *     call goes through Google Vertex AI in the environment's Google Cloud
+   *     project (env `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`). For customers
+   *     (banks) that require it.
+   *
+   * Versioned with the body: the customer chat follows the published
+   * version, so a switch reaches customers only once that version is
+   * published. Every model call made for the agent honours it (Talker,
+   * Thinker, extractors / reasoners, KB Retriever steps, Live Brain and
+   * Profiler panels, Ask Profiler, proactive turns). NO fallback: on Vertex
+   * a model that isn't on Vertex (`vertex` in GET /api/models), an OpenAI
+   * add-on with Web search on, or a missing server setting makes the call
+   * FAIL loudly — never silently direct. Still direct on both routes:
+   * knowledge-base embeddings, transcription, the simulated user, Alfred.
+   * See BUILDER_V2.md #60 and services/modelRoute.js.
+   */
+  modelRoute?: ModelRoute;
   /**
    * The crews that belong to this agent. NOT part of the agent
    * version body — crews are their own versioned entities and live

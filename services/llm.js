@@ -4,6 +4,7 @@ const googleService = require('./llm.google');
 const functionRegistry = require('./function-registry');
 const { logUsage, logWebSearches } = require('./usageLogger');
 const modelsService = require('./models.service');
+const modelRoute = require('./modelRoute');
 
 /**
  * Main LLM service that routes requests to specific providers
@@ -15,6 +16,23 @@ const errorCenter = require('../builder/services/errorCenter');
 const errorRules = require('../builder/services/errorRules');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Model route (task #984). `modelRoute: 'vertex'` on a call's options sends
+ * it through Google Vertex AI (services/modelRoute.js); absent / 'direct'
+ * is exactly the call as before. A Vertex call is checked HERE, before any
+ * provider is touched — a model that is not on Vertex, or a server without
+ * VERTEX_PROJECT_ID, throws a ModelRouteError (never retried, never sent
+ * direct). Returns the normalized route.
+ */
+function checkRoute(options, model) {
+  const route = modelRoute.normalize(options && options.modelRoute);
+  if (route === 'vertex') {
+    modelRoute.assertVertexModel(model);
+    modelRoute.vertexConfig();
+  }
+  return route;
+}
 
 /**
  * A model call failed: record it in the error center (task #903) with the
@@ -117,6 +135,8 @@ class LLMService {
    * @returns {AsyncGenerator} - Stream of text chunks
    */
   async *sendMessageStreamWithPrompt(message, conversationId, config = {}) {
+    // Model route (#984): a Vertex call is checked before any provider call.
+    checkRoute(config, config.model);
     // Detect provider from model name
     const provider = this._getProviderForModel(config.model, 'crew');
     // Error center (#903): record a failed call with its kind; retry a rate
@@ -191,6 +211,8 @@ class LLMService {
    * @returns {Promise<string>} - The response text
    */
   async sendOneShot(instructions, message, options = {}) {
+    // Model route (#984): a Vertex call is checked before any provider call.
+    const route = checkRoute(options, options.model);
     // Detect provider from model name (use context from options for logging)
     const provider = this._getProviderForModel(options.model, options.context || 'one-shot');
     let start;
@@ -227,6 +249,8 @@ class LLMService {
           crewMember: options.crewMember,
           conversationId: options.conversationId,
           userId: options.userId,
+          // #984: a Vertex call's row says so (provider 'anthropic@vertex' …).
+          ...(route === 'vertex' ? { route } : {}),
         });
         // Web search switch (#967): the searches are their own priced row.
         if (result.usage.webSearches) {
@@ -239,6 +263,7 @@ class LLMService {
             crewMember: options.crewMember,
             conversationId: options.conversationId,
             userId: options.userId,
+            ...(route === 'vertex' ? { route } : {}),
           });
         }
       }

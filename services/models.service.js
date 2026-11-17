@@ -28,7 +28,21 @@
  *     price:      optional { in, out } — USD per 1M tokens at list
  *                 price. Only set where the rate is known; costOf()
  *                 returns null for the rest rather than guessing.
+ *     vertex:     optional boolean — the model exists on Google Vertex AI,
+ *                 so an agent whose model route is Vertex may use it
+ *                 (task #984, services/modelRoute.js). Absent = not on
+ *                 Vertex: a Vertex agent's call to it fails loudly.
+ *     vertexId:   optional — the id Vertex knows the model by, when it is
+ *                 not our id (dated Claude snapshots use '@').
  *   }
+ *
+ * Vertex availability (checked 2026-11-17): Claude — every current model,
+ * bare first-party id, Haiku 4.5 as the dated snapshot
+ * `claude-haiku-4-5@20251001`; each must still be ENABLED in the project's
+ * Model Garden. OpenAI — private preview, ONLY gpt-6-luna, gpt-6.1-sol,
+ * gpt-6.1-terra, gpt-6-astra (global endpoint, Responses API). Gemini —
+ * 2.5 Pro / Flash. Vertex list prices for Claude on the global endpoint
+ * equal the direct ones (regional endpoints +10%), so costOf() holds.
  *
  * `notes` is the tagline (task #975), one line for a dropdown:
  *   `<strength> — <weakness> · <speed> · <cost tier>`
@@ -51,23 +65,23 @@
 // first within each provider, then the legacy ones.
 const MODELS_RAW = [
   // ── Anthropic ──
-  { id: 'claude-fable-5-2',  providerId: 'anthropic', name: 'Claude Fable 5.2',  notes: 'Strongest reasoning, for complex code-heavy jobs — overkill for chat · Slow, slow to start', price: { in: 8, out: 40 } },
-  { id: 'claude-opus-5-5',   providerId: 'anthropic', name: 'Claude Opus 5.5',   notes: 'Top reasoning — far too slow for a live Talker · Slow, slow to start', price: { in: 4, out: 20 } },
-  { id: 'claude-sonnet-5-5', providerId: 'anthropic', name: 'Claude Sonnet 5.5', notes: 'Great Thinker, sharp reasoning — robotic Hebrew as a Talker · Medium', price: { in: 2, out: 10 } },
+  { id: 'claude-fable-5-2',  providerId: 'anthropic', name: 'Claude Fable 5.2',  notes: 'Strongest reasoning, for complex code-heavy jobs — overkill for chat · Slow, slow to start', price: { in: 8, out: 40 }, vertex: true },
+  { id: 'claude-opus-5-5',   providerId: 'anthropic', name: 'Claude Opus 5.5',   notes: 'Top reasoning — far too slow for a live Talker · Slow, slow to start', price: { in: 4, out: 20 }, vertex: true },
+  { id: 'claude-sonnet-5-5', providerId: 'anthropic', name: 'Claude Sonnet 5.5', notes: 'Great Thinker, sharp reasoning — robotic Hebrew as a Talker · Medium', price: { in: 2, out: 10 }, vertex: true },
   // Haiku 5.5: $0.10/$0.50 up to a 100K-token prompt; $0.50/$2.50 above it.
-  { id: 'claude-haiku-5-5',  providerId: 'anthropic', name: 'Claude Haiku 5.5',  notes: 'Cheap Claude for extractors and quick steps — lighter reasoning · Fast', price: { in: 0.1, out: 0.5 } },
-  { id: 'claude-sonnet-4-6', providerId: 'anthropic', name: 'Claude Sonnet 4.6', notes: 'Default Thinker, solid reasoning — robotic Hebrew as a Talker · Medium', price: { in: 3, out: 15 } },
-  { id: 'claude-fable-5-1',  providerId: 'anthropic', name: 'Claude Fable 5.1',  notes: 'Very strong reasoning — replaced by Fable 5.2 (cheaper) · Slow, slow to start', price: { in: 10, out: 50 }, legacy: true },
-  { id: 'claude-opus-5',     providerId: 'anthropic', name: 'Claude Opus 5',     notes: 'Top reasoning — replaced by Opus 5.5 (cheaper) · Slow, slow to start', price: { in: 5, out: 25 }, legacy: true },
-  { id: 'claude-sonnet-5',   providerId: 'anthropic', name: 'Claude Sonnet 5',   notes: 'Good Thinker — replaced by Sonnet 5.5 · Medium', price: { in: 2, out: 10 }, legacy: true },
-  { id: 'claude-opus-4-7',   providerId: 'anthropic', name: 'Claude Opus 4.7',   notes: 'Strong reasoning — replaced by Opus 5.5 (cheaper) · Slow', price: { in: 5, out: 25 }, legacy: true },
-  { id: 'claude-haiku-4-5',  providerId: 'anthropic', name: 'Claude Haiku 4.5',  notes: 'Cheap and quick — replaced by Haiku 5.5 (far cheaper) · Fast', price: { in: 1, out: 5 }, legacy: true },
+  { id: 'claude-haiku-5-5',  providerId: 'anthropic', name: 'Claude Haiku 5.5',  notes: 'Cheap Claude for extractors and quick steps — lighter reasoning · Fast', price: { in: 0.1, out: 0.5 }, vertex: true },
+  { id: 'claude-sonnet-4-6', providerId: 'anthropic', name: 'Claude Sonnet 4.6', notes: 'Default Thinker, solid reasoning — robotic Hebrew as a Talker · Medium', price: { in: 3, out: 15 }, vertex: true },
+  { id: 'claude-fable-5-1',  providerId: 'anthropic', name: 'Claude Fable 5.1',  notes: 'Very strong reasoning — replaced by Fable 5.2 (cheaper) · Slow, slow to start', price: { in: 10, out: 50 }, legacy: true, vertex: true },
+  { id: 'claude-opus-5',     providerId: 'anthropic', name: 'Claude Opus 5',     notes: 'Top reasoning — replaced by Opus 5.5 (cheaper) · Slow, slow to start', price: { in: 5, out: 25 }, legacy: true, vertex: true },
+  { id: 'claude-sonnet-5',   providerId: 'anthropic', name: 'Claude Sonnet 5',   notes: 'Good Thinker — replaced by Sonnet 5.5 · Medium', price: { in: 2, out: 10 }, legacy: true, vertex: true },
+  { id: 'claude-opus-4-7',   providerId: 'anthropic', name: 'Claude Opus 4.7',   notes: 'Strong reasoning — replaced by Opus 5.5 (cheaper) · Slow', price: { in: 5, out: 25 }, legacy: true, vertex: true },
+  { id: 'claude-haiku-4-5',  providerId: 'anthropic', name: 'Claude Haiku 4.5',  notes: 'Cheap and quick — replaced by Haiku 5.5 (far cheaper) · Fast', price: { in: 1, out: 5 }, legacy: true, vertex: true, vertexId: 'claude-haiku-4-5@20251001' },
 
   // ── OpenAI ──
-  { id: 'gpt-6.1-terra', providerId: 'openai', name: 'GPT-6.1 Terra', notes: 'Newest balanced GPT, natural writing — thinks before answering · Medium, slow to start', price: { in: 1, out: 5 } },
-  { id: 'gpt-6.1-sol',   providerId: 'openai', name: 'GPT-6.1 Sol',   notes: 'Near-Astra reasoning, mid price — thinks first, not for the Talker · Medium, slow to start', price: { in: 2, out: 10 } },
-  { id: 'gpt-6-astra',   providerId: 'openai', name: 'GPT-6 Astra',   notes: "OpenAI's top reasoning — thinks first, very expensive · Slow, slow to start", price: { in: 10, out: 50 } },
-  { id: 'gpt-6-luna',    providerId: 'openai', name: 'GPT-6 Luna',    notes: 'Cheapest current GPT, fine for extractors — light reasoning · Fast', price: { in: 0.1, out: 0.5 } },
+  { id: 'gpt-6.1-terra', providerId: 'openai', name: 'GPT-6.1 Terra', notes: 'Newest balanced GPT, natural writing — thinks before answering · Medium, slow to start', price: { in: 1, out: 5 }, vertex: true },
+  { id: 'gpt-6.1-sol',   providerId: 'openai', name: 'GPT-6.1 Sol',   notes: 'Near-Astra reasoning, mid price — thinks first, not for the Talker · Medium, slow to start', price: { in: 2, out: 10 }, vertex: true },
+  { id: 'gpt-6-astra',   providerId: 'openai', name: 'GPT-6 Astra',   notes: "OpenAI's top reasoning — thinks first, very expensive · Slow, slow to start", price: { in: 10, out: 50 }, vertex: true },
+  { id: 'gpt-6-luna',    providerId: 'openai', name: 'GPT-6 Luna',    notes: 'Cheapest current GPT, fine for extractors — light reasoning · Fast', price: { in: 0.1, out: 0.5 }, vertex: true },
   { id: 'gpt-5.6-terra', providerId: 'openai', name: 'GPT-5.6 Terra', notes: 'Default Talker, good conversation — can sound robotic without strong prompting · Fast', price: { in: 2, out: 12 } },
   { id: 'gpt-4o-mini',   providerId: 'openai', name: 'GPT-4o mini',   notes: 'Default extractor, cheap and instant — old, weak reasoning · Very fast', price: { in: 0.15, out: 0.6 } },
   // `gpt-5.6` is OpenAI's alias for gpt-5.6-sol; kept as the id agents already use.
@@ -87,8 +101,8 @@ const MODELS_RAW = [
   // Gemini key is out of prepaid credit (402). The successors are NOT added
   // yet — they could not be proven through llm.google.js (see the list of
   // candidates in BUILDER_V2.md #59).
-  { id: 'gemini-2.5-pro',   providerId: 'google', name: 'Gemini 2.5 Pro',   notes: 'Long context — Google retires it (closed to new accounts) · Medium, slow to start', price: { in: 1.25, out: 10 }, legacy: true },
-  { id: 'gemini-2.5-flash', providerId: 'google', name: 'Gemini 2.5 Flash', notes: 'Cheap — Google retires it (closed to new accounts) · Fast', price: { in: 0.3, out: 2.5 }, legacy: true },
+  { id: 'gemini-2.5-pro',   providerId: 'google', name: 'Gemini 2.5 Pro',   notes: 'Long context — Google retires it (closed to new accounts) · Medium, slow to start', price: { in: 1.25, out: 10 }, legacy: true, vertex: true },
+  { id: 'gemini-2.5-flash', providerId: 'google', name: 'Gemini 2.5 Flash', notes: 'Cheap — Google retires it (closed to new accounts) · Fast', price: { in: 0.3, out: 2.5 }, legacy: true, vertex: true },
 ];
 
 /**
