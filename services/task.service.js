@@ -17,6 +17,68 @@ const NON_RELEASE_TYPES = ['goal', 'agenda'];
 // A team member's first What's New shows this many of the latest releases.
 const WHATS_NEW_START = 25;
 
+// ─── Agenda checklist lines (used by updateAgendaLine) ─────────────────
+const AGENDA_CHECK_RE = /^(\s*)[-*] \[( |x|X)\] ?(.*)$/;
+const AGENDA_QUOTE_RE = /^\s*>/;
+const AGENDA_NOTE_RE = /^\s*>\s*הערה:/;
+const AGENDA_NOTE_PREFIX = '  > הערה: ';
+const AGENDA_INDENTED_RE = /^\s+\S/; // a point's indented "  - detail" lines
+
+/**
+ * Pure: returns the new description with one checklist line changed.
+ * Throws { status: 409 } when the line can't be found safely.
+ */
+function applyAgendaLineChange(description, { index, text, checked, note }) {
+  const eol = description.includes('\r\n') ? '\r\n' : '\n';
+  const lines = description.split(/\r?\n/);
+  const items = []; // { lineNo, text }
+  lines.forEach((line, lineNo) => {
+    const m = line.match(AGENDA_CHECK_RE);
+    if (m) items.push({ lineNo, text: m[3].trim() });
+  });
+
+  const want = text.trim();
+  let target = items[index] && items[index].text === want ? items[index] : null;
+  if (!target) {
+    const same = items.filter(it => it.text === want);
+    if (same.length === 1) target = same[0];
+  }
+  if (!target) {
+    const err = new Error('That line moved or changed — reload the agenda');
+    err.status = 409;
+    throw err;
+  }
+
+  const out = lines.slice();
+  if (checked !== undefined) {
+    out[target.lineNo] = out[target.lineNo].replace(/\[( |x|X)\]/, checked ? '[x]' : '[ ]');
+  }
+
+  if (note !== undefined) {
+    // New notes go right after the quotes under the point (before its
+    // indented "  - " detail lines); an existing note is found anywhere in the
+    // point's own block (quotes + indented lines that are not checklist lines).
+    let end = target.lineNo + 1;
+    while (end < out.length && AGENDA_QUOTE_RE.test(out[end])) end++;
+    let blockEnd = target.lineNo + 1;
+    while (blockEnd < out.length && (AGENDA_QUOTE_RE.test(out[blockEnd]) || (AGENDA_INDENTED_RE.test(out[blockEnd]) && !AGENDA_CHECK_RE.test(out[blockEnd])))) blockEnd++;
+    let noteAt = -1;
+    for (let i = target.lineNo + 1; i < blockEnd; i++) {
+      if (AGENDA_NOTE_RE.test(out[i])) { noteAt = i; break; }
+    }
+    const clean = typeof note === 'string' ? note.replace(/\s*\r?\n\s*/g, ' ').trim() : '';
+    if (clean) {
+      const noteLine = AGENDA_NOTE_PREFIX + clean;
+      if (noteAt >= 0) out[noteAt] = noteLine;
+      else out.splice(end, 0, noteLine);
+    } else if (noteAt >= 0) {
+      out.splice(noteAt, 1);
+    }
+  }
+
+  return out.join(eol);
+}
+
 /**
  * Task Board Service
  *
@@ -266,6 +328,63 @@ class TaskService {
 
     boardEventsService.emit({ type: 'task_updated', task });
     return task;
+  }
+
+  /**
+   * Agenda page: tick / untick one checklist line of an agenda topic, or set /
+   * clear Shlomi's note under it — without overwriting lines that Claude
+   * sessions add to the same description meanwhile.
+   *
+   * The line is addressed by `index` (0-based position among the description's
+   * `- [ ]` / `- [x]` lines) AND `text` (the line's text after the box). If the
+   * line at `index` doesn't carry that text, it is looked up by text; when the
+   * text is gone or ambiguous we refuse (status 409) rather than tick the wrong
+   * line. The write is compare-and-swap on the whole description, retried a few
+   * times, so a concurrent edit is re-read and re-applied, never clobbered.
+   *
+   * note: string → writes / replaces `  > הערה: <text>` under the line;
+   *       '' or null → removes that note line. Other `>` lines (decisions) are
+   *       never touched. undefined → note left as is.
+   */
+  async updateAgendaLine(id, { index, text, checked, note } = {}) {
+    if (!this.drizzle) this.initialize();
+    if (!Number.isInteger(index) || index < 0 || typeof text !== 'string') {
+      const err = new Error('index (number) and text (string) are required');
+      err.status = 400;
+      throw err;
+    }
+    if (checked === undefined && note === undefined) {
+      const err = new Error('Nothing to change: pass checked and/or note');
+      err.status = 400;
+      throw err;
+    }
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const [before] = await this.drizzle.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+      if (!before) return null;
+
+      const original = before.description || '';
+      const next = applyAgendaLineChange(original, { index, text, checked, note });
+      if (next === original) return before; // already in that state
+
+      const [task] = await this.drizzle
+        .update(tasks)
+        .set({ description: next, updatedAt: new Date() })
+        .where(and(
+          eq(tasks.id, id),
+          before.description === null ? isNull(tasks.description) : eq(tasks.description, before.description),
+        ))
+        .returning();
+
+      if (task) {
+        boardEventsService.emit({ type: 'task_updated', task });
+        return task;
+      }
+      // Someone saved the description between our read and write — re-read and retry.
+    }
+    const err = new Error('The topic keeps changing — try again');
+    err.status = 409;
+    throw err;
   }
 
   /**

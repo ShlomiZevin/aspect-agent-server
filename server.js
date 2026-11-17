@@ -184,6 +184,10 @@ app.use('/api/llm-usage', require('./builder/routes/llmUsageRoute'));
 // first). Independent of the agent/crew system — see bi/routes/bi.routes.js.
 app.use('/api/bi', require('./bi/routes/bi.routes'));
 
+// Threaded doc comments (reply / resolve / hidden sections) for /lybi/bank-jerusalem — see page-comments/routes.js.
+// Separate from /api/page-comments (routes/page-comments.routes.js), which serves the other review pages.
+app.use('/api/doc-comments', require('./page-comments/routes'));
+
 // ─── Aspect Intelligence ───────────────────────────────────────────
 // Proactive AI-investigation insights feed. Separate product from /api/bi
 // (ad-hoc queries) — see insights/routes/insights.routes.js.
@@ -4948,6 +4952,28 @@ app.patch('/api/tasks/:id', async (req, res) => {
   } catch (err) {
     console.error('❌ Error updating task:', err.message);
     res.status(500).json({ error: 'Error updating task: ' + err.message });
+  }
+});
+
+// Agenda page: tick / untick one checklist line of an agenda topic, or set /
+// clear Shlomi's note under it. Body: { index, text, checked?, note? }.
+// Re-reads and compare-and-swaps the description, so lines that Claude
+// sessions add meanwhile are never overwritten. 409 = the line moved/changed.
+app.patch('/api/tasks/:id/agenda-line', async (req, res) => {
+  try {
+    const { index, text, checked, note } = req.body || {};
+    const task = await taskService.updateAgendaLine(parseInt(req.params.id), {
+      index: typeof index === 'number' ? index : parseInt(index),
+      text,
+      checked: checked === undefined ? undefined : !!checked,
+      note,
+    });
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    res.json({ task });
+  } catch (err) {
+    const status = err.status || 500;
+    if (status === 500) console.error('❌ Error updating agenda line:', err.message);
+    res.status(status).json({ error: err.message });
   }
 });
 
