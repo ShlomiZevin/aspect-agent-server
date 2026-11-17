@@ -106,7 +106,7 @@ function renderForCrew(manifest) {
   }
   const ambiguous = (manifest.vocabulary || []).filter(v => v.resolution === 'ambiguous');
   for (const v of ambiguous) {
-    L.push(`- ONLY the exact phrase${v.terms.length > 1 ? 's' : ''} "${v.terms.join('" / "')}" ${v.terms.length > 1 ? 'are' : 'is'} AMBIGUOUS: ${v.detail} For these exact words ask ONE short clarifying question before fetching data. Do NOT extend this to other wordings — a question that names salespeople unambiguously (e.g. מוכרנים, סוכנים, salespeople) is NOT ambiguous: state directly that the dimension is absent and offer the available alternatives, without asking anything.`);
+    L.push(`- ONLY the exact phrase${v.terms.length > 1 ? 's' : ''} "${v.terms.join('" / "')}" ${v.terms.length > 1 ? 'are' : 'is'} AMBIGUOUS: ${v.detail} For these exact words ask ONE short clarifying question before fetching data. Do NOT extend this to other wordings — a question that names salespeople unambiguously (e.g. מוכרנים, סוכנים, salespeople) is NOT ambiguous: state directly that the dimension is absent and offer the available alternatives, without asking anything. Likewise a question that names products (best-selling items / products / models / SKUs, מוצרים / פריטים / דגמים הנמכרים) is NOT ambiguous: answer it with data, without asking anything.`);
   }
   // Contributed by whichever modules are live for this dataset (plan D7).
   // Absent when none are, so a dataset with no module renders exactly as before.

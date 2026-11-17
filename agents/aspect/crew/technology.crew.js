@@ -238,7 +238,7 @@ Top 3 סניפים:
 
 💡 תובנה: למרות צמיחה יפה ב-topline, הירידה ב-attach rate מקזזת. כל נקודת אחוז ב-attach rate = ~₪85K רווח גולמי חודשי. מיקוד בהדרכת צוות ו-bundling יכול להחזיר ₪250K+ רווח חודשי.
 
-רוצה לצלול ל-attach rate לפי סניף, לנתח ביצועי קטגוריה, או לבנות תכנית פעולה לשיפור רווחיות?"
+השלב הבא המומלץ: פירוק ה-attach rate לפי סניף ותכנית פעולה לשיפור הרווחיות."
 
 Q: "מה המצב עם מלאי הסמארטפונים?"
 A: "מצב מלאי סמארטפונים — סיכום חודשי:
@@ -282,7 +282,7 @@ A: "מצב מלאי סמארטפונים — סיכום חודשי:
 - שחרור הון חוזר: ₪4.2M
 - יצירת 650 מכשירים מחודשים (ערך מכירה עתידי ₪975K)
 
-רוצה לצלול לניתוח attach rate לפי דגם, לראות מגמת trade-in, או לתכנן הקצאות לפני ההשקה הבאה?"
+השלב הבא המומלץ: תכנית הקצאות לפני ההשקה הבאה, עם attach rate לפי דגם."
 
 Q: "אילו מוצרים עם בעיות מלאי אפשר לקדם עם קמפיין?"
 A: "זיהיתי 5 הזדמנויות להפוך אתגרי מלאי לערך ללקוח ולעסק:
@@ -330,17 +330,19 @@ A: "זיהיתי 5 הזדמנויות להפוך אתגרי מלאי לערך ל
 
 המלצה: התחל עם עדיפות 3 (warranty subscription) — zero inventory cost, pure margin uplift. במקביל השק את עדיפות 1 (S24 FE trade-in) כקמפיין שבועי. עדיפויות 2, 4, 5 כפרויקטים של 30 יום.
 
-רוצה שאכין בריף מפורט לאחד הקמפיינים, אנתח ROI צפוי, או אבנה dashboard מעקב לכל 5 היוזמות?"
+השלב הבא המומלץ: בריף מפורט לקמפיין ה-warranty subscription, עם ROI צפוי ומדדי מעקב."
 
 Always respond as if you have real-time access to this data. Be creative with variations but keep it realistic and consistent with the business context. When analyzing any domain (inventory, sales, customers, services, vendors), always consider cross-domain opportunities for maximum business value.
 
 Always answer in the language you were asked in. When asked in Hebrew, use ₪ / ש"ח for all monetary values.
 
-Always finish with a CTA — Call To Action: suggest the next question, deeper analysis, or actionable next step the user should take.
+Always finish with ONE short next step, written as a statement (e.g. "השלב הבא המומלץ: ..." / "Recommended next step: ..."). Never end with a question that asks the user to choose between options — to the user that reads as the chat asking instead of answering.
+
+ANSWER, DON'T ASK: when the user asks for a table, a list, a ranking or "top N", deliver it right away with sensible defaults (top 10, by units sold, with revenue and stock where relevant) and say in one line which defaults you used. Never reply to a table request with a question about which kind of table. A short follow-up — "כן", "yes", "בטבלה", "תן לי בטבלה", "תתקן" — means: do in THIS reply what you just offered, or show your previous answer as a table.
 
 ## TABLES & LISTS
 
-When your answer includes a table, ranking, or list of items, render a clean, realistic table in your reply (about 15-20 rows is plenty — do NOT pad with empty, blank, or repeated rows) together with your insights. ALSO call the \`present_table\` tool with those same rows and their column headers, so the user gets a sortable/filterable table with one-click Excel export below your reply. CRITICAL: respond ENTIRELY in the language of the user's message — the prose, the table headers, the column names, and the \`title\` must all match it. If the user wrote in English, everything is in English; do not switch to Hebrew.
+When your answer includes a table, ranking, or list of items, WRITE the table itself in your reply as a markdown table (about 10-20 rows — do NOT pad with empty, blank, or repeated rows), then 2-4 short bullets of insight. The table you write IS what the user sees: the chat automatically gives every table in your reply a sortable/filterable view with one-click Excel export. So never say a table is "below" or "attached" — if it is not written in your reply, the user has no table. CRITICAL: respond ENTIRELY in the language of the user's message — the prose and the table headers must all match it. If the user wrote in English, everything is in English; do not switch to Hebrew.
 
 ## FINANCIAL REPORTS — FROM THE BOOKS, NEVER INVENTED
 
@@ -355,7 +357,8 @@ Which report:
 - \`monthly_trend\` — the last 12 closed months.
 - \`balance_sheet\` — מאזן: assets, liabilities and equity at the end of period A against the end of period B.
 - \`cash_flow\` — דוח תזרים מזומנים: operating, investing and financing cash flows for periods A and B, opening to closing cash.
-Balance sheet, cash flow, inventory value (מלאי), cash (מזומנים), suppliers (ספקים), bank loans and equity (הון עצמי) all come from the tool too. The balance sheet and cash flow are for the whole chain — there is no per-branch balance sheet; say so if asked.
+Balance sheet, cash flow, the chain's total inventory on the books (מלאי במאזן), cash (מזומנים), suppliers (ספקים), bank loans and equity (הון עצמי) all come from the tool too. The balance sheet and cash flow are for the whole chain — there is no per-branch balance sheet; say so if asked.
+NOT a finance report: stock per product, SKU or branch — units on hand, stock value per item, days of inventory, sell-through, transfers. Those are product/inventory questions: answer them like the other product questions (a table in your reply) and do NOT call \`get_finance_report\` for them.
 Branches in the books are named by CITY (e.g. "חיפה", "ירושלים 2", "אונליין"). The mall names elsewhere in this prompt (גרנד קניון חיפה, קניון רמת אביב...) are NOT branch names in the books — pass the city as \`branch\`.
 
 Which period (\`preset\`): default \`last_month_vs_last_year\` (the last closed month against the same month a year earlier); "מתחילת השנה" / year to date → \`ytd_vs_last_ytd\`; "לעומת החודש הקודם" → \`last_month_vs_previous_month\`; a quarter → \`last_quarter_vs_last_year\`; named months → \`custom\` with a_from/a_to (and b_from/b_to if the user names the comparison) as YYYY-MM. The books are closed monthly — the current month is not in them yet; if asked, say they are closed through \`periods.data_closed_through\`.
@@ -365,7 +368,7 @@ How to answer:
 1. THE REPORT IS ALREADY ON SCREEN. It renders under your reply as a proper statement — section totals the user opens to see the detail lines. Do NOT write the table, do NOT list its rows, do NOT repeat section totals one by one. You are writing the commentary that goes WITH a report the user is already looking at.
 2. Open with ONE short sentence naming the report and the two periods it compares, then 2-4 short bullets of insight, using ONLY numbers that appear in \`highlights\`.
 3. End with one short suggestion of the next report (e.g. פירוק שורה לפי סניף, השוואה מתחילת השנה, רווחיות סניפים).
-Finance reports are in Hebrew — write the whole answer in Hebrew. Do NOT call \`present_table\` for a finance report: the report is already rendered for the user.`,
+Finance reports are in Hebrew — write the whole answer in Hebrew. Do NOT write a table for a finance report: the report is already rendered for the user.`,
 
       // gpt-5.6-terra, not Sol (plain 'gpt-5.6'): this demo crew has no DB and
       // just narrates + fabricates a demo table, so Sol's full reasoning budget
@@ -421,44 +424,11 @@ Finance reports are in Hebrew — write the whole answer in Hebrew. Do NOT call 
             };
           },
         },
-        {
-          name: 'present_table',
-          description: 'Render a data table for the user as a sortable, filterable, Excel-exportable view. Call this whenever your answer includes a table, ranking, or list of items. Pass the FULL set of rows you want to show (up to ~50) so the user can open and export the complete table below your reply.',
-          parameters: {
-            type: 'object',
-            properties: {
-              title: { type: 'string', description: 'Short heading for the table, in the SAME language the user used. Example: "Top 100 Best-Selling Products, January 2026".' },
-              columns: { type: 'array', items: { type: 'string' }, description: 'Column headers in display order.' },
-              rows: { type: 'array', items: { type: 'object' }, description: 'The table rows. Each row is an object keyed by the exact column names in `columns`. Provide every row you want shown (up to ~50).' },
-            },
-            required: ['title', 'columns', 'rows'],
-          },
-          handler: async (params) => this._presentTable(params),
-        },
+        // No present_table tool (task #117) — see the note in fmcg.crew.js.
       ],
       knowledgeBase: { enabled: false },
       collectFields: []
     });
-  }
-
-  // Render a table for the user as a sortable/filterable/Excel-exportable view.
-  // Demo crews have no database — the model supplies the (demo) rows here, and the
-  // server surfaces them as a `data_table` step (same path as the BI agents' real
-  // query results), so the full-table viewer works on every Aspect tab.
-  _presentTable({ title, columns, rows }) {
-    const data = Array.isArray(rows) ? rows.filter(r => r && typeof r === 'object') : [];
-    const cols = Array.isArray(columns) && columns.length
-      ? columns
-      : (data[0] ? Object.keys(data[0]) : []);
-    return {
-      success: true,
-      tableTitle: title || null,
-      columns: cols,
-      rowCount: data.length,
-      data,
-      summary: 'Added an interactive table "' + (title || '') + '" with ' + data.length
-        + ' rows below the reply (sortable / filterable / Excel export). Keep the same table in your text answer too, and respond ENTIRELY in the user\'s language (English question -> English prose, headers and title).',
-    };
   }
 
   async buildContext(params) {

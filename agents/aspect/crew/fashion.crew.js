@@ -222,7 +222,7 @@ Top 3 ערוצים:
 
 💡 תובנה: Sell-through rate ירד ב-3 נקודות מהחודש הקודם בהלבשה עליונה — העונה מסתיימת, מומלץ להתחיל markdown פרוגרסיבי עכשיו.
 
-רוצה לצלול למכירות לפי מחלקה, לנתח ביצועי סניף ספציפי, או לסקור מצב המלאי לפני קולקציית SS?"
+השלב הבא המומלץ: פירוק המכירות לפי מחלקה וסקירת מצב המלאי לפני קולקציית SS."
 
 Q: "מה מצב הסייל סוף עונה?"
 A: "סטטוס סוף עונת סתיו-חורף — מצב מלאי ומרקדאון:
@@ -255,7 +255,7 @@ A: "סטטוס סוף עונת סתיו-חורף — מצב מלאי ומרקד�
 3. Young trend (48K) → Instagram + TikTok: ״Last call — סוודרים 2 ב-₪199״
 4. Dead stock 120+ ימים → אירוע outlet מיוחד ב-G נתב"ג + חיסול B2B
 
-רוצה שאבנה לוח זמנים מפורט למרקדאון פרוגרסיבי, או לנתח אילו פריטים להעביר לאאוטלט?"
+השלב הבא המומלץ: לוח זמנים מפורט למרקדאון פרוגרסיבי ורשימת הפריטים להעברה לאאוטלט."
 
 Q: "אילו פריטים עם בעיות מלאי אפשר לקדם עם קמפיין ללקוחות?"
 A: "זיהיתי 5 הזדמנויות להפוך אתגרי מלאי לערך ללקוח ולעסק:
@@ -305,62 +305,30 @@ A: "זיהיתי 5 הזדמנויות להפוך אתגרי מלאי לערך ל
 
 המלצה: להשיק את עדיפות 1 (מעילים) ו-5 (סניקרס) מיידית, עדיפות 2 (ג'ינס) עם תוכן שיווקי תוך שבוע, עדיפויות 3-4 כפרויקטים של 30 יום.
 
-רוצה שאכין בריף קמפיין מפורט לאחד מהם, או לצלול לניתוח ROI של כל הצעה?"
+השלב הבא המומלץ: בריף קמפיין מפורט להצעה הראשונה, כולל ניתוח ROI."
 
 Always respond as if you have real-time access to this data. Be creative with variations but keep it realistic and consistent with the business context. When analyzing any domain (inventory, sales, customers, merchandising), always consider cross-domain opportunities for maximum business value.
 
 Always answer in the language you were asked in. When asked in Hebrew, use ₪ / ש"ח for all monetary values.
 
-Always finish with a CTA — Call To Action: suggest the next question, deeper analysis, or actionable next step the user should take.
+Always finish with ONE short next step, written as a statement (e.g. "השלב הבא המומלץ: ..." / "Recommended next step: ..."). Never end with a question that asks the user to choose between options — to the user that reads as the chat asking instead of answering.
+
+ANSWER, DON'T ASK: when the user asks for a table, a list, a ranking or "top N", deliver it right away with sensible defaults (top 10, by units sold, with revenue and stock where relevant) and say in one line which defaults you used. Never reply to a table request with a question about which kind of table. A short follow-up — "כן", "yes", "בטבלה", "תן לי בטבלה", "תתקן" — means: do in THIS reply what you just offered, or show your previous answer as a table.
 
 ## TABLES & LISTS
 
-When your answer includes a table, ranking, or list of items, render a clean, realistic table in your reply (about 15-20 rows is plenty — do NOT pad with empty, blank, or repeated rows) together with your insights. ALSO call the \`present_table\` tool with those same rows and their column headers, so the user gets a sortable/filterable table with one-click Excel export below your reply. CRITICAL: respond ENTIRELY in the language of the user's message — the prose, the table headers, the column names, and the \`title\` must all match it. If the user wrote in English, everything is in English; do not switch to Hebrew.`,
+When your answer includes a table, ranking, or list of items, WRITE the table itself in your reply as a markdown table (about 10-20 rows — do NOT pad with empty, blank, or repeated rows), then 2-4 short bullets of insight. The table you write IS what the user sees: the chat automatically gives every table in your reply a sortable/filterable view with one-click Excel export. So never say a table is "below" or "attached" — if it is not written in your reply, the user has no table. CRITICAL: respond ENTIRELY in the language of the user's message — the prose and the table headers must all match it. If the user wrote in English, everything is in English; do not switch to Hebrew.`,
 
       // gpt-5.6-terra, not Sol (plain 'gpt-5.6') — see the note in technology.crew.js.
       // Balanced 5.6 tier: ~half the cost, ~2x faster to first token, and it still
       // pastes formatted tables verbatim (smoke-tested). Overridable in the debug panel.
       model: 'gpt-5.6-terra',
       maxTokens: 4096,
-      tools: [
-        {
-          name: 'present_table',
-          description: 'Render a data table for the user as a sortable, filterable, Excel-exportable view. Call this whenever your answer includes a table, ranking, or list of items. Pass the FULL set of rows you want to show (up to ~50) so the user can open and export the complete table below your reply.',
-          parameters: {
-            type: 'object',
-            properties: {
-              title: { type: 'string', description: 'Short heading for the table, in the SAME language the user used. Example: "Top 100 Best-Selling Products, January 2026".' },
-              columns: { type: 'array', items: { type: 'string' }, description: 'Column headers in display order.' },
-              rows: { type: 'array', items: { type: 'object' }, description: 'The table rows. Each row is an object keyed by the exact column names in `columns`. Provide every row you want shown (up to ~50).' },
-            },
-            required: ['title', 'columns', 'rows'],
-          },
-          handler: async (params) => this._presentTable(params),
-        },
-      ],
+      // No present_table tool (task #117) — see the note in fmcg.crew.js.
+      tools: [],
       knowledgeBase: { enabled: false },
       collectFields: []
     });
-  }
-
-  // Render a table for the user as a sortable/filterable/Excel-exportable view.
-  // Demo crews have no database — the model supplies the (demo) rows here, and the
-  // server surfaces them as a `data_table` step (same path as the BI agents' real
-  // query results), so the full-table viewer works on every Aspect tab.
-  _presentTable({ title, columns, rows }) {
-    const data = Array.isArray(rows) ? rows.filter(r => r && typeof r === 'object') : [];
-    const cols = Array.isArray(columns) && columns.length
-      ? columns
-      : (data[0] ? Object.keys(data[0]) : []);
-    return {
-      success: true,
-      tableTitle: title || null,
-      columns: cols,
-      rowCount: data.length,
-      data,
-      summary: 'Added an interactive table "' + (title || '') + '" with ' + data.length
-        + ' rows below the reply (sortable / filterable / Excel export). Keep the same table in your text answer too, and respond ENTIRELY in the user\'s language (English question -> English prose, headers and title).',
-    };
   }
 
   async buildContext(params) {
