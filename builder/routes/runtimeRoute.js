@@ -998,6 +998,8 @@ router.post('/:slug/conversations/:convId/proactive', async (req, res) => {
 });
 
 router.post('/:slug/conversations/:convId/messages', async (req, res) => {
+  // Reply timing (#985): the moment the customer's message reached us.
+  const receivedAt = Date.now();
   const { slug, convId } = req.params;
   const {
     ownerUserId,
@@ -1149,6 +1151,7 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
         emit,
         stopKey,
         convRow,
+        receivedAt,
       }));
     } finally {
       stopRegistry.end(stopKey, stopHandle);

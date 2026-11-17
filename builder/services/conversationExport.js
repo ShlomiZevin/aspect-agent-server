@@ -188,6 +188,8 @@ async function exportConversation({ conversationId, include, agentSlug }) {
     };
     const crew = crewRef(crewId, crewNames);
     if (crew) entry.crew = crew;
+    // How long the reply took (#985 — builder/runtime/replyTiming.js); replies since then only.
+    if (m.role === 'assistant' && meta.replyTiming) entry.replyTiming = meta.replyTiming;
     if (meta.proactive) entry.proactive = true;
     if (level !== 'messages' && m.role === 'assistant') {
       entry.addonRuns = runs.map(r => exportRun(r, level));

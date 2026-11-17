@@ -35,6 +35,7 @@ const db = require('../../services/db.pg');
 const stopRegistry = require('./stopRegistry');
 const { conversations, messages } = require('../../db/schema');
 const { mergeMetadata } = require('./conversationMeta');
+const { buildReplyTiming, saveReplyTiming } = require('./replyTiming');
 const { resolveRunnable } = require('../services/builderProjects');
 const { logUsage } = require('../../services/usageLogger');
 const builderMemory = require('./builderMemory');
@@ -241,8 +242,20 @@ async function runOnce({
   // The conversation row when the caller already read it this turn (the chat
   // route does — #914). Only its `metadata` is used. Omitted → read here.
   convRow: preloadedConvRow = null,
+  // When the server received the customer's message (the chat route stamps
+  // it first thing) — for the reply timing (#985). Omitted → this call's start.
+  receivedAt = null,
 }) {
   const totalStart = Date.now();
+
+  // Reply timing (#985): note when the first word streamed. Observes the
+  // events only — every event still goes out exactly as before.
+  let firstTextAt = null;
+  const emitRaw = emit;
+  emit = (type, payload) => {
+    if (firstTextAt === null && type === 'addon.token') firstTextAt = Date.now();
+    return emitRaw(type, payload);
+  };
 
   // Resolve the current-crew pointer. Priority:
   //   1. explicit per-turn override from the request (user-picked crew)
@@ -549,6 +562,11 @@ async function runOnce({
         messageId: Number(assistantMessageId),
         text:      assistantText,
       });
+      // Reply timing (#985): kept on the reply message AFTER it was saved
+      // and announced — fire-and-forget, never throws, never waits.
+      try {
+        saveReplyTiming(assistantMessageId, buildReplyTiming({ receivedAt: receivedAt ?? totalStart, firstTextAt, finishedAt: Date.now() }));
+      } catch { /* timing is a nicety; the turn goes on */ }
     } catch (err) {
       console.error('[BuilderRunner] assistant text persist failed:', err.message);
     }

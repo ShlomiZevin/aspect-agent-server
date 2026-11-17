@@ -731,6 +731,21 @@ async function removeIfPresent(slug) {
     check('unknown error group → 404', (await get(`/agents/${TEST_SLUG}/errors/${'0'.repeat(40)}`)).status === 404);
     await db.query("DELETE FROM error_events WHERE agent_slug = $1 AND code = 'battery_test'", [TEST_SLUG]).catch(() => {});
 
+    // ── customer-chat problems in plain words (task #985) — read only ──
+    section('customer problems');
+    check('entry page teaches the customer-problems page', doc.text.includes(`${base}/agents/<slug>/customer-problems`));
+    const cpEmpty = await get(`/agents/${TEST_SLUG}/customer-problems`);
+    check('customer problems read (today)', cpEmpty.status === 200 && cpEmpty.text.includes('Customer-chat problems of'), cpEmpty.text.slice(0, 120));
+    await errorCenter.recordNow(new Error('mcp battery customer error'), { area: 'turn', kind: 'code', code: 'battery_test_cp', agentSlug: TEST_SLUG, source: 'customer' });
+    const cpList = await get(`/agents/${TEST_SLUG}/customer-problems?range=week`);
+    const cpWords = require('../builder/services/customerProblems').plainWords({ type: 'error', kind: 'code', area: 'turn', answered: false });
+    check('a customer error shows in plain Hebrew with its "what to do"',
+      cpList.status === 200 && cpList.text.includes(cpWords.title) && cpList.text.includes(cpWords.action.text), cpList.text.slice(0, 200));
+    check('…and no stack or raw message', !cpList.text.includes('mcp battery customer error') && !/\bat .*\.js:\d+/.test(cpList.text));
+    check('a builder-source error is NOT a customer problem', !cpList.text.includes(errMsg));
+    check('unknown agent → 404 with a pointer', (await get('/agents/zz-no-such-agent/customer-problems')).status === 404);
+    await db.query("DELETE FROM error_events WHERE agent_slug = $1 AND code = 'battery_test_cp'", [TEST_SLUG]).catch(() => {});
+
     // ── refusals ──
     section('refusals');
     check('string body → 400', (await post(`/agents/${TEST_SLUG}`, { body: 'nope' })).status === 400);

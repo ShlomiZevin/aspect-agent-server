@@ -65,6 +65,7 @@ const mcpConversations = require('../services/mcpConversations');
 const simulationJobs = require('../services/simulationJobs');
 const loadTests = require('../services/loadTests');
 const errorCenter = require('../services/errorCenter');
+const customerProblems = require('../services/customerProblems');
 const { publicBaseOf } = require('./publicBase');
 const modelsService = require('../../services/models.service');
 const environments = require('../environments');
@@ -792,6 +793,25 @@ Read only. A person marks a problem looking-at-it / handled / ignored in
 the Builder, Admin → Errors; a handled one that comes back shows as BACK.
 When a person says "something is broken" or a simulation or load test
 failed, look here first.
+
+**What went wrong with my customers — in plain words**
+
+For "what went wrong with my customers today?" (or this week), from a
+person who is not technical, read this instead of the error list:
+
+| To see | Fetch |
+|---|---|
+| The agent's customer-chat problems, newest first — what happened in one plain Hebrew sentence, what to do ("כדאי לפנות ללקוח", "פנו לשלומי", "תוקן אוטומטית"), how it ended, and the customer's last message | \`${base}/agents/<slug>/customer-problems\` — optional \`?range=week\` (default \`today\`, Israel time) |
+
+Only the outside customer chat — never the Builder's test chat or
+simulations. One line per customer turn that went wrong, plus "no reply"
+(a customer message still unanswered a few minutes later, even when nothing
+threw an error) and "slow reply" (answered, but after more than a minute).
+Each line says REAL customer or TEST conversation (a teammate trying the
+customer chat) — every line is listed either way. The Hebrew sentences are the same ones the management
+page shows the person (\`/manage/<slug>\` on the Lybi site) — quote them
+as they are; don't translate them into codes. For the technical side of
+one line, the error list above. Read only.
 
 **The user's next line, written for you**
 
@@ -2598,6 +2618,49 @@ router.get('/agents/:slug/errors/:fingerprint', async (req, res) => {
     ].join('\n'));
   } catch (err) {
     simFail(res, err, 'read the error');
+  }
+});
+
+// ─── Customer-chat problems, in plain words (task #985) — read only ─
+// Same sentences as the management page (/manage/<slug>):
+// builder/services/customerProblems.js.
+
+router.get('/agents/:slug/customer-problems', async (req, res) => {
+  try {
+    const slug = req.params.slug;
+    if (!(await customerProblems.agentExists(slug))) {
+      return res.status(404).type('text/plain').send(`No agent "${slug}". Fetch ${urls(req).base}/agents for the list of agents.`);
+    }
+    const range = req.query.range === 'week' ? 'week' : 'today';
+    const data = await customerProblems.listProblems({ slug, range });
+    const me = data.agents.find(a => a.slug === slug) || { conversations: 0 };
+    const when = range === 'week' ? 'this week (today and the 6 days before, Israel time)' : 'today (since 00:00 Israel time)';
+    const env = environments.currentEnvironment(urls(req).origin);
+    const page = `${env ? env.app : '<the Lybi site>'}/manage/${encodeURIComponent(slug)}`;
+    const head = [
+      `Customer-chat problems of "${slug}" — ${when}. Checked ${data.checkedAt}.`,
+      `Customer conversations in this period: ${me.conversations}. Problems: ${data.problems.length}. New in the last 24 h: ${data.newCount}.`,
+      `The Hebrew lines are the exact words the management page shows the person (${page}) — quote them as they are.`,
+      `"No reply" = a customer message still unanswered ${data.noReplyMinutes} minutes later. "Slow reply" = the customer got an answer, but it took more than ${data.slowReplySeconds} seconds (timed only for replies since this was added).`,
+      'Each line says whether the conversation is a REAL customer\'s or a TEST (someone on the team trying the customer chat — real only when the user is marked "Real customer" in Admin → Users).',
+    ];
+    if (!data.problems.length) {
+      return sendText(res, [...head, '', range === 'today'
+        ? `No problems in customer conversations today — ${me.conversations} customer conversation(s), all went through. For the week: ?range=week`
+        : `No problems in customer conversations this week — ${me.conversations} customer conversation(s), all went through.`].join('\n'));
+    }
+    const line = p => [
+      `- ${p.at} · ${p.isNew ? 'NEW · ' : ''}${p.conversationId ? `conversation ${p.conversationId}` : 'no conversation'}${p.customerName ? ` · customer: ${p.customerName}` : ''}${p.audience ? ` · ${p.audience === 'real' ? 'REAL customer' : 'TEST conversation'}` : ''}${p.replyMs ? ` · reply took ${Math.round(p.replyMs / 1000)} s` : ''}`,
+      `  what happened: ${p.title}`,
+      `  what to do: ${p.action.text}`,
+      `  how it ended: ${p.outcome}`,
+      ...(p.lastCustomerMessage ? [`  the customer's last message: "${p.lastCustomerMessage}"`] : []),
+      ...(p.conversationId ? [`  read it: ${urls(req).base}/conversations/${p.conversationId}`] : []),
+    ].join('\n');
+    sendText(res, [...head, '', ...data.problems.map(line), '',
+      `Technical details (kinds, codes, every occurrence): ${urls(req).base}/agents/${encodeURIComponent(slug)}/errors?source=customer`].join('\n'));
+  } catch (err) {
+    simFail(res, err, 'list the customer-chat problems');
   }
 });
 

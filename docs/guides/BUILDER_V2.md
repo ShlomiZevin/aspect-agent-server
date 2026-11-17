@@ -2375,3 +2375,79 @@ bank's own GCP project), all three providers.
   — one tiny Talker turn per provider through `runAddon`, prints every
   request host, fails on any direct-API hit.
 - **Not touched:** Alfred (taught only after Shlomi approves the feature).
+
+### 61. Management center + customer-chat problems page (task #985)
+
+A NEW surface beside Admin: Admin stays the technical tool; the management
+center is the simple one, for non-technical users (Noa, Hila; later maybe a
+customer's super user). Hebrew, RTL. v1 has one page.
+
+- **Routes (client, `src/manage/`):** `/manage/<agentSlug>` (opens the first
+  page, `/manage/<slug>/customer-problems`) and `/manage/all` — every agent
+  with an agent filter, **Lybi team only**: the same light super-admin unlock
+  as the hidden `/users` page (`superAdminService`, header
+  `X-Super-Admin-Key`, server `requireSuperAdmin`). Per-agent pages are open,
+  like every per-agent Admin read. The right-side menu and the routes are
+  built from ONE registry, `src/manage/pages.ts` — a new page is one entry +
+  its component; no placeholder entries.
+- **The page "תקלות בשיחות עם לקוחות":** the customer chat only (Error Center
+  `source = customer`; groups marked Ignored in Admin → Errors left out),
+  newest first, Today / This week (Israel time), "N חדשות" = problems in the
+  last 24 h (no read-tracking). Each row: when, agent, customer, what
+  happened in one plain sentence, a "what to do" chip (pink: contact the
+  customer / call Shlomi; green: "fixed automatically – nothing to do" /
+  "nothing to do" — every row says whether to act), the customer's last
+  message and how it ended. Sentences pass a "for dummies" test: what the
+  customer experienced, never how the agent works inside,
+  "לצפייה בשיחה המלאה" → Admin → Conversations `?c=<id>`, "פרטים טכניים" →
+  Admin → Errors. No codes, stacks or model names. A calm day shows
+  "הכול תקין" with how many customer conversations each agent served and
+  what happened earlier this week. Designed with GPT Image (picked D2 + E2):
+  `C:\Users\shazbak\Downloads\customer-errors-designs\`.
+- **One customer turn = one row:** the Error Center rows of a turn (a retried
+  model call, the add-on, the turn) group by the turn's reply message (or
+  conversation + area + 10 minutes when there is none). Answered = the reply
+  message has text (the runtime reserves an empty one at turn start).
+  Background-lane-only errors (offline, Profiler, Live Brain) after an
+  answered turn read "the customer did not notice".
+- **"No reply" (not a thrown error), computed at read time:** a customer
+  conversation whose LAST customer message has no non-empty assistant message
+  after it, 3 minutes later — catches a turn killed with its instance, a reply
+  never written. Skipped when an Error Center row already covers that turn.
+- **One wording table:** `builder/services/customerProblems.js` (`KINDS`,
+  `ACTIONS`, `OUTCOMES`, `SPECIAL`, a safe `FALLBACK` for unknown kinds). The
+  page and the MCP print the same sentences — change wording there only.
+- **API:** `GET /api/manage/agents/:slug/customer-problems?range=today|week`;
+  `GET /api/manage/customer-problems?range&agent` (super-admin)
+  — `builder/routes/manageRoute.js`.
+- **MCP:** `GET /builder/mcp/agents/<slug>/customer-problems?range=today|week`
+  — "what went wrong with my customers today", same Hebrew lines + links to
+  the conversations.
+- **Tests:** `node scripts/test-customer-problems.js` (offline — a stand-in
+  DB, the real routes: wording table, grouping, answered, no-reply + its
+  de-duplication, the super-admin gate, the MCP page). `test-builder-mcp.js`
+  has a "customer problems" section (it needs a live DB).
+- **Reply timing (round 3):** every turn's reply message now carries
+  `metadata.replyTiming = { replyMs, firstTextMs, receivedAt, finishedAt }`
+  (received by the server → reply saved and announced; → first streamed
+  word). Written by `builder/runtime/replyTiming.js`, called in
+  `BuilderRunner.runOnce` right after the reply is saved — a separate,
+  fire-and-forget jsonb merge that never throws or waits; the chat route
+  stamps `receivedAt` first thing. No migration. Older replies have none.
+- **Slow reply:** a customer reply over `SLOW_REPLY_MS` (60 s) is a row —
+  "התשובה ללקוח לקחה יותר מדקה", chip "nothing to do", or "call Shlomi"
+  when the agent had `SLOW_REPEAT_PER_DAY` (3) that day. A turn that also
+  has an Error Center row is told by that row.
+- **Real / test:** every row carries `audience` (`metadata.audience`, #968,
+  fail closed) so the page can tag test conversations; nothing is hidden.
+- **Layout (round 4, design D — `customer-errors-designs/round3/D-*-sunburst.jpg`):**
+  a top bar (Lybi | מרכז הניהול); the right panel's "מה להציג" chooses the
+  WORLD — all agents, or one agent — above the menu and the page (unlocked:
+  every agent with today's status, from `agents[].needsAction`; locked: only
+  the agent in the address, and "כל הסוכנים" opens the unlock gate); below
+  it "בתצוגה הזו", the world's pages from the registry. The page: masthead
+  (world name + tag + date), today / week (+ agent filter in all), a plain
+  headline with "דורש את שלך" / "הכול תקין" boxes, the "needs handling" and
+  "for information only" lists, "במבט מהיר" (only real counts), and in all
+  each active agent's line. On a phone the panel folds into a world switcher.
+- **Not yet:** no seen-marker. **Not touched:** Alfred.
