@@ -66,16 +66,17 @@ class NotificationsService {
   /**
    * Create a notification and store it in the DB.
    */
-  async createNotification({ recipient, taskId, commentId, type }) {
+  async createNotification({ recipient, taskId, commentId, type, alreadyEmailed = false }) {
     if (!this.drizzle) this.initialize();
 
     const [notification] = await this.drizzle
       .insert(taskNotifications)
-      .values({ recipient, taskId, commentId: commentId || null, type })
+      .values({ recipient, taskId, commentId: commentId || null, type, emailedAt: alreadyEmailed ? new Date() : null })
       .returning();
 
-    // Schedule a batched email (debounce 5min, max-wait 15min)
-    emailScheduler.schedule(recipient, notification.id);
+    // Schedule a batched email (debounce 5min, max-wait 15min) — unless the
+    // caller already sent its own immediate email (e.g. a Blocker alert).
+    if (!alreadyEmailed) emailScheduler.schedule(recipient, notification.id);
 
     return notification;
   }

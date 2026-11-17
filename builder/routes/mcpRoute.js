@@ -904,7 +904,9 @@ POST ${base}/tasks
 Only \`opener\` and \`title\` are required — fill in the rest yourself from
 what they told you. The assignee is either Shlomi (the default) or the
 opener themself. \`type\` is one of ${TASK_TYPES.join(', ')};
-\`priority\` one of ${TASK_PRIORITIES.join(', ')}. Write the description
+\`priority\` one of ${TASK_PRIORITIES.join(', ')} — \`blocker\` means
+"fix right now" and emails Shlomi immediately, so use it only when they
+say it cannot wait. Write the description
 in Markdown: headings, bullet and numbered lists, \`**bold**\`,
 \`code\` and links become the board's own formatting, and a blank line
 starts a new paragraph. Assigning to Shlomi
@@ -1864,7 +1866,7 @@ const MIME_BY_EXT = {
 };
 
 const TASK_TYPES = ['bug', 'feature', 'task', 'idea', 'test', 'read'];
-const TASK_PRIORITIES = ['low', 'medium', 'high', 'critical'];
+const TASK_PRIORITIES = ['low', 'medium', 'high', 'critical', 'blocker'];
 /** Sidebar items that live on the board table but are not work. */
 const NON_WORK_TYPES = new Set(['goal', 'agenda']);
 /**

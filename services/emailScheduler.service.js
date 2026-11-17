@@ -96,6 +96,17 @@ class EmailSchedulerService {
   }
 
   /**
+   * A board person's email address, or null when they get no board email
+   * (not on EMAIL_RECIPIENTS, or this server sends no Lybi task emails).
+   * Case-insensitive on the name.
+   */
+  emailFor(name) {
+    if (!ENABLED || !name) return null;
+    const key = Object.keys(EMAIL_RECIPIENTS).find(k => k.toLowerCase() === String(name).toLowerCase());
+    return key ? EMAIL_RECIPIENTS[key].email : null;
+  }
+
+  /**
    * Called immediately after a notification is inserted into the DB.
    * @param {string} recipient - The notification recipient name
    * @param {number} notificationId - The new notification's DB id

@@ -3,6 +3,13 @@ const { tasks, taskAssignees } = require('../db/schema');
 const { eq, desc, and, or, gt, lt, ilike, isNull, isNotNull, notInArray, sql } = require('drizzle-orm');
 const notificationsService = require('./notifications.service');
 const boardEventsService = require('./boardEvents.service');
+const emailScheduler = require('./emailScheduler.service');
+const { sendBlockerAlertEmail } = require('./email.service');
+
+// Priority "blocker" (above critical) means "fix right now": the moment a task
+// is opened as, or raised to, Blocker, this person gets an immediate email.
+const BLOCKER_PRIORITY = 'blocker';
+const BLOCKER_RECIPIENT = 'Shlomi';
 
 // Sidebar items, never shipped — kept out of the Release list and What's New.
 const NON_RELEASE_TYPES = ['goal', 'agenda'];
@@ -186,6 +193,10 @@ class TaskService {
       }).catch(err => console.error('[notifications] Failed to create task creation notification:', err));
     }
 
+    if (task.priority === BLOCKER_PRIORITY) {
+      this._alertBlocker(task, opener || null, 'created');
+    }
+
     return task;
   }
 
@@ -248,8 +259,46 @@ class TaskService {
       );
     }
 
+    // Raised to Blocker (not every edit of a task that already is one)
+    if (before && task && task.priority === BLOCKER_PRIORITY && before.priority !== BLOCKER_PRIORITY) {
+      this._alertBlocker(task, updatedBy, 'raised');
+    }
+
     boardEventsService.emit({ type: 'task_updated', task });
     return task;
+  }
+
+  /**
+   * Blocker alert — fire-and-forget, never throws into the API call.
+   * Immediate email to BLOCKER_RECIPIENT plus the in-app notification
+   * (marked as already emailed so the digest does not send it again).
+   * Nothing when the recipient raised it themselves.
+   */
+  _alertBlocker(task, by, what) {
+    const isSelf = by && by.toLowerCase() === BLOCKER_RECIPIENT.toLowerCase();
+    if (isSelf) return;
+    (async () => {
+      let emailed = false;
+      const to = emailScheduler.emailFor(BLOCKER_RECIPIENT);
+      if (to) {
+        try {
+          await sendBlockerAlertEmail({ to, task, by, what });
+          emailed = true;
+          console.log(`[blocker] Alert email sent to ${BLOCKER_RECIPIENT} for task #${task.id} (${what} by ${by || 'unknown'})`);
+        } catch (err) {
+          console.error(`[blocker] Alert email FAILED for task #${task.id}:`, err.message);
+        }
+      } else {
+        console.log(`[blocker] No email for task #${task.id}: board emails are off on this server or ${BLOCKER_RECIPIENT} has no address`);
+      }
+      await notificationsService.createNotification({
+        recipient: BLOCKER_RECIPIENT,
+        taskId: task.id,
+        commentId: null,
+        type: by ? `blocker_by:${by}` : 'blocker',
+        alreadyEmailed: emailed,
+      });
+    })().catch(err => console.error(`[blocker] Alert failed for task #${task.id}:`, err.message));
   }
 
   /**

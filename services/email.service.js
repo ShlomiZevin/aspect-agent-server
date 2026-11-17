@@ -422,4 +422,75 @@ async function sendErrorCenterAlert({ to, agentSlug, what, error, link }) {
   });
 }
 
-module.exports = { sendLybiContactEmail, sendAspectContactEmail, sendTaskAttentionEmail, sendAgentErrorEmail, sendDeployedDigestEmail, sendErrorCenterAlert };
+/**
+ * Blocker alert: a LYBI board task was opened as, or changed to, priority
+ * "blocker" — sent the moment it happens, never batched into the digest.
+ *
+ * @param {object} a
+ * @param {string} a.to
+ * @param {object} a.task       the saved task row
+ * @param {string} a.by         who opened / raised it
+ * @param {string} a.what       'created' | 'raised'
+ */
+async function sendBlockerAlertEmail({ to, task, by, what }) {
+  const who = by || 'Someone';
+  const link = `${APP_URL}/tasks/${task.id}`;
+  const subject = `🚨 BLOCKER – handle now: #${task.id} ${String(task.title || '').slice(0, 120)} (${what === 'raised' ? 'raised' : 'opened'} by ${who})`;
+  const when = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Jerusalem', dateStyle: 'medium', timeStyle: 'short' });
+  // Board descriptions are HTML: keep line breaks, drop tags, decode the
+  // common entities — the result is escaped again when it goes into the mail.
+  const description = String(task.description || '')
+    .replace(/<\s*(br|\/p|\/div|\/li|\/h\d)\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim() || '—';
+  const rows = [
+    [what === 'raised' ? 'Raised to Blocker by' : 'Opened by', who],
+    ['When', `${when} (Israel time)`],
+    ['Type', task.type || '—'],
+    ['Assignee', task.assignee || '—'],
+    ['Status', String(task.status || 'todo').replace(/_/g, ' ')],
+  ];
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:24px;background:#F9FAFB;font-family:Arial,sans-serif;">
+  <table width="600" cellpadding="0" cellspacing="0" style="margin:0 auto;background:#fff;border-radius:8px;border:2px solid #991B1B;overflow:hidden;">
+    <tr><td style="padding:22px 24px;background:#991B1B;color:#fff;text-align:center;">
+      <div style="font-size:24px;font-weight:800;letter-spacing:0.5px;">🚨 BLOCKER – needs to be handled right now</div>
+      <div dir="rtl" style="margin-top:6px;font-size:18px;font-weight:700;">חוסם – צריך טיפול מיידי</div>
+    </td></tr>
+    <tr><td style="padding:20px 24px 8px;">
+      <div style="font-size:13px;color:#991B1B;font-weight:700;">Task #${task.id}</div>
+      <div style="margin-top:4px;font-size:20px;font-weight:700;color:#111827;word-break:break-word;">${escapeHtml(task.title)}</div>
+    </td></tr>
+    ${rows.map(([k, v]) => `<tr><td style="padding:6px 24px;font-size:14px;color:#374151;"><span style="display:inline-block;width:170px;color:#6B7280;">${escapeHtml(k)}</span><strong>${escapeHtml(v)}</strong></td></tr>`).join('')}
+    <tr><td style="padding:14px 24px 4px;">
+      <div style="font-size:12px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Description</div>
+      <div style="font-size:14px;color:#111827;line-height:1.5;white-space:pre-wrap;word-break:break-word;background:#FEF2F2;border-radius:6px;padding:12px;">${escapeHtml(description.slice(0, 2000))}</div>
+    </td></tr>
+    <tr><td style="padding:22px 24px 26px;text-align:center;">
+      <a href="${escapeHtml(link)}" style="display:inline-block;background:#B91C1C;color:#fff;text-decoration:none;font-weight:800;font-size:17px;padding:14px 32px;border-radius:8px;">Open task #${task.id} now →</a>
+    </td></tr>
+  </table>
+</body></html>`;
+  await transporter.sendMail({
+    from: `"Lybi Board – BLOCKER" <${process.env.GMAIL_USER}>`,
+    to,
+    subject,
+    html,
+    text: [
+      'BLOCKER – needs to be handled right now',
+      'חוסם – צריך טיפול מיידי',
+      '',
+      `#${task.id} ${task.title}`,
+      ...rows.map(([k, v]) => `${k}: ${v}`),
+      '',
+      description.slice(0, 2000),
+      '',
+      link,
+    ].join('\n'),
+    headers: { 'X-Priority': '1', Importance: 'high' },
+  });
+}
+
+module.exports = { sendLybiContactEmail, sendAspectContactEmail, sendTaskAttentionEmail, sendAgentErrorEmail, sendDeployedDigestEmail, sendErrorCenterAlert, sendBlockerAlertEmail };
