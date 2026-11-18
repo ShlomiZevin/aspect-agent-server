@@ -746,6 +746,16 @@ async function removeIfPresent(slug) {
     check('unknown agent → 404 with a pointer', (await get('/agents/zz-no-such-agent/customer-problems')).status === 404);
     await db.query("DELETE FROM error_events WHERE agent_slug = $1 AND code = 'battery_test_cp'", [TEST_SLUG]).catch(() => {});
 
+    // ── management center access (task #985) — read only; needs migration 070 ──
+    section('management center access');
+    check('entry page teaches the access pages', doc.text.includes(`${base}/access`) && doc.text.includes(`${base}/agents/<slug>/access`));
+    const acc = await get('/access');
+    check('who has access (every grant)', acc.status === 200 && acc.text.includes('Management center access'), acc.text.slice(0, 160));
+    const accOne = await get(`/agents/${TEST_SLUG}/access`);
+    check('who can open one agent (own + every-agent grants)', accOne.status === 200 && accOne.text.includes('Every-agent grants'), accOne.text.slice(0, 160));
+    check('access: unknown agent → 404', (await get('/agents/zz-no-such-agent/access')).status === 404);
+    check('access is read only (no POST)', (await post('/access', { email: 'x@y.z' })).status === 404);
+
     // ── refusals ──
     section('refusals');
     check('string body → 400', (await post(`/agents/${TEST_SLUG}`, { body: 'nope' })).status === 400);

@@ -747,5 +747,7 @@ module.exports = {
   triggerEvents:          builderSchema.triggerEvents,
   triggerStatus:          builderSchema.triggerStatus,
   errorEvents:            builderSchema.errorEvents,
+  // Management center sign-in (task #985)
+  manageAccess:           builderSchema.manageAccess,
   agentLog,
 };

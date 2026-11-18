@@ -7,7 +7,8 @@
  * A stand-in for services/db.pg answers each query of
  * builder/services/customerProblems.js with canned rows, then the real
  * routes are mounted on a local port: the management API
- * (builder/routes/manageRoute.js, incl. the super-admin gate on "all")
+ * (builder/routes/manageRoute.js, signed in — the door's own checks are in
+ * test-manage-access.js)
  * and the Builder MCP door (builder/routes/mcpRoute.js — entry page +
  * /agents/:slug/customer-problems). Checks the plain-words table, one
  * problem per customer turn, answered vs not, "no reply" and its
@@ -69,9 +70,24 @@ const FACTS = {
 };
 const queries = [];
 
+// The management center's door (manageRoute): its session secret and grants.
+const config = new Map();
+const GRANTS = [
+  { email: 'noa@lybi.ai', agent_id: null },
+  { email: 'super@acme.com', agent_id: 'agent_acme' },
+];
+const AGENT_IDS = { acme: 'agent_acme', other: 'agent_other' };
+
 const fakeDb = {
   async query(sql, params = []) {
     queries.push(sql);
+    if (/INSERT INTO provider_config/.test(sql)) {
+      if (!config.has(params[0])) config.set(params[0], params[1]);
+      return { rows: [] };
+    }
+    if (/FROM provider_config/.test(sql)) return { rows: config.has(params[0]) ? [{ value: config.get(params[0]) }] : [] };
+    if (/FROM manage_access WHERE email/.test(sql)) return { rows: GRANTS.filter(g => g.email === params[0]) };
+    if (/SELECT id FROM builder_agents WHERE slug/.test(sql)) return { rows: AGENT_IDS[params[0]] ? [{ id: AGENT_IDS[params[0]] }] : [] };
     if (/UPDATE messages/.test(sql)) {
       timingWrites.push({ sql, params });
       if (failTimingWrite) throw new Error('database down (on purpose)');
@@ -110,7 +126,7 @@ const dbPath = require.resolve(path.join(__dirname, '..', 'services', 'db.pg'));
 require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: fakeDb };
 
 const cp = require('../builder/services/customerProblems');
-const { SUPER_ADMIN_KEY } = require('../services/super-admin');
+const manageSession = require('../builder/services/manageSession');
 
 let fails = 0;
 function check(name, cond, extra = '') {
@@ -232,16 +248,21 @@ function check(name, cond, extra = '') {
     return { status: r.status, text: await r.text() };
   };
   try {
-    const one = await get('/api/manage/agents/acme/customer-problems?range=week');
+    // Signed in (manageSession) — the door itself is tested in test-manage-access.js.
+    const team = { Authorization: `Bearer ${(await manageSession.issue({ email: 'noa@lybi.ai', name: 'Noa' })).token}` };
+    const acmeOnly = { Authorization: `Bearer ${(await manageSession.issue({ email: 'super@acme.com', name: 'Acme' })).token}` };
+    check('per-agent API without signing in → 401', (await get('/api/manage/agents/acme/customer-problems')).status === 401);
+    const one = await get('/api/manage/agents/acme/customer-problems?range=week', acmeOnly);
     const oneJson = one.status === 200 ? JSON.parse(one.text) : {};
-    check('per-agent API answers (open, like the per-agent Admin reads)', one.status === 200 && oneJson.scope === 'agent' && oneJson.agent.name === 'Acme bank');
+    check('per-agent API answers the agent\'s own grant', one.status === 200 && oneJson.scope === 'agent' && oneJson.agent.name === 'Acme bank');
+    check('…and refuses another agent (403)', (await get('/api/manage/agents/other/customer-problems', acmeOnly)).status === 403);
     check('no stack, code or raw error text in the API rows',
       one.status === 200 && oneJson.problems.every(p => !('kind' in p) && !('code' in p) && !('message' in p) && !('area' in p)));
-    check('unknown agent → 404', (await get('/api/manage/agents/nope/customer-problems')).status === 404);
-    check('"all" without the super-admin key → 403', (await get('/api/manage/customer-problems')).status === 403);
-    const allRes = await get('/api/manage/customer-problems?range=week&agent=acme', { 'X-Super-Admin-Key': SUPER_ADMIN_KEY });
+    check('unknown agent → 404 (every-agent person)', (await get('/api/manage/agents/nope/customer-problems', team)).status === 404);
+    check('"all" for a one-agent grant → 403', (await get('/api/manage/customer-problems', acmeOnly)).status === 403);
+    const allRes = await get('/api/manage/customer-problems?range=week&agent=acme', team);
     const allJson = allRes.status === 200 ? JSON.parse(allRes.text) : {};
-    check('"all" with the key → every agent in the filter, problems narrowed to one',
+    check('"all" for an every-agent grant → every agent in the filter, problems narrowed to one',
       allRes.status === 200 && allJson.scope === 'all' && allJson.agents.length === 2 && allJson.problems.every(p => p.agentSlug === 'acme'));
 
     const entry = await get('/builder/mcp');

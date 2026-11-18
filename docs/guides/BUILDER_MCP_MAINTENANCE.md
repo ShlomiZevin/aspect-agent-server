@@ -55,6 +55,7 @@ people type and paste this URL.
 | `GET /load-tests/:id` · `POST /load-tests/:id/stop` `{ name }` · `GET /agents/:slug/load-tests` | A run's digest — verdict, baseline vs under load, errors by kind, cost, server vitals, every conversation's turn times (JSON); stop it; an agent's runs (text) | `loadTests.getRun` / `stopRun` / `listRuns` |
 | `GET /agents/:slug/errors` `?status&source&kind&area&sort` · `GET /agents/:slug/errors/:fingerprint` | **The error center, read only** (task #903) — one line per problem with its count; one problem's occurrences with conversation + technical details (text) | `builder/services/errorCenter.js` → `listGroups` / `listOccurrences` |
 | `GET /agents/:slug/customer-problems` `?range=today\|week` | **Customer-chat problems in plain Hebrew** (task #985) — for "what went wrong with my customers today": one line per customer turn that went wrong (Error Center `source = customer`, ignored groups left out) plus "no reply" (a customer message unanswered after 3 minutes, computed at read time), each with what happened / what to do / how it ended / the customer's last message. The SAME sentences as the management page `/manage/<slug>` — the table lives in the service, change wording only there (text) | `builder/services/customerProblems.js` → `listProblems` (also `GET /api/manage/...`, `builder/routes/manageRoute.js`). Not in `alfredTools` — Alfred untouched by request |
+| `GET /access` · `GET /agents/:slug/access` | **Who can open the management center** (task #985) — every grant (address → EVERY agent, or one agent), and for one agent its own grants + the every-agent ones (text). **Read only by decision:** the door has no identity, so a grant tool here would let anyone give themselves access — grants are rows in `manage_access` (migration 070), added by the Lybi team | `builder/services/manageAccess.js` → `listGrants` (the same table `builder/routes/manageRoute.js` checks on every `/api/manage` request) |
 | `POST /simulate/user-reply` `{ persona, goal?, conversationId \| transcript, model? }` | "What would this persona say next" → `{ text, done, model }`. Stateless; default model is `EVERYDAY_MODEL` | `mcpConversations.userReply` |
 | `GET /addons` | **Every addon descriptor, in one page** | reads `builder/addons/*.addon.json` |
 | `GET /triggers` | **Triggers, in one page** (task #950) — where they live in the body, the envelope (real customers only — #968 — quiet hours, limits, filter), every trigger type with its `purpose`, `configReference` and defaults | `builder/services/mcpTriggers.js` → `triggersPage`, reading the trigger-type registry (`builder/triggers/*.trigger.json`) |
@@ -450,6 +451,12 @@ Exits `1` on any failure. What it covers:
   `POST /agents` (that one is deleted afterwards).
 - **Refusals** — malformed body `400`, unknown crew `404` with the real
   crew list.
+- **Customer problems / management center access (#985)** — the plain-words
+  page, and `/access` + `/agents/<slug>/access` (read only, no POST). The
+  access pages need migration 070 in that database. Offline twins:
+  `node scripts/test-customer-problems.js` and `node scripts/test-manage-access.js`
+  (stand-in DB — sign-in, grants, the doors, the conversation window, the
+  access pages).
 - **Crew tree (#855)** — on two throwaway crews of `zz-mcp-test` (deleted
   in `finally`, tree emptied): write → stored as `crewTree.parents`, **no
   new version**, no phantom dirty; read renders the indented tree; a loop

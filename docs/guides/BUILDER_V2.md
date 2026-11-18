@@ -2382,14 +2382,34 @@ A NEW surface beside Admin: Admin stays the technical tool; the management
 center is the simple one, for non-technical users (Noa, Hila; later maybe a
 customer's super user). Hebrew, RTL. v1 has one page.
 
-- **Routes (client, `src/manage/`):** `/manage/<agentSlug>` (opens the first
-  page, `/manage/<slug>/customer-problems`) and `/manage/all` — every agent
-  with an agent filter, **Lybi team only**: the same light super-admin unlock
-  as the hidden `/users` page (`superAdminService`, header
-  `X-Super-Admin-Key`, server `requireSuperAdmin`). Per-agent pages are open,
-  like every per-agent Admin read. The right-side menu and the routes are
-  built from ONE registry, `src/manage/pages.ts` — a new page is one entry +
-  its component; no placeholder entries.
+- **Routes (client, `src/manage/`):** `/manage` (lands on `all` for an
+  every-agent grant, else the person's first agent), `/manage/<agentSlug>/<page>`
+  and `/manage/all/<page>`. The side menu and the routes are built from ONE
+  registry, `src/manage/pages.ts` — a new page is one entry + its component;
+  no placeholder entries.
+- **Sign-in (round 5): Google, and grants in `manage_access`** (migration
+  070, `builder/services/manageAccess.js`). One row per grant: `email`
+  (lowercased) + `agent_id` → `builder_agents.id` (ON DELETE CASCADE),
+  **NULL = every agent**. Seeded: shlomi@ / noa@ / hila@lybi.ai = every agent.
+  Revoke = delete the row. Flow: Google's button → `POST /api/manage/auth/google
+  { idToken }` → `services/google-auth.service.js` `verify` (audience = the
+  environment's `GOOGLE_OAUTH_CLIENT_ID`, verified email) → a grant? → the
+  server's own session token (`builder/services/manageSession.js`: HMAC-SHA256,
+  30 days, identity only; the secret is random, made on first use in
+  `provider_config` key `manage_session_secret` — one per environment by
+  itself; deleting it signs everyone out). The browser keeps it in
+  localStorage and sends `Authorization: Bearer …` (CORS allows the header;
+  no cookie — web.app and run.app are different sites). **Every**
+  `/api/manage/*` route checks the token AND re-reads the grants per request
+  — per-agent pages too — so a deleted grant closes the door at once. No
+  grant → 403 `no_access` with the address, and the screen says
+  "לכתובת X אין עדיין גישה" with a button for another account. The
+  super-admin key no longer opens anything here. The Aspect `allowed_emails`
+  sign-in is a different thing and is not used.
+- **Scope (side panel, top):** every-agent grant → a dropdown "כל הסוכנים" +
+  every agent; 2+ agents → a dropdown of theirs (no "all"); one agent → just
+  its name. `/manage/all` for anyone else redirects to their agent; another
+  agent's address says "אין גישה לסוכן הזה".
 - **The page "תקלות בשיחות עם לקוחות":** the customer chat only (Error Center
   `source = customer`; groups marked Ignored in Admin → Errors left out),
   newest first, Today / This week (Israel time), "N חדשות" = problems in the
@@ -2398,12 +2418,18 @@ customer's super user). Hebrew, RTL. v1 has one page.
   customer / call Shlomi; green: "fixed automatically – nothing to do" /
   "nothing to do" — every row says whether to act), the customer's last
   message and how it ended. Sentences pass a "for dummies" test: what the
-  customer experienced, never how the agent works inside,
-  "לצפייה בשיחה המלאה" → Admin → Conversations `?c=<id>`, "פרטים טכניים" →
-  Admin → Errors. No codes, stacks or model names. A calm day shows
-  "הכול תקין" with how many customer conversations each agent served and
-  what happened earlier this week. Designed with GPT Image (picked D2 + E2):
-  `C:\Users\shazbak\Downloads\customer-errors-designs\`.
+  customer experienced, never how the agent works inside. No codes, stacks
+  or model names. Row action "צפייה" opens the conversation window (below).
+  Designs: `C:\Users\shazbak\Downloads\customer-errors-designs\`.
+- **The conversation window ("צפייה", round 5):** the problem (sentence,
+  what to do, how it ended, when) + the conversation's basic facts —
+  started, last activity, messages (all / the customer's), phase (current
+  crew's name), agent, real or test — and its last 8 messages as the
+  customer saw them. `GET /api/manage/agents/:slug/conversations/:id`
+  (`builder/services/manageConversation.js`): customer chat only
+  (`kind = 'user'`, `metadata.kind = 'live'`), and only a conversation of the
+  agent in the address. Every-agent people also get "חקירה ב־Builder" →
+  `/<slug>/builder?c=<id>` in a new tab (`rel=noopener`); nobody else sees it.
 - **One customer turn = one row:** the Error Center rows of a turn (a retried
   model call, the add-on, the turn) group by the turn's reply message (or
   conversation + area + 10 minutes when there is none). Answered = the reply
@@ -2417,16 +2443,31 @@ customer's super user). Hebrew, RTL. v1 has one page.
 - **One wording table:** `builder/services/customerProblems.js` (`KINDS`,
   `ACTIONS`, `OUTCOMES`, `SPECIAL`, a safe `FALLBACK` for unknown kinds). The
   page and the MCP print the same sentences — change wording there only.
-- **API:** `GET /api/manage/agents/:slug/customer-problems?range=today|week`;
-  `GET /api/manage/customer-problems?range&agent` (super-admin)
-  — `builder/routes/manageRoute.js`.
+- **API** (`builder/routes/manageRoute.js`): open — `GET /auth/config`
+  (`{ clientId }`), `POST /auth/google`; signed in — `GET /me`
+  (`{ email, name, picture, all, agents[] }`),
+  `GET /agents/:slug/customer-problems?range=today|week`,
+  `GET /agents/:slug/conversations/:id`, and `GET /customer-problems?range&agent`
+  (every-agent grant only, else 403 `not_all`). Refusals carry a `code`:
+  `signed_out` (401), `no_access`, `no_agent_access`, `not_all` (403),
+  `no_agent`, `no_conversation` (404).
 - **MCP:** `GET /builder/mcp/agents/<slug>/customer-problems?range=today|week`
   — "what went wrong with my customers today", same Hebrew lines + links to
-  the conversations.
+  the conversations. **Access, read only:** `GET /builder/mcp/access` (every
+  grant) and `/agents/<slug>/access` (its own + every-agent grants). No grant
+  tool by decision — the door has no identity; grants are rows the Lybi team
+  adds.
+- **Per environment:** run `db/migrations/run-070-manage-access.js` against
+  that environment's database BEFORE deploying the server (safe to run
+  twice). The environment's Google OAuth client must list the site under
+  Authorized JavaScript origins (staging: done at setup, `lybi-staging.web.app`).
 - **Tests:** `node scripts/test-customer-problems.js` (offline — a stand-in
   DB, the real routes: wording table, grouping, answered, no-reply + its
-  de-duplication, the super-admin gate, the MCP page). `test-builder-mcp.js`
-  has a "customer problems" section (it needs a live DB).
+  de-duplication, the MCP page) and `node scripts/test-manage-access.js`
+  (offline — the token, grants, sign-in with a stand-in Google, every door,
+  revoke-at-once, the conversation window, the MCP access pages, migration
+  070 safe twice, CORS). `test-builder-mcp.js` has "customer problems" and
+  "management center access" sections (it needs a live DB with 070).
 - **Reply timing (round 3):** every turn's reply message now carries
   `metadata.replyTiming = { replyMs, firstTextMs, receivedAt, finishedAt }`
   (received by the server → reply saved and announced; → first streamed
@@ -2440,14 +2481,20 @@ customer's super user). Hebrew, RTL. v1 has one page.
   has an Error Center row is told by that row.
 - **Real / test:** every row carries `audience` (`metadata.audience`, #968,
   fail closed) so the page can tag test conversations; nothing is hidden.
-- **Layout (round 4, design D — `customer-errors-designs/round3/D-*-sunburst.jpg`):**
-  a top bar (Lybi | מרכז הניהול); the right panel's "מה להציג" chooses the
-  WORLD — all agents, or one agent — above the menu and the page (unlocked:
-  every agent with today's status, from `agents[].needsAction`; locked: only
-  the agent in the address, and "כל הסוכנים" opens the unlock gate); below
-  it "בתצוגה הזו", the world's pages from the registry. The page: masthead
-  (world name + tag + date), today / week (+ agent filter in all), a plain
-  headline with "דורש את שלך" / "הכול תקין" boxes, the "needs handling" and
-  "for information only" lists, "במבט מהיר" (only real counts), and in all
-  each active agent's line. On a phone the panel folds into a world switcher.
+- **Layout (round 5, design `customer-errors-designs/round4/opt1-sunburst.jpg`
+  — a pro tool: small type, dense, the first screen fits 1440×900):** a
+  compact dark-aubergine top bar (Lybi | מרכז הניהול · the address + יציאה);
+  a dark side panel with the scope control on top and the MENU below (one
+  real entry today, no placeholders). The page: a small title + scope,
+  today / week, updated + refresh; six tiles of REAL counts only (דורש טיפול
+  and הכול תקין in conversations, customer conversations, problems, slow
+  replies, problems in test conversations); one compact table — time ·
+  agent (all only) · what happened (+ customer and last message, `dir=auto`)
+  · kind chip · what-to-do chip · צפייה — "דורש טיפול" rows first and
+  highlighted, then "לידיעה בלבד"; in all, "מצב הסוכנים" (each agent's
+  conversations, problems, status; the name opens that agent). On desktop the
+  tables scroll inside their cards; on a phone the panel folds into a bar
+  (scope + menu) and rows become small cards. All colours and type sizes
+  are tokens in `src/manage/tokens.css`. Screens:
+  `customer-errors-designs/built-v3/`.
 - **Not yet:** no seen-marker. **Not touched:** Alfred.

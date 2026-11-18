@@ -360,6 +360,22 @@ const errorEvents = pgTable('error_events', {
   createdIdx:     index('error_events_created_idx').on(t.createdAt),
 }));
 
+// manage_access — who may sign in to the management center (/manage, task
+// #985) and to which agents. One row per grant; agentId NULL = every agent.
+// Lowercased email (CHECK). Revoke = delete. The server re-reads these on
+// every /api/manage request (builder/services/manageAccess.js).
+// See migrations/070_manage_access.sql.
+const manageAccess = pgTable('manage_access', {
+  id:        serial('id').primaryKey(),
+  email:     varchar('email', { length: 255 }).notNull(),
+  agentId:   varchar('agent_id', { length: 64 }).references(() => builderAgents.id, { onDelete: 'cascade' }),
+  note:      text('note'),
+  grantedBy: varchar('granted_by', { length: 255 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, t => ({
+  agentIdx:  index('manage_access_agent_idx').on(t.agentId),
+}));
+
 module.exports = {
   builderProjects,
   builderWorkspaces,
@@ -376,4 +392,5 @@ module.exports = {
   triggerEvents,
   triggerStatus,
   errorEvents,
+  manageAccess,
 };

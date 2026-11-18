@@ -279,3 +279,7 @@ database** — a local server's writes are real.
   (team lead): either deploy from the shared working folder, or get everything
   that's live committed first. This replaces the 2026-10-26 "deploy from a
   clean copy" advice.
+- 2026-11-18 — A Python `open(p, 'w')` patch on Windows rewrites the WHOLE
+  file with CRLF endings (most server files are LF; the docs are CRLF), and a
+  `'\n'` meant for JS lands as a real newline. Patch with the Edit tool or a
+  small Node script written to a file; check `grep -c $'\r$'` before and after.

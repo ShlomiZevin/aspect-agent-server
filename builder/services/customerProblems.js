@@ -71,7 +71,7 @@ const RANGES = ['today', 'week'];
 const ACTIONS = {
   customer:  { id: 'customer', text: 'כדאי לפנות ללקוח', tone: 'act' },
   shlomi:    { id: 'shlomi', text: 'פנו לשלומי', tone: 'act' },
-  auto:      { id: 'auto', text: 'תוקן אוטומטית – לא צריך לעשות כלום', tone: 'ok' },
+  auto:      { id: 'auto', text: 'תוקן אוטומטית', tone: 'ok' },
   answered:  { id: 'answered', text: 'לא צריך לעשות כלום', tone: 'ok' },
   unnoticed: { id: 'unnoticed', text: 'לא צריך לעשות כלום', tone: 'ok' },
 };

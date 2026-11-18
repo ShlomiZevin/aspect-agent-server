@@ -79,7 +79,8 @@ if (process.env.NODE_ENV === 'development') {
   app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-Super-Admin-Key']
+    // Authorization: the management center's session token (task #985).
+    allowedHeaders: ['Content-Type', 'X-Super-Admin-Key', 'Authorization']
   }));
 } else {
   // Production CORS (strict)
@@ -113,7 +114,8 @@ if (process.env.NODE_ENV === 'development') {
       }
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-Super-Admin-Key']
+    // Authorization: the management center's session token (task #985).
+    allowedHeaders: ['Content-Type', 'X-Super-Admin-Key', 'Authorization']
   }));
 }
 
@@ -176,7 +178,8 @@ app.use('/api/load-tests', require('./builder/routes/loadTestsRoute'));
 // Admin → Errors (task #903). See builder/services/errorCenter.js.
 app.use('/api/errors', require('./builder/routes/errorsRoute'));
 // Management center for non-technical users — customer-chat problems in
-// plain Hebrew (task #985). See builder/services/customerProblems.js.
+// plain Hebrew (task #985). Google sign-in + per-agent grants
+// (manage_access); see builder/routes/manageRoute.js.
 app.use('/api/manage', require('./builder/routes/manageRoute'));
 // LLM usage — every model call by add-on and interaction; read by
 // Builder Admin → LLM Usage (task #953). See builder/services/llmUsageReport.js.

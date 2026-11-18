@@ -66,6 +66,7 @@ const simulationJobs = require('../services/simulationJobs');
 const loadTests = require('../services/loadTests');
 const errorCenter = require('../services/errorCenter');
 const customerProblems = require('../services/customerProblems');
+const manageAccess = require('../services/manageAccess');
 const { publicBaseOf } = require('./publicBase');
 const modelsService = require('../../services/models.service');
 const environments = require('../environments');
@@ -812,6 +813,20 @@ customer chat) — every line is listed either way. The Hebrew sentences are the
 page shows the person (\`/manage/<slug>\` on the Lybi site) — quote them
 as they are; don't translate them into codes. For the technical side of
 one line, the error list above. Read only.
+
+**Who can open the management center**
+
+The management center (\`/manage\` on the Lybi site) is behind Google
+sign-in. Who may sign in, and to which agents:
+
+| To see | Fetch |
+|---|---|
+| Every grant: each address, and either "every agent" or the agents it opens | \`${base}/access\` |
+| Who can open one agent's pages (every-agent people + that agent's own grants) | \`${base}/agents/<slug>/access\` |
+
+Read only — access is granted by the Lybi team, not through this door. When
+someone says "I can't get in to the management center", read this first: it
+is usually a different Google address from the one that was granted.
 
 **The user's next line, written for you**
 
@@ -2661,6 +2676,59 @@ router.get('/agents/:slug/customer-problems', async (req, res) => {
       `Technical details (kinds, codes, every occurrence): ${urls(req).base}/agents/${encodeURIComponent(slug)}/errors?source=customer`].join('\n'));
   } catch (err) {
     simFail(res, err, 'list the customer-chat problems');
+  }
+});
+
+// ─── Management center access (task #985) — read only ──────────────
+// Grants live in manage_access (builder/services/manageAccess.js);
+// granting is done by the Lybi team, not here.
+
+function accessLine(g) {
+  const who = g.agent ? `${g.agent.name} (${g.agent.slug})` : 'EVERY agent';
+  return `- ${g.email} → ${who}${g.note ? ` · ${g.note}` : ''}${g.grantedBy ? ` · granted by ${g.grantedBy}` : ''}${g.createdAt ? ` · since ${g.createdAt.slice(0, 10)}` : ''}`;
+}
+
+router.get('/access', async (req, res) => {
+  try {
+    const grants = await manageAccess.listGrants();
+    const env = environments.currentEnvironment(urls(req).origin);
+    const page = `${env ? env.app : '<the Lybi site>'}/manage`;
+    const people = new Set(grants.map(g => g.email));
+    sendText(res, [
+      `Management center access (${page}) — sign-in with Google; the address must match one below.`,
+      `${people.size} address(es), ${grants.length} grant(s). "EVERY agent" = all agents, including the "all agents" view.`,
+      '',
+      ...(grants.length ? grants.map(accessLine) : ['No one has access yet.']),
+      '',
+      `One agent: ${urls(req).base}/agents/<slug>/access. Read only.`,
+    ].join('\n'));
+  } catch (err) {
+    simFail(res, err, 'read the management center access');
+  }
+});
+
+router.get('/agents/:slug/access', async (req, res) => {
+  try {
+    const slug = req.params.slug;
+    if (!(await customerProblems.agentExists(slug))) {
+      return res.status(404).type('text/plain').send(`No agent "${slug}". Fetch ${urls(req).base}/agents for the list of agents.`);
+    }
+    const grants = await manageAccess.listGrants({ slug });
+    const every = grants.filter(g => !g.agent);
+    const own = grants.filter(g => g.agent);
+    sendText(res, [
+      `Who can open "${slug}" in the management center (/manage/${slug}):`,
+      '',
+      `This agent's own grants (${own.length}):`,
+      ...(own.length ? own.map(accessLine) : ['- none']),
+      '',
+      `Every-agent grants (${every.length}) — they see this agent too:`,
+      ...(every.length ? every.map(accessLine) : ['- none']),
+      '',
+      `Everyone: ${urls(req).base}/access. Read only.`,
+    ].join('\n'));
+  } catch (err) {
+    simFail(res, err, 'read who can open this agent');
   }
 });
 
