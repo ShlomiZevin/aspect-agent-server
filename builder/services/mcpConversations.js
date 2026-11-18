@@ -240,8 +240,13 @@ async function sendMessage({ conversationId, text, base, timeoutMs }) {
   let messageId = null;
   let failure = null;
   let stopped = false;
+  let blocked = null;
   await readEvents(res, ev => {
-    if (ev.type === 'assistant.message') {
+    if (ev.type === 'protection.blocked') {
+      // Data protection (#986): the message was stopped before it was saved
+      // or reached any model — the reply is the agent's fixed message.
+      blocked = { detectors: ev.detectors || [], blockId: ev.blockId ?? null, message: ev.message || '' };
+    } else if (ev.type === 'assistant.message') {
       if (ev.text) replies.push(ev.text);
       if (ev.messageId) messageId = ev.messageId;
     } else if (ev.type === 'addon.error' && ev.instanceId == null) {
@@ -254,6 +259,21 @@ async function sendMessage({ conversationId, text, base, timeoutMs }) {
     const e = refuse(502, `The agent's turn failed: ${failure}. The conversation is intact — open it in the Builder, or fetch ../conversations/${id}, to see which addon broke.`);
     e.turnFailure = failure;
     throw e;
+  }
+
+  // Nothing was saved and no add-on ran, so there is no turn to digest —
+  // the export's last reply would be the PREVIOUS turn's.
+  if (blocked) {
+    return {
+      conversationId: id,
+      reply: blocked.message,
+      messageId: null,
+      blocked: {
+        detectors: blocked.detectors,
+        blockId: blocked.blockId,
+        note: 'Stopped by data protection: the message was not saved and no add-on or model saw it. The reply is the agent\'s fixed message.',
+      },
+    };
   }
 
   const out = {

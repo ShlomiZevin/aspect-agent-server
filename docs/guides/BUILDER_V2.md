@@ -2382,9 +2382,12 @@ A NEW surface beside Admin: Admin stays the technical tool; the management
 center is the simple one, for non-technical users (Noa, Hila; later maybe a
 customer's super user). Hebrew, RTL. v1 has one page.
 
-- **Routes (client, `src/manage/`):** `/manage` (lands on `all` for an
-  every-agent grant, else the person's first agent), `/manage/<agentSlug>/<page>`
-  and `/manage/all/<page>`. The side menu and the routes are built from ONE
+- **Routes (client, `src/manage/`):** `/lybi/manage` (lands on `all` for an
+  every-agent grant, else the person's first agent), `/lybi/manage/<agentSlug>/<page>`
+  and `/lybi/manage/all/<page>` (round 6 — it was `/manage/...`; every old
+  `/manage/...` link redirects to `/lybi/manage/...`, rest of the path and the
+  query kept; one helper builds every link: `src/manage/links.ts`
+  `MANAGE_BASE` / `scopePath`). The side menu and the routes are built from ONE
   registry, `src/manage/pages.ts` — a new page is one entry + its component;
   no placeholder entries.
 - **Sign-in (round 5): Google, and grants in `manage_access`** (migration
@@ -2408,7 +2411,7 @@ customer's super user). Hebrew, RTL. v1 has one page.
   sign-in is a different thing and is not used.
 - **Scope (side panel, top):** every-agent grant → a dropdown "כל הסוכנים" +
   every agent; 2+ agents → a dropdown of theirs (no "all"); one agent → just
-  its name. `/manage/all` for anyone else redirects to their agent; another
+  its name. `/lybi/manage/all` for anyone else redirects to their agent; another
   agent's address says "אין גישה לסוכן הזה".
 - **The page "תקלות בשיחות עם לקוחות":** the customer chat only (Error Center
   `source = customer`; groups marked Ignored in Admin → Errors left out),
@@ -2498,3 +2501,125 @@ customer's super user). Hebrew, RTL. v1 has one page.
   are tokens in `src/manage/tokens.css`. Screens:
   `customer-errors-designs/built-v3/`.
 - **Not yet:** no seen-marker. **Not touched:** Alfred.
+
+### 62. Data protection — code detectors for personal data (task #986, P1)
+
+Banks and hospitals: sensitive personal data a customer types must be stopped
+BEFORE it is processed or stored — by fast, deterministic code, no model.
+(The LLM-based Guardrail add-on is #963; these code protections run first.)
+
+- **One detector list, both sides:** `builder/protection/detectors.mjs` — a
+  pure ES module (no dependencies, no I/O). The server loads it with
+  `import()` (`builder/protection/index.js`; works on the Node 22 container
+  and a local Node 18); the client imports the SAME file through the
+  `@protection` alias (vite.config.ts + tsconfig.app.json, the @addons
+  trick; types in `detectors.d.mts`). Detectors: `il_id` (9 digits, Israeli
+  check digit), `credit_card` (13–19 digits, Luhn; joined groups must look
+  like card formatting, ≤ 6 digits each), `iban` (mod-97), `bank_account` and
+  `passport` (no check digit exists — only right after a word such as
+  "חשבון" / "דרכון"), `phone` (Israeli 05X/07X/02–09 or +972, or any `+`
+  number), `email`. Text is normalised first: Arabic-Indic / Persian /
+  full-width digits → ASCII, zero-width and bidi marks removed (Hebrew
+  keyboards put RLM marks between digits), every dash incl. the maqaf → '-'.
+  Candidates are the consecutive digit GROUPS of a run (split at single
+  spaces / dashes) — never a window cut through a long number. `detect()`
+  returns `{ id, count }` only — never the matched text. A new detector = one
+  entry in that file.
+- **Settings (data model):** `dataProtection` in the AGENT body —
+  `{ enabled, detectors?: { <id>: bool }, blockedMessage?: { he?, en? } }`;
+  absent = off (empty == absent). A detector not set takes its default (on:
+  il_id / credit_card / iban; off: the rest). A CREW may override detector
+  switches only — `dataProtection: { detectors }` in the crew body — for
+  messages that arrive while it is the current crew (the crew that collects
+  the ID turns `il_id` off). A crew can't turn protection on for an off
+  agent. `resolveSettings(agentDp, crewDp)` in the shared file is the one
+  merge, used by the server gate, the Builder and (P2) the browser.
+  Versioned with the bodies: the customer chat follows the PUBLISHED
+  versions; the Builder test chat runs the working copy. Carried through
+  hydrate (`builderProjects`), `bodyOfAgent` / `bodyOfCrew` (both copies in
+  BuilderContext + useProjectSync), duplicate and copy-agent (whole bodies).
+- **The server gate:** `runtimeRoute` POST `/:slug/conversations/:id/messages`
+  — the one door every channel uses (customer chat, embed, Builder test,
+  MCP, simulations, load tests). It now reads the conversation, resolves the
+  turn's runnable with `BuilderRunner.resolveTurnRunnable` (THE one
+  definition — the runner gets the same object through `runnable`, so a turn
+  never resolves twice or differently) and runs `checkMessage` with the
+  agent body + the starting crew's body, BEFORE anything is written. A
+  match: no user message row, no placeholder, no auto-name, no add-on, no
+  model; a `protection_events` row; SSE `protection.blocked { conversationId,
+  blockId, detectors, message }` then `done`. The message is in the request's
+  `lang` ('en' → English, anything else → Hebrew). A failed record STILL
+  blocks (`blockId: null`, an Error Center row with detector ids only). The
+  message is checked once, on entry, against the crew that receives it — a
+  mid-turn transition doesn't re-check.
+- **The record:** table `protection_events` (migration
+  `071_protection_events.sql` + `run-071-protection-events.js`): agent_slug,
+  conversation_id (NULL for a browser block before the first message),
+  side (client | server), surface (live | builder | simulation | api),
+  detectors text[], lang, mistake_reported_at, created_at. NEVER the value,
+  a hash of it (a 9-digit ID hash is brute-forced in seconds) or any text.
+  `builder/services/protectionEvents.js` (record / reportMistake / report)
+  takes no text argument at all.
+- **The chat's calls** (`builder/routes/protectionRoute.js`, mounted on
+  /api/agents): POST `/:slug/protection-events` records a block that
+  happened in the BROWSER (`{ surface: live|builder, detectors,
+  conversationId?, lang? }` → `{ blockId }`; unknown detectors, another
+  agent's conversation and unknown agents refused); POST
+  `/:slug/protection-events/:id/mistake` is the customer's one tap "blocked
+  by mistake" — it only records (idempotent), the message never goes through.
+- **MCP:** GET/POST `/agents/<slug>/data-protection` (agent; POST changes
+  only what is sent, `null` removes a key, `{ clear: true }` removes it — a
+  new version, active, not published), POST
+  `/agents/<slug>/crews/<crewId>/data-protection` (crew exception), GET
+  `/protection/detectors`, POST `/protection/test` (which detectors fire on
+  a sentence, for an agent / crew, as if on; never stored or echoed), GET
+  `/agents/<slug>/protection-events?days=` (blocks, mistake rate, per
+  detector, latest rows). Whole-body agent and crew saves KEEP
+  `dataProtection` when they don't mention it (like `modelRoute`). A
+  simulated turn that was stopped returns `blocked` + the fixed message as
+  its reply (and skips the turn digest — nothing was saved).
+- **Builder (existing pieces only, no new design — Shlomi 2026-11-18):** the
+  agent Setup card has a "Data protection" row under "Model route" (same
+  segmented Off/On, a summary, the Web-search "Edit" button) → a modal with
+  the switch, a toggle per detector ("· default" until set) and the message
+  he/en (empty = built-in). The Cortex has a fixed first card "🛡 Data
+  protection" (the Agent combo chip's card style) at both scopes: agent →
+  those settings; crew → that crew's exceptions (follow the agent / on / off
+  per detector, with what the agent does). Shows "off" / "N checks" /
+  "· exception".
+- **Battery:** `node scripts/test-data-protection.js` — offline (db.pg is a
+  stub, never `.env`): detectors, settings, the gate (a match saves nothing
+  and runs nothing; a failed record still blocks; the crew exception; the
+  Builder working copy; one resolve), the chat calls, the MCP door, static
+  guards (the gate sits before the insert; nothing hands text to the record).
+- **In the browser (P2):** before any network call, `useLiveChat.send`
+  (live chat, the embed iframe, the customer page — all one hook) runs
+  `checkOutgoing` (`src/live-chat/protection.ts`): the PUBLISHED bodies
+  (`publishedSource`, the server's published → active → viewing rule) and the
+  conversation's CURRENT crew — from the `conversation` event, transitions
+  (`addon.output.transition`) and the conversation list's
+  `metadata.currentCrewId` (on open and after every turn). A match sends
+  nothing: the turn becomes a notice, the text goes back into the composer
+  (unless something new was typed), and POST `protection-events` records it.
+  The Builder test chat (`UserChat`) does the same against the WORKING copy
+  (`bodyOfAgent` + the crew the turn goes to), surface `builder`.
+- **The server's block on screen:** `protection.blocked` is handled by the
+  live chat (the bubble drops the text — it was never accepted — the notice
+  replaces it, the text returns to the composer) and by the Builder test chat
+  (the bubble keeps the text for the author; a Stop-style pill "Data
+  protection (browser|server) — <detectors> · not saved" and the fixed
+  message as the customer gets it). A simulated turn returns `blocked`. Both
+  chats send `lang` (the live chat's language; the Builder sends none →
+  Hebrew).
+- **The customer's notice (design D, `data-protection-designs/b2-sunburst.jpg`):**
+  `src/live-chat/components/ProtectionNotice.tsx` + `.protect-*` in
+  liveChat.css (brand tokens, light + dark, embed, phone width): a warm card
+  — "רגע קטן לעצור ולשמור עליך" with a heart and an inline-SVG shield, the
+  agent's own message, "זיהינו: <detector names>", a reassurance strip (not
+  sent / saved, the text waits in the box), and two actions: "לערוך את
+  ההודעה" (the cursor goes to the end of the kept text) and "נחסם בטעות" → POST
+  `/mistake`, which turns IN PLACE into "תודה, נבדוק את זה". The mockup's
+  "secure channel" button is out of scope. Strings in `live-chat/i18n.ts`
+  (he + en). A blocked turn isn't in the history after a reload (it was never
+  saved). Screens: `Downloads/data-protection-built/`.
+- **P3:** the Admin report. **Not touched:** Alfred.

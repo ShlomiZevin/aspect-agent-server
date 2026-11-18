@@ -67,6 +67,8 @@ function bodyOfAgent(a) {
     ...(Object.keys(a.crewTree?.parents ?? {}).length ? { crewTree: a.crewTree } : {}),
     // Model route (#984): Direct == absent.
     ...(a.modelRoute === 'vertex' ? { modelRoute: 'vertex' } : {}),
+    // Data protection (#986): absent = off.
+    ...(a.dataProtection ? { dataProtection: a.dataProtection } : {}),
   };
 }
 
@@ -78,6 +80,8 @@ function bodyOfCrew(c) {
     persona: c.persona,
     addons: c.addons,
     fields: c.fields,
+    // Data protection exception (#986): empty == absent.
+    ...(c.dataProtection ? { dataProtection: c.dataProtection } : {}),
   };
 }
 
@@ -471,6 +475,38 @@ async function removeIfPresent(slug) {
     const mv2 = (await hydrate(TEST_SLUG)).agents[0];
     check('set direct → the key is removed (Direct == absent)', mrD.status === 200 && mv2.modelRoute === undefined
       && !('modelRoute' in mv2.versions.find(v => v.id === mv2.activeVersionId).body));
+
+    // ── data protection (#986) — agent settings + crew exception, versioned
+    // writes on the test agent only; ends cleared. Offline proof of the gate
+    // itself: scripts/test-data-protection.js. ──
+    section('data protection (#986)');
+    check('entry page teaches data protection', doc.text.includes(`${base}/agents/<slug>/data-protection`) && doc.text.includes('dataProtection'));
+    const dp0 = await get(`/agents/${TEST_SLUG}/data-protection`);
+    check('read → 200, says the status', dp0.status === 200 && /Status: (ON|OFF)/.test(dp0.text), dp0.text.slice(0, 160));
+    check('an unknown detector is refused', (await post(`/agents/${TEST_SLUG}/data-protection`, { detectors: { ssn: true } })).status === 400);
+    const dpOn = await post(`/agents/${TEST_SLUG}/data-protection`, { enabled: true, detectors: { phone: true }, description: 'battery (protection on)' });
+    const dv1 = (await hydrate(TEST_SLUG)).agents[0];
+    check('set → new active version with dataProtection', dpOn.status === 200 && dv1.dataProtection?.enabled === true
+      && dv1.versions.find(v => v.id === dv1.activeVersionId).body.dataProtection?.detectors?.phone === true, dpOn.text.slice(0, 200));
+    check('no phantom "unsaved changes" with protection on', agentDirty(dv1).length === 0, agentDirty(dv1).join(', '));
+    const dpCrew = dv1.crews[0];
+    const dpEx = await post(`/agents/${TEST_SLUG}/crews/${dpCrew.id}/data-protection`, { detectors: { il_id: false }, description: 'battery (crew exception)' });
+    const dv2 = (await hydrate(TEST_SLUG)).agents[0];
+    const dc2 = dv2.crews.find(c => c.id === dpCrew.id);
+    check('crew exception saved on that crew', dpEx.status === 200 && dc2.dataProtection?.detectors?.il_id === false, dpEx.text.slice(0, 200));
+    check('no phantom "unsaved changes" on the crew', !crewDirty(dc2));
+    const dpBody = JSON.parse(JSON.stringify(dv2.versions.find(v => v.id === dv2.activeVersionId).body));
+    delete dpBody.dataProtection;
+    await post(`/agents/${TEST_SLUG}`, { body: dpBody, description: 'battery (protection kept)' });
+    check('a body save without dataProtection KEEPS it', (await hydrate(TEST_SLUG)).agents[0].dataProtection?.enabled === true);
+    const dpTest = await post('/protection/test', { text: 'my id is 123456782', agent: TEST_SLUG, crewId: dpCrew.id });
+    check('test in the crew with the ID exception passes', /^PASSES/.test(dpTest.text), dpTest.text.slice(0, 120));
+    const dpEv = await get(`/agents/${TEST_SLUG}/protection-events?days=7`);
+    check('the block report reads (table exists)', dpEv.status === 200 && /blocked message/.test(dpEv.text), dpEv.text.slice(0, 160));
+    await post(`/agents/${TEST_SLUG}/crews/${dpCrew.id}/data-protection`, { clear: true, description: 'battery (crew exception cleared)' });
+    await post(`/agents/${TEST_SLUG}/data-protection`, { clear: true, description: 'battery (protection cleared)' });
+    const dv3 = (await hydrate(TEST_SLUG)).agents[0];
+    check('cleared → both keys gone', dv3.dataProtection === undefined && dv3.crews.find(c => c.id === dpCrew.id).dataProtection === undefined);
 
     // ── create ──
     section('create');

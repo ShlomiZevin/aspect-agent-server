@@ -2,7 +2,7 @@
  * Customer-chat problems (task #985) — what went wrong for CUSTOMERS, in
  * plain Hebrew, for people who are not technical.
  *
- * Read by the management center's errors page (client `/manage/<slug>`,
+ * Read by the management center's errors page (client `/lybi/manage/<slug>`,
  * API `builder/routes/manageRoute.js`) and by the Builder MCP
  * (`GET /builder/mcp/agents/:slug/customer-problems`). Both print the
  * sentences from THIS file, so the page and an AI assistant say the same

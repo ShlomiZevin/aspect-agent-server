@@ -749,5 +749,7 @@ module.exports = {
   errorEvents:            builderSchema.errorEvents,
   // Management center sign-in (task #985)
   manageAccess:           builderSchema.manageAccess,
+  // Data protection blocks (task #986)
+  protectionEvents:       builderSchema.protectionEvents,
   agentLog,
 };

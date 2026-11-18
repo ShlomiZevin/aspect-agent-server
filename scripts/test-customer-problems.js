@@ -233,7 +233,20 @@ function check(name, cond, extra = '') {
   const iTiming = runner.indexOf('saveReplyTiming(assistantMessageId', iSave);
   check('runtime: timing is written right after the reply is saved and announced', iSave > 0 && iAnnounce > iSave && iTiming > iAnnounce);
   check('runtime: the first word is noticed from addon.token (events still pass through)', /type === 'addon\.token'\) firstTextAt = Date\.now\(\);\s*return emitRaw\(type, payload\)/.test(runner));
-  check('chat route stamps receivedAt first thing and hands it to the run', /messages', async \(req, res\) => \{\s*\/\/[^\n]*\n\s*const receivedAt = Date\.now\(\);/.test(route) && /convRow,\s*receivedAt,\s*\}\)\)/.test(route));
+  // Shape-independent: inside the POST .../messages handler, `receivedAt` is
+  // stamped before the handler awaits anything, and the runOnce call's own
+  // arguments carry it.
+  {
+    const start = route.indexOf("router.post('/:slug/conversations/:convId/messages'");
+    const next = start >= 0 ? route.indexOf('\nrouter.', start + 1) : -1;
+    const handler = start >= 0 ? route.slice(start, next > 0 ? next : route.length) : '';
+    const iStamp = handler.search(/const receivedAt = Date\.now\(\)/);
+    const iAwait = handler.search(/\bawait\b/);
+    const iRun = handler.indexOf('runOnce(');
+    const runArgs = iRun >= 0 ? handler.slice(iRun, handler.indexOf('})', iRun)) : '';
+    check('chat route stamps receivedAt first thing and hands it to the run',
+      iStamp > 0 && (iAwait === -1 || iStamp < iAwait) && /\breceivedAt\b/.test(runArgs));
+  }
 
   // ─── The routes ─────────────────────────────────────────────────
   console.log('\n-- routes');
@@ -270,6 +283,7 @@ function check(name, cond, extra = '') {
     const mcp = await get('/builder/mcp/agents/acme/customer-problems?range=week');
     check('MCP lists the problems with the same plain words',
       mcp.status === 200 && mcp.text.includes(cp.KINDS.model_rate_limit.problem) && mcp.text.includes(cp.ACTIONS.customer.text) && mcp.text.includes(cp.SPECIAL.noReply.title), mcp.text.slice(0, 200));
+    check('MCP names the management page at /lybi/manage/<slug>', mcp.text.includes('/lybi/manage/acme') && !/[^i]\/manage\/acme/.test(mcp.text));
     check('MCP lines point at the conversation', /read it: http:\/\/127\.0\.0\.1:\d+\/builder\/mcp\/conversations\/10/.test(mcp.text));
     check('MCP: no kind codes in the lines', !/model_rate_limit|something_new/.test(mcp.text));
     check('MCP shows the slow reply with its time', mcp.text.includes(cp.SPECIAL.slowReply.title) && /reply took 75 s/.test(mcp.text));

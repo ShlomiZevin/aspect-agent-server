@@ -39,7 +39,7 @@ The **Builder** is where agents are made. Its doc is `aspect-agent-server/docs/g
   transition router, Live Brain / Profiler panels, triggers and schedules.
 - **Every add-on** has its own prompt, model and lane.
 - **Around the agents:** simulations, load tests, Admin (technical), and the management center for
-  non-technical users (`/manage/...`).
+  non-technical users (`/lybi/manage/...`).
 
 ### The two rules every feature passes
 
@@ -292,3 +292,13 @@ database** — a local server's writes are real.
   file with CRLF endings (most server files are LF; the docs are CRLF), and a
   `'\n'` meant for JS lands as a real newline. Patch with the Edit tool or a
   small Node script written to a file; check `grep -c $'\r$'` before and after.
+- 2026-11-18 — Correction: most server AND client files are CRLF in this
+  working tree (BuilderContext.tsx, mcpRoute.js, runtimeRoute.js, types…).
+  `sed -i` in Git Bash silently rewrites a CRLF file to LF — a whole-file
+  diff. Use the Edit tool or a Node `split/join` on the exact substring;
+  `git diff --stat` must show only your lines (#986).
+- 2026-11-18 — Port 5174 is often another session's Vite (`--strictPort`
+  fails and your screenshot shows THEIR code). Pick a free port (e.g. 5179),
+  check the Vite output says it started, and kill only your own PID after.
+  A local Vite against staging works read-only with a Playwright route that
+  aborts every non-GET and answers CORS itself.

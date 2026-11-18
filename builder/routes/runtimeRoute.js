@@ -18,7 +18,9 @@ const express = require('express');
 const { eq, and, desc, inArray, sql } = require('drizzle-orm');
 const db = require('../../services/db.pg');
 const { agents, conversations, messages, users } = require('../../db/schema');
-const { runOnce, runProactive } = require('../runtime/BuilderRunner');
+const { runOnce, runProactive, resolveTurnRunnable } = require('../runtime/BuilderRunner');
+const protection = require('../protection');
+const protectionEvents = require('../services/protectionEvents');
 const stopRegistry = require('../runtime/stopRegistry');
 const conversationPush = require('../../services/conversation-push.service');
 const errorCenter = require('../services/errorCenter');
@@ -1018,6 +1020,9 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
     // current crew is still covered by `overrideCrewBody` for backward
     // compat; we merge it in below.
     overrideCrewBodies = null,
+    // The customer's UI language ('he' | 'en') — picks the data protection
+    // message (#986). Anything else → Hebrew.
+    lang = null,
   } = req.body || {};
 
   if (!ownerUserId || !userMessage) {
@@ -1054,18 +1059,66 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
       return res.end();
     }
 
-    // Persist the user's message first so we have an id to emit.
+    // The conversation row, read ONCE for this turn (#914) — the gate, the
+    // auto-name, the crew override, the `conversation` event and the runner
+    // all use it. Each write below updates this copy too, so it always
+    // matches the DB.
+    const [convRow] = await d.select().from(conversations)
+      .where(eq(conversations.id, Number(convId))).limit(1);
+
+    // The agent + crew this turn starts on — resolved once, here, and handed
+    // to the runner (the same definition it would use itself).
+    const runnable = await resolveTurnRunnable({
+      agentSlug: slug,
+      ownerUserId,
+      version,
+      currentCrewId: overrideCrewId || (convRow?.metadata && convRow.metadata.currentCrewId) || null,
+      overrideAgentBody,
+      overrideCrewBody,
+      overrideCrewBodies,
+    });
+
+    // Data protection (#986) — BEFORE anything is saved or reaches a model,
+    // for every channel. The agent's settings with the current crew's
+    // detector switches laid over them. A match: the message is not stored,
+    // no add-on runs, the customer gets the agent's fixed message and the
+    // block is recorded (detector ids only — never the text). A failed
+    // record still blocks.
+    const block = await protection.checkMessage(userMessage, runnable.agent.body, runnable.crew.body, lang);
+    if (block) {
+      let blockId = null;
+      try {
+        blockId = await protectionEvents.record({
+          agentSlug: slug,
+          conversationId: Number(convId),
+          side: 'server',
+          surface: protectionEvents.surfaceOf(convRow && convRow.metadata),
+          detectors: block.detectors,
+          lang,
+        });
+      } catch (err) {
+        errorCenter.record(err, {
+          area: 'turn', code: 'protection_record_failed',
+          agentSlug: slug, conversationId: Number(convId),
+          detail: { detectors: block.detectors },
+        });
+      }
+      emit('protection.blocked', {
+        conversationId: Number(convId),
+        blockId,
+        detectors: block.detectors,
+        message: block.message,
+      });
+      emit('done', { totalMs: 0 });
+      return res.end();
+    }
+
+    // Persist the user's message so we have an id to emit.
     const [userMsg] = await d.insert(messages).values({
       conversationId: Number(convId),
       role: 'user',
       content: userMessage,
     }).returning();
-
-    // The conversation row, read ONCE for this turn (#914) — the auto-name,
-    // the crew override, the `conversation` event and the runner all use it.
-    // Each write below updates this copy too, so it always matches the DB.
-    const [convRow] = await d.select().from(conversations)
-      .where(eq(conversations.id, Number(convId))).limit(1);
 
     // Auto-name the conversation on its first user message. Truncated
     // first message reads better than "Chat #1667" in the history
@@ -1152,6 +1205,7 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
         stopKey,
         convRow,
         receivedAt,
+        runnable,
       }));
     } finally {
       stopRegistry.end(stopKey, stopHandle);

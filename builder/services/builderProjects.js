@@ -167,6 +167,10 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       persona:      crewBody.persona,
       addons:       migratedAddons,
       fields:       Array.isArray(crewBody.fields) ? crewBody.fields : [],
+      // Data protection override (#986) — detector switches over the
+      // agent's. Absent = follow the agent. The version bodies below carry
+      // it through `...vb`, so working copy and version compare equal.
+      dataProtection: crewBody.dataProtection,
       // Version metadata (client format). The dirty calc compares the
       // working-copy fields above (name / description / spec / persona
       // / addons / fields) against `versions.find(viewing).body`. If
@@ -242,6 +246,9 @@ async function hydrateProject({ agentSlug, ownerUserId: _ownerUserId }) {
       // Model route (#984): 'vertex' or absent (= Direct). Same one-by-one
       // rule as triggers above — the runtime reads it from the body.
       modelRoute:      agentBody.modelRoute,
+      // Data protection (#986): absent = off. Same one-by-one rule — the
+      // runtime gate reads it from the body.
+      dataProtection:  agentBody.dataProtection,
       crews,
       versions: agentVersions.map(v => ({
         id:           v.id,

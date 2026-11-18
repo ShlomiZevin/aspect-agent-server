@@ -376,7 +376,28 @@ const manageAccess = pgTable('manage_access', {
   agentIdx:  index('manage_access_agent_idx').on(t.agentId),
 }));
 
+// protection_events — data protection blocks (task #986). One row per
+// customer message stopped by a code detector, in the browser ('client') or
+// on the server ('server'). NEVER the value or any message text — detector
+// ids only. The customer's "blocked by mistake" tap stamps
+// `mistakeReportedAt`. Written/read by builder/services/protectionEvents.js.
+// See migrations/071_protection_events.sql.
+const protectionEvents = pgTable('protection_events', {
+  id:                serial('id').primaryKey(),
+  agentSlug:         varchar('agent_slug', { length: 100 }).notNull(),
+  conversationId:    integer('conversation_id'),
+  side:              varchar('side', { length: 10 }).notNull(),      // client | server
+  surface:           varchar('surface', { length: 20 }).notNull(),   // live | builder | simulation | api
+  detectors:         text('detectors').array().notNull(),
+  lang:              varchar('lang', { length: 5 }),
+  mistakeReportedAt: timestamp('mistake_reported_at', { withTimezone: true }),
+  createdAt:         timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, t => ({
+  agentTimeIdx:      index('protection_events_agent_time_idx').on(t.agentSlug, t.createdAt),
+}));
+
 module.exports = {
+  protectionEvents,
   builderProjects,
   builderWorkspaces,
   builderAgents,

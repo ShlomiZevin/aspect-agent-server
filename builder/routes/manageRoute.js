@@ -1,6 +1,7 @@
 /**
  * The management center for non-technical users (task #985) — its API.
- * Client: `/manage/<slug>` and `/manage/all` (aspect-react-client/src/manage/).
+ * Client: `/lybi/manage/<slug>` and `/lybi/manage/all` (aspect-react-client/src/manage/;
+ * the old `/manage/...` links redirect there).
  *
  * Signing in (open):
  *   GET  /api/manage/auth/config        { clientId } — the Google OAuth web client

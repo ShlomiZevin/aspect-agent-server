@@ -73,6 +73,8 @@ const environments = require('../environments');
 const mcpTriggers = require('../services/mcpTriggers');
 const crewTree = require('../services/crewTree');
 const modelRoute = require('../../services/modelRoute');
+const protection = require('../protection');
+const protectionEvents = require('../services/protectionEvents');
 
 /**
  * The team's shared knowledge repository (task #893) — notes, recipes and
@@ -358,6 +360,9 @@ saved for the others unless the person passes it on.
 | History of changes to an agent, and why | \`${base}/agents/<slug>/log\` |
 | **How its crews are grouped in the Builder's CREWS list** — the manual tree (which crew is shown under which), display only | \`${base}/agents/<slug>/crew-tree\` |
 | **Its model route** — Direct (our provider keys) or Vertex (every model call through Google Vertex AI), whether Vertex is set up on this server, and every add-on whose model can't run on Vertex | \`${base}/agents/<slug>/model-route\` |
+| **Its data protection** — on/off, each detector (ID, card, IBAN, …), the message the customer sees, every crew's exception and what is checked in each crew | \`${base}/agents/<slug>/data-protection\` |
+| Messages its data protection stopped — per detector, browser vs server, how many the customer reported as a mistake, latest rows (never the text) | \`${base}/agents/<slug>/protection-events?days=30\` |
+| The data protection detectors — what each one matches, its default | \`${base}/protection/detectors\` |
 | **Its Spec** — project, agent and crew specs, the text of every file attached to the agent's Spec, and the notes & files on each Targeted KB (the author's knowledge map). What the person wants the agent to be; read it before designing anything. Never seen by the running agent | \`${base}/agents/<slug>/spec\` |
 | **Every knowledge base** — chunks, files, which agents it is connected to and which KB Retrievers search it, plus any retriever naming a KB that doesn't exist | \`${base}/kbs\` |
 | One agent's knowledge bases — connected ones, and each KB Retriever with whether its KB is ok, not connected, or missing | \`${base}/agents/<slug>/kbs\` |
@@ -459,6 +464,40 @@ add-on with Web search on) **fails** — there is no fallback to the direct
 API — so the answer lists those add-ons; change their models (models with
 \`vertex: true\` in \`${origin}/api/models\`) before or right after
 switching. A body you POST without \`modelRoute\` keeps the current route.
+
+**Data protection — stopping sensitive personal data (code, no model).**
+Per agent, detectors that find an Israeli ID (check digit), a credit card
+(Luhn), an IBAN, a bank account / passport number (only right after a word
+such as "חשבון" / "דרכון"), a phone number or an email in what the CUSTOMER
+writes. A match stops the message before it is saved or reaches any model:
+the customer sees the agent's fixed message (Hebrew + English) and the block
+is recorded — detector ids only, never the text. Off unless turned on
+(\`dataProtection\` in the agent body, absent = off); turning it on switches
+ID / card / IBAN on and the rest off unless you set them. A crew may
+override the detector switches for messages that arrive while it is the
+current crew — e.g. the crew that collects the ID turns \`il_id\` off
+(\`dataProtection\` in the crew body, detectors only).
+
+\`\`\`
+GET  ${base}/agents/<slug>/data-protection                 # agent + every crew + what applies
+POST ${base}/agents/<slug>/data-protection
+{ "enabled": true, "detectors": { "phone": true }, "blockedMessage": { "he": "...", "en": "..." } }
+POST ${base}/agents/<slug>/crews/<crewId>/data-protection
+{ "detectors": { "il_id": false } }                        # null = back to the agent's
+GET  ${base}/protection/detectors                          # the detector list
+POST ${base}/protection/test
+{ "text": "...", "agent": "<slug>", "crewId": "<optional>" } # which detectors fire; nothing stored
+GET  ${base}/agents/<slug>/protection-events?days=30       # blocks + "blocked by mistake" reports
+\`\`\`
+
+Each POST changes only what you send (\`null\` removes a key, \`{ "clear":
+true }\` removes the whole setting) and is a new version — not live until
+published, like any save. A body you POST without \`dataProtection\` keeps
+the current one. Ask the person before turning a detector on for an agent
+whose crews must collect that data (an account-opening agent collects the
+ID, phone and email): give that crew an exception first. A simulated turn
+that was stopped comes back with \`blocked\` (detectors) and the fixed
+message as its reply; nothing of it is in the conversation.
 
 **Giving an agent a knowledge base.** Two steps, and people mix them up:
 
@@ -810,13 +849,13 @@ simulations. One line per customer turn that went wrong, plus "no reply"
 threw an error) and "slow reply" (answered, but after more than a minute).
 Each line says REAL customer or TEST conversation (a teammate trying the
 customer chat) — every line is listed either way. The Hebrew sentences are the same ones the management
-page shows the person (\`/manage/<slug>\` on the Lybi site) — quote them
+page shows the person (\`/lybi/manage/<slug>\` on the Lybi site) — quote them
 as they are; don't translate them into codes. For the technical side of
 one line, the error list above. Read only.
 
 **Who can open the management center**
 
-The management center (\`/manage\` on the Lybi site) is behind Google
+The management center (\`/lybi/manage\` on the Lybi site) is behind Google
 sign-in. Who may sign in, and to which agents:
 
 | To see | Fetch |
@@ -1455,6 +1494,16 @@ router.post('/agents/:slug', async (req, res) => {
           `Nothing saved — modelRoute is "direct" or "vertex" (absent = keep the current route), not ${JSON.stringify(body.modelRoute)}.`,
         );
       }
+      // Data protection (#986): same keep-rule — a body that doesn't mention
+      // `dataProtection` keeps the current settings (a save must never quietly
+      // switch a bank agent's protection off). null removes it (= off).
+      const kept = await keepDataProtection(body, agent.dataProtection, 'agent');
+      if (kept.problems) {
+        return res.status(400).type('text/plain').send(
+          `Nothing saved — dataProtection has problems:\n- ${kept.problems.join('\n- ')}\n\nLeave it out to keep the current settings (or use POST ${urls(req).base}/agents/${agent.slug}/data-protection).`,
+        );
+      }
+      body = kept.body;
     }
     await saveAsNewVersion({
       res,
@@ -1489,33 +1538,392 @@ router.post('/agents/:slug/crews/:crewId', async (req, res) => {
         `No crew "${req.params.crewId}" on ${agent.name || agent.slug}. Its crews are: ${have}`,
       );
     }
-    // One version number for the whole agent (#923): the crew's new version
-    // and an unchanged copy of the agent share the next number, so the
-    // Builder opens on "vN" for the agent and this crew alike. The other
-    // crews keep their versions — vN means "their latest at or below N".
-    const number = await builderProjects.nextAgentWideNumber(agent.id);
-    const agentBody = (agent.versions || []).find(v => v.id === agent.activeVersionId)?.body;
-    await saveAsNewVersion({
-      res,
-      kind: 'Crew',
-      id: crew.name || crew.id,
-      body: req.body?.body,
-      description: req.body?.description,
-      normalize: normalizeCrewBody,
-      number,
-      saveFn: async args => {
-        await builderProjects.saveCrewVersionAs({ crewId: crew.id, ...args });
-        if (agentBody) {
-          const agentVersionId = newVersionId();
-          await builderProjects.saveAgentVersionAs({ agentId: agent.id, versionId: agentVersionId, body: agentBody, description: args.description, number });
-          await builderProjects.setAgentActive({ agentId: agent.id, versionId: agentVersionId });
-        }
-      },
-      activateFn: ({ versionId }) => builderProjects.setCrewActive({ crewId: crew.id, versionId }),
-    });
+    // Data protection override (#986): a crew body that doesn't mention
+    // `dataProtection` keeps the crew's current exception; null removes it.
+    let body = req.body?.body;
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      const kept = await keepDataProtection(body, crew.dataProtection, 'crew');
+      if (kept.problems) {
+        return res.status(400).type('text/plain').send(
+          `Nothing saved — dataProtection has problems:\n- ${kept.problems.join('\n- ')}\n\nLeave it out to keep the crew's current exception (or use POST ${urls(req).base}/agents/${agent.slug}/crews/${crew.id}/data-protection).`,
+        );
+      }
+      body = kept.body;
+    }
+    await saveCrewAsNewVersion({ res, agent, crew, body, description: req.body?.description });
   } catch (err) {
     console.error('[builder-mcp] update crew failed:', err);
     res.status(500).type('text/plain').send(`Could not save: ${err.message}`);
+  }
+});
+
+/**
+ * Save a crew body as the crew's new ACTIVE version — shared by the crew
+ * save and the crew data protection exception (#986).
+ *
+ * One version number for the whole agent (#923): the crew's new version
+ * and an unchanged copy of the agent share the next number, so the
+ * Builder opens on "vN" for the agent and this crew alike. The other
+ * crews keep their versions — vN means "their latest at or below N".
+ */
+async function saveCrewAsNewVersion({ res, agent, crew, body, description, extra }) {
+  const number = await builderProjects.nextAgentWideNumber(agent.id);
+  const agentBody = (agent.versions || []).find(v => v.id === agent.activeVersionId)?.body;
+  await saveAsNewVersion({
+    res,
+    kind: 'Crew',
+    id: crew.name || crew.id,
+    body,
+    description,
+    normalize: normalizeCrewBody,
+    number,
+    extra,
+    saveFn: async args => {
+      await builderProjects.saveCrewVersionAs({ crewId: crew.id, ...args });
+      if (agentBody) {
+        const agentVersionId = newVersionId();
+        await builderProjects.saveAgentVersionAs({ agentId: agent.id, versionId: agentVersionId, body: agentBody, description: args.description, number });
+        await builderProjects.setAgentActive({ agentId: agent.id, versionId: agentVersionId });
+      }
+    },
+    activateFn: ({ versionId }) => builderProjects.setCrewActive({ crewId: crew.id, versionId }),
+  });
+}
+
+// ─── Data protection (task #986) ───────────────────────────────────
+//
+// Agent settings: `dataProtection` in the agent body. Crew exception:
+// `dataProtection: { detectors }` in a crew body, laid over the agent's for
+// messages that arrive while that crew is the current one. The detector
+// list and every rule are builder/protection/detectors.mjs — the SAME file
+// the server gate and the browser check use.
+
+/**
+ * The keep-rule for a WHOLE body save: absent = keep `current`, null =
+ * remove, anything else is checked. → { body } or { problems }.
+ */
+async function keepDataProtection(body, current, level) {
+  if (!Object.prototype.hasOwnProperty.call(body, 'dataProtection')) {
+    return { body: current ? { ...body, dataProtection: current } : body };
+  }
+  if (body.dataProtection === null) {
+    const next = { ...body };
+    delete next.dataProtection;
+    return { body: next };
+  }
+  const m = await protection.load();
+  const problems = level === 'crew'
+    ? m.crewSettingsProblems(body.dataProtection)
+    : m.agentSettingsProblems(body.dataProtection);
+  return problems.length ? { problems } : { body };
+}
+
+/** Merge `patch` switches into `current` ones; null removes a switch. */
+function mergeSwitches(current, patch) {
+  const next = { ...(current || {}) };
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (v === null) delete next[k]; else next[k] = v;
+  }
+  return next;
+}
+
+const sameJson = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+/** "Israeli ID number (il_id)" */
+function detectorLabel(m, id) {
+  const det = m.DETECTORS.find(d => d.id === id);
+  return det ? `${det.name.en} (${id})` : id;
+}
+
+/**
+ * The lines the door shows about an agent's data protection: the agent's
+ * settings, every crew's exception, and what applies in each crew.
+ */
+async function dataProtectionLines(base, agent) {
+  const m = await protection.load();
+  const dp = agent.dataProtection;
+  const resolved = m.resolveSettings(dp, null);
+  const published = (agent.versions || []).find(v => v.id === agent.publishedVersionId)?.body;
+  const lines = [
+    `Status: ${resolved.enabled ? 'ON' : 'OFF'} in the active (editable) version${dp ? '' : ' — not set (absent = off)'}.`,
+    `Customers get the PUBLISHED version: ${!agent.publishedVersionId ? 'not published yet' : m.resolveSettings(published && published.dataProtection, null).enabled ? 'ON there' : 'OFF there'}.`,
+    '',
+    'Agent detectors (a detector you have not set takes its default):',
+  ];
+  const sw = (dp && dp.detectors) || {};
+  for (const det of m.DETECTORS) {
+    const set = typeof sw[det.id] === 'boolean';
+    const on = set ? sw[det.id] : det.defaultOn;
+    lines.push(`- ${det.id}: ${on ? 'on' : 'off'}${set ? '' : ' (default)'} — ${det.name.en}: ${det.matches.en}`);
+  }
+  lines.push(
+    '',
+    'Fixed message the customer sees:',
+    `- he: ${resolved.blockedMessage.he}${dp && dp.blockedMessage && dp.blockedMessage.he ? '' : ' (built-in)'}`,
+    `- en: ${resolved.blockedMessage.en}${dp && dp.blockedMessage && dp.blockedMessage.en ? '' : ' (built-in)'}`,
+    '',
+    'Per crew (applies to messages that arrive while it is the current crew):',
+  );
+  for (const crew of agent.crews || []) {
+    const crewDp = crew.dataProtection;
+    const r = m.resolveSettings(dp, crewDp);
+    const exception = crewDp && crewDp.detectors && Object.keys(crewDp.detectors).length
+      ? `exception ${JSON.stringify(crewDp.detectors)}`
+      : 'follows the agent';
+    const applies = !r.enabled ? 'nothing is checked (agent is OFF)' : r.detectorIds.length ? `checks ${r.detectorIds.join(', ')}` : 'checks nothing';
+    lines.push(`- ${crew.name || crew.id} (${crew.id}): ${exception} → ${applies}`);
+  }
+  lines.push(
+    '',
+    `Change the agent: POST ${base}/agents/${agent.slug}/data-protection { "enabled": true|false, "detectors": { "<id>": true|false|null }, "blockedMessage": { "he": "...", "en": "..." } } — only what you send changes; { "clear": true } removes it.`,
+    `Crew exception: POST ${base}/agents/${agent.slug}/crews/<crewId>/data-protection { "detectors": { "<id>": true|false|null } } — null = back to the agent's; { "clear": true } removes the exception.`,
+    `Try a sentence: POST ${base}/protection/test { "text": "...", "agent": "${agent.slug}", "crewId": "<optional>" }. Blocks so far: ${base}/agents/${agent.slug}/protection-events.`,
+    'Every change is a new version, not live until published.',
+  );
+  return lines;
+}
+
+async function loadAgentOr404(req, res) {
+  const project = await builderProjects.hydrateProject({ agentSlug: req.params.slug });
+  const agent = project && project.agents[0];
+  if (!agent) {
+    res.status(404).type('text/plain').send(`No agent with slug "${req.params.slug}". Fetch ../agents for the list.`);
+    return null;
+  }
+  return agent;
+}
+
+router.get('/agents/:slug/data-protection', async (req, res) => {
+  try {
+    const agent = await loadAgentOr404(req, res);
+    if (!agent) return;
+    sendText(res, [
+      `# Data protection of ${agent.name || agent.slug}`,
+      '',
+      ...(await dataProtectionLines(urls(req).base, agent)),
+    ].join('\n'));
+  } catch (err) {
+    console.error('[builder-mcp] data-protection read failed:', err);
+    res.status(500).type('text/plain').send(`Could not read data protection: ${err.message}`);
+  }
+});
+
+router.post('/agents/:slug/data-protection', async (req, res) => {
+  try {
+    const agent = await loadAgentOr404(req, res);
+    if (!agent) return;
+    const m = await protection.load();
+    const input = req.body || {};
+    const allowed = ['enabled', 'detectors', 'blockedMessage', 'clear', 'description'];
+    const unknown = Object.keys(input).filter(k => !allowed.includes(k));
+    if (unknown.length) {
+      return res.status(400).type('text/plain').send(`Nothing saved — unknown key(s): ${unknown.join(', ')}. Send any of: enabled, detectors, blockedMessage, clear, description.`);
+    }
+    const current = (agent.versions || []).find(v => v.id === agent.activeVersionId)?.body;
+    if (!current) return res.status(409).type('text/plain').send('This agent has no active version to change. Open it in the Builder and save once.');
+
+    let next;
+    if (input.clear === true) {
+      next = undefined;
+    } else {
+      const cur = current.dataProtection || {};
+      next = { enabled: 'enabled' in input ? input.enabled : cur.enabled === true };
+      const detectors = input.detectors === undefined ? cur.detectors
+        : (input.detectors && typeof input.detectors === 'object' && !Array.isArray(input.detectors))
+          ? mergeSwitches(cur.detectors, input.detectors) : input.detectors;
+      if (detectors !== undefined && !(typeof detectors === 'object' && detectors && !Array.isArray(detectors) && Object.keys(detectors).length === 0)) next.detectors = detectors;
+      const message = input.blockedMessage === undefined ? cur.blockedMessage
+        : (input.blockedMessage && typeof input.blockedMessage === 'object' && !Array.isArray(input.blockedMessage))
+          ? Object.fromEntries(Object.entries({ ...(cur.blockedMessage || {}), ...input.blockedMessage })
+            .filter(([, v]) => !(v === null || (typeof v === 'string' && !v.trim()))))
+          : input.blockedMessage;
+      if (message !== undefined && !(typeof message === 'object' && message && !Array.isArray(message) && Object.keys(message).length === 0)) next.blockedMessage = message;
+      const problems = m.agentSettingsProblems(next);
+      if (problems.length) {
+        return res.status(400).type('text/plain').send(`Nothing saved — ${problems.join('; ')}.`);
+      }
+      // Off with nothing else set == absent (empty == absent, like the Builder).
+      if (next.enabled === false && !next.detectors && !next.blockedMessage) next = undefined;
+    }
+
+    if (sameJson(next, current.dataProtection)) {
+      return sendText(res, [`Nothing to change.`, '', ...(await dataProtectionLines(urls(req).base, agent))].join('\n'));
+    }
+    const body = { ...current };
+    if (next) body.dataProtection = next; else delete body.dataProtection;
+    await saveAsNewVersion({
+      res,
+      kind: 'Agent',
+      id: agent.name || agent.slug,
+      body,
+      description: input.description || `Data protection: ${next && next.enabled ? 'on' : 'off'}`,
+      normalize: b => normalizeAgentBody(b, agent),
+      number: await builderProjects.nextAgentWideNumber(agent.id),
+      saveFn: args => builderProjects.saveAgentVersionAs({ agentId: agent.id, ...args }),
+      activateFn: ({ versionId }) => builderProjects.setAgentActive({ agentId: agent.id, versionId }),
+      extra: b => {
+        const r = m.resolveSettings(b.dataProtection, null);
+        return [
+          `Data protection is now ${r.enabled ? `ON — checks ${r.detectorIds.join(', ') || 'nothing'}` : 'OFF'} in this version (before crew exceptions).`,
+          `Full picture, crews included: GET ${urls(req).base}/agents/${agent.slug}/data-protection`,
+        ];
+      },
+    });
+  } catch (err) {
+    console.error('[builder-mcp] data-protection write failed:', err);
+    res.status(500).type('text/plain').send(`Could not change data protection: ${err.message}`);
+  }
+});
+
+router.post('/agents/:slug/crews/:crewId/data-protection', async (req, res) => {
+  try {
+    const agent = await loadAgentOr404(req, res);
+    if (!agent) return;
+    const crew = (agent.crews || []).find(c => c.id === req.params.crewId);
+    if (!crew) {
+      const have = (agent.crews || []).map(c => `${c.id} (${c.name || 'unnamed'})`).join(', ') || 'none';
+      return res.status(404).type('text/plain').send(`No crew "${req.params.crewId}" on ${agent.name || agent.slug}. Its crews are: ${have}`);
+    }
+    const m = await protection.load();
+    const input = req.body || {};
+    const unknown = Object.keys(input).filter(k => !['detectors', 'clear', 'description'].includes(k));
+    if (unknown.length) {
+      return res.status(400).type('text/plain').send(`Nothing saved — unknown key(s): ${unknown.join(', ')}. A crew can only override detectors: { "detectors": { "<id>": true|false|null } } or { "clear": true }.`);
+    }
+    const current = (crew.versions || []).find(v => v.id === crew.activeVersionId)?.body;
+    if (!current) return res.status(409).type('text/plain').send('This crew has no active version to change. Open it in the Builder and save once.');
+
+    let next;
+    if (input.clear === true) {
+      next = undefined;
+    } else {
+      if (!input.detectors || typeof input.detectors !== 'object' || Array.isArray(input.detectors)) {
+        return res.status(400).type('text/plain').send('Send { "detectors": { "<id>": true | false | null } } (null = back to the agent\'s), or { "clear": true }.');
+      }
+      const detectors = mergeSwitches(current.dataProtection && current.dataProtection.detectors, input.detectors);
+      next = Object.keys(detectors).length ? { detectors } : undefined;
+      if (next) {
+        const problems = m.crewSettingsProblems(next);
+        if (problems.length) return res.status(400).type('text/plain').send(`Nothing saved — ${problems.join('; ')}.`);
+      }
+    }
+    if (sameJson(next, current.dataProtection)) {
+      return sendText(res, [`Nothing to change.`, '', ...(await dataProtectionLines(urls(req).base, agent))].join('\n'));
+    }
+    const body = { ...current };
+    if (next) body.dataProtection = next; else delete body.dataProtection;
+    const changed = Object.keys((input.detectors) || {}).join(', ');
+    await saveCrewAsNewVersion({
+      res,
+      agent,
+      crew,
+      body,
+      description: input.description || (next ? `Data protection exception: ${changed}` : 'Data protection: follow the agent'),
+      extra: b => {
+        const r = m.resolveSettings(agent.dataProtection, b.dataProtection);
+        return [
+          `This crew now ${b.dataProtection ? `overrides ${JSON.stringify(b.dataProtection.detectors)}` : 'follows the agent'} → ${!r.enabled ? 'nothing is checked while the agent is OFF' : r.detectorIds.length ? `checks ${r.detectorIds.join(', ')}` : 'checks nothing'}.`,
+          `Full picture: GET ${urls(req).base}/agents/${agent.slug}/data-protection`,
+        ];
+      },
+    });
+  } catch (err) {
+    console.error('[builder-mcp] crew data-protection write failed:', err);
+    res.status(500).type('text/plain').send(`Could not change the crew exception: ${err.message}`);
+  }
+});
+
+router.get('/protection/detectors', async (req, res) => {
+  try {
+    const m = await protection.load();
+    sendText(res, [
+      '# Data protection detectors',
+      '',
+      'Code only, no model. The same list runs in the customer\'s browser (before sending) and on the server (every channel).',
+      '"default" = its switch when an agent turns protection on without setting it.',
+      '',
+      ...m.DETECTORS.map(d => `- ${d.id} — ${d.name.en} / ${d.name.he} (default ${d.defaultOn ? 'on' : 'off'}): ${d.matches.en}`),
+      '',
+      `Built-in message (he): ${m.DEFAULT_BLOCKED_MESSAGE.he}`,
+      `Built-in message (en): ${m.DEFAULT_BLOCKED_MESSAGE.en}`,
+      '',
+      `Per agent: ${urls(req).base}/agents/<slug>/data-protection`,
+    ].join('\n'));
+  } catch (err) {
+    res.status(500).type('text/plain').send(`Could not read the detectors: ${err.message}`);
+  }
+});
+
+router.post('/protection/test', async (req, res) => {
+  try {
+    const m = await protection.load();
+    const { text, agent: slug, crewId, detectors } = req.body || {};
+    if (typeof text !== 'string' || !text.trim()) {
+      return res.status(400).type('text/plain').send('Send { "text": "a sentence to try", "agent": "<slug, optional>", "crewId": "<optional>", "detectors": ["<optional ids>"] }.');
+    }
+    let ids;
+    const notes = [];
+    if (Array.isArray(detectors) && detectors.length) {
+      const bad = detectors.filter(d => !m.DETECTOR_IDS.includes(d));
+      if (bad.length) return res.status(400).type('text/plain').send(`Unknown detector(s): ${bad.join(', ')}. Known: ${m.DETECTOR_IDS.join(', ')}.`);
+      ids = detectors;
+      notes.push(`Tried the detectors you named: ${ids.join(', ')}.`);
+    } else if (slug) {
+      const project = await builderProjects.hydrateProject({ agentSlug: slug });
+      const agent = project && project.agents[0];
+      if (!agent) return res.status(404).type('text/plain').send(`No agent with slug "${slug}".`);
+      const crew = crewId ? (agent.crews || []).find(c => c.id === crewId) : null;
+      if (crewId && !crew) return res.status(404).type('text/plain').send(`No crew "${crewId}" on ${agent.name || agent.slug}.`);
+      const dp = agent.dataProtection || {};
+      // Off agents are tried as if on, so a setting can be checked first.
+      ids = m.resolveSettings({ ...dp, enabled: true }, crew && crew.dataProtection).detectorIds;
+      notes.push(`Tried ${agent.name || agent.slug}${crew ? ` in crew ${crew.name || crew.id}` : ''} (active version): ${ids.join(', ') || 'no detectors'}.`);
+      if (dp.enabled !== true) notes.push('Data protection is OFF on this agent — tried as if it were on.');
+    } else {
+      ids = m.DETECTOR_IDS;
+      notes.push('Tried every detector.');
+    }
+    const hits = m.detect(text, ids);
+    sendText(res, [
+      hits.length
+        ? `BLOCKED — ${hits.map(h => `${detectorLabel(m, h.id)} ×${h.count}`).join(', ')}.`
+        : 'PASSES — no detector fired.',
+      ...notes,
+      'Nothing was stored, and the text is not repeated here.',
+    ].join('\n'));
+  } catch (err) {
+    res.status(500).type('text/plain').send(`Could not run the test: ${err.message}`);
+  }
+});
+
+router.get('/agents/:slug/protection-events', async (req, res) => {
+  try {
+    const agent = await loadAgentOr404(req, res);
+    if (!agent) return;
+    const m = await protection.load();
+    const r = await protectionEvents.report({ agentSlug: agent.slug, days: req.query.days });
+    const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '—');
+    const lines = [
+      `# Data protection blocks — ${agent.name || agent.slug}, last ${r.days} days`,
+      '',
+      `${r.total} blocked message(s); ${r.mistakes} reported "blocked by mistake" (${pct(r.mistakes, r.total)}).`,
+      `Where: browser ${r.bySide.client || 0}, server ${r.bySide.server || 0} · customer chat ${r.bySurface.live || 0}, Builder ${r.bySurface.builder || 0}, simulation ${r.bySurface.simulation || 0}, other ${r.bySurface.api || 0}.`,
+    ];
+    if (r.byDetector.length) {
+      lines.push('', 'Per detector (a message can trip several):');
+      for (const d of r.byDetector) lines.push(`- ${detectorLabel(m, d.id)}: ${d.blocks} block(s), ${d.mistakes} reported as a mistake (${pct(d.mistakes, d.blocks)})`);
+    }
+    if (r.recent.length) {
+      lines.push('', `Latest ${r.recent.length} (newest first; the text is never kept):`);
+      for (const e of r.recent) {
+        lines.push(`- #${e.id} ${e.at} · ${e.side} · ${e.surface} · ${e.detectors.join(', ')}${e.conversationId ? ` · conversation ${e.conversationId}` : ''}${e.mistakeReportedAt ? ' · reported as a mistake' : ''}`);
+      }
+    }
+    lines.push('', `Settings: ${urls(req).base}/agents/${agent.slug}/data-protection`);
+    sendText(res, lines.join('\n'));
+  } catch (err) {
+    console.error('[builder-mcp] protection-events read failed:', err);
+    res.status(500).type('text/plain').send(`Could not read the blocks: ${err.message}`);
   }
 });
 
@@ -2637,7 +3045,7 @@ router.get('/agents/:slug/errors/:fingerprint', async (req, res) => {
 });
 
 // ─── Customer-chat problems, in plain words (task #985) — read only ─
-// Same sentences as the management page (/manage/<slug>):
+// Same sentences as the management page (/lybi/manage/<slug>):
 // builder/services/customerProblems.js.
 
 router.get('/agents/:slug/customer-problems', async (req, res) => {
@@ -2651,7 +3059,7 @@ router.get('/agents/:slug/customer-problems', async (req, res) => {
     const me = data.agents.find(a => a.slug === slug) || { conversations: 0 };
     const when = range === 'week' ? 'this week (today and the 6 days before, Israel time)' : 'today (since 00:00 Israel time)';
     const env = environments.currentEnvironment(urls(req).origin);
-    const page = `${env ? env.app : '<the Lybi site>'}/manage/${encodeURIComponent(slug)}`;
+    const page = `${env ? env.app : '<the Lybi site>'}/lybi/manage/${encodeURIComponent(slug)}`;
     const head = [
       `Customer-chat problems of "${slug}" — ${when}. Checked ${data.checkedAt}.`,
       `Customer conversations in this period: ${me.conversations}. Problems: ${data.problems.length}. New in the last 24 h: ${data.newCount}.`,
@@ -2692,7 +3100,7 @@ router.get('/access', async (req, res) => {
   try {
     const grants = await manageAccess.listGrants();
     const env = environments.currentEnvironment(urls(req).origin);
-    const page = `${env ? env.app : '<the Lybi site>'}/manage`;
+    const page = `${env ? env.app : '<the Lybi site>'}/lybi/manage`;
     const people = new Set(grants.map(g => g.email));
     sendText(res, [
       `Management center access (${page}) — sign-in with Google; the address must match one below.`,
@@ -2717,7 +3125,7 @@ router.get('/agents/:slug/access', async (req, res) => {
     const every = grants.filter(g => !g.agent);
     const own = grants.filter(g => g.agent);
     sendText(res, [
-      `Who can open "${slug}" in the management center (/manage/${slug}):`,
+      `Who can open "${slug}" in the management center (/lybi/manage/${slug}):`,
       '',
       `This agent's own grants (${own.length}):`,
       ...(own.length ? own.map(accessLine) : ['- none']),

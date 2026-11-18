@@ -83,6 +83,43 @@ function versionToMode(version) {
 }
 
 /**
+ * The crewId → working-copy body map of a turn: `overrideCrewBodies` with
+ * the legacy single `overrideCrewBody` folded in under the current crew
+ * (the map wins when both exist — caller intent).
+ */
+function crewBodyOverridesFor({ currentCrewId, overrideCrewBody, overrideCrewBodies }) {
+  const map = { ...(overrideCrewBodies || {}) };
+  if (overrideCrewBody && currentCrewId && !map[currentCrewId]) {
+    map[currentCrewId] = overrideCrewBody;
+  }
+  return map;
+}
+
+/**
+ * Resolve the agent + crew a user turn starts on — THE one definition, used
+ * by `runOnce` and by the chat route, which needs the same bodies BEFORE it
+ * saves the message (the data protection gate, #986) and then hands the
+ * result to `runOnce` so the turn never resolves twice or differently.
+ *
+ * `currentCrewId` = the per-turn override, else the conversation's
+ * `metadata.currentCrewId`, else null (→ the agent's default crew).
+ */
+async function resolveTurnRunnable({
+  agentSlug, ownerUserId, version, currentCrewId,
+  overrideAgentBody = null, overrideCrewBody = null, overrideCrewBodies = null,
+}) {
+  const map = crewBodyOverridesFor({ currentCrewId, overrideCrewBody, overrideCrewBodies });
+  return resolveRunnable({
+    agentSlug,
+    ownerUserId,
+    mode: versionToMode(version),
+    overrideCrewId: currentCrewId,
+    overrideAgentBody,
+    overrideCrewBody: (currentCrewId && map[currentCrewId]) || overrideCrewBody,
+  });
+}
+
+/**
  * Partition an ordered blocking-lane addon array into STEPS.
  *
  * A step is a set of addons that run concurrently; steps run in
@@ -245,6 +282,10 @@ async function runOnce({
   // When the server received the customer's message (the chat route stamps
   // it first thing) — for the reply timing (#985). Omitted → this call's start.
   receivedAt = null,
+  // The runnable the chat route already resolved with `resolveTurnRunnable`
+  // and the same arguments (#986 — it checks the message against it before
+  // saving). Omitted → resolved here.
+  runnable: preResolvedRunnable = null,
 }) {
   const totalStart = Date.now();
 
@@ -290,19 +331,17 @@ async function runOnce({
   // single-crew override) gets folded in under the resolved current
   // crew id so the cascade lookup below covers it without special
   // cases. Map wins over individual when both exist (caller intent).
-  const crewBodyOverrides = { ...(overrideCrewBodies || {}) };
-  if (overrideCrewBody && currentCrewId && !crewBodyOverrides[currentCrewId]) {
-    crewBodyOverrides[currentCrewId] = overrideCrewBody;
-  }
+  const crewBodyOverrides = crewBodyOverridesFor({ currentCrewId, overrideCrewBody, overrideCrewBodies });
 
   // ── 1. Resolve runnable: which crew + addons for this version. ──
-  const runnable = await resolveRunnable({
+  const runnable = preResolvedRunnable || await resolveTurnRunnable({
     agentSlug,
     ownerUserId,
-    mode: versionToMode(version),
-    overrideCrewId: currentCrewId,
+    version,
+    currentCrewId,
     overrideAgentBody,
-    overrideCrewBody: (currentCrewId && crewBodyOverrides[currentCrewId]) || overrideCrewBody,
+    overrideCrewBody,
+    overrideCrewBodies,
   });
 
   // Multi-persona: prefer the named `personas[]`; fall back to the
@@ -879,4 +918,4 @@ async function runProactive({
   };
 }
 
-module.exports = { runOnce, runProactive, deriveSteps };
+module.exports = { runOnce, runProactive, deriveSteps, resolveTurnRunnable };

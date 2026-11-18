@@ -33,6 +33,46 @@ export interface ModelRef {
 /** Where an agent's model calls go — see {@link AgentDoc.modelRoute} (task #984). */
 export type ModelRoute = 'direct' | 'vertex';
 
+// ─── Data protection (task #986) ───────────────────────────────────
+// Code-only detectors (no model) that stop a customer message holding
+// sensitive personal data BEFORE it is saved or reaches any model — in the
+// browser before sending, and on the server for every channel. The
+// detector list itself is builder/protection/detectors.mjs (shared by
+// server and client). See BUILDER_V2.md #62.
+
+/** One detector of builder/protection/detectors.mjs. */
+export type DataProtectionDetectorId =
+  | 'il_id' | 'credit_card' | 'iban' | 'bank_account' | 'passport' | 'phone' | 'email';
+
+/**
+ * Agent-level data protection — `AgentBody.dataProtection`. Absent = off
+ * (empty == absent, so agents saved before #986 never look dirty).
+ */
+export interface DataProtectionSettings {
+  /** Master switch. Off (or absent) = no message is ever stopped. */
+  enabled: boolean;
+  /**
+   * Per-detector switches. A detector not listed takes its default:
+   * on for il_id / credit_card / iban, off for bank_account / passport /
+   * phone / email (passport and bank account match only right after a
+   * word such as "דרכון" / "חשבון", they have no check digit).
+   */
+  detectors?: Partial<Record<DataProtectionDetectorId, boolean>>;
+  /** The fixed message the customer sees. Empty / absent → the built-in text. */
+  blockedMessage?: { he?: string; en?: string };
+}
+
+/**
+ * Crew-level override — `CrewBody.dataProtection`. Only detector switches,
+ * laid over the agent's for messages that arrive while this crew is the
+ * current one (e.g. `{ detectors: { il_id: false } }` in the crew that
+ * collects the ID). It can't turn protection on when the agent has it off.
+ * Absent = follow the agent.
+ */
+export interface CrewDataProtection {
+  detectors?: Partial<Record<DataProtectionDetectorId, boolean>>;
+}
+
 // ─── Fields (used by Field Extractor and any future addon that produces fields) ──
 
 export type FieldType = 'string' | 'int' | 'enum' | 'boolean';
@@ -1157,6 +1197,7 @@ export interface RulesAddonConfig {
 export type CrewBody = Pick<
   CrewDoc,
   'name' | 'description' | 'spec' | 'persona' | 'addons' | 'fields'
+  | 'dataProtection'
 >;
 
 export interface CrewVersion {
@@ -1218,6 +1259,12 @@ export interface CrewDoc {
    * explicit Publish action. `null`/undefined = not published yet.
    */
   publishedVersionId?: ID | null;
+  /**
+   * Data protection override for messages that arrive while this crew is
+   * the current one (task #986) — detector switches laid over the agent's.
+   * Versioned with the crew body. Absent = follow the agent.
+   */
+  dataProtection?: CrewDataProtection;
 }
 
 /**
@@ -1231,7 +1278,7 @@ export type AgentBody = Pick<
   'name' | 'slug' | 'spec' | 'persona' | 'defaultCrewId'
   | 'fields' | 'domains' | 'tags' | 'parameters' | 'enums'
   | 'cortex' | 'snippets' | 'personas' | 'liveBrain' | 'profiler'
-  | 'triggers' | 'crewTree' | 'modelRoute'
+  | 'triggers' | 'crewTree' | 'modelRoute' | 'dataProtection'
 >;
 
 /**
@@ -1857,6 +1904,14 @@ export interface AgentDoc {
    * See BUILDER_V2.md #60 and services/modelRoute.js.
    */
   modelRoute?: ModelRoute;
+  /**
+   * Data protection (task #986): code-only detectors that stop a customer
+   * message holding sensitive personal data before it is saved or reaches
+   * a model. Absent = off. Versioned with the body — the customer chat
+   * follows the published version. A crew may override the detector
+   * switches (`CrewDoc.dataProtection`). See BUILDER_V2.md #62.
+   */
+  dataProtection?: DataProtectionSettings;
   /**
    * The crews that belong to this agent. NOT part of the agent
    * version body — crews are their own versioned entities and live

@@ -166,6 +166,10 @@ app.use('/api/builder', require('./builder/routes/projectsRoute'));
 // ever grows a wildcard. See docs/guides/BUILDER_V2_TRIGGERS.md.
 app.use('/api/agents', require('./builder/routes/triggersRoute'));
 app.use('/api/agents', require('./builder/routes/conversationExportRoute'));
+// Data protection (task #986): a chat records a block that happened in the
+// browser, and the customer's "blocked by mistake" tap. The server-side
+// gate itself is inside runtimeRoute POST .../messages.
+app.use('/api/agents', require('./builder/routes/protectionRoute'));
 app.use('/api/agents', require('./builder/routes/runtimeRoute'));
 // Simulation jobs — one simulated conversation that runs on the server by
 // itself; released through /builder/mcp, watched in Admin → Simulations

@@ -222,6 +222,9 @@ function check(name, cond, extra = '') {
     check('MCP /agents/<slug>/access: its own grants + the every-agent ones',
       one.status === 200 && /own grants \(1\)/.test(one.text) && one.text.includes('two@partner.com') && /Every-agent grants \(1\)/.test(one.text) && !one.text.includes('super@acme.com'), one.text);
     check('MCP unknown agent → 404', (await call('GET', '/builder/mcp/agents/nope/access')).status === 404);
+    check('MCP points at the center\'s address /lybi/manage (never the old /manage)',
+      entry.text.includes('`/lybi/manage`') && all.text.includes('/lybi/manage') && one.text.includes('/lybi/manage/other')
+      && !/[^i]\/manage[/`)\s]/.test(`${entry.text}\n${all.text}\n${one.text}`.replace(/\/api\/manage/g, '')));
     check('MCP has no way to grant (POST /access is not a route)', (await call('POST', '/builder/mcp/access', { body: { email: 'x@y.z' } })).status === 404);
   } finally {
     srv.close();
