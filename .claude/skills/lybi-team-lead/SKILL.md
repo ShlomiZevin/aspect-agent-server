@@ -66,8 +66,8 @@ Noa and Hila build through **their own AI tool — Codex / Claude Code — conne
 Builder MCP** (`/builder/mcp`). **A feature that isn't in the MCP doesn't exist for
 them.** Every feature must be creatable, readable and adjustable from the MCP
 (`aspect-agent-server/docs/guides/BUILDER_MCP_MAINTENANCE.md`). **Alfred** (the
-in-builder helper) is almost obsolete — a light pass at most, and only after Shlomi
-approved the feature.
+in-builder helper) is not part of the work any more — don't plan, update or mention it
+unless Shlomi asks (2026-11-18: "alfred is not important, mcp is").
 
 ## 3. What is NOT yours
 

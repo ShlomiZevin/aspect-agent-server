@@ -56,8 +56,8 @@ The **Builder** is where agents are made. Its doc is `aspect-agent-server/docs/g
    **Builder MCP**. A feature missing from the MCP doesn't exist for them.
    - Every feature must be creatable, readable and adjustable there
      (`docs/guides/BUILDER_MCP_MAINTENANCE.md`).
-   - Alfred (the in-builder helper) is almost obsolete: a light pass at most, and only after
-     Shlomi approved the feature.
+   - Alfred (the in-builder helper) is not part of the work any more: don't update it unless
+     the team leader asks.
 
 ### The engineering bar
 
@@ -175,8 +175,7 @@ database** — a local server's writes are real.
    headers, tooltips, no paragraphs).
 4. **The Builder MCP is the must-do surface** — teach it every feature:
    `docs/guides/BUILDER_MCP_MAINTENANCE.md`, then `node scripts/test-builder-mcp.js`.
-   Alfred: a light pass per `docs/guides/ALFRED_UPDATE_PROTOCOL.md` — **no live
-   Alfred tests**.
+   Alfred: skip it unless the team leader asks.
 5. Batteries for what you touched (server): `test-builder-mcp`, `test-simulation-jobs`,
    `test-error-center`, `test-load-tests` (all in `aspect-agent-server/scripts/`).
    Client: `npx tsc --noEmit -p tsconfig.app.json` must be clean.
