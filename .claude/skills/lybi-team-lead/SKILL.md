@@ -162,17 +162,34 @@ further down this list it goes.
 
 ## 8. Designing a new screen — GPT Image, concept prompts
 
-Every new screen / panel / visible feature is designed before it is built, with
-**GPT Image 2.6 flare + sunburst** on Leonardo (Lybi's one key), quality LOW:
+**What gets a design round:**
+- **Yes:** a new surface — a customer-facing moment (the live chat, embed), the
+  management center, a new standalone page or app.
+- **No: the Builder.** The Builder is our internal tool. It was built before the image
+  designs, it has its own established look, layout and components, and Noa and Hila
+  know it (Shlomi, 2026-11-18). A Builder feature is built from the **existing Builder
+  components and add-on mechanics**: cards, the add-on config modal, the agent / crew
+  settings modals and toggles. A new add-on usually needs almost nothing new. The
+  only open question is usually **where** a control lives. Decide that yourself, by
+  analogy with an existing control (e.g. next to the Direct / Vertex model route),
+  without an image round. Most Builder work happens through the MCP anyway.
+
+Each new surface is designed before it is built, with **GPT Image 2.6 flare + sunburst**
+on Leonardo (Lybi's one key), **quality LOW, always**. LOW changes only sharpness, not
+layout; never HIGH. The command:
 `node lybi-website/tools/leo.mjs image <prompt.txt> <out.jpg> flare|sunburst LOW 1536x1024`.
+**Show Shlomi 2–3 options, never 4 or more:** one labelled sheet, with your recommendation.
+For customer-facing moments he prefers the more personal, warm "Lybi-style" option over
+the plain functional one (2026-11-18: he picked a "short moment to protect you" card).
 
 **The rule that decides whether the round is worth anything:** never describe what you
 want to see. Describe **what we are building** — the purpose, who uses it, the idea,
 a reference or a style if useful — and let the model design it. No inventory of
 screen elements, no layout, no rows / chips / counts / buttons. A detailed prompt draws
 the same screen every time; a short, accurate concept prompt gives real range. Several
-genuinely different concepts, both models, one labelled combined image (A/B/C/D) for
-Shlomi to pick from — or you pick when he delegates. Delete your own generations after.
+genuinely different concepts, then pick the best 2–3 for one labelled combined image
+(A/B/C) for Shlomi to pick from — or you pick when he delegates. Delete your own
+generations afterwards.
 
 ---
 

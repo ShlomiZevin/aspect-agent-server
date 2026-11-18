@@ -90,7 +90,16 @@ are in `lybi-team-lead` sections 9–10.
 
 ### Designing a new screen
 
-Use **GPT Image 2.6 flare + sunburst** on Leonardo, quality LOW (details under the checklist below).
+**The Builder is the exception: no design round.** It is our internal tool with its own established look,
+and Noa and Hila know it. Build Builder features from the existing Builder components and add-on mechanics:
+cards, the add-on config modal, agent / crew settings modals, toggles. A new add-on needs almost nothing new.
+Place a new control by analogy with an existing one. Never invent new visual language in the Builder
+(Shlomi, 2026-11-18).
+
+New surfaces (customer-facing chat moments, the management center, new pages) get a design round with
+**GPT Image 2.6 flare + sunburst** on Leonardo, **always quality LOW**. LOW only affects sharpness; never
+use HIGH. Show **2–3 options**, never 4+. Customer-facing moments: prefer the warmer, more personal "Lybi"
+option. The rest is under the checklist below.
 - **Describe what we're building, not what you want to see.** Give the purpose, the user, the idea,
   and a reference or a style if it helps.
 - **No inventory of screen elements and no layout.** A detailed prompt draws the same screen every
@@ -147,8 +156,8 @@ database** — a local server's writes are real.
 
 1. **Agree the architecture with the team leader** (data model, where the logic
    lives, MCP surface, what the user sees) before writing code.
-2. **Design first, with Leonardo** (any new page, panel, modal or visible
-   feature), and **give it freedom**. Shlomi, 2026-10-27 / 2026-11-17: if the
+2. **Design first, with Leonardo** (any new page or surface outside the Builder;
+   Builder features reuse the Builder's existing components), and **give it freedom**. Shlomi, 2026-10-27 / 2026-11-17: if the
    prompt says what the screen shows, every option comes back the same.
    - Write **short, accurate concept prompts**: what we're building, for whom, the idea; a
      reference or style is fine. Never list screen elements or a layout. Small
@@ -157,7 +166,7 @@ database** — a local server's writes are real.
      variety). Render each on **GPT Image 2.6 flare and sunburst**, LOW:
      `node lybi-website/tools/leo.mjs image <prompt.txt> <out.jpg> flare|sunburst LOW 1536x1024`.
      Everything runs on Lybi's one Leonardo key.
-   - Put every option together, labelled (A/B/C… in one combined image or one local HTML
+   - Put the best 2–3 options together, labelled (A/B/C in one combined image or one local HTML
      page), and let Shlomi or the team leader pick. Build only after the pick.
    - Save prompts and picks under `lybi-website/art-source/ui/<feature>/`, and delete your other
      generations from Leonardo afterwards. Run `leo.mjs balance` before a batch.
