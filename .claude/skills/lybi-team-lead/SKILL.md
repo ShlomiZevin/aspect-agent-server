@@ -279,7 +279,18 @@ agenda stand". He didn't ask — that's a full status, and it buries the one lin
 5. **Review the result yourself** against the design and the agreed architecture
    (screenshots side by side, the data, the MCP). Send every flaw back without asking
    Shlomi. Repeat until it's right. He sees only the final version.
-6. **Deploy to Lybi Staging**, then **commit + push** what you approved — nothing stays
+6. **Deploy from a clean copy while anyone is still working in the tree** (2026-11-18:
+   a deploy from the shared folder picked up a developer's half-built next phase).
+   - Commit exactly the approved files.
+   - `git worktree add ../server-deploy HEAD`, copy `.env.production.staging` into it,
+     and run `./deploy.sh staging` there.
+   - Client: a worktree, a node_modules junction, the `.env.staging` copy, then
+     `npx vite build --mode staging` + `npx firebase deploy --only hosting --project staging`.
+     This skips `sync-types`, which would pull the server's uncommitted types.
+   - Remove a junction with `[System.IO.Directory]::Delete`, never a recursive delete.
+   - Deploy from the working folder only when `git status` is clean, or holds only what
+     you're shipping.
+   **Deploy to Lybi Staging**, then **commit + push** what you approved — nothing stays
    only on the computer. Coordinate other sessions: tell them before a staging deploy;
    make sure their approved work is pushed too.
 7. **Board — his panel must always be true.** The `now:` tag (one short Hebrew status
