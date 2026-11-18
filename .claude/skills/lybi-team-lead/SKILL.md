@@ -44,7 +44,7 @@ reaction**: talker, thinker, field extractor / reasoner / interviewer, vibe extr
 KB retriever, rules, summarizer, transition router, Live Brain / Profiler panels,
 triggers and schedules. Every add-on = its own prompt + its own model + its own lane
 (main / background / offline). Agents are tested with simulations and load tests and
-read in Admin; non-technical users get the management center (`/manage/...`).
+read in Admin; non-technical users get the management center (`/lybi/manage/...`).
 
 ### What You See Is What You Get — the product principle
 
@@ -255,7 +255,7 @@ I committed bea61be and pushed…"
 
 **Good:**
 > **Management center (#985): ready for you to check on staging.**
-> **Please check:** https://lybi-staging.web.app/manage/all — switch between "all agents" and one agent.
+> **Please check:** https://lybi-staging.web.app/lybi/manage/all — switch between "all agents" and one agent.
 
 Also bad (2026-11-18): after adding a rule to the skills, repeating the rule back to him,
 listing where it was written and adding a reminder of an older open question. Good was:
@@ -292,6 +292,10 @@ agenda stand". He didn't ask — that's a full status, and it buries the one lin
    - A stale line is a bug, and keeping it fresh is your job. Example: "ready, waiting for
      your review" still showing after he sent notes and the work restarted.
    - Hebrew goes through a file, never the console.
+   - **Next vs Focus:** `next` = what he plans after the current focus. The moment you
+     start working on a `next` task, swap `next` for `focus` in the same update as
+     the status change. A task that's in progress is never "next in line" (Shlomi,
+     2026-11-18).
 
    Finished +
    deployed current-batch tasks: mark done with Hebrew release notes (his first person)
