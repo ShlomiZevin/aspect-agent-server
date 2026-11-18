@@ -32,6 +32,10 @@ async function run(ctx) {
     logUsage,
     usageProcess,
     usageCrew,
+    // #963: a Guardrail with "hold the answer" comes after this Talker —
+    // collect the reply without streaming it; it goes out (approved,
+    // replaced or blocked) in `assistant.message` once the Guardrail decided.
+    holdTokens = false,
   } = ctx;
 
   const start = Date.now();
@@ -68,11 +72,11 @@ async function run(ctx) {
     if (typeof chunk === 'string') {
       if (firstTokenMs === null && chunk.length > 0) firstTokenMs = Date.now() - start;
       collected += chunk;
-      emit('addon.token', { instanceId: instance.instanceId, token: chunk });
+      if (!holdTokens) emit('addon.token', { instanceId: instance.instanceId, token: chunk });
     } else if (chunk && chunk.type === 'text' && typeof chunk.text === 'string') {
       if (firstTokenMs === null && chunk.text.length > 0) firstTokenMs = Date.now() - start;
       collected += chunk.text;
-      emit('addon.token', { instanceId: instance.instanceId, token: chunk.text });
+      if (!holdTokens) emit('addon.token', { instanceId: instance.instanceId, token: chunk.text });
     } else if (chunk && chunk.type === 'web_search') {
       searches.add(chunk);
       emit('addon.websearch', {
@@ -135,6 +139,7 @@ async function run(ctx) {
 
   return {
     ...(webSearchResult ? { webSearch: webSearchResult } : {}),
+    ...(holdTokens ? { held: true } : {}),
     assistantText: collected,
     rawOutput:     collected,
     parsedOutput:  null,

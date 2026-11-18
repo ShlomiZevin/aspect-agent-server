@@ -607,6 +607,7 @@ function assemblePrompt({
   summaries,
   snippets,
   brain,
+  reply,
 }) {
   let template = instance.promptTemplate || '';
   const cfg = instance.config || {};
@@ -635,6 +636,8 @@ function assemblePrompt({
     kbSlots:        [],   // retrieved KB text, restored after every pass
     // One value per prompt, so every {{today}} in it (snippets included) agrees.
     today:          formatToday(),
+    // {{reply}} (#963): this turn's reply so far — '' before a Talker spoke.
+    reply:          typeof reply === 'string' ? reply : '',
   };
 
   // {{prompt}} expands first so any token the user authored inside
@@ -711,6 +714,7 @@ function resolveTokens(template, c, depth, stack) {
     fields_schema:  c.isExtractor ? buildFieldsSchemaBlock(fields, enumsList) : '',
     fields_current: c.isExtractor ? buildFieldsCurrentBlock(fields, fieldValueOf) : '',
     today:          c.today || formatToday(),
+    reply:          c.reply || '',
   });
 
   // Single-field inline tokens — `{{this_field}}` and `{{enum_values}}`

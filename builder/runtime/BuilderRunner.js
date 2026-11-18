@@ -40,7 +40,8 @@ const { resolveRunnable } = require('../services/builderProjects');
 const { logUsage } = require('../../services/usageLogger');
 const builderMemory = require('./builderMemory');
 const { seedPinnedFields } = require('./pinnedFields');
-const { runAddon } = require('./addonRunner');
+const { runAddon, saveTransition } = require('./addonRunner');
+const guardrail = require('../plugins/guardrail/addon.guardrail');
 const addonRunsStore = require('./addonRunsStore');
 const conversationPush = require('../../services/conversation-push.service');
 const { dispatchOfflineAddons } = require('./offlineDispatcher');
@@ -183,15 +184,27 @@ async function runChainSteps(ctx, blockingForChain) {
   let chainText = '';
   let chainTransition = false;
   let cascadeTo = null;
+  // {{reply}} (#963): this turn's reply so far — what earlier crews of a
+  // cascade already said (`replyPrefix`, set by runOnce) plus this chain's.
+  const prefix = typeof ctx.replyPrefix === 'string' ? ctx.replyPrefix : '';
+  const replyNow = () => (prefix && chainText ? `${prefix}\n\n${chainText}` : (prefix || chainText));
+  ctx.replySoFar = replyNow();
 
   // Partition into steps, then run each step's addons concurrently.
   // A step of one addon (the default for an un-grouped chain) is
   // exactly the old sequential behavior — Promise.all over a
   // single-element array awaits that one addon.
-  const steps = deriveSteps(blockingForChain);
+  const chain = Array.isArray(blockingForChain) ? blockingForChain : [];
+  const steps = deriveSteps(chain);
   for (const step of steps) {
     // Task #816: Stop pressed — don't start another step.
     if (ctx.isStopped()) break;
+    // "Hold the answer" (#963): a Talker runs HELD (nothing streams) when
+    // an enabled Guardrail with hold ON comes after it in this chain.
+    const talker = step.find(a => a && a.pluginId === 'talker');
+    ctx.holdReply = !!talker
+      && chain.slice(chain.indexOf(talker) + 1)
+        .some(a => a && a.pluginId === guardrail.GUARDRAIL_PLUGIN_ID && a.enabled !== false && guardrail.acts(a));
     // addonRunner stays the single source of truth for how ONE
     // addon executes. Same-step addons all close over the same
     // `ctx`/`memory`: they read the same pre-step snapshot and merge
@@ -210,7 +223,26 @@ async function runChainSteps(ctx, blockingForChain) {
     // member of a parallel step has already run by the time we see
     // the break, which is the correct barrier semantics.
     let stepBroke = false;
-    for (const { result, didTransition, broke } of results) {
+    for (const [i, { result, didTransition, broke }] of results.entries()) {
+      // A Guardrail whose verdict applies (hold ON) but that FAILED — model
+      // error, cut off, no valid verdict (#963): its "If it fails" setting.
+      // Fail closed (the default) = exactly what a block does.
+      const inst = step[i];
+      if (!result && inst && inst.pluginId === guardrail.GUARDRAIL_PLUGIN_ID && guardrail.acts(inst)
+        && guardrail.settingsOf(inst).onError === 'block') {
+        const out = guardrail.blockOutcome(inst);
+        chainText = out.assistantText;
+        stepBroke = true;
+        if (out.transition && await saveTransition(ctx, out.transition.to)) chainTransition = true;
+        try {
+          ctx.emit('warning', {
+            code: 'guardrail_failed_closed',
+            instanceId: inst.instanceId,
+            message: 'The Guardrail gave no verdict, so it failed closed: the block message was sent instead of the reply.',
+          });
+        } catch { /* emit is best-effort */ }
+        continue;
+      }
       if (didTransition) {
         chainTransition = true;
         const fireImmediately = result?.transition?.fireImmediately !== false;
@@ -223,8 +255,10 @@ async function runChainSteps(ctx, blockingForChain) {
       }
       if (broke) stepBroke = true;
     }
+    ctx.replySoFar = replyNow();
     if (stepBroke) break;
   }
+  ctx.holdReply = false;
   return { chainText, chainTransition, cascadeTo };
 }
 
@@ -495,6 +529,7 @@ async function runOnce({
   // outputs in the first pass, and its purpose is "pre-crew" work.
   {
     const firstCrewId = ctx.runnable?.crew?.id;
+    ctx.replyPrefix = '';
     const first = await runChain(blockingAddons);
     if (first.chainText) assistantText = first.chainText;
     if (first.chainTransition) {
@@ -535,6 +570,7 @@ async function runOnce({
       const nextBlocking = (Array.isArray(nextRunnable.crew.body?.addons) ? nextRunnable.crew.body.addons : [])
         .filter(a => a.lane === 'main' && a.enabled !== false);
 
+      ctx.replyPrefix = assistantText; // {{reply}} in the next crew sees what was said
       const next = await runChain(nextBlocking);
       // CONCATENATE cascade-chain talker text instead of clobbering it.
       // Each chain may have its own Talker; both stream tokens into the
@@ -624,6 +660,10 @@ async function runOnce({
   // the same timeline.
   ctx.historyExcludeFromMessageId = undefined;
   ctx.historyCache = new Map(); // the reply text was just written
+  // {{reply}} in the offline lane = the whole reply the customer got (#963 —
+  // an offline Guardrail audits it, flag only).
+  ctx.replySoFar = assistantText;
+  ctx.replyPrefix = '';
   ctx.transitionFromCrewIds = [...transitionFrom];
   await dispatchOfflineAddons({ ctx, didTransition: anyTransition });
 
@@ -918,4 +958,4 @@ async function runProactive({
   };
 }
 
-module.exports = { runOnce, runProactive, deriveSteps, resolveTurnRunnable };
+module.exports = { runOnce, runProactive, deriveSteps, resolveTurnRunnable, runChainSteps };

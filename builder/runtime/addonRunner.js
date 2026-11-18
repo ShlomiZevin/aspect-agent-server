@@ -133,8 +133,6 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
     thinkingDomainList,
     retrievalValueOf,
     fieldValueOf,
-    drizzle,
-    convRow,
     emit,
     llm,
     logUsage,
@@ -344,6 +342,8 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
       enums:            agentEnums,
       fieldsForDc:      fieldPool,
       summaries:        memory?.summary || {},
+      // {{reply}} (#963): this turn's reply so far — empty before a Talker.
+      reply:            typeof ctx.replySoFar === 'string' ? ctx.replySoFar : '',
       // Snippet pass: agent-level reusable prompt content + the live
       // brain blob so a snippet's optional filter can be evaluated
       // against current memory. See `promptAssembler.resolveSnippetInline`.
@@ -385,6 +385,12 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
   // `shownPrompt` = what the run card / export show: on OpenAI it also
   // carries a marked copy of the rule for the extra input item that
   // llm.openai.js sends right before the user's message.
+  // ── A plugin's own closing section (#963 — the Guardrail's "Your ──
+  // verdict"), appended HERE so the run card shows what the model got.
+  if (typeof plugin.promptSuffix === 'function') {
+    const suffix = plugin.promptSuffix({ instance, reply: typeof ctx.replySoFar === 'string' ? ctx.replySoFar : '' });
+    if (suffix) prompt = `${prompt}\n\n${suffix}`;
+  }
   let shownPrompt = prompt;
   if (plugin.webSearch) {
     const m = instance.config?.model;
@@ -533,6 +539,11 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
       // Task #816: lets a streaming plugin (Talker) stop consuming
       // chunks once the builder pressed Stop. Optional — most ignore it.
       isStopped: ctx.isStopped,
+      // #963: the reply so far (a Guardrail checks it), and whether a
+      // Talker must run HELD — a Guardrail with "hold the answer" comes
+      // after it, so nothing streams to the customer until it decided.
+      reply: typeof ctx.replySoFar === 'string' ? ctx.replySoFar : '',
+      holdTokens: ctx.holdReply === true,
       // Agent-wide static parameters. Plugins that evaluate conditions
       // (Rules, Transition Router) pass these through so `#name`
       // operands resolve (task #826).
@@ -701,24 +712,7 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
   // `since_transition` history mode has a cutoff to filter on.
   let didTransition = false;
   if (result.transition && result.transition.to) {
-    try {
-      // Only the keys that change, merged in the database (#968) — the
-      // turn's copy of metadata is from its start, and spreading it back
-      // would undo anything written since (a Real/Test flip included).
-      const patch = {
-        currentCrewId: result.transition.to,
-        ...(Number.isFinite(assistantMessageId) && assistantMessageId > 0
-          ? { lastTransitionMessageId: Number(assistantMessageId) }
-          : {}),
-      };
-      await drizzle.update(conversations)
-        .set({ metadata: mergeMetadata(patch), updatedAt: new Date() })
-        .where(eq(conversations.id, Number(conversationId)));
-      if (convRow) convRow.metadata = { ...(convRow.metadata || {}), ...patch };
-      didTransition = true;
-    } catch (err) {
-      console.error('[addonRunner] transition save failed:', err.message);
-    }
+    didTransition = await saveTransition(ctx, result.transition.to);
   }
 
   // ── Emit addon.output. Same shape live and historical — P3 ──
@@ -747,6 +741,9 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
     ...(result.webSearch ? { webSearch: result.webSearch } : {}),
     ...(didTransition ? { transition: { to: result.transition.to, reason: result.transition.reason } } : {}),
     ...(result.breakChain ? { broke: true } : {}),
+    // Guardrail (#963): its verdict, what was applied, why — run card,
+    // export, conversation state, simulated-turn digest.
+    ...(result.guardrail ? { guardrail: result.guardrail } : {}),
     // The lane is in addon.start.meta — surfacing it on addon.output
     // too means the UserChat history view can colour offline runs
     // even when rehydrating from `addon_runs.run_data` without the
@@ -779,6 +776,36 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
 }
 
 /**
+ * Move the conversation to crew `to` from the next turn — stamps both
+ * `currentCrewId` and `lastTransitionMessageId` (the `since_transition`
+ * history cutoff). THE one transition write: an add-on's transition, and a
+ * Guardrail that failed closed and escalates (#963, BuilderRunner).
+ * @returns {Promise<boolean>} whether it was saved
+ */
+async function saveTransition(ctx, to) {
+  const { drizzle, conversationId, assistantMessageId, convRow } = ctx;
+  try {
+    // Only the keys that change, merged in the database (#968) — the
+    // turn's copy of metadata is from its start, and spreading it back
+    // would undo anything written since (a Real/Test flip included).
+    const patch = {
+      currentCrewId: to,
+      ...(Number.isFinite(assistantMessageId) && assistantMessageId > 0
+        ? { lastTransitionMessageId: Number(assistantMessageId) }
+        : {}),
+    };
+    await drizzle.update(conversations)
+      .set({ metadata: mergeMetadata(patch), updatedAt: new Date() })
+      .where(eq(conversations.id, Number(conversationId)));
+    if (convRow) convRow.metadata = { ...(convRow.metadata || {}), ...patch };
+    return true;
+  } catch (err) {
+    console.error('[addonRunner] transition save failed:', err.message);
+    return false;
+  }
+}
+
+/**
  * Why a run that returned must still count as failed, or null (#920).
  * Only judged when the plugin actually called a model — a plugin that
  * skipped its call (nothing to do) returns empty output legitimately.
@@ -793,14 +820,20 @@ function outputFailureOf({ instance, result, modelCalls, outputLimit }) {
     };
   }
   const raw = String(result?.rawOutput ?? '');
-  if ((instance.outputType || 'json-to-memory') !== 'json-to-memory') return null;
+  const type = instance.outputType || 'json-to-memory';
+  if (type !== 'json-to-memory' && type !== 'guardrail-verdict') return null;
   if (!raw.trim()) {
     return { code: 'empty_output', message: 'The model returned nothing. Nothing was saved.' };
   }
   if (result?.parseError && (result.parsedOutput === null || result.parsedOutput === undefined)) {
+    // A Guardrail without a valid verdict (#963) — what happens next is
+    // its "If it fails" setting (BuilderRunner; fail closed by default).
+    if (type === 'guardrail-verdict') {
+      return { code: 'no_verdict', message: `No valid verdict (${result.parseError}).` };
+    }
     return { code: 'bad_json', message: `The answer is not valid JSON (${result.parseError}). Nothing was saved.` };
   }
   return null;
 }
 
-module.exports = { runAddon, outputFailureOf };
+module.exports = { runAddon, outputFailureOf, saveTransition };

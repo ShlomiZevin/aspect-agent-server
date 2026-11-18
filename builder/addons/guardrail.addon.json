@@ -1,0 +1,32 @@
+{
+  "pluginId":          "guardrail",
+  "displayName":       "Guardrail",
+  "description":       "Checks a reply (or the customer's message) against your rules. Can hold the answer and replace or block it.",
+  "purpose":           "A model-based check, placed anywhere in a crew's chain with any prompt and model (task #963). The code-only data protection (agent Setup → Data protection) runs first, before any add-on; a Guardrail is the model-based layer after it. Placed AFTER the Talker it reads the reply through the {{reply}} token (this turn's reply so far; empty before a Talker has spoken) and returns a verdict. The runtime adds a short 'Your verdict' section at the end of the prompt (visible on the run card) telling the model which JSON to return, and adds the reply itself when the prompt has no {{reply}}. HOLD THE ANSWER (config.holdReply, default OFF): ON — the Talker before it runs HELD: nothing streams to the customer (the chat shows its thinking bubble) until the Guardrail has decided, and then its verdict applies: approve (the reply goes out), replace (the model's corrected reply goes out instead — only if config.actions.replace), block (config.blockMessage goes out instead, the rest of the chain stops, and the conversation moves to config.escalateTo — a crew id — from the NEXT turn; only if config.actions.block). The customer waits for the whole reply plus this check, so use a fast model that doesn't think first (GPT-5.6 Terra, GPT-4o, Claude 4.x). If the Guardrail fails (model error, cut off, no valid verdict), config.onError decides: 'block' (default — fail closed: the block message + escalation) or 'approve'. OFF — the reply streams as usual and the verdict is only a FLAG recorded after the fact: on the run card, in the conversation export, in conversation state runs and in a simulated turn's addons[].guardrail; it never changes what the customer already saw. In the OFFLINE lane a Guardrail is always flag-only (an audit after the reply — e.g. a made-up-facts check that adds no wait). Placed BEFORE the Talker (with hold ON) it can block the customer's message from being answered (e.g. off-topic or abusive requests); replace does nothing there. Hold applies only to a Talker in the SAME crew chain (v1 — an agent-wide guardrail slot comes later). Every run's verdict is on its run card: verdict, what was applied, reason.",
+  "icon":              "🚦",
+  "color":             "#dc2626",
+
+  "defaultLane":       "main",
+  "fieldMode":         "none",
+  "speaks":            false,
+
+  "allowedOutputTypes": ["guardrail-verdict"],
+  "defaultOutputType":  "guardrail-verdict",
+
+  "defaultContext": {
+    "history":      { "mode": "last_n", "n": 6 }
+  },
+
+  "defaultPromptTemplate": "{{prompt}}",
+
+  "defaultConfig": {
+    "prompt": "{{persona}}\n\nYou check the assistant's reply before the customer sees it. The conversation so far is above; the customer's last message is the current one.\n\nThe reply to check:\n{{reply}}\n\nThe reply must:\n- (write your rules here — e.g. promise no rate, approval or date; give no medical diagnosis; stay on the bank's products)",
+    "model":  { "providerId": "openai", "modelId": "gpt-5.6-terra" },
+    "name":   "",
+    "holdReply": false,
+    "actions": { "replace": true, "block": true },
+    "blockMessage": "",
+    "escalateTo": null,
+    "onError": "block"
+  }
+}

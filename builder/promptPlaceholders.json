@@ -85,6 +85,14 @@
       "picker_group": "Date & time"
     },
     {
+      "token": "{{reply}}",
+      "category": "value",
+      "trigger": "/",
+      "render": "This turn's reply so far — what the Talker(s) said this turn, before it reaches the customer. Empty before a Talker has spoken. In the offline lane: the whole reply the customer got. Made for the Guardrail add-on placed after the Talker (task #963); any add-on may read it.",
+      "example": "The reply to check:\n{{reply}}",
+      "picker_group": "This turn"
+    },
+    {
       "token": "{{field:NAME}}",
       "category": "value",
       "trigger": "@",

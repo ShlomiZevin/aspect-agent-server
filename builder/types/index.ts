@@ -317,7 +317,8 @@ export interface AddonFilter {
 export type OutputType =
   | 'text-to-user'      // Talker — text response sent to the chat
   | 'json-to-memory'    // Field Extractor, future Strategic / Vibe — structured fields written to memory
-  | 'transition';       // Transition Router — emits a next-crew handoff signal
+  | 'transition'        // Transition Router — emits a next-crew handoff signal
+  | 'guardrail-verdict'; // Guardrail (#963) — a verdict on the reply / message
 
 export interface AddonInstance<TConfig = unknown> {
   /** Unique within the crew. */
@@ -646,6 +647,49 @@ export interface ThinkerConfig {
    * write to different domains (e.g. `'strategy'`, `'tone'`).
    */
   domain: string;
+}
+
+/**
+ * Guardrail (task #963) — a model-based check of the reply (`{{reply}}`)
+ * or of the customer's message, returning a verdict. See the descriptor's
+ * `purpose` (builder/addons/guardrail.addon.json) and BUILDER_V2.md #63.
+ *
+ *   holdReply false (default), or the offline lane → FLAG ONLY: the verdict
+ *     ("approve" | "flag") is recorded on the run card; nothing changes.
+ *   holdReply true, main lane → the Talker before it runs HELD (nothing
+ *     streams) and the verdict applies: approve | replace | block.
+ */
+export interface GuardrailConfig {
+  prompt: string;
+  model: ModelRef;
+  maxOutputTokens?: number;
+  /** User-editable instance name shown on the chain card. */
+  name?: string;
+  /** "Hold the answer". Off (default) = flag only, after the fact. */
+  holdReply?: boolean;
+  /** What a held verdict may do. Both default to true. Ignored when hold is off. */
+  actions?: { replace?: boolean; block?: boolean };
+  /** Sent instead of the reply on a block (and on a fail-closed failure).
+   *  Empty → a built-in Hebrew sentence. */
+  blockMessage?: string;
+  /** Crew the conversation moves to from the NEXT turn after a block. null = stay. */
+  escalateTo?: ID | null;
+  /** When the Guardrail gives no valid verdict (hold on): 'block' (default, fail closed) or 'approve'. */
+  onError?: 'block' | 'approve';
+}
+
+/** What a Guardrail run decided — on `addon.output.guardrail` and its addon_run. */
+export interface GuardrailVerdict {
+  /** What the model said. */
+  verdict: 'approve' | 'replace' | 'block' | 'flag';
+  /** What actually happened: 'flag' = recorded only (hold off / offline). */
+  applied: 'approve' | 'replace' | 'block' | 'flag';
+  reason: string;
+  /** True when the Talker's reply was held for this verdict. */
+  held: boolean;
+  escalateTo?: ID;
+  /** Why a verdict was not applied as asked (e.g. an action this Guardrail may not take). */
+  note?: string;
 }
 
 /**

@@ -499,6 +499,23 @@ ID, phone and email): give that crew an exception first. A simulated turn
 that was stopped comes back with \`blocked\` (detectors) and the fixed
 message as its reply; nothing of it is in the conversation.
 
+**Guardrail add-on — a model checks the reply (\`pluginId: "guardrail"\`).**
+A normal add-on in a crew's chain (full config on \`${base}/addons\`). After
+the Talker it reads the reply through \`{{reply}}\` and returns a verdict.
+\`config.holdReply\` (default false) decides what the verdict can do:
+- **false — flag only:** the reply streams as usual; the verdict ("approve" /
+  "flag") is recorded on the run (export, conversation runs, a simulated
+  turn's \`addons[].guardrail\`). It never changes what the customer saw.
+- **true — hold the answer:** the Talker before it runs held (nothing streams
+  until the verdict), then approve / replace (\`actions.replace\`) / block
+  (\`actions.block\`: \`blockMessage\` goes out, the chain stops, the
+  conversation moves to \`escalateTo\` from the next turn). No valid verdict →
+  \`onError\`: "block" (default, fail closed) or "approve". The customer waits
+  for the whole reply plus this call — give it a fast model that doesn't think
+  first.
+In the offline lane it is always flag-only (an audit, no wait). It acts only on
+a Talker in its own crew chain. Data protection (code) runs before all of it.
+
 **Giving an agent a knowledge base.** Two steps, and people mix them up:
 
 1. **Connect** it, so the Builder shows it for this agent:

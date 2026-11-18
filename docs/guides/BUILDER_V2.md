@@ -2633,3 +2633,70 @@ BEFORE it is processed or stored — by fast, deterministic code, no model.
   `/api/agents/:slug/protection-events?days=` (protectionRoute — the same
   `protectionEvents.report` the MCP reads). Never any message text.
 - **Not touched:** Alfred.
+
+### 63. Guardrail add-on — a model checks the reply (task #963)
+
+The model-based layer next to #62's code protections (which run first, before
+any add-on). A Guardrail is a NORMAL add-on: any crew chain, any prompt, any
+model, the usual tokens — plus one new token.
+
+- **`{{reply}}`** (promptPlaceholders.json, "This turn" group): this turn's
+  reply so far — what the Talker(s) said, before it reaches the customer.
+  Empty before a Talker has spoken. In a cascade it includes what earlier
+  crews said this turn (`ctx.replyPrefix`); in the offline lane it is the
+  whole reply the customer got. Kept current by `BuilderRunner.runChainSteps`
+  (`ctx.replySoFar`) and passed to `assemblePrompt({ reply })`. Any add-on
+  may read it.
+- **The plugin** (`builder/plugins/guardrail/addon.guardrail.js`, descriptor
+  `addons/guardrail.addon.json`, output type `guardrail-verdict`): one
+  one-shot JSON call. The runtime appends a "Your verdict" section to the
+  prompt — the plugin's `promptSuffix`, appended in addonRunner so the run
+  card shows it — listing only the verdicts this Guardrail may return, and
+  the reply itself when the prompt has no `{{reply}}`.
+- **"Hold the answer" (`config.holdReply`, default off — Shlomi, 2026-11-18):**
+  - **Off, or the offline lane — flag only.** The reply streams as usual;
+    the verdict is `approve` / `flag`, recorded as `guardrail: { verdict,
+    applied: 'flag', reason, held: false }` on addon.output / addon_runs. It
+    never changes what the customer already saw.
+  - **On (main lane) — the verdict applies.** `runChainSteps` runs any Talker
+    step HELD (`ctx.holdReply` → the Talker collects without emitting
+    `addon.token`) when an enabled holding Guardrail comes after it in the
+    same chain. The live chat shows its existing thinking bubble until
+    `assistant.message` brings the final text. Then: **approve** — the reply
+    goes out; **replace** (`actions.replace`) — `replacement` becomes the
+    chain's text; **block** (`actions.block`) — `blockMessage` (empty → a
+    built-in Hebrew sentence) becomes the text, `breakChain` stops the rest,
+    and `escalateTo` moves the conversation from the NEXT turn
+    (`fireImmediately: false`). A verdict it may not apply (a switched-off
+    action, replace with no reply yet / no replacement) goes out as approve
+    with a `note`.
+  - **No valid verdict** (model error, cut off, bad / unknown JSON — the run
+    fails with `no_verdict`, `outputFailureOf`): `onError` decides — "block"
+    (default, fail closed: exactly a block, incl. escalation, plus a
+    `warning` event `guardrail_failed_closed`) or "approve".
+  - The wait: the whole reply plus the Guardrail call — use a fast model that
+    doesn't think first (the default is GPT-5.6 Terra).
+- **Before the Talker** (hold on) it can block the customer's message from
+  being answered; replace does nothing there. Hold acts only on a Talker in
+  its own crew chain (v1; an agent-wide slot is later). A disabled Guardrail
+  never holds.
+- **One transition write:** `addonRunner.saveTransition(ctx, to)` — used by
+  every add-on transition and by a fail-closed escalation.
+- **Where the verdict shows:** the run card (a "🚦 approve / replace / block /
+  flag · …" pill, its tooltip the verdict, what was applied and why), the
+  conversation export (`addonRuns[].guardrail`), a simulated turn
+  (`addons[].guardrail`). The chain card says "reply waits" when hold is on,
+  and a Guardrail after the Talker is not flagged "after talker".
+- **Builder:** the existing add-on modal — name, model, the hold switch (the
+  Web-search toggle), what it may do, the block message, the crew a block
+  moves to, if it fails, the prompt. Hold-only settings are disabled in place
+  while hold is off.
+- **MCP:** `/addons` (from the descriptor), the entry page's "Guardrail
+  add-on" section, `{{reply}}` in the tokens; created and changed through the
+  normal crew POST.
+- **Battery:** `node scripts/test-guardrail.js` — offline (the real chain,
+  runner, Talker and Guardrail with a fake model): flag only, held approve /
+  replace / block + escalation, fail closed / open, before the Talker, a
+  disabled one, the offline lane, `no_verdict`.
+- **Not yet:** send back to the Talker with notes; an agent-wide Guardrail
+  slot. **Not touched:** Alfred.

@@ -29,3 +29,4 @@ require('./transitionRouter/addon.transitionRouter');
 require('./rules/addon.rules');
 require('./kbRetriever/addon.kbRetriever');
 require('./liveBrainPanel/addon.liveBrainPanel');
+require('./guardrail/addon.guardrail');

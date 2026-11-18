@@ -508,6 +508,16 @@ async function removeIfPresent(slug) {
     const dv3 = (await hydrate(TEST_SLUG)).agents[0];
     check('cleared → both keys gone', dv3.dataProtection === undefined && dv3.crews.find(c => c.id === dpCrew.id).dataProtection === undefined);
 
+    // ── Guardrail add-on (#963) — discoverable and documented. The runtime
+    // itself is proven offline by scripts/test-guardrail.js. ──
+    section('guardrail add-on (#963)');
+    check('entry page teaches the Guardrail', doc.text.includes('Guardrail add-on') && doc.text.includes('holdReply'));
+    const grAddons = await get('/addons');
+    check('/addons lists the guardrail with its config', grAddons.status === 200 && grAddons.text.includes('guardrail')
+      && grAddons.text.includes('holdReply') && grAddons.text.includes('escalateTo'));
+    const tokens = await get('/code/builder/promptPlaceholders.json');
+    check('{{reply}} is in the prompt tokens', tokens.status === 200 && tokens.text.includes('{{reply}}'));
+
     // ── create ──
     section('create');
     await removeIfPresent(BORN_CLEAN_SLUG);

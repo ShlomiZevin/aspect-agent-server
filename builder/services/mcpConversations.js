@@ -300,6 +300,8 @@ async function sendMessage({ conversationId, text, base, timeoutMs }) {
         label: r.label, pluginId: r.pluginId, lane: r.lane, status: r.status,
         // Web search switch (#967): the queries this addon searched.
         ...(r.webSearch ? { webSearches: r.webSearch.searches.map(s => s.query).filter(Boolean) } : {}),
+        // Guardrail (#963): verdict + what was applied (flag / approve / replace / block).
+        ...(r.guardrail ? { guardrail: r.guardrail } : {}),
       }));
     }
   } catch (err) {
