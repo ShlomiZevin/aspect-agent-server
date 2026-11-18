@@ -265,8 +265,18 @@ agenda stand". He didn't ask — that's a full status, and it buries the one lin
 6. **Deploy to Lybi Staging**, then **commit + push** what you approved — nothing stays
    only on the computer. Coordinate other sessions: tell them before a staging deploy;
    make sure their approved work is pushed too.
-7. **Board:** move the task's status yourself, keep its `now:` tag (one short Hebrew
-   status line) current — it feeds his management center (/tasks/center). Finished +
+7. **Board — his panel must always be true.** The `now:` tag (one short Hebrew status
+   line) is what he reads on his management center (/tasks/center). Rules from Shlomi,
+   2026-11-18:
+   - Anything you'd update him about on an ongoing task goes into its `now:` line too.
+   - Update `now:` and the status **at every change of state**, the moment it happens:
+     started, waiting for him or for someone else, back in progress after his notes,
+     ready for him to check, done.
+   - A stale line is a bug, and keeping it fresh is your job. Example: "ready, waiting for
+     your review" still showing after he sent notes and the work restarted.
+   - Hebrew goes through a file, never the console.
+
+   Finished +
    deployed current-batch tasks: mark done with Hebrew release notes (his first person)
    and release. No task comments.
 8. **Agenda:** conclusions and open decisions from any session go into his agenda
