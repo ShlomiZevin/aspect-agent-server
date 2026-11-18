@@ -13,6 +13,10 @@
  *        on a server block (its id came in the `protection.blocked` event).
  *        Only records; the message is never let through. → { ok, alreadyReported }
  *
+ *   GET  /api/agents/:slug/protection-events?days=30
+ *        The Admin report (P3) — the same `protectionEvents.report` the MCP
+ *        reads.
+ *
  * No auth, like the rest of the customer chat calls (proportionate: the
  * rows hold no personal data). The agent and conversation are checked so
  * the report stays clean.
@@ -66,6 +70,21 @@ router.post('/:slug/protection-events', async (req, res) => {
   } catch (err) {
     console.error('[protection] record client block failed:', err.message);
     res.status(500).json({ error: 'Could not record the block' });
+  }
+});
+
+/**
+ * GET /api/agents/:slug/protection-events?days=30 — the Admin report
+ * (task #986 P3): totals, browser vs server, per surface, per detector with
+ * its mistake rate, and the latest blocks. Detector ids only, never text.
+ */
+router.get('/:slug/protection-events', async (req, res) => {
+  try {
+    const report = await protectionEvents.report({ agentSlug: req.params.slug, days: req.query.days, recentLimit: 200 });
+    res.json(report);
+  } catch (err) {
+    console.error('[protection] report failed:', err.message);
+    res.status(500).json({ error: 'Could not read the blocks' });
   }
 });
 

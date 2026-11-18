@@ -2622,4 +2622,14 @@ BEFORE it is processed or stored — by fast, deterministic code, no model.
   "secure channel" button is out of scope. Strings in `live-chat/i18n.ts`
   (he + en). A blocked turn isn't in the history after a reload (it was never
   saved). Screens: `Downloads/data-protection-built/`.
-- **P3:** the Admin report. **Not touched:** Alfred.
+- **The Admin report (P3):** Builder Admin → "🛡 Data protection"
+  (`AdminDashboard/ProtectionTab.tsx`, built from the LLM Usage tab's own
+  styles): what is on now (+ crew exceptions, a link to the Setup), four
+  counts (blocked, reported as a mistake + rate, caught in the browser, caught
+  on the server), a period (7 / 30 / 90 / 365 days), per detector with its
+  mistake rate, and the latest blocks (time, detectors, browser/server,
+  where, the conversation → Admin conversations, the mistake time) with an
+  "All / Reported as a mistake" switch. Data: GET
+  `/api/agents/:slug/protection-events?days=` (protectionRoute — the same
+  `protectionEvents.report` the MCP reads). Never any message text.
+- **Not touched:** Alfred.

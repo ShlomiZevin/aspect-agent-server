@@ -301,6 +301,14 @@ function sseEvents(text) {
   check('"blocked by mistake" → ok', out.status === 200 && /"ok":true/.test(out.text), out.text);
   out = await postJson(`${baseP}/api/agents/${AGENT_SLUG}/protection-events/777/mistake`, {});
   check('mistake on an unknown block → 404', out.status === 404);
+  {
+    const res = await fetch(`${baseP}/api/agents/${AGENT_SLUG}/protection-events?days=7`);
+    const j = await res.json();
+    check('Admin report (P3): totals, per detector, recent rows', res.status === 200 && j.total === 3 && j.mistakes === 1
+      && j.byDetector[0].id === 'il_id' && j.recent[0].conversationId === 42 && j.bySide.client === 2, JSON.stringify(j).slice(0, 200));
+    const q = dbCalls.queries.find(x => /ORDER BY created_at DESC/.test(x.sql));
+    check('…scoped to the agent and the period', q && q.params[0] === AGENT_SLUG && q.params[1] === 7);
+  }
   srvP.close();
 
   // ═══ E. The MCP door ═══
