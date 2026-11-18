@@ -292,6 +292,12 @@ agenda stand". He didn't ask — that's a full status, and it buries the one lin
    - A stale line is a bug, and keeping it fresh is your job. Example: "ready, waiting for
      your review" still showing after he sent notes and the work restarted.
    - Hebrew goes through a file, never the console.
+   - **Waiting:** a task that has started and is now waiting on something outside us
+     (Google, his decision, a meeting) = status `in_progress` + the tag `waiting`, with
+     what it waits for in its `now:` line. Not started = `todo`. Remove `waiting` the
+     moment it moves again.
+   - **Connected tasks:** set the board's `linkedTasks` field (task ids) on both tasks,
+     so his center shows them together.
    - **Next vs Focus:** `next` = what he plans after the current focus. The moment you
      start working on a `next` task, swap `next` for `focus` in the same update as
      the status change. A task that's in progress is never "next in line" (Shlomi,
