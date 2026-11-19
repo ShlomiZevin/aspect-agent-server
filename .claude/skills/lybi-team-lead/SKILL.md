@@ -129,6 +129,11 @@ recommendation.
 
 ## 7. Who does the work — you, a subagent, or a visible session
 
+**Terminology (Shlomi's):** a **subagent** is one you spawn with the Agent tool —
+only you see it. A **session** is a visible Claude Code session, like "Lybi -
+Guardrails". When he says "do it with a subagent, no need for a session", use the
+Agent tool.
+
 - **Yourself (hands-on):** short, contained tasks only — a fix, a check, a board
   update, a small edit. Don't fill your context with long work: you are the one who
   must remember everything across tasks.
