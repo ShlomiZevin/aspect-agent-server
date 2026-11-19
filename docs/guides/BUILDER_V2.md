@@ -2581,12 +2581,21 @@ BEFORE it is processed or stored — by fast, deterministic code, no model.
 - **Builder (existing pieces only, no new design — Shlomi 2026-11-18):** the
   agent Setup card has a "Data protection" row under "Model route" (same
   segmented Off/On, a summary, the Web-search "Edit" button) → a modal with
-  the switch, a toggle per detector ("· default" until set) and the message
-  he/en (empty = built-in). The Cortex has a fixed first card "🛡 Data
-  protection" (the Agent combo chip's card style) at both scopes: agent →
-  those settings; crew → that crew's exceptions (follow the agent / on / off
-  per detector, with what the agent does). Shows "off" / "N checks" /
-  "· exception".
+  the switch, the detectors and the message he/en (empty = built-in). The
+  Cortex has a fixed first card "🛡 Data protection" (the Agent combo chip's
+  card style) at both scopes: agent → those settings; crew → that crew's
+  exceptions. Shows "off" / "N checks" / "· exception".
+- **Detector groups (Shlomi's note, 2026-11-19 — the list will grow: other
+  countries' IDs, plates, addresses):** every detector has a `group` from
+  `DETECTOR_GROUPS` (Identity / Payment / Contact) in the shared file. The
+  modal lists each group as one line of the KB retriever's toggle chips with
+  "N of M on" in the header (the tooltip: what it matches, its state, what a
+  click does). In a crew the chip shows what applies HERE and a click steps
+  follow the agent → the other way in this crew → the agent's way, pinned →
+  follow; an overridden chip carries a "crew" tag (its slot always reserved,
+  so nothing resizes) and "Reset to agent" clears them all. The MCP lists
+  detectors under the same groups (`/protection/detectors`, the agent's
+  data-protection page). A new detector = one entry with its group.
 - **Battery:** `node scripts/test-data-protection.js` — offline (db.pg is a
   stub, never `.env`): detectors, settings, the gate (a match saves nothing
   and runs nothing; a failed record still blocks; the crew exception; the
@@ -2690,7 +2699,18 @@ model, the usual tokens — plus one new token.
 - **Builder:** the existing add-on modal — name, model, the hold switch (the
   Web-search toggle), what it may do, the block message, the crew a block
   moves to, if it fails, the prompt. Hold-only settings are disabled in place
-  while hold is off.
+  while hold is off. On an agent with one crew, "After a block" shows a
+  disabled "No other crew yet — add one to move there", so the option is
+  visible (Shlomi couldn't find it, 2026-11-19).
+- **Every Builder modal sits on whole pixels** (`components/Modal`, 2026-11-19):
+  it used to be flex-centred at 94vh, i.e. at 28.59px from the top on a
+  953px window, so everything in it sat on fractional pixels and Chrome
+  redrew a hovered pill / an opened select a pixel off (Shlomi's jitter in
+  the Guardrail screen). Now `Modal` places the box itself — left/top
+  rounded to whole device pixels, re-placed on any size change
+  (ResizeObserver: content, the resize corner, the window) — and 96vw / 94vh
+  are rounded down with CSS `round()`. Don't go back to flex/transform
+  centring there.
 - **MCP:** `/addons` (from the descriptor), the entry page's "Guardrail
   add-on" section, `{{reply}}` in the tokens; created and changed through the
   normal crew POST.

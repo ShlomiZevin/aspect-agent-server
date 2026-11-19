@@ -162,14 +162,24 @@ const IBAN = /(?<![A-Za-z0-9])[A-Za-z]{2}\d{2}(?:[ -]?[A-Za-z0-9]){11,30}(?![A-Z
 
 // ─── The list ────────────────────────────────────────────────────────
 
+/** The groups detectors are listed under, in this order. */
+export const DETECTOR_GROUPS = [
+  { id: 'identity', name: { en: 'Identity', he: 'זהות' } },
+  { id: 'payment', name: { en: 'Payment', he: 'תשלום' } },
+  { id: 'contact', name: { en: 'Contact', he: 'פרטי קשר' } },
+];
+
 /**
  * Every detector. `defaultOn` = switched on when an author turns data
  * protection on for an agent and has not set that detector yet.
+ * `group` = one of DETECTOR_GROUPS — how the Builder and the MCP list them
+ * (the list grows: other countries' IDs, plates, addresses …).
  * `check` gets the normalized text + its digit runs and returns a count.
  */
 export const DETECTORS = [
   {
     id: 'il_id',
+    group: 'identity',
     name: { en: 'Israeli ID number', he: 'מספר תעודת זהות' },
     matches: {
       en: '9 digits whose last digit is a valid Israeli ID check digit.',
@@ -180,6 +190,7 @@ export const DETECTORS = [
   },
   {
     id: 'credit_card',
+    group: 'payment',
     name: { en: 'Credit card number', he: 'מספר כרטיס אשראי' },
     matches: {
       en: '13–19 digits (spaces or dashes allowed) that pass the Luhn check.',
@@ -190,6 +201,7 @@ export const DETECTORS = [
   },
   {
     id: 'iban',
+    group: 'payment',
     name: { en: 'IBAN', he: 'מספר IBAN' },
     matches: {
       en: 'A country code, 2 check digits and the account (e.g. IL62 0108 …), passing the IBAN mod-97 check.',
@@ -200,6 +212,7 @@ export const DETECTORS = [
   },
   {
     id: 'bank_account',
+    group: 'payment',
     name: { en: 'Bank account number', he: 'מספר חשבון בנק' },
     matches: {
       en: '6–13 digits right after a word such as "account" / "חשבון" (Israeli account numbers have no check digit).',
@@ -210,6 +223,7 @@ export const DETECTORS = [
   },
   {
     id: 'passport',
+    group: 'identity',
     name: { en: 'Passport number', he: 'מספר דרכון' },
     matches: {
       en: '6–9 digits right after the word "passport" / "דרכון" (passports have no check digit).',
@@ -220,6 +234,7 @@ export const DETECTORS = [
   },
   {
     id: 'phone',
+    group: 'contact',
     name: { en: 'Phone number', he: 'מספר טלפון' },
     matches: {
       en: 'An Israeli mobile or landline number (05X / 07X / 02–09, or +972), or any number written with + and a country code.',
@@ -230,6 +245,7 @@ export const DETECTORS = [
   },
   {
     id: 'email',
+    group: 'contact',
     name: { en: 'Email address', he: 'כתובת מייל' },
     matches: { en: 'An email address.', he: 'כתובת מייל.' },
     defaultOn: false,

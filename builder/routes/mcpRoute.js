@@ -1668,10 +1668,13 @@ async function dataProtectionLines(base, agent) {
     'Agent detectors (a detector you have not set takes its default):',
   ];
   const sw = (dp && dp.detectors) || {};
-  for (const det of m.DETECTORS) {
-    const set = typeof sw[det.id] === 'boolean';
-    const on = set ? sw[det.id] : det.defaultOn;
-    lines.push(`- ${det.id}: ${on ? 'on' : 'off'}${set ? '' : ' (default)'} — ${det.name.en}: ${det.matches.en}`);
+  for (const group of m.DETECTOR_GROUPS) {
+    lines.push(`${group.name.en}:`);
+    for (const det of m.DETECTORS.filter(d => d.group === group.id)) {
+      const set = typeof sw[det.id] === 'boolean';
+      const on = set ? sw[det.id] : det.defaultOn;
+      lines.push(`- ${det.id}: ${on ? 'on' : 'off'}${set ? '' : ' (default)'} — ${det.name.en}: ${det.matches.en}`);
+    }
   }
   lines.push(
     '',
@@ -1859,7 +1862,12 @@ router.get('/protection/detectors', async (req, res) => {
       'Code only, no model. The same list runs in the customer\'s browser (before sending) and on the server (every channel).',
       '"default" = its switch when an agent turns protection on without setting it.',
       '',
-      ...m.DETECTORS.map(d => `- ${d.id} — ${d.name.en} / ${d.name.he} (default ${d.defaultOn ? 'on' : 'off'}): ${d.matches.en}`),
+      ...m.DETECTOR_GROUPS.flatMap(g => [
+        `## ${g.name.en} (${g.id})`,
+        ...m.DETECTORS.filter(d => d.group === g.id)
+          .map(d => `- ${d.id} — ${d.name.en} / ${d.name.he} (default ${d.defaultOn ? 'on' : 'off'}): ${d.matches.en}`),
+        '',
+      ]),
       '',
       `Built-in message (he): ${m.DEFAULT_BLOCKED_MESSAGE.he}`,
       `Built-in message (en): ${m.DEFAULT_BLOCKED_MESSAGE.en}`,

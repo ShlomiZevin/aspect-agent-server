@@ -182,6 +182,9 @@ function sseEvents(text) {
   const hit = m.detect('id 123456782 and 123456782', ALL)[0];
   check('output is {id, count} only — never the text', JSON.stringify(Object.keys(hit)) === '["id","count"]' && hit.count === 2, JSON.stringify(hit));
   check('every detector has he/en name + matches', m.DETECTORS.every(d => d.name.he && d.name.en && d.matches.he && d.matches.en));
+  const groupIds = m.DETECTOR_GROUPS.map(g => g.id);
+  check('every detector sits in a known group', m.DETECTORS.every(d => groupIds.includes(d.group)));
+  check('every group has he/en name and at least one detector', m.DETECTOR_GROUPS.every(g => g.name.he && g.name.en && m.DETECTORS.some(d => d.group === g.id)));
 
   // ═══ B. Settings ═══
   section('B. settings');
@@ -399,6 +402,7 @@ function sseEvents(text) {
   res = await fetch(`${mcp}/protection/detectors`);
   txt = await res.text();
   check('detectors catalog lists all seven', m.DETECTOR_IDS.every(id => txt.includes(`- ${id} —`)));
+  check('detectors catalog lists them under their groups', m.DETECTOR_GROUPS.every(g => txt.includes(`## ${g.name.en} (${g.id})`)) && txt.indexOf('## Identity') < txt.indexOf('- il_id —') && txt.indexOf('## Payment') < txt.indexOf('- credit_card —'));
   res = await fetch(`${mcp}/agents/${AGENT_SLUG}/protection-events?days=7`);
   txt = await res.text();
   check('report: totals, mistake rate, per detector, recent', /3 blocked message\(s\); 1 reported "blocked by mistake" \(33%\)/.test(txt) && /Israeli ID number \(il_id\): 2 block/.test(txt) && /#7 2026-11-18/.test(txt), txt.slice(0, 500));

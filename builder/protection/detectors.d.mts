@@ -9,8 +9,13 @@ export type DetectorId =
 
 export interface Localized { he: string; en: string }
 
+export type DetectorGroupId = 'identity' | 'payment' | 'contact';
+
+export interface DetectorGroup { id: DetectorGroupId; name: Localized }
+
 export interface DetectorDef {
   id: DetectorId;
+  group: DetectorGroupId;
   name: Localized;
   matches: Localized;
   defaultOn: boolean;
@@ -30,6 +35,7 @@ export interface ResolvedProtection {
 interface AgentDpLike { enabled?: boolean; detectors?: Partial<Record<DetectorId, boolean>>; blockedMessage?: Partial<Localized> }
 interface CrewDpLike { detectors?: Partial<Record<DetectorId, boolean>> }
 
+export const DETECTOR_GROUPS: DetectorGroup[];
 export const DETECTORS: DetectorDef[];
 export const DETECTOR_IDS: DetectorId[];
 export const DEFAULT_BLOCKED_MESSAGE: Localized;
