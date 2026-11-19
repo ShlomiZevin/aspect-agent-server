@@ -326,6 +326,16 @@ Shlomi brings it up. Still apply the board holds (tasks he parked or said to ign
      (Google, his decision, a meeting) = status `in_progress` + the tag `waiting`, with
      what it waits for in its `now:` line. Not started = `todo`. Remove `waiting` the
      moment it moves again.
+   - **Waiting on whom:** every `waiting` task also gets `waiting-on:<who>` so his panel
+     shows who holds it: `waiting-on:us` (we parked it / later), `waiting-on:Shlomi`
+     (his decision or talk), or `waiting-on:Noa` / `Google` / a customer (outside).
+   - **Ready to check → released → off the table:** when something is on staging for his
+     check, add the tag `check` (the now: line says what to check). He clicks "נבדק" →
+     `checked`; the task stays on his panel as checked until you release it. Then
+     release it (done + release notes + release); it moves to "שוחרר" until he clicks
+     "ירד מהשולחן" (`off-table`). Release a `checked` task promptly — he is waiting.
+   - **Links:** put the real URL in the now: line when there is something to open; his
+     panel makes it clickable.
    - **Connected tasks:** set the board's `linkedTasks` field (task ids) on both tasks,
      so his center shows them together.
    - **Next vs Focus:** `next` = what he plans after the current focus. The moment you
