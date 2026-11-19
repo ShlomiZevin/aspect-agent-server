@@ -294,6 +294,11 @@ app.use('/api/hq', require('./hq/routes/hq.routes'));
 // are internal documents shared by link. See routes/page-comments.routes.js.
 app.use('/api/page-comments', require('./routes/page-comments.routes'));
 
+// ─── Agenda line comments ──────────────────────────────────────────
+// Comments on each line of a meeting's action items (/tasks/actions and the
+// center's ACTION ITEMS panel). See routes/agenda-comments.routes.js.
+app.use('/api/agenda-comments', require('./routes/agenda-comments.routes'));
+
 // ========== MODELS REGISTRY ==========
 // Single source of truth for the LLM models the platform supports.
 // Server-hardcoded today (services/models.service.js); the client

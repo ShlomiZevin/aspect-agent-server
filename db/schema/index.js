@@ -356,6 +356,24 @@ const pageComments = pgTable('page_comments', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// Comments on one checklist line of an agenda topic (Action items:
+// /tasks/actions and the center's ACTION ITEMS panel). `line_key` is the
+// line's stable id, stamped at the end of the line in the description
+// (`<!-- line:… -->`, services/agendaLines.js), so a comment stays with its
+// line through ticks, notes, text edits and new lines. `line_text` = the
+// line when the comment was written (a fallback if the id is ever lost).
+// updated_at null = never edited. See db/migrations/072_agenda_line_comments.sql.
+const agendaLineComments = pgTable('agenda_line_comments', {
+  id: serial('id').primaryKey(),
+  taskId: integer('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  lineKey: varchar('line_key', { length: 16 }).notNull(),
+  lineText: text('line_text').notNull(),
+  author: varchar('author', { length: 100 }).notNull(),
+  body: text('body').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }),
+});
+
 // Task notifications
 const taskNotifications = pgTable('task_notifications', {
   id: serial('id').primaryKey(),
@@ -710,6 +728,7 @@ module.exports = {
   tasks,
   taskComments,
   pageComments,
+  agendaLineComments,
   taskNotifications,
   demoMockups,
   providerConfig,

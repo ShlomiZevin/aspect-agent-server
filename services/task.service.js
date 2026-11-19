@@ -17,67 +17,10 @@ const NON_RELEASE_TYPES = ['goal', 'agenda'];
 // A team member's first What's New shows this many of the latest releases.
 const WHATS_NEW_START = 25;
 
-// ─── Agenda checklist lines (used by updateAgendaLine) ─────────────────
-const AGENDA_CHECK_RE = /^(\s*)[-*] \[( |x|X)\] ?(.*)$/;
-const AGENDA_QUOTE_RE = /^\s*>/;
-const AGENDA_NOTE_RE = /^\s*>\s*הערה:/;
-const AGENDA_NOTE_PREFIX = '  > הערה: ';
-const AGENDA_INDENTED_RE = /^\s+\S/; // a point's indented "  - detail" lines
-
-/**
- * Pure: returns the new description with one checklist line changed.
- * Throws { status: 409 } when the line can't be found safely.
- */
-function applyAgendaLineChange(description, { index, text, checked, note }) {
-  const eol = description.includes('\r\n') ? '\r\n' : '\n';
-  const lines = description.split(/\r?\n/);
-  const items = []; // { lineNo, text }
-  lines.forEach((line, lineNo) => {
-    const m = line.match(AGENDA_CHECK_RE);
-    if (m) items.push({ lineNo, text: m[3].trim() });
-  });
-
-  const want = text.trim();
-  let target = items[index] && items[index].text === want ? items[index] : null;
-  if (!target) {
-    const same = items.filter(it => it.text === want);
-    if (same.length === 1) target = same[0];
-  }
-  if (!target) {
-    const err = new Error('That line moved or changed — reload the agenda');
-    err.status = 409;
-    throw err;
-  }
-
-  const out = lines.slice();
-  if (checked !== undefined) {
-    out[target.lineNo] = out[target.lineNo].replace(/\[( |x|X)\]/, checked ? '[x]' : '[ ]');
-  }
-
-  if (note !== undefined) {
-    // New notes go right after the quotes under the point (before its
-    // indented "  - " detail lines); an existing note is found anywhere in the
-    // point's own block (quotes + indented lines that are not checklist lines).
-    let end = target.lineNo + 1;
-    while (end < out.length && AGENDA_QUOTE_RE.test(out[end])) end++;
-    let blockEnd = target.lineNo + 1;
-    while (blockEnd < out.length && (AGENDA_QUOTE_RE.test(out[blockEnd]) || (AGENDA_INDENTED_RE.test(out[blockEnd]) && !AGENDA_CHECK_RE.test(out[blockEnd])))) blockEnd++;
-    let noteAt = -1;
-    for (let i = target.lineNo + 1; i < blockEnd; i++) {
-      if (AGENDA_NOTE_RE.test(out[i])) { noteAt = i; break; }
-    }
-    const clean = typeof note === 'string' ? note.replace(/\s*\r?\n\s*/g, ' ').trim() : '';
-    if (clean) {
-      const noteLine = AGENDA_NOTE_PREFIX + clean;
-      if (noteAt >= 0) out[noteAt] = noteLine;
-      else out.splice(end, 0, noteLine);
-    } else if (noteAt >= 0) {
-      out.splice(noteAt, 1);
-    }
-  }
-
-  return out.join(eol);
-}
+// ─── Agenda checklist lines (updateAgendaLine, ensureAgendaLineKey) ─────
+// Pure text functions in agendaLines.js — incl. the stable line id
+// (`<!-- line:… -->`) that agenda line comments point at.
+const { applyAgendaLineChange, stampAgendaLineKey } = require('./agendaLines');
 
 /**
  * Task Board Service
@@ -358,13 +301,47 @@ class TaskService {
       err.status = 400;
       throw err;
     }
+    return this._rewriteDescription(id, original => applyAgendaLineChange(original, { index, text, checked, note }));
+  }
 
+  /**
+   * Agenda line comments: make sure one checklist line carries its stable id
+   * (`<!-- line:… -->` at the end of the line — agendaLines.js), stamping it
+   * the first time. The line is addressed like updateAgendaLine (index AND
+   * text, 409 when it moved or changed); the write never clobbers concurrent
+   * edits. Returns { task, key, text } (text = the line without the id), or
+   * null when the task doesn't exist.
+   */
+  async ensureAgendaLineKey(id, { index, text } = {}) {
+    if (!this.drizzle) this.initialize();
+    if (!Number.isInteger(index) || index < 0 || typeof text !== 'string') {
+      const err = new Error('index (number) and text (string) are required');
+      err.status = 400;
+      throw err;
+    }
+    let stamped = null;
+    const task = await this._rewriteDescription(id, original => {
+      stamped = stampAgendaLineKey(original, { index, text });
+      return stamped.description;
+    });
+    if (!task) return null;
+    return { task, key: stamped.key, text: stamped.text };
+  }
+
+  /**
+   * Compare-and-swap on a task's description: `transform(description)` returns
+   * the new text (or throws). Retried on a concurrent save, so an edit made
+   * between our read and write is re-read and re-applied, never overwritten.
+   * Returns the saved task (the unchanged one when nothing changed), or null.
+   */
+  async _rewriteDescription(id, transform) {
+    if (!this.drizzle) this.initialize();
     for (let attempt = 0; attempt < 5; attempt++) {
       const [before] = await this.drizzle.select().from(tasks).where(eq(tasks.id, id)).limit(1);
       if (!before) return null;
 
       const original = before.description || '';
-      const next = applyAgendaLineChange(original, { index, text, checked, note });
+      const next = transform(original);
       if (next === original) return before; // already in that state
 
       const [task] = await this.drizzle
