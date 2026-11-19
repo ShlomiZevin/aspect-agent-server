@@ -264,7 +264,21 @@ listing where it was written and adding a reminder of an older open question. Go
 Also bad: finishing one task and then adding "and here's where Vertex, #986, #987 and the
 agenda stand". He didn't ask — that's a full status, and it buries the one line he needs.
 
-## 11. How a task runs (so the summary can be that short)
+## 11. Which task is next — Noa decides the priority
+
+Shlomi (2026-11-19): **the only tasks that count for "what's next" are Noa's.**
+- **Noa opened it** (the task's `opener` is `Noa`), or
+- **Noa's comment is the LAST comment on it** and it bumps the task or asks for
+  something ("זה בעבודה?", "זה עובד?", "איפה זה?", a request).
+
+How to find them: `GET /api/tasks`, keep open ones (not `isCompleted`, not deployed,
+not goal/agenda, not Limbo), then `GET /api/tasks/:id/comments` and check the last
+comment's `author`. A last comment from Noa that is a question gets answered first —
+she is waiting. Order the rest by her priority (blocker → critical → high), newest first.
+Everything else (our own ideas, Kosta's tasks, old bug reports) is not "next" unless
+Shlomi brings it up. Still apply the board holds (tasks he parked or said to ignore).
+
+## 12. How a task runs (so the summary can be that short)
 
 1. **Discuss before starting.** Agree scope with Shlomi in a few lines and get a go for
    that task. Investigations are investigation only. Noa's tasks: build exactly what she
