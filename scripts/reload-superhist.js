@@ -62,6 +62,12 @@
  *   products), but that needs checking against the categories table's 110
  *   marketing-collection rows before trusting it as a real taxonomy — see
  *   Kosta/Shlomi before wiring it in.
+ *   Canceld — the credits file (task #97), loaded as `credits` from 2026-10-05
+ *   to 2026-11-19. The client stopped updating it (the copy in GCS is the
+ *   2026-10-05 one, August only — the Drive mirror never deletes) and on
+ *   2026-11-19 moved credits INTO OrderLine as 'שורת זיכוי' rows covering the
+ *   whole history. Loading both would put the same credits in front of the
+ *   SQL generator twice; order_lines with line_kind = 'credit' is the source.
  */
 
 require('dotenv').config();
@@ -92,11 +98,8 @@ const FILE_TO_TABLE = {
   // Task #72 — daily inventory snapshot, see the header comment. Confirmed
   // against the real GCS delivery 2026-09-14.
   'StockHistoryהסופר החברתי_CSV.csv': 'stock_history',
-  // Task #97 — credited product lines, added by the client 2026-10-05 after
-  // the CEO asked for cancellations and credits. See column-aliases-superhist.js.
-  'Canceldהסופר החברתי_CSV.csv': 'credits',
   // Deliberately NOT loaded (see header): Dim, Dim1, Measure, Measures,
-  // OrderLine_Last_7_Days_1.
+  // OrderLine_Last_7_Days_1, Canceld.
 };
 
 function formatBytes(bytes) {

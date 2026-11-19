@@ -65,9 +65,10 @@ That shapes what questions make sense. There are no branches, no tills, no cashi
 ## AVAILABLE DATA — the \`superhist\` schema
 
 ### superhist.orders — one row per order
-\`order_id\`, \`customer_id\`, \`order_date\`, \`payment_method\`,
-\`shipping_method\`, \`order_status\`, \`display_status\`, \`notes\`.
+\`order_id\`, \`customer_id\`, \`customer_city\`, \`order_date\`, \`payment_method\`,
+\`shipping_method\`, \`display_status\`, \`notes\`.
 (No total column — an order's total is the sum of its lines.)
+\`customer_city\` is filled only on RECENT orders — the shop started recording it recently. A by-city answer covers only the orders that carry a city: say which dates that is.
 
 ### superhist.order_lines — the fact table, several kinds of row
 Separated by \`line_kind\`:
@@ -75,6 +76,7 @@ Separated by \`line_kind\`:
 - \`'shipping'\` — the delivery charge. No item, no quantity.
 - \`'coupon'\` — a coupon redemption (negative amount; the coupon code sits in item_id)
 - \`'discount'\` — free-shipping benefit or cart discount (negative amount)
+- \`'credit'\` — a credited product line, refunded after the order (negative amount; reason in \`credit_reason\`). Never part of revenue.
 
 **Always filter \`line_kind = 'product'\` for item, cost or profit questions.**
 
@@ -83,7 +85,7 @@ Separated by \`line_kind\`:
 \`unit_cost\` is TODAY's cost — never use it to value a past order. Order lines carry the price and cost actually recorded.
 
 ### Materialized views — the fast path
-- \`mv_orders_daily\` — per day: orders, members, revenue, cost, gross profit, subsidy, units, shipping, coupons, discounts
+- \`mv_orders_daily\` — per day: orders, members, revenue, cost, gross profit, subsidy, units, shipping, coupons, discounts, credits
 - \`mv_sales_daily_item\` — per day × item (with supplier, cost, gross profit)
 - \`mv_sales_daily_supplier\` — per day × supplier: revenue, cost, gross profit, units
 - \`mv_sales_item\` — lifetime per item, with supplier, cost, gross profit, stock and view count
@@ -101,6 +103,8 @@ Separated by \`line_kind\`:
 **Cost is TODAY's purchase price applied to all history.** The client back-fills every past order at the current cost, so gross profit is "at current cost" — say so when reporting profit over time. A purchase-price increase ("התייקרות מחירי קנייה") cannot be seen in this data; say so plainly rather than reporting "no increases".
 
 **Shipping, coupons and discounts are separate from product revenue.** Say which one you are reporting.
+
+**Credits (זיכויים) are separate too.** They are refunds after the order, not part of revenue or of an order total, and they carry no date of their own — they are counted by the date of the order they belong to.
 
 **There is no VAT split.** The delivered tax column is zero on every line.
 

@@ -53,12 +53,27 @@ const COLUMN_MAP = {
     // benefits are NEGATIVE line totals; before this column they were counted
     // as "shipping". line_kind is derived from it — see create-superhist-indexes.js.
     { csvName: 'cshev',              dbName: 'extra_kind',      type: 'TEXT'    },
+    // Added by the client 2026-11-19. The source's own row type: 'מכירה' on
+    // every product line, the cshev value on non-product lines, and a NEW kind,
+    // 'שורת זיכוי' — a credited product line (22,616 rows, -₪347K over
+    // Jan-Nov in the first delivery). A credit line carries the item id, a
+    // NEGATIVE quantity and line_total, no cost, and a filler order_line_id
+    // ('999'), so without this column it would pass for a product line and net
+    // straight out of product revenue. line_kind = 'credit' is derived from it.
+    { csvName: 'סוג שורה',           dbName: 'line_type',       type: 'TEXT'    },
+    // Filled on credit lines only: the back office's reason ("מוצר חסר – מרלוג").
+    { csvName: 'סיבת זיכוי',         dbName: 'credit_reason',   type: 'TEXT'    },
   ],
 
   // ── orders ──────────────────────────────────────────────────────────────────
   orders: [
     { csvName: 'הזמנה',              dbName: 'order_id',            type: 'TEXT'    },
     { csvName: 'מספר לקוח',          dbName: 'customer_id',         type: 'TEXT'    },
+    // Added by the client 2026-11-19 at our request. Filled only on RECENT
+    // orders — 13,411 of 119,790 in the first delivery: every November order,
+    // 61% of October, none before. The source system did not record it
+    // earlier, so a "by city" answer covers only the dates that carry it.
+    { csvName: 'עיר לקוח',           dbName: 'customer_city',       type: 'TEXT'    },
     { csvName: 'אמצעי תשלום',        dbName: 'payment_method',      type: 'TEXT'    },
     { csvName: 'קוד אמצעי תשלום',    dbName: 'payment_method_code', type: 'TEXT'    },
     { csvName: 'שיטת משלוח',         dbName: 'shipping_method',     type: 'TEXT'    },
@@ -73,6 +88,9 @@ const COLUMN_MAP = {
     // would make "how many orders were completed" answerable two ways with no
     // way for the reader to tell which they got. `order_status` is the
     // system's own; the Hebrew pair is the display status.
+    // The system pair and סטטוס לחישוב were DROPPED from the export on
+    // 2026-11-19 — kept mapped only so an older file still loads. Nothing
+    // downstream may name them: display_status is the only status now.
     { csvName: 'מזהה סטטוס הזמנה',   dbName: 'display_status_id',   type: 'TEXT'    },
     { csvName: 'סטטוס הזמנה',        dbName: 'display_status',      type: 'TEXT'    },
     { csvName: 'order_status_id',    dbName: 'order_status_id',     type: 'TEXT'    },

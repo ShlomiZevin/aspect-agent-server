@@ -68,6 +68,30 @@ const LINE_KIND_WITH_EXTRA_SQL = `
     ) STORED`;
 
 /**
+ * From 2026-11-19 the source also ships its own row type (`סוג שורה`, loaded
+ * as `line_type`), and with it CREDIT lines: 'שורת זיכוי', a credited product
+ * line with a negative quantity and line_total and a filler order_line_id
+ * ('999'). The product rule above would take them for products and net
+ * -₪347K out of product revenue, so they are matched FIRST and kept as their
+ * own kind. Product lines ('מכירה') are exactly the rows the product rule
+ * already found — 3,799,891 in the file and in the live table on that day.
+ *
+ *   credit    — a credited product line, negative; reason in credit_reason
+ */
+const LINE_KIND_WITH_TYPE_SQL = `
+  ALTER TABLE %SCHEMA%.order_lines
+    ADD COLUMN "line_kind" TEXT
+    GENERATED ALWAYS AS (
+      CASE
+        WHEN "line_type" = 'שורת זיכוי' THEN 'credit'
+        WHEN "order_line_id" IS NOT NULL AND "order_line_id" <> '' THEN 'product'
+        WHEN "extra_kind" = 'coupon' THEN 'coupon'
+        WHEN "extra_kind" IN ('bgfnttl', 'cartdis') THEN 'discount'
+        ELSE 'shipping'
+      END
+    ) STORED`;
+
+/**
  * From 2026-10-05 the Orders export also carries the Canceld (credits) rows,
  * appended as extra rows: the order id, its status and five credit columns,
  * with the customer and every other order column empty. Left in, one order
@@ -126,7 +150,9 @@ const INDEXES = [
   { name: 'idx_orders_order_id',        table: 'orders', col: '"order_id"' },
   { name: 'idx_orders_date',            table: 'orders', col: '"order_date"' },
   { name: 'idx_orders_customer',        table: 'orders', col: '"customer_id"' },
-  { name: 'idx_orders_status',          table: 'orders', col: '"order_status"' },
+  // display_status, not order_status: the system status was dropped from the
+  // export on 2026-11-19, and an index on a missing column fails Phase 2.
+  { name: 'idx_orders_display_status',  table: 'orders', col: '"display_status"' },
 
   // ── products (16,537 rows) ─────────────────────────────────────────────────
   { name: 'idx_products_item_id',       table: 'products', col: '"item_id"' },
@@ -165,13 +191,18 @@ async function createIndexes(targetSchema, emitLog) {
     );
     if (rows.length === 0) {
       const t0 = Date.now();
-      const { rows: extra } = await client.query(
-        `SELECT 1 FROM information_schema.columns
-          WHERE table_schema = $1 AND table_name = 'order_lines' AND column_name = 'extra_kind'`,
+      const { rows: kindCols } = await client.query(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_schema = $1 AND table_name = 'order_lines' AND column_name IN ('extra_kind', 'line_type')`,
         [schema]
       );
-      const sql = extra.length ? LINE_KIND_WITH_EXTRA_SQL : LINE_KIND_SQL;
-      log(`Adding derived line_kind column to order_lines (one table rewrite, ${extra.length ? 'from extra_kind' : 'legacy two-way'})...`);
+      const has = new Set(kindCols.map(r => r.column_name));
+      const [sql, source] = has.has('line_type') && has.has('extra_kind')
+        ? [LINE_KIND_WITH_TYPE_SQL, 'from line_type + extra_kind']
+        : has.has('extra_kind')
+          ? [LINE_KIND_WITH_EXTRA_SQL, 'from extra_kind']
+          : [LINE_KIND_SQL, 'legacy two-way'];
+      log(`Adding derived line_kind column to order_lines (one table rewrite, ${source})...`);
       await client.query(sql.replace(/%SCHEMA%/g, schema));
       log(`line_kind added in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     } else {

@@ -19,6 +19,11 @@
  * 2026-09-23: the client added line cost, supplier and unit cost, dropped the
  * order total and catalogue price, and added a raw kind for non-product rows
  * (coupons, discounts). Rules 1, 3, 3a, 3b, 4, 5 were rewritten for it.
+ *
+ * 2026-11-19: the client added customer city (recent orders only), moved
+ * credits into order_lines as their own row type, and dropped the system
+ * order status. Rules 1, 3, 4, 7, 7a were rewritten for it; the `credits`
+ * table is no longer loaded.
  */
 
 function superhistRules(schemaName) {
@@ -43,6 +48,7 @@ The kind is given by \`line_kind\`, a derived column added at load time:
 | \`'shipping'\` | the delivery charge. NO item, NO quantity |
 | \`'coupon'\` | a coupon redemption — NEGATIVE line_total; item_id holds the coupon name/code |
 | \`'discount'\` | a free-shipping benefit or cart discount — NEGATIVE line_total |
+| \`'credit'\` | a CREDITED product line (refund after the order) — item_id, NEGATIVE quantity and line_total, no cost; reason in \`credit_reason\` |
 
 A non-product row carries a NAME in \`item_id\` (delivery method, coupon code).
 So:
@@ -51,7 +57,9 @@ So:
 - Delivery income is \`WHERE line_kind = 'shipping'\`; coupons are
   \`line_kind = 'coupon'\` (report as a positive amount redeemed with ABS or
   say they are negative). Never mix any of them into product revenue.
-- \`extra_kind\` is the source's own raw kind for these rows; prefer \`line_kind\`.
+- Credits are \`line_kind = 'credit'\`, never part of revenue or of an order
+  total — see RULE 7a.
+- \`extra_kind\` and \`line_type\` are the source's own raw kinds; prefer \`line_kind\`.
 
 ### RULE 2 — the date lives on the ORDER, not the line
 \`order_lines\` has no date column. Every time-based question joins
@@ -61,8 +69,8 @@ line table.
 ### RULE 3 — revenue is the line total. Subsidy is NOT subtracted.
 \`line_total\` = \`quantity\` × \`unit_price\`, exactly, on every product line, and
 it is what the member was charged. \`orders\` has NO total column — an order's
-total is the SUM of ALL its lines (products + shipping + negative coupons and
-discounts).
+total is the SUM of its lines EXCEPT credits (products + shipping + negative
+coupons and discounts): \`WHERE line_kind <> 'credit'\`.
 
 \`subsidy\` is the Histadrut's contribution — the value of the member benefit,
 recorded alongside the charge, NOT deducted from it.
@@ -101,12 +109,12 @@ catalogue rows.
 ### RULE 4 — prefer the materialized views for aggregates
 | view | grain | use for |
 |---|---|---|
-| \`mv_orders_daily\` | day | orders, members, revenue, cost, gross_profit, subsidy, units, shipping, coupons, discounts, orders_with_coupon, order_total_inc_vat |
+| \`mv_orders_daily\` | day | orders, members, revenue, cost, gross_profit, subsidy, units, shipping, coupons, discounts, credits, orders_with_coupon, order_total_inc_vat |
 | \`mv_sales_daily_item\` | day × item | top sellers / profit per item over a period (has supplier_name) |
 | \`mv_sales_daily_supplier\` | day × supplier | revenue, cost, gross profit, units by supplier |
 | \`mv_sales_item\` | item (lifetime) | best sellers overall, loss-making items, stock vs demand, supplier, unit_cost |
 | \`mv_customers\` | member | repeat rate, spend per member |
-| \`mv_orders_by_status\` | day × status | order status flow |
+| \`mv_orders_by_status\` | day × display_status | order status flow |
 
 The views already filter \`line_kind = 'product'\` for product measures and
 already join the order date, so a question they cover needs no join at all.
@@ -125,23 +133,23 @@ or use a materialized view, which already does. A duplicated dimension row
 multiplies every fact it joins — the same defect inflated another client's
 revenue by 44.6%.
 
-### RULE 7 — two status columns, and they disagree
-\`order_status\` (the system's) and \`display_status\` (the Hebrew display value)
-disagree on thousands of orders. \`display_status\` is the CURRENT one: where
-they differ, display_status is the later stage (order_status still says
-'ממתין לשליח' on orders display_status already shows as 'הושלם'). So any
-question about an order's current state — waiting, delivered, credited — uses
-\`display_status\` ONLY; never OR the two columns together, which counts an
-already-completed order as still waiting. NAME the column in the output.
-\`counts_for_totals\` filters nothing — do not use it as a filter and do not
-describe it as one.
+### RULE 7 — order status is \`display_status\`
+\`orders.display_status\` (Hebrew) is the order's current state — waiting,
+delivered, credited. It is the ONLY status column; the export no longer
+carries a system status or a "counts for totals" flag.
 
 ### RULE 7a — operational questions the client asks by name
+- **Customer city** ("עיר", "לפי עיר", "by city"): \`orders.customer_city\`.
+  It is filled ONLY on recent orders — the source started recording it
+  recently, and every older order has it empty. A "by city" answer must
+  filter \`NULLIF(customer_city, '') IS NOT NULL\` and return the date range
+  it covers (MIN/MAX order_date of the orders WITH a city) so the reader sees
+  the answer is not the whole history. If the asked period lies before that
+  range, say city was not recorded then — never fill it with another column.
+  No street address exists; never substitute shipping_method for city.
 - **Deliveries waiting for a courier / not delivered** ("ממתין לשליח", "לא
-  סופקו"): \`display_status = 'ממתין לשליח'\`. There is NO customer city or
-  address in this data. When the question asks "by city", group by date only
-  and add a column or note saying city is not in the data — never substitute
-  shipping_method or anything else for city.
+  סופקו"): \`display_status = 'ממתין לשליח'\`. "By city" here follows the
+  customer city rule above.
 - **Delayed deliveries** ("משלוחים מעוכבים"): orders with
   \`display_status = 'ממתין לשליח'\` placed 10 or more calendar days before the
   last order date in the data:
@@ -173,16 +181,14 @@ describe it as one.
   skipped. Order value is NOT the credited amount; say so, never present it as
   money refunded. Never present the partial-credit count as "all cancellations".
 - **Credited amounts and reasons** ("סכום זיכוי", "סיבת זיכוי", "כמה זיכינו"):
-  \`${schemaName}.credits\` — one row per credited product line: order_id,
-  product_name, quantity, credit_reason, credited_at, credit_amount,
-  order_status. quantity, credit_amount and credited_at are stored as TEXT:
-  use \`NULLIF(regexp_replace(credit_amount, '[^0-9.-]', '', 'g'), '')::numeric\`
-  and \`credited_at::timestamp\`. Group by credit_reason for "why", by
-  \`date_trunc('month', credited_at::timestamp)\` for trends. The file covers
-  only the dates it covers — state its MIN/MAX credited_at in the answer and
-  never extrapolate to months it does not reach. Cancellation and credit
-  questions answer with BOTH the status counts above AND the credited amount
-  from this table.
+  \`order_lines\` WHERE \`line_kind = 'credit'\` — one row per credited product
+  line: order_id, item_id, quantity and line_total (both NEGATIVE — report the
+  credited amount as \`-SUM(line_total)\` or say it is negative),
+  credit_reason. There is no credit date: a credit is dated by its ORDER's
+  \`order_date\` (join orders), so say "credits on orders placed in <period>".
+  Group by credit_reason for "why"; join products (RULE 6) for product names.
+  Cancellation and credit questions answer with BOTH the status counts above
+  AND the credited amount from these lines.
 
 ### RULE 7b — subsidy is SIGNED. Never report only the net.
 \`order_lines.subsidy\` is positive on some product lines and NEGATIVE on most

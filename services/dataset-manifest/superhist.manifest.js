@@ -39,6 +39,10 @@ module.exports = {
     },
     'shipping income': { fidelity: 'exact', basis: "order_lines.line_total on rows where line_kind = 'shipping'" },
     'coupons / discounts': { fidelity: 'exact', basis: "line_total where line_kind = 'coupon' / 'discount' — negative, report as amount redeemed" },
+    'credits / refunds': {
+      fidelity: 'exact',
+      basis: "line_total where line_kind = 'credit' — negative, dated by the order; outside revenue and order totals",
+    },
     'basket size': { fidelity: 'exact', basis: 'units or value divided by distinct orders' },
     'member count': { fidelity: 'exact', basis: 'distinct orders.customer_id' },
     // Added 2026-09-23 when the client delivered a line-level cost column.
@@ -70,13 +74,19 @@ module.exports = {
       status: 'available',
       detail: "line_kind 'coupon' (item_id = coupon code) or 'discount'; negative line_total",
     },
-    'member / customer': { status: 'available', detail: 'orders.customer_id — an identifier only. No name, no city, no demographics' },
+    'member / customer': { status: 'available', detail: 'orders.customer_id — an identifier only. No name, no demographics' },
+    // Added by the client 2026-11-19. Measured on that delivery: filled on
+    // 13,411 of 119,790 orders — all of November, 61% of October, none
+    // earlier — 730 distinct values.
+    'customer city': {
+      status: 'limited',
+      detail: 'orders.customer_city — recent orders only; a by-city answer must state the dates it covers',
+    },
     'payment method': { status: 'available', detail: 'orders.payment_method / payment_method_code' },
     'shipping method': { status: 'available', detail: 'orders.shipping_method / shipping_code' },
     'order status': {
-      status: 'unreliable',
-      detail: 'TWO status columns that disagree on 7,176 of 19,062 orders — order_status (system) and display_status (Hebrew display). Any status answer must name which one it used. counts_for_totals is 1 on every row and filters nothing',
-      roadmap: 'client says which of the two is authoritative for reporting',
+      status: 'available',
+      detail: 'orders.display_status — the only status column',
     },
     'product category': {
       status: 'absent',
@@ -116,6 +126,8 @@ module.exports = {
       detail: 'order_lines.line_cost on product lines — cost of the whole line' },
     { terms: ['ספק', 'supplier'], resolution: 'field', detail: 'products.supplier_name' },
     { terms: ['קופון', 'coupon'], resolution: 'field', detail: "order_lines where line_kind = 'coupon' — negative amounts" },
+    { terms: ['עיר', 'ערים', 'city', 'cities'], resolution: 'field', detail: 'orders.customer_city — recent orders only' },
+    { terms: ['זיכוי', 'זיכויים', 'credit', 'refund'], resolution: 'field', detail: "order_lines line_kind = 'credit', reason in credit_reason" },
   ],
 
   dataFacts: [
@@ -155,6 +167,7 @@ module.exports = {
     { pattern: /\bproducts?\b|\bitems?\b|מוצר|פריט/i, entity: 'product', expectGroupByAny: ['item_id', 'item_name', 'sku'] },
     { pattern: /members?|customers?|לקוח|חבר/i, entity: 'member', expectGroupByAny: ['customer_id'] },
     { pattern: /payment|תשלום/i, entity: 'payment method', expectGroupByAny: ['payment_method', 'payment_method_code'] },
+    { pattern: /\bcit(y|ies)\b|לפי\s+עיר|ערים/i, entity: 'city', expectGroupByAny: ['customer_city'] },
   ],
 
   // Deterministic pre-flight refusals, keyed by the absent dimension. Triggers

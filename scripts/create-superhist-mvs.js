@@ -73,10 +73,15 @@ const ITEM_DIM = schema => `
  * column on 2026-09-23, so it is rebuilt here: every line of the order —
  * products, shipping, and the NEGATIVE coupon and discount lines — which is
  * what the member actually paid.
+ *
+ * Credit lines (line_kind = 'credit', from 2026-11-19) are refunds made AFTER
+ * the order and are left out, so the order total keeps the meaning it had;
+ * mv_orders_daily carries them on their own as `credits`.
  */
 const ORDER_TOTALS = schema => `
   SELECT order_id, SUM(line_total) AS order_total
     FROM ${schema}.order_lines
+   WHERE line_kind <> 'credit'
    GROUP BY order_id`;
 
 /**
@@ -108,7 +113,6 @@ const SALES = schema => `
   SELECT o.order_date,
          l.order_id,
          o.customer_id,
-         o.order_status,
          o.payment_method,
          o.shipping_method,
          l.item_id,
@@ -145,11 +149,12 @@ function mvs(schema) {
                COALESCE(SUM(k.shipping_total), 0)                  AS shipping_inc_vat,
                COALESCE(SUM(k.coupon_total), 0)                    AS coupons,
                COALESCE(SUM(k.discount_total), 0)                  AS discounts,
+               COALESCE(SUM(k.credit_total), 0)                    AS credits,
                COUNT(DISTINCT o.order_id) FILTER (WHERE k.coupon_total <> 0) AS orders_with_coupon
           FROM ${schema}.orders o
           LEFT JOIN (
             SELECT order_id,
-                   SUM(line_total)                                          AS order_total,
+                   SUM(line_total) FILTER (WHERE line_kind <> 'credit')     AS order_total,
                    SUM(line_total) FILTER (WHERE line_kind = 'product')     AS product_revenue,
                    SUM(line_cost)  FILTER (WHERE line_kind = 'product')     AS cost,
                    SUM(line_total - line_cost) FILTER (WHERE line_kind = 'product') AS gross_profit,
@@ -157,7 +162,8 @@ function mvs(schema) {
                    SUM(quantity)   FILTER (WHERE line_kind = 'product')     AS units,
                    SUM(line_total) FILTER (WHERE line_kind = 'shipping')    AS shipping_total,
                    SUM(line_total) FILTER (WHERE line_kind = 'coupon')      AS coupon_total,
-                   SUM(line_total) FILTER (WHERE line_kind = 'discount')    AS discount_total
+                   SUM(line_total) FILTER (WHERE line_kind = 'discount')    AS discount_total,
+                   SUM(line_total) FILTER (WHERE line_kind = 'credit')      AS credit_total
               FROM ${schema}.order_lines
              GROUP BY order_id
           ) k ON k.order_id = o.order_id
@@ -283,25 +289,23 @@ function mvs(schema) {
     },
 
     // ── mv_orders_by_status — day x status ───────────────────────────────────
-    // Both status columns, side by side and both named, because they disagree
-    // on 7,176 of 19,062 orders. A view that silently picked one would make
-    // "how many completed" answerable two ways with no way to tell which
-    // arrived.
+    // display_status only. Until 2026-11-19 the system's order_status sat
+    // beside it (the two disagreed on 7,176 of 19,062 orders); the export then
+    // dropped it, and a view naming a missing column fails the whole Phase 2.
     {
       name: 'mv_orders_by_status',
       sql: `
         SELECT o.order_date,
-               COALESCE(o.order_status, '(none)')   AS order_status,
                COALESCE(o.display_status, '(none)') AS display_status,
                COUNT(*)                             AS order_count,
                SUM(t.order_total)                   AS order_total_inc_vat
           FROM ${schema}.orders o
           LEFT JOIN (${ORDER_TOTALS(schema)}) t ON t.order_id = o.order_id
          WHERE o.order_date IS NOT NULL
-         GROUP BY o.order_date, COALESCE(o.order_status, '(none)'), COALESCE(o.display_status, '(none)')`,
+         GROUP BY o.order_date, COALESCE(o.display_status, '(none)')`,
       indexes: [{
         name: 'uq_mv_orders_by_status',
-        col: 'order_date, order_status, display_status',
+        col: 'order_date, display_status',
         unique: true,
       }],
     },

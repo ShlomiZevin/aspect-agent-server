@@ -26,7 +26,7 @@ orders ──< order_lines >── products ── (categories)
 | `categories` | 110 | marketing collections, **not** a taxonomy |
 | `calendar` | 367 | all of 2026 |
 | `stock_history` | ~3.3k/day | daily stock snapshot (task #72) |
-| `credits` | 11,678 | credited product lines, from 2026-10-05 |
+| ~~`credits`~~ | — | the Canceld file; loaded 2026-10-05 to 2026-11-19, retired (credits now live in `order_lines`) |
 
 ## Five things measured on 2026-09-02 that shape everything
 
@@ -88,6 +88,21 @@ Points 4 and 5 above are history. As of 2026-10-05:
 - **Signed subsidy**: most product lines carry a negative subsidy; always
   report positive / negative / net, never the bare net.
 
+As of 2026-11-19 (Reut, the client's BI developer):
+
+- **Customer city**: `orders.customer_city` (`עיר לקוח`). Filled only on recent
+  orders — every November order, 61% of October, none earlier (13,411 of
+  119,790). A by-city answer must state the dates it covers.
+- **Credits moved into OrderLine**: a new `סוג שורה` column (`line_type`) and
+  `סיבת זיכוי` (`credit_reason`). Credit rows ('שורת זיכוי', 22,616 lines,
+  -₪347K, Jan-Nov) have a filler line id, so they would have read as products;
+  `line_kind = 'credit'` is matched first. They are outside revenue and outside
+  order totals; `mv_orders_daily.credits` carries them. The `Canceld` file is
+  no longer loaded — its GCS copy stopped at 2026-10-05.
+- **System status dropped**: `order_status`, `order_status_id` and
+  `counts_for_totals` are gone from Orders. `display_status` is the only
+  status; the status index and `mv_orders_by_status` use it alone.
+
 Operational rules for the client's own tiles (waiting / delayed deliveries,
 slow movers, turnover, credits) are in `superhist.rules.js` RULE 7a.
 
@@ -117,7 +132,7 @@ routes `/superhist` and `/intelligence/superhist`.
 | `mv_sales_daily_item` | day × item | top sellers over a period |
 | `mv_sales_item` | item, lifetime | best sellers, stock against demand |
 | `mv_customers` | member | repeat rate, spend per member |
-| `mv_orders_by_status` | day × status | both status columns, side by side |
+| `mv_orders_by_status` | day × display_status | order status flow |
 
 ## Bringing it up
 
