@@ -348,7 +348,10 @@ Shlomi brings it up. Still apply the board holds (tasks he parked or said to ign
    and release. No task comments.
 8. **Agenda:** conclusions and open decisions from any session go into his agenda
    (board `type: agenda`, `agendaFor:Shlomi`), not only into chat. A recommendation is
-   "המלצה", a meeting decision is "החלטה".
+   "המלצה", a meeting decision is "החלטה". A meeting's **action items** are the same kind
+   of task tagged `actionsFor:Shlomi` (never `agendaFor`); Noa, Hila and Shlomi comment
+   on each line at /tasks/actions. When you rewrite such a topic, keep each line's
+   `<!-- line:… -->` marker at the end of the line — the comments hang on it.
 9. **Then report** — section 10, nothing more.
 
 ## Related
