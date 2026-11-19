@@ -802,6 +802,16 @@ async function removeIfPresent(slug) {
     check('access: unknown agent → 404', (await get('/agents/zz-no-such-agent/access')).status === 404);
     check('access is read only (no POST)', (await post('/access', { email: 'x@y.z' })).status === 404);
 
+    // ── the agent's customer-chat users, real / test (tasks #999, #982) — read only ──
+    section('users');
+    check('entry page teaches the users pages', doc.text.includes(`${base}/agents/<slug>/users`) && doc.text.includes(`${base}/agents/<slug>/users/<user id>`));
+    const usersPage = await get(`/agents/${TEST_SLUG}/users`);
+    check('users read: real and test lists', usersPage.status === 200 && usersPage.text.includes(`Users of "${TEST_SLUG}"`)
+      && /Real customers \(\d+\):/.test(usersPage.text) && /Test users \(\d+\):/.test(usersPage.text), usersPage.text.slice(0, 200));
+    check('users: unknown agent → 404', (await get('/agents/zz-no-such-agent/users')).status === 404);
+    check('users: unknown user → 404', (await get(`/agents/${TEST_SLUG}/users/999999999`)).status === 404);
+    check('users are read only (no POST)', (await post(`/agents/${TEST_SLUG}/users/1/suspend`, {})).status === 404);
+
     // ── refusals ──
     section('refusals');
     check('string body → 400', (await post(`/agents/${TEST_SLUG}`, { body: 'nope' })).status === 400);

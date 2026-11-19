@@ -67,6 +67,7 @@ const loadTests = require('../services/loadTests');
 const errorCenter = require('../services/errorCenter');
 const customerProblems = require('../services/customerProblems');
 const manageAccess = require('../services/manageAccess');
+const manageUsers = require('../services/manageUsers');
 const { publicBaseOf } = require('./publicBase');
 const modelsService = require('../../services/models.service');
 const environments = require('../environments');
@@ -869,6 +870,19 @@ customer chat) — every line is listed either way. The Hebrew sentences are the
 page shows the person (\`/lybi/manage/<slug>\` on the Lybi site) — quote them
 as they are; don't translate them into codes. For the technical side of
 one line, the error list above. Read only.
+
+**Who the agent's users are — real customers and test users**
+
+| To see | Fetch |
+|---|---|
+| The people of the agent's customer chat, in two lists: REAL customers (marked "Real customer") and TEST users — name, phone, conversations, created, last active, suspended | \`${base}/agents/<slug>/users\` |
+| One user and their customer conversations (each with a link to read it) | \`${base}/agents/<slug>/users/<user id>\` |
+
+A user = anyone who talked to the agent in the customer chat, or was added
+for it in Admin → Users. Builder test-chat owners, simulations and
+synthetic personas are not listed. The same lists as the management
+center's Users page (\`/lybi/manage/<slug>/users\`), where a person
+suspends, marks real / test or deletes a user. Read only here.
 
 **Who can open the management center**
 
@@ -3109,6 +3123,75 @@ router.get('/agents/:slug/customer-problems', async (req, res) => {
       `Technical details (kinds, codes, every occurrence): ${urls(req).base}/agents/${encodeURIComponent(slug)}/errors?source=customer`].join('\n'));
   } catch (err) {
     simFail(res, err, 'list the customer-chat problems');
+  }
+});
+
+// ─── The agent's customer-chat users, real / test (tasks #999, #982) — read only ─
+// Same list as the management center's Users page (/lybi/manage/<slug>/users):
+// builder/services/manageUsers.js. Changing a user (suspend, real customer,
+// delete) is done by a person on that page or in Admin → Users, not here.
+
+router.get('/agents/:slug/users', async (req, res) => {
+  try {
+    const slug = req.params.slug;
+    if (!(await customerProblems.agentExists(slug))) {
+      return res.status(404).type('text/plain').send(`No agent "${slug}". Fetch ${urls(req).base}/agents for the list of agents.`);
+    }
+    const data = await manageUsers.listUsers({ slug });
+    const env = environments.currentEnvironment(urls(req).origin);
+    const page = `${env ? env.app : '<the Lybi site>'}/lybi/manage/${encodeURIComponent(slug)}/users`;
+    const line = u => `- user ${u.id} · ${u.name || '(no name)'}${u.phone ? ` · phone ${u.phone}` : ''}${u.email ? ` · ${u.email}` : ''}`
+      + `${!u.name && u.externalId ? ` · id ${u.externalId}` : ''}`
+      + ` · ${u.conversations} customer conversation(s) · created ${u.createdAt ? u.createdAt.slice(0, 10) : '—'}`
+      + ` · last active ${u.lastActiveAt || '—'}${u.suspended ? ` · SUSPENDED since ${String(u.suspendedAt).slice(0, 10)}` : ''}`
+      + `${u.shared ? ' · also on other agents' : ''}`;
+    const real = data.users.filter(u => u.audience === 'real');
+    const test = data.users.filter(u => u.audience === 'test');
+    sendText(res, [
+      `Users of "${slug}" — the people of its customer chat (anyone who talked to it there, or was added for it in Admin → Users). Checked ${data.checkedAt}.`,
+      'REAL customer = the user is marked "Real customer" (Admin → Users, or the management center); their new conversations are real and triggers reach them. Everyone else is a TEST user (the team trying the chat, scripts).',
+      'Builder test-chat owners, simulations and synthetic personas are not users of the customer chat and are not listed.',
+      `The same list as the management center's Users page (${page}), where a person suspends, marks real / test or deletes a user. Read only here.`,
+      '',
+      `Real customers (${real.length}):`,
+      ...(real.length ? real.map(line) : ['- none']),
+      '',
+      `Test users (${test.length}):`,
+      ...(test.length ? test.map(line) : ['- none']),
+      ...(data.truncated ? ['', `Only the ${data.limit} most recently active users are listed.`] : []),
+      '',
+      `One user and their customer conversations: ${urls(req).base}/agents/${encodeURIComponent(slug)}/users/<user id>.`,
+    ].join('\n'));
+  } catch (err) {
+    simFail(res, err, 'list the users');
+  }
+});
+
+router.get('/agents/:slug/users/:userId', async (req, res) => {
+  try {
+    const slug = req.params.slug;
+    if (!(await customerProblems.agentExists(slug))) {
+      return res.status(404).type('text/plain').send(`No agent "${slug}". Fetch ${urls(req).base}/agents for the list of agents.`);
+    }
+    const u = await manageUsers.getUser({ slug, userId: req.params.userId });
+    if (!u) {
+      return res.status(404).type('text/plain').send(`No user ${req.params.userId} in the customer chat of "${slug}". Fetch ${urls(req).base}/agents/${encodeURIComponent(slug)}/users for the list.`);
+    }
+    const convs = await manageUsers.listConversations({ slug, userId: u.id });
+    sendText(res, [
+      `User ${u.id} of "${slug}": ${u.name || '(no name)'} — ${u.audience === 'real' ? 'REAL customer' : 'TEST user'}${u.suspended ? `, SUSPENDED since ${String(u.suspendedAt).slice(0, 10)} (cannot chat; nothing deleted)` : ''}.`,
+      `Phone: ${u.phone || '—'} · email: ${u.email || '—'} · id: ${u.externalId || '—'}`,
+      `Created ${u.createdAt || '—'} · last active ${u.lastActiveAt || '—'}${u.shared ? ' · also belongs to other agents' : ''}`,
+      '',
+      `Customer conversations (${convs.length}${convs.length >= manageUsers.MAX_CONVERSATIONS ? `, the newest ${manageUsers.MAX_CONVERSATIONS}` : ''}):`,
+      ...(convs.length
+        ? convs.map(c => `- conversation ${c.id} · ${c.audience === 'real' ? 'REAL' : 'TEST'} · started ${c.startedAt || '—'} · last ${c.lastActivityAt || '—'} · ${c.messageCount} message(s)${c.phase ? ` · phase: ${c.phase}` : ''} · read it: ${urls(req).base}/conversations/${c.id}`)
+        : ['- none yet']),
+      '',
+      'Read only.',
+    ].join('\n'));
+  } catch (err) {
+    simFail(res, err, 'read the user');
   }
 });
 

@@ -45,6 +45,41 @@ const LAST = [ // newest first, as the query's inner ORDER BY id DESC … the ou
   { id: 1, role: 'user', content: 'שלום, אני רוצה לפתוח חשבון', created_at: T0 },
 ];
 const queries = [];
+// Rows as the Users query returns them (one per user per agent).
+const USERS = [
+  { id: 1, name: 'Ronit', phone: '0501234567', email: null, external_id: 'manual_acme_0501234567_1', created_at: T0, last_active_at: null,
+    real_customer: true, suspended_at: null, slug: 'acme', conversations: 2, last_seen: T0, shared: false },
+  { id: 2, name: null, phone: null, email: null, external_id: 'smoke914-1792', created_at: T0, last_active_at: null,
+    real_customer: false, suspended_at: null, slug: 'acme', conversations: 1, last_seen: null, shared: false },
+  { id: 3, name: 'Shared Sam', phone: '0509999999', email: 'sam@x.com', external_id: 'builder-owner-x', created_at: T0, last_active_at: T0,
+    real_customer: false, suspended_at: null, slug: 'acme', conversations: 1, last_seen: T0, shared: true },
+  { id: 4, name: 'Olga', phone: '0521111111', email: null, external_id: 'manual_other_1', created_at: T0, last_active_at: T0,
+    real_customer: true, suspended_at: null, slug: 'other', conversations: 3, last_seen: T0, shared: false },
+];
+const USER_CONVS = [
+  { user_id: 1, slug: 'acme', id: 10, created_at: T0, last_message_at: new Date(T0.getTime() + 600000), audience: 'real', phase: 'Opening', message_count: 12 },
+  { user_id: 1, slug: 'acme', id: 11, created_at: T0, last_message_at: T0, audience: null, phase: null, message_count: 2 },
+];
+// Admin's own operations (services/admin.service.js) — the Users page reuses them.
+const adminCalls = [];
+const fakeAdmin = {
+  async setSuspended(id, suspended) {
+    adminCalls.push(['suspend', id, suspended]);
+    USERS.filter(u => u.id === id).forEach(u => { u.suspended_at = suspended ? T0.toISOString() : null; });
+    return { id };
+  },
+  async setRealCustomer(id, real) {
+    adminCalls.push(['real', id, real]);
+    USERS.filter(u => u.id === id).forEach(u => { u.real_customer = real; });
+    return { id };
+  },
+  async deleteUser(id) {
+    adminCalls.push(['delete', id]);
+    const n = USERS.filter(u => u.id === id).reduce((s, u) => s + u.conversations, 0);
+    for (let i = USERS.length - 1; i >= 0; i--) if (USERS[i].id === id) USERS.splice(i, 1);
+    return { userId: id, deletedConversations: n, deletedMessages: 0 };
+  },
+};
 
 const fakeDb = {
   async query(sql, params = []) {
@@ -66,6 +101,14 @@ const fakeDb = {
     if (/SELECT id FROM builder_agents WHERE slug/.test(sql)) return { rows: AGENTS.filter(a => a.slug === params[0]).map(a => ({ id: a.id })) };
     if (/a\.id = ANY/.test(sql)) return { rows: AGENTS.filter(a => !params[0] || params[0].includes(a.id)) };
     if (/FROM builder_agents a/.test(sql)) return { rows: AGENTS.filter(a => !params[0] || a.slug === params[0]) };
+    // The Users page (#999): builder/services/manageUsers.js
+    if (/WITH live AS/.test(sql)) {
+      const [slugs, one, id] = params;
+      return { rows: USERS.filter(u => slugs.includes(u.slug) && (!one || u.slug === one) && (id === null || u.id === id)).map(u => ({ ...u })) };
+    }
+    if (/WHERE c\.user_id = \$1 AND lower\(a\.url_slug\) = \$2/.test(sql)) {
+      return { rows: USER_CONVS.filter(c => c.user_id === params[0] && c.slug === params[1]) };
+    }
     if (/FROM conversations c/.test(sql) && /currentCrewId/.test(sql)) {
       return { rows: params[0] === CONVERSATION.id && params[1] === CONVERSATION.agent_slug ? [CONVERSATION] : [] };
     }
@@ -94,6 +137,9 @@ const fakeGoogle = {
 };
 const gPath = require.resolve(path.join(__dirname, '..', 'services', 'google-auth.service'));
 require.cache[gPath] = { id: gPath, filename: gPath, loaded: true, exports: fakeGoogle };
+
+const adminPath = require.resolve(path.join(__dirname, '..', 'services', 'admin.service'));
+require.cache[adminPath] = { id: adminPath, filename: adminPath, loaded: true, exports: fakeAdmin };
 
 const manageSession = require('../builder/services/manageSession');
 const manageAccess = require('../builder/services/manageAccess');
@@ -213,8 +259,60 @@ function check(name, cond, extra = '') {
     check('the super-admin key opens nothing any more',
       (await fetch(`http://127.0.0.1:${port}/api/manage/customer-problems`, { headers: { 'X-Super-Admin-Key': require('../services/super-admin').SUPER_ADMIN_KEY } })).status === 401);
 
+    // ─── The Users page (#999, #982, #991) ─────────────────────────
+    console.log('\n-- users');
+    const ul = await call('GET', '/api/manage/agents/acme/users', { token: acmeT });
+    check('users: the agent\'s people, real and test', ul.status === 200 && ul.json.users.length === 3 && ul.json.real === 1 && ul.json.test === 2, ul.text.slice(0, 200));
+    const ronit = ul.json && ul.json.users.find(x => x.id === 1);
+    check('…each with name / phone / conversations / created / last active / agent name',
+      !!ronit && ronit.name === 'Ronit' && ronit.phone === '0501234567' && ronit.conversations === 2 && ronit.audience === 'real'
+      && ronit.createdAt === T0.toISOString() && ronit.lastActiveAt === T0.toISOString() && ronit.agentName === 'Acme bank' && ronit.suspended === false);
+    check('…no internals (no metadata, role, tenant)', ul.status === 200 && !/metadata|"role"|tenant/.test(ul.text));
+    const usersSql = queries.find(q => /WITH live AS/.test(q.sql));
+    check('…customer chat only, synthetic left out, real = the "Real customer" mark',
+      !!usersSql && /c\.kind = 'user'/.test(usersSql.sql) && /metadata->>'kind' = 'live'/.test(usersSql.sql)
+      && /'synthetic'/.test(usersSql.sql) && /'realCustomer'\) = 'true'/.test(usersSql.sql) && usersSql.params[1] === 'acme');
+    check('users: another agent → 403', (await call('GET', '/api/manage/agents/other/users', { token: acmeT })).status === 403);
+    check('users: no token → 401', (await call('GET', '/api/manage/agents/acme/users')).status === 401);
+    check('every agent\'s users: two-agent grant → 403 not_all', (await call('GET', '/api/manage/users', { token: twoT })).json?.code === 'not_all');
+    const ua = await call('GET', '/api/manage/users', { token: noaT });
+    check('every agent\'s users for the team', ua.status === 200 && ua.json.scope === 'all' && ua.json.users.length === 4 && ua.json.users.some(x => x.agentName === 'Other'));
+
+    const ud = await call('GET', '/api/manage/agents/acme/users/1', { token: acmeT });
+    check('user window: the user + their customer conversations, newest first',
+      ud.status === 200 && ud.json.user.id === 1 && ud.json.conversations.map(c => c.id).join() === '10,11'
+      && ud.json.conversations[0].phase === 'Opening' && ud.json.conversations[0].messageCount === 12 && ud.json.conversations[1].audience === 'test');
+    check('user window: a user of another agent → 404 no_user', (await call('GET', '/api/manage/agents/acme/users/4', { token: acmeT })).json?.code === 'no_user');
+
+    const sus = await call('POST', '/api/manage/agents/acme/users/1/suspend', { token: acmeT, body: { suspended: true } });
+    check('suspend: Admin\'s own operation, the row comes back suspended',
+      sus.status === 200 && sus.json.user.suspended === true && JSON.stringify(adminCalls.at(-1)) === '["suspend",1,true]');
+    const back = await call('POST', '/api/manage/agents/acme/users/1/suspend', { token: acmeT, body: { suspended: false } });
+    check('reactivate', back.status === 200 && back.json.user.suspended === false);
+    const mk = await call('POST', '/api/manage/agents/acme/users/2/real-customer', { token: acmeT, body: { real: true } });
+    check('mark real customer: moves to the real part', mk.status === 200 && mk.json.user.audience === 'real' && JSON.stringify(adminCalls.at(-1)) === '["real",2,true]');
+    const calls = adminCalls.length;
+    const shared = await call('POST', '/api/manage/agents/acme/users/3/suspend', { token: acmeT, body: { suspended: true } });
+    check('a person on other agents too → 409 user_shared, nothing changed', shared.status === 409 && shared.json.code === 'user_shared' && adminCalls.length === calls);
+    check('…delete refused too', (await call('DELETE', '/api/manage/agents/acme/users/3', { token: acmeT })).status === 409 && adminCalls.length === calls);
+    check('act on another agent\'s user → 403', (await call('DELETE', '/api/manage/agents/other/users/4', { token: acmeT })).status === 403 && adminCalls.length === calls);
+    check('act on a user not of this agent → 404', (await call('POST', '/api/manage/agents/acme/users/4/real-customer', { token: noaT, body: { real: false } })).status === 404 && adminCalls.length === calls);
+    check('act without a token → 401', (await call('DELETE', '/api/manage/agents/acme/users/2')).status === 401);
+    const del = await call('DELETE', '/api/manage/agents/acme/users/2', { token: acmeT });
+    check('delete: Admin\'s own operation, says how many conversations went', del.status === 200 && del.json.deleted === true && del.json.conversations === 1 && JSON.stringify(adminCalls.at(-1)) === '["delete",2]');
+
     // The MCP — read only
     const entry = await call('GET', '/builder/mcp');
+    check('MCP entry page teaches the users pages', entry.text.includes('/agents/<slug>/users`') && entry.text.includes('/agents/<slug>/users/<user id>'));
+    const mu = await call('GET', '/builder/mcp/agents/acme/users');
+    check('MCP users: two lists, real and test', mu.status === 200 && /Real customers \(1\):/.test(mu.text) && /Test users \(1\):/.test(mu.text)
+      && mu.text.includes('Ronit') && mu.text.includes('Shared Sam') && mu.text.includes('also on other agents') && !mu.text.includes('Olga'), mu.text.slice(0, 400));
+    const mone = await call('GET', '/builder/mcp/agents/acme/users/1');
+    check('MCP one user: their conversations with links', mone.status === 200 && mone.text.includes('REAL customer') && /conversation 10 .*\/conversations\/10/.test(mone.text), mone.text.slice(0, 300));
+    check('MCP users: unknown agent / user → 404', (await call('GET', '/builder/mcp/agents/nope/users')).status === 404 && (await call('GET', '/builder/mcp/agents/acme/users/4')).status === 404);
+    check('MCP users are read only (no POST / DELETE)', (await call('POST', '/builder/mcp/agents/acme/users/1/suspend', { body: {} })).status === 404
+      && (await call('DELETE', '/builder/mcp/agents/acme/users/1')).status === 404);
+
     check('MCP entry page points at /access (template literal intact)', entry.status === 200 && entry.text.includes('/access') && entry.text.includes('/agents/<slug>/access'));
     const all = await call('GET', '/builder/mcp/access');
     check('MCP /access lists every grant', all.status === 200 && all.text.includes('noa@lybi.ai → EVERY agent') && all.text.includes('two@partner.com → Other (other)') && /3 address\(es\), 4 grant\(s\)/.test(all.text), all.text.slice(0, 300));

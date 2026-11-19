@@ -2720,3 +2720,54 @@ model, the usual tokens — plus one new token.
   disabled one, the offline lane, `no_verdict`.
 - **Not yet:** send back to the Talker with notes; an agent-wide Guardrail
   slot. **Not touched:** Alfred.
+
+### 64. Management center — Users page (tasks #999, #982, #991)
+
+The management center's second menu entry, "משתמשים": user management only,
+for the people of the agent's CUSTOMER chat, in two parts.
+
+- **No new data.** Reads `users` + `conversations` as they are
+  (`builder/services/manageUsers.js`). A user of an agent = talked to it in
+  the customer chat (`kind = 'user'`, `metadata.kind = 'live'`, not deleted)
+  OR was created for it (`users.tenant = <slug>`, Admin → Users → Add user).
+  Builder test-chat owners (`builder-preview` only), simulations and
+  synthetic personas are left out. **Real / test** = `metadata.realCustomer
+  === true` (#968) — the same rule as `conversationAudience.isRealCustomer`.
+  Conversations = the user's customer conversations on that agent; last
+  active = the later of `users.last_active_at` and their last customer
+  message there. Up to 1,000 users per view, most recently active first.
+- **Page** (`src/manage/pages/UsersPage/`): header like the problems page
+  (title · scope · updated + refresh). "לקוחות אמיתיים" card, then
+  "משתמשי בדיקה" folded by default (click to open). Columns: user (name;
+  email, or the id when there is no name) · phone · agent (all only) ·
+  conversations · created · last active · actions. Every column has a fixed
+  width except the name, which clips — nothing covers another column; on a
+  phone rows become small cards.
+- **Actions** — suspend / reactivate, real customer ↔ test, delete — each
+  confirmed in `ConfirmModal` (never `confirm()`), then the SAME operations
+  as Admin → Users (`services/admin.service.js` `setSuspended`,
+  `setRealCustomer`, `deleteUser`). They act on the person (suspend stops
+  them on every agent; delete removes all their conversations), so a person
+  who also belongs to another agent is `shared`: the buttons are disabled
+  with a tooltip, and the server refuses with 409 `user_shared` — the Lybi
+  team handles them in Admin.
+- **Clicking a user** opens `UserModal` (facts + their conversations);
+  "צפייה" on a conversation opens the existing `ConversationModal` (it now
+  takes a `conversation` ref without a problem); closing it returns to the user.
+- **API** (`builder/routes/manageRoute.js`, manage token + agent access as
+  every page): `GET /agents/:slug/users`, `GET /agents/:slug/users/:id`
+  (404 `no_user`), `POST /agents/:slug/users/:id/suspend { suspended }`,
+  `POST /agents/:slug/users/:id/real-customer { real }`,
+  `DELETE /agents/:slug/users/:id`, and `GET /users[?agent]` (every-agent
+  grant only). The old Admin endpoints and their shapes are unchanged.
+- **MCP (read only):** `GET /builder/mcp/agents/<slug>/users` (real + test
+  lists) and `/agents/<slug>/users/<id>` (one user + conversation links).
+- **Old Admin → Users (#991):** the fixed column widths added up to more than
+  a laptop screen, so the pinned Actions column (#989) sat on Created / Last
+  Active. External ID / Phone / Name now share the free width, short columns
+  and cell padding are tighter — the table fits; Actions stays pinned only as
+  a fallback for very narrow windows. CSS only.
+- **Tests:** the "users" part of `node scripts/test-manage-access.js`
+  (offline — the routes, access, shared refusal, Admin's operations called,
+  the MCP pages) and the "users" section of `test-builder-mcp.js` (live DB).
+  **Not touched:** Alfred.

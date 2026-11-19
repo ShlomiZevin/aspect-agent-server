@@ -19,6 +19,14 @@
  *       one customer conversation's basic facts + last messages (the "צפייה" window)
  *   GET /api/manage/customer-problems?range=today|week[&agent=<slug>]
  *       every agent — only for an every-agent grant (403 'not_all' otherwise)
+ *   GET    /api/manage/agents/:slug/users               the agent's customer-chat users (real / test)
+ *   GET    /api/manage/agents/:slug/users/:id           one user + their customer conversations
+ *   POST   /api/manage/agents/:slug/users/:id/suspend        { suspended: bool }
+ *   POST   /api/manage/agents/:slug/users/:id/real-customer  { real: bool }
+ *   DELETE /api/manage/agents/:slug/users/:id
+ *       (404 'no_user' if not a user of that agent; 409 'user_shared' when
+ *       the person belongs to other agents too — the actions act on the person)
+ *   GET    /api/manage/users[?agent=<slug>]             every agent's users (every-agent grant only)
  *
  * Who is who: builder/services/manageSession.js (the token — identity only)
  * and builder/services/manageAccess.js (the grants). The problem words come
@@ -30,6 +38,7 @@ const customerProblems = require('../services/customerProblems');
 const manageAccess = require('../services/manageAccess');
 const manageSession = require('../services/manageSession');
 const manageConversation = require('../services/manageConversation');
+const manageUsers = require('../services/manageUsers');
 
 // Loaded on first use: it pulls the Aspect sign-in stack (modules,
 // conversations, insights) that nothing else here needs. We use only its
@@ -144,6 +153,74 @@ router.get('/agents/:slug/conversations/:id', requireAgentAccess, async (req, re
     res.json(conv);
   } catch (err) {
     fail(res, err, 'conversation');
+  }
+});
+
+// ─── Users (tasks #999, #982, #991) ────────────────────────────────
+// builder/services/manageUsers.js: the agent's customer-chat users, real /
+// test by the "Real customer" mark (#968). The actions reuse Admin's own
+// operations (services/admin.service.js) and refuse a person who belongs
+// to other agents too (409 user_shared) — suspend / delete act on the person.
+
+function userFail(res, err, what) {
+  if (err instanceof manageUsers.UserActionError) return res.status(err.status).json({ error: err.message, code: err.code });
+  return fail(res, err, what);
+}
+
+router.get('/agents/:slug/users', requireAgentAccess, async (req, res) => {
+  try {
+    const slug = String(req.params.slug);
+    const data = await manageUsers.listUsers({ slug });
+    res.json({ scope: 'agent', agentSlug: slug, ...data });
+  } catch (err) {
+    fail(res, err, 'users');
+  }
+});
+
+router.get('/agents/:slug/users/:userId', requireAgentAccess, async (req, res) => {
+  try {
+    const user = await manageUsers.getUser({ slug: req.params.slug, userId: req.params.userId });
+    if (!user) return res.status(404).json({ error: 'No such user on this agent', code: 'no_user' });
+    const conversations = await manageUsers.listConversations({ slug: req.params.slug, userId: user.id });
+    res.json({ user, conversations, shownConversations: manageUsers.MAX_CONVERSATIONS });
+  } catch (err) {
+    fail(res, err, 'user');
+  }
+});
+
+router.post('/agents/:slug/users/:userId/suspend', requireAgentAccess, async (req, res) => {
+  try {
+    const user = await manageUsers.setSuspended({ slug: req.params.slug, userId: req.params.userId, suspended: req.body?.suspended !== false });
+    res.json({ user });
+  } catch (err) {
+    userFail(res, err, 'suspend user');
+  }
+});
+
+router.post('/agents/:slug/users/:userId/real-customer', requireAgentAccess, async (req, res) => {
+  try {
+    const user = await manageUsers.setRealCustomer({ slug: req.params.slug, userId: req.params.userId, real: req.body?.real === true });
+    res.json({ user });
+  } catch (err) {
+    userFail(res, err, 'mark real customer');
+  }
+});
+
+router.delete('/agents/:slug/users/:userId', requireAgentAccess, async (req, res) => {
+  try {
+    res.json(await manageUsers.deleteUser({ slug: req.params.slug, userId: req.params.userId }));
+  } catch (err) {
+    userFail(res, err, 'delete user');
+  }
+});
+
+router.get('/users', requireAll, async (req, res) => {
+  try {
+    const agent = req.query.agent ? String(req.query.agent) : null;
+    const data = await manageUsers.listUsers({ slug: agent });
+    res.json({ scope: 'all', agentSlug: null, filter: agent, ...data });
+  } catch (err) {
+    fail(res, err, 'all users');
   }
 });
 
