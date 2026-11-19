@@ -588,6 +588,8 @@ class TaskService {
   /**
    * What's New for one person: tasks deployed after their "seen until" watermark,
    * newest first. People without a watermark get nothing (no popup).
+   * A task this person confirmed on its own ("Got it" on one item → dismissDeployed,
+   * stored in tasks.deployed_reviewed_by, reset on every re-release) is left out.
    *
    * Never selects `description` (can hold pasted base64 images) — this is polled.
    */
@@ -613,6 +615,7 @@ class TaskService {
         gt(tasks.deployedAt, seenUntil),
         eq(tasks.isDraft, false),
         notInArray(tasks.type, NON_RELEASE_TYPES),
+        sql`NOT (COALESCE(${tasks.deployedReviewedBy}, '[]'::jsonb) ? ${identity})`,
       ))
       .orderBy(desc(tasks.deployedAt));
 
