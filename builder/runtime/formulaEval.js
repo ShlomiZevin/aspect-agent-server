@@ -63,7 +63,8 @@ function buildSandbox() {
 }
 
 /** Substitute {{field}} tokens with JS literals via the caller's
- *  resolver. Numeric-looking strings become numbers; missing → null. */
+ *  resolver. Numeric-looking strings become numbers; missing → null;
+ *  a list (multi-value field, #947) → a JS array of strings. */
 function substituteTokens(expr, resolveField) {
   const parts = [];
   const substituted = String(expr).replace(TOKEN_RE, (_, name) => {
@@ -71,6 +72,10 @@ function substituteTokens(expr, resolveField) {
     let literal;
     if (raw === undefined || raw === null || raw === '') {
       literal = 'null';
+    } else if (Array.isArray(raw)) {
+      // A multi-value field (#947) — a real list, so
+      // `{{motives}}.includes("x")` and `.length` work.
+      literal = JSON.stringify(raw.map(x => (x === null || x === undefined ? null : String(x))));
     } else if (typeof raw === 'number' || typeof raw === 'boolean') {
       literal = JSON.stringify(raw);
     } else if (typeof raw === 'string' && /^-?\d+(\.\d+)?$/.test(raw.trim())) {
@@ -109,6 +114,14 @@ function evaluate(expr, resolveField) {
       timeout: TIMEOUT_MS,
       displayErrors: false,
     });
+    // A list of plain values is a value too — it sets a multi-value
+    // field (#947). Copied out of the sandbox's realm.
+    if (Array.isArray(value)) {
+      if (value.some(x => x !== null && typeof x === 'object')) {
+        return { ok: false, error: 'a list in a formula may only hold text, numbers or true/false', substituted };
+      }
+      return { ok: true, value: Array.from(value), substituted };
+    }
     if (typeof value === 'function' || (typeof value === 'object' && value !== null && !(value instanceof Date))) {
       return { ok: false, error: 'formula must produce a value (number, text, true/false)', substituted };
     }

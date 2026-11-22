@@ -129,6 +129,31 @@ export interface FieldDef {
    *  picked yet" — the field is authoring-only until wired. */
   enumType?: ID;
   /**
+   * Several values (task #947). Only for `type: 'enum'` (a Choice or a
+   * Targeted KB); ignored on a `pinned` field. Absent / false = one value,
+   * exactly as before.
+   *
+   * When true the field's memory value is a LIST of the enum's values
+   * (`string[]`), de-duplicated and kept in the enum's authored order —
+   * no ranking. An empty selection is never stored.
+   *
+   *  - Writing (any add-on, Rules included): what is written is the WHOLE
+   *    new selection and replaces the old one. Update / remove a value =
+   *    write the list without it; `[]` (or the Rules Clear action) clears
+   *    the field; leaving the key out changes nothing. A single string is
+   *    a list of one. Each member must be one of the enum's values — a
+   *    wrong member is dropped (shown under `rejectedWrites` on the run),
+   *    the right ones are kept.
+   *  - `{{dc:FIELD}}` / `{{dc:FIELD:SECTION}}` / `{{dc:FIELD:*}}` render one
+   *    block per selected value, each headed with its value
+   *    (`### value` / `### value — SECTION`); unselected values are never
+   *    injected. `{{field:FIELD}}` reads `a, b`.
+   *  - Conditions treat the list as "contains" — see {@link FieldOp}.
+   *  - A stored single value read through a multi field is a list of one,
+   *    so switching the flag needs no migration.
+   */
+  multiple?: boolean;
+  /**
    * Optional memory grouping. Blank/undefined = "(no domain)" — the
    * field is still captured to a `general` bucket at runtime, just
    * not surfaced under a named group.
@@ -851,7 +876,10 @@ export interface Brain {
  *    record on its enum and renders that value's umbrella (default),
  *    a named section body, or every authored section under it (`:*`).
  *    Resolves to empty when the field has no value or the value isn't
- *    in the enum.
+ *    in the enum. On a multi-value field (`FieldDef.multiple`, #947) it
+ *    renders one block per selected value, headed `### value` (or
+ *    `### value — SECTION`; with `:*`, `#### section` blocks under each
+ *    `### value`).
  *
  * No fallback concept on the enum — missing matches resolve to empty.
  * Authors wrap with their own fallback prose in the prompt if needed.
@@ -1038,6 +1066,16 @@ export interface PersonaDef {
  * `in` / `not-in` use the `values` array; everything else uses
  * `value` (scalar). Keeping them on the same condition variant lets
  * the user flip between operators without losing the field choice.
+ *
+ * On a multi-value field (`FieldDef.multiple`, task #947) the same ops
+ * read the selection as "contains" — on screen:
+ *   - equals X     → "includes X"        (X is one of the selected values)
+ *   - not-equals X → "doesn't include X"
+ *   - in [..]      → "includes any of"
+ *   - not-in [..]  → "includes none of"
+ *   - is-null / is-not-null → "is empty" / "has a value"
+ * So a rule written while the field held one value keeps its meaning
+ * after the field becomes multi-value.
  */
 export type FieldOp =
   | 'equals' | 'not-equals'
@@ -1164,8 +1202,9 @@ export interface RuleAction {
   /** set: how the value is produced. Default 'fixed'. */
   valueMode?: 'fixed' | 'copy' | 'formula' | 'compute';
   /** set + fixed: the literal value, or `#paramName` to use an agent
-   *  parameter's value. */
-  value?: string;
+   *  parameter's value. On a multi-value field (`FieldDef.multiple`,
+   *  #947) a list of the enum's values — the whole new selection. */
+  value?: string | string[];
   /** set + copy: source field NAME, or `#paramName`. */
   fromField?: string;
   /** set + formula: SINGLE JavaScript expression over {{field}} tokens

@@ -584,6 +584,29 @@ opens showing "unsaved changes" before anyone has touched it.
 - On screen those read String, Integer, Boolean; an \`enum\` shows as a
   Choice or a Targeted KB. Say the screen's words when you talk to the
   person, not the JSON spellings.
+- **Several values** ("Several values" on screen) is \`multiple: true\` on an
+  \`enum\` field (Choice or Targeted KB; ignored on a \`pinned\` field). The
+  field then holds a LIST of the enum's values, kept in the enum's order.
+  - Writing (any add-on, Rules too): what is written is the WHOLE new
+    selection and replaces the old one — remove a value by writing the list
+    without it; \`[]\` (or the Rules Clear action) clears the field; leaving
+    the key out changes nothing. A wrong member is dropped and shown under
+    \`rejectedWrites\`; the right ones are kept. A Rules Set on such a field
+    takes a list as \`value\`.
+  - \`{{dc:FIELD}}\` / \`{{dc:FIELD:SECTION}}\` / \`{{dc:FIELD:*}}\` render one
+    block per SELECTED value, headed \`### value\` (\`### value — SECTION\`);
+    values that aren't selected are never injected. \`{{field:FIELD}}\`
+    reads \`a, b\`. No new syntax — existing prompts keep working when a
+    field is switched to several values.
+  - Conditions read the list as "contains": \`equals X\` = X is selected,
+    \`not-equals X\` = it isn't, \`in\` = any of, \`not-in\` = none of,
+    \`is-null\` = nothing selected. In a formula the field is a JS array
+    (\`{{motives}}.includes("x")\`).
+  - Each run lists the \`{{dc:…}}\` lookups it resolved under \`targetedKb\`
+    (field, section, values selected, the ones injected; the text in the
+    \`full\` export) — that is how you check what a prompt actually got.
+  - Switching a live field to several values is the person's call (it
+    changes what the agent injects) — propose it, don't just do it.
 - Crews are separate entities, saved one at a time, but the agent has ONE
   version number: every save — the agent or one crew — becomes the agent's
   next version (v7 = the agent and each crew as of v7). Adding a crew means

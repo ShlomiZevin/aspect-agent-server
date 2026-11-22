@@ -2880,3 +2880,63 @@ and every error says what happened.
   line incl. conversation 313's case, the period and its refusals, the
   conversations list and its cap, tiles = conversations counts, the routes
   and the MCP pages). **Not touched:** Alfred.
+
+### 67. Several values on a Choice / Targeted KB field (task #947)
+
+A field bound to a Targeted KB (or a Choice list) can hold **several values
+at once**, and `{{dc:…}}` then injects only the selected values' content,
+each block labelled with the value it came from. Built for "two motives →
+bring two segments", but general: nothing in it knows about motives.
+
+- **Data model.** `FieldDef.multiple?: boolean` — only on `type: 'enum'`,
+  ignored on a `pinned` field. Absent = one value, exactly as before. The
+  memory value is a `string[]` of the enum's values, de-duplicated and kept
+  in the **enum's authored order** (no ranking). An empty selection is never
+  stored. A stored single value reads as a list of one, so switching the
+  flag needs no migration. One helper owns these rules:
+  `builder/runtime/multiValue.js` (client mirror `src/builder/state/multiValue.ts`).
+- **Writing.** What an add-on writes is the **whole new selection** and
+  replaces the old one: remove a value = write the list without it; `[]`
+  (or the Rules Clear action) clears the field; leaving the key out changes
+  nothing; a single string = a list of one. The enum guard (`addonRunner`)
+  checks each member: coerced to the canonical spelling, a wrong member is
+  dropped into `rejectedWrites` while the right ones are kept; a write whose
+  members are all wrong changes nothing (like a wrong single value). The
+  extractor's `{{fields_schema}}` line says `multiple=true` plus how to write
+  it (visible in the run's prompt and the preview). Rules Set takes a list
+  (`RuleAction.value: string | string[]`, chips in the editor); a formula may
+  produce a list.
+- **Injection — no new syntax.** On a multi field, `{{dc:FIELD}}` →
+  `### value` + umbrella per selected value; `{{dc:FIELD:SECTION}}` →
+  `### value — SECTION` + body; `{{dc:FIELD:*}}` → `### value` with
+  `#### section` blocks. Always headed (even one value); unselected,
+  disabled or empty values are left out; nothing selected → ''. A removed
+  value's context is gone on the next run because the token reads memory
+  every time. `{{field:FIELD}}` / `{{tag:T:values}}` read `a, b`.
+  Single-value fields: byte-identical output (checked against the previous
+  assembler on every prompt of the staging agents).
+- **Conditions.** Same operators, read as "contains" on a list: equals X =
+  X is selected, not-equals X = it isn't, in = any of, not-in = none of,
+  is-null = nothing selected (screen labels: includes / doesn't include /
+  includes any of / includes none of). An existing rule keeps its meaning
+  when the field becomes multi. Formulas get a real JS array.
+- **Debug.** Every run records `targetedKb` (`addon.output` and
+  `addon_runs.run_data`): one entry per `{{dc:…}}` token — field, section,
+  `values` (selected then), `injected` (the ones whose content went in),
+  `text`. The run card shows it as a "Targeted KB" section (chips, faded =
+  selected but nothing to inject, the injected text behind a toggle); the
+  conversation export carries it (`text` at the `full` level). The Live
+  Brain's lookups show one card per selected value. The Builder chat now
+  also shows `rejectedWrites` on the run card (it was never mapped).
+- **Builder.** "Several values" checkbox on the Add Field, Field editor and
+  Fields-page editor (disabled for other types — no layout shift). The
+  live value / starting value editors pick several values.
+- **MCP.** `multiple` in the types, the multi rendering in
+  `promptPlaceholders.json`, a "Several values" bullet on the entry page
+  (write rule, tokens, conditions, `targetedKb`, switching a live field is
+  the person's call). Battery: `test-builder-mcp.js` section
+  "several values (#947)".
+- **Tests:** `node scripts/test-multi-value-fields.js` (offline — helpers,
+  every dc form, single-value unchanged, schema line, conditions, formula,
+  and real `runAddon` runs: coerce/reject, replace, remove, clear, run
+  record, Rules Set/Clear). **Not touched:** Alfred.

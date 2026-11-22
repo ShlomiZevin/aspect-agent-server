@@ -43,6 +43,8 @@
  * not interpolated into the prompt string.
  */
 
+const { isMultiField, valuesOf, orderByEnum, formatList } = require('./multiValue');
+
 /**
  * `{{today}}` (task #967 follow-up): the current date and time in Israel,
  * as one stable English line — "Sunday, 8 November 2026, 14:05 (Israel
@@ -259,7 +261,7 @@ function resolveTagToken(rawName, { fieldsForDc, fieldValueOf }) {
     for (const f of tagged) {
       const v = fieldValueOf(f.name);
       if (v === null || v === undefined) continue;
-      const text = typeof v === 'string' ? v : JSON.stringify(v);
+      const text = isMultiField(f) ? formatList(v) : (typeof v === 'string' ? v : JSON.stringify(v));
       parts.push(`${f.name}: ${text}`);
     }
     return parts.join(', ');
@@ -273,11 +275,19 @@ function resolveTagToken(rawName, { fieldsForDc, fieldValueOf }) {
   return null;
 }
 
-function resolveFieldInline(name, fieldValueOf) {
+/** A multi-value field's value reads inline as `a, b` (#947); every
+ *  other value as before. `fieldsForDc` = the field defs in scope. */
+function fieldValueText(name, v, fieldsForDc) {
+  const def = Array.isArray(fieldsForDc) ? fieldsForDc.find(f => f && f.name === name) : null;
+  if (isMultiField(def)) return formatList(v);
+  return typeof v === 'string' ? v : JSON.stringify(v);
+}
+
+function resolveFieldInline(name, fieldValueOf, fieldsForDc) {
   if (!fieldValueOf) return '';
   const v = fieldValueOf(name);
   if (v === undefined || v === null) return '';
-  return typeof v === 'string' ? v : JSON.stringify(v);
+  return fieldValueText(name, v, fieldsForDc);
 }
 
 function resolveParamInline(name, parameters) {
@@ -332,11 +342,17 @@ function buildFieldsSchemaBlock(fields, enums) {
       if (vals.length > 0) {
         props.push(`values=[${vals.join(', ')}]`);
       }
+      // Multi-value (#947): say so, and how to write it — the whole
+      // current list each time (it replaces the old one), [] to clear.
+      if (isMultiField(f)) props.push('multiple=true');
     }
     props.push(`source=${f.source}`);
     const head = `- ${f.name} (${props.join(', ')})`;
     const how = (f.howToExtract || '').trim();
-    return how ? `${head}: ${how}` : head;
+    const line = how ? `${head}: ${how}` : head;
+    return isMultiField(f)
+      ? `${line}\n  (several values: return a JSON array of EVERY value that applies now — the full list, it replaces the previous one; [] clears it; leave the key out when nothing changed)`
+      : line;
   });
   return lines.join('\n');
 }
@@ -478,6 +494,12 @@ function resolveDcInline(rawName, { enums, fieldsForDc, fieldValueOf, onDcResolv
   }
 
   const live = fieldValueOf ? fieldValueOf(fieldName) : undefined;
+
+  // Multi-value field (#947): one headed block per selected value.
+  if (isMultiField(field)) {
+    return resolveDcMulti(field, enumDef, live, sectionPart, onDcResolved);
+  }
+
   const liveStr = live === undefined || live === null ? null : String(live);
 
   const matchedValue = liveStr === null
@@ -514,6 +536,65 @@ function resolveDcInline(rawName, { enums, fieldsForDc, fieldValueOf, onDcResolv
 
   if (onDcResolved) {
     onDcResolved({ fieldName, section: sectionPart, matched: liveStr, text });
+  }
+  return text;
+}
+
+/**
+ * `{{dc:…}}` on a multi-value field (task #947). Every selected value that
+ * is on the enum and enabled renders as its own block, in the enum's
+ * authored order, headed with the value it came from:
+ *
+ *   FIELD          → `### value` + umbrella
+ *   FIELD:SECTION  → `### value — SECTION` + that section's body
+ *   FIELD:*        → `### value` + every authored section as `#### name`
+ *
+ * Values with nothing to render are left out. Always headed — even with
+ * one value selected — so the prompt's shape doesn't change with the
+ * count. Nothing selected → ''.
+ *
+ * `onDcResolved` gets `matched` as the list of values that rendered
+ * (null when none), `values` as the whole selection, `multiple: true`.
+ */
+function resolveDcMulti(field, enumDef, live, sectionPart, onDcResolved) {
+  const selected = orderByEnum(valuesOf(live), enumDef);
+  const declared = Array.isArray(enumDef.sections) ? enumDef.sections : [];
+  const blocks = [];
+  const rendered = [];
+  for (const valueName of selected) {
+    const v = enumDef.values.find(x => x && String(x.value) === valueName);
+    if (!v || v.enabled === false) continue;
+    const texts = v.sectionTexts || {};
+    let block = '';
+    if (sectionPart === null) {
+      const body = (v.umbrellaText || '').trim();
+      if (body) block = `### ${valueName}\n${body}`;
+    } else if (sectionPart === '*') {
+      const parts = declared
+        .filter(s => s && typeof s.name === 'string')
+        .map(s => ({ name: s.name, body: (texts[s.name] || '').trim() }))
+        .filter(p => p.body.length > 0)
+        .map(p => `#### ${p.name}\n${p.body}`);
+      if (parts.length) block = `### ${valueName}\n${parts.join('\n\n')}`;
+    } else {
+      const raw = texts[sectionPart];
+      const body = typeof raw === 'string' ? raw.trim() : '';
+      if (body) block = `### ${valueName} — ${sectionPart}\n${body}`;
+    }
+    if (!block) continue;
+    blocks.push(block);
+    rendered.push(valueName);
+  }
+  const text = blocks.join('\n\n');
+  if (onDcResolved) {
+    onDcResolved({
+      fieldName: field.name,
+      section: sectionPart,
+      matched: rendered.length ? rendered : null,
+      text,
+      values: selected,
+      multiple: true,
+    });
   }
   return text;
 }
@@ -765,7 +846,7 @@ function resolveTokens(template, c, depth, stack) {
   template = substituteParameterised(
     template,
     'field',
-    name => resolveFieldInline(name, fieldValueOf),
+    name => resolveFieldInline(name, fieldValueOf, fieldsForDc),
     /* inline */ true,
   );
   // {{fieldname:NAME}} — literal field NAME (not value). Unknown names
@@ -876,7 +957,7 @@ function resolveTokens(template, c, depth, stack) {
   template = substituteParameterised(
     template,
     'field',
-    name => resolveFieldInline(name, fieldValueOf),
+    name => resolveFieldInline(name, fieldValueOf, fieldsForDc),
     /* inline */ true,
   );
   template = substituteParameterised(

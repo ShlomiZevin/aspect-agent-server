@@ -96,7 +96,7 @@
       "token": "{{field:NAME}}",
       "category": "value",
       "trigger": "@",
-      "render": "The current memory value for a single field, inline. Bare value with no label or formatting. Empty string when the field has no value yet.",
+      "render": "The current memory value for a single field, inline. Bare value with no label or formatting. Empty string when the field has no value yet. A multi-value field (Targeted KB / Choice with several values) reads as a comma-separated list: `a, b`.",
       "example": "The customer is {{field:customer_age}} years old.",
       "picker_group": "Memory fields"
     },
@@ -160,7 +160,7 @@
       "token": "{{dc:FIELD}}",
       "category": "value",
       "trigger": "*",
-      "render": "Looks up FIELD (must be an enum-typed field), resolves its current memory value to a value record on its enum, and renders that value's umbrella prompt bare (no wrapping headers — author adds their own preamble). Resolves to empty when the field has no value or the value isn't declared on the enum.",
+      "render": "Looks up FIELD (must be an enum-typed field), resolves its current memory value to a value record on its enum, and renders that value's umbrella prompt bare (no wrapping headers — author adds their own preamble). Resolves to empty when the field has no value or the value isn't declared on the enum. MULTI-VALUE field (`multiple: true`): one block per SELECTED value, in the enum's order, each headed `### value` + that value's umbrella — values that are not selected are never injected; nothing selected → empty.",
       "example": "{{dc:primary_motive}}",
       "picker_group": "Field DC"
     },
@@ -168,7 +168,7 @@
       "token": "{{dc:FIELD:SECTION}}",
       "category": "value",
       "trigger": "*",
-      "render": "Same lookup as `{{dc:FIELD}}` but renders the matched value's SECTION body bare. Empty when the field is unset, the value isn't on the enum, or that value has no body for the named section.",
+      "render": "Same lookup as `{{dc:FIELD}}` but renders the matched value's SECTION body bare. Empty when the field is unset, the value isn't on the enum, or that value has no body for the named section. MULTI-VALUE field: one block per selected value, headed `### value — SECTION` + that value's body (values with no body omitted).",
       "example": "{{dc:primary_motive:how_to_identify}}",
       "picker_group": "Field DC"
     },
@@ -176,7 +176,7 @@
       "token": "{{dc:FIELD:*}}",
       "category": "value",
       "trigger": "*",
-      "render": "Joins every declared section under the matched value as `### section_name` blocks separated by blank lines. Convenience form for 'give me everything authored under the current value of this field'. Sections with empty bodies are omitted.",
+      "render": "Joins every declared section under the matched value as `### section_name` blocks separated by blank lines. Convenience form for 'give me everything authored under the current value of this field'. Sections with empty bodies are omitted. MULTI-VALUE field: one `### value` block per selected value, its sections as `#### section_name` blocks under it.",
       "example": "{{dc:primary_motive:*}}",
       "picker_group": "Field DC"
     },

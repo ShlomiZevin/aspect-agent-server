@@ -52,6 +52,7 @@ const errorCenter = require('../services/errorCenter');
 const addonRunsStore = require('./addonRunsStore');
 const historyService = require('./historyService');
 const { evaluateConditions } = require('./conditionMatcher');
+const { isMultiField, valuesOf, orderByEnum } = require('./multiValue');
 const { chosenLimitOf, outputLimitOf, STREAM_ABOVE } = require('./outputLimit');
 const { webSearchFor, withWebSearchRule, promptAsShown } = require('../../services/webSearch');
 const modelRoute = require('../../services/modelRoute');
@@ -327,6 +328,10 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
   // ── Assemble the prompt. Readers close over the live brain blob ──
   // so writes from upstream addons in the same turn are visible.
   let prompt = '';
+  // Every {{dc:…}} lookup this run resolved (#947) — kept on the run so
+  // the run card / export show which values were selected and what was
+  // actually injected, after a reload too. One entry per distinct token.
+  const targetedKb = [];
   try {
     prompt = assemblePrompt({
       instance,
@@ -360,14 +365,25 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
           text,
         });
       },
-      onDcResolved: ({ fieldName, section, matched, text }) => {
+      onDcResolved: ({ fieldName, section, matched, text, values, multiple }) => {
         emit('dc.resolved', {
           instanceId: instance.instanceId,
           fieldName,
           section,
           matched,
           text,
+          ...(multiple ? { values, multiple: true } : {}),
         });
+        if (!targetedKb.some(r => r.fieldName === fieldName && r.section === section)) {
+          targetedKb.push({
+            fieldName,
+            section: section ?? null,
+            values: multiple ? (values || []) : (matched === null || matched === undefined ? [] : [String(matched)]),
+            injected: matched === null || matched === undefined ? [] : (Array.isArray(matched) ? matched : [String(matched)]),
+            text: text || '',
+            ...(multiple ? { multiple: true } : {}),
+          });
+        }
       },
     });
   } catch (err) {
@@ -672,6 +688,34 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
     const allowed = en && Array.isArray(en.values)
       ? en.values.map(v => v && v.value).filter(v => typeof v === 'string' && v)
       : [];
+    // ── Multi-value field (#947): the write is the WHOLE new selection. ──
+    // Each member is checked like a single value: coerced to the canonical
+    // spelling, a wrong member dropped (and shown) while the right ones
+    // stay. The kept list is de-duplicated into the enum's order. Nothing
+    // left (`[]` written, or every member wrong) clears the field, so an
+    // old selection — and its injected context — never stays behind.
+    if (isMultiField(def)) {
+      const kept = [];
+      const wrong = [];
+      for (const member of valuesOf(w.value)) {
+        const canon = allowed.length === 0
+          ? member
+          : (allowed.includes(member) ? member : allowed.find(v => v.toLowerCase() === member.toLowerCase()));
+        if (canon === undefined) wrong.push(member); else kept.push(canon);
+      }
+      if (wrong.length > 0) {
+        rejectedWrites.push({ field: w.field, value: wrong, allowed });
+        console.warn(`⚠️ [addonRunner] rejected values for "${w.field}": ${JSON.stringify(wrong)} — not in [${allowed.join(', ')}] (addon: ${meta.label})`);
+      }
+      const list = orderByEnum(kept, en);
+      if (list.length > 0) {
+        memoryWrites.push({ ...w, value: list });
+      } else if (wrong.length === 0) {
+        // A deliberate empty selection — clear the field everywhere.
+        memoryWrites.push({ kind: w.kind, field: w.field, clear: true, domain: '*' });
+      }
+      continue;
+    }
     if (allowed.length === 0) { memoryWrites.push(w); continue; }
     const raw = String(w.value).trim();
     const canonical = allowed.includes(raw)
@@ -736,6 +780,7 @@ async function runAddonInner({ ctx, instance, addonStart = Date.now() }) {
     historyCount: visibleCount,
     ...(typeof result.firstTokenMs === 'number' ? { firstTokenMs: result.firstTokenMs } : {}),
     ...(rejectedWrites.length > 0 ? { rejectedWrites } : {}),
+    ...(targetedKb.length > 0 ? { targetedKb } : {}),
     ...(result.parseError ? { parseError: result.parseError } : {}),
     // Web search switch (#967): queries, sources, count — for the run card.
     ...(result.webSearch ? { webSearch: result.webSearch } : {}),

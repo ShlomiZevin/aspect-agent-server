@@ -37,7 +37,7 @@ function normalizeLevel(include) {
 
 const FORMAT = {
   messages: 'messages[] in chronological order; each has role (user|assistant|system), text, at (ISO time) and crew when known.',
-  outputs: 'messages[] in chronological order; each has role, text, at, crew when known. Assistant messages carry addonRuns[] — the addons that ran on that turn, in run order: label, pluginId, lane (main|offline), status, output (parsed, else raw), fieldWrites, rejectedWrites, transition, skipReason, webSearch (when the addon searched the web: count + each query with its sources), guardrail (a Guardrail verdict: verdict, applied, reason, held).',
+  outputs: 'messages[] in chronological order; each has role, text, at, crew when known. Assistant messages carry addonRuns[] — the addons that ran on that turn, in run order: label, pluginId, lane (main|offline), status, output (parsed, else raw), fieldWrites, rejectedWrites, targetedKb (each {{dc:FIELD[:SECTION]}} lookup the prompt resolved: field, section, values selected at that moment, injected = the values whose content went into the prompt; text at the full level), transition, skipReason, webSearch (when the addon searched the web: count + each query with its sources), guardrail (a Guardrail verdict: verdict, applied, reason, held).',
   full: 'Same as the outputs level, plus each addon run carries prompt — the exact assembled prompt the addon\'s LLM received.',
 };
 
@@ -91,6 +91,16 @@ function exportRun(row, level) {
   }
   if (Array.isArray(d.memoryWrites) && d.memoryWrites.length > 0) out.fieldWrites = d.memoryWrites;
   if (Array.isArray(d.rejectedWrites) && d.rejectedWrites.length > 0) out.rejectedWrites = d.rejectedWrites;
+  // Targeted KB lookups (#947): each {{dc:…}} token the run resolved — the
+  // values selected then and the ones whose content was injected. The
+  // injected text itself only at the full level (it is in the prompt).
+  if (Array.isArray(d.targetedKb) && d.targetedKb.length > 0) {
+    out.targetedKb = d.targetedKb.map(r => ({
+      field: r.fieldName, section: r.section ?? null, values: r.values || [], injected: r.injected || [],
+      ...(r.multiple ? { multiple: true } : {}),
+      ...(level === 'full' ? { text: r.text || '' } : {}),
+    }));
+  }
   if (d.transition) out.transition = d.transition;
   if (d.broke) out.brokeChain = true;
   // Guardrail (#963): the verdict, what was applied, why.

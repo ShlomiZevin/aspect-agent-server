@@ -518,6 +518,32 @@ async function removeIfPresent(slug) {
     const tokens = await get('/code/builder/promptPlaceholders.json');
     check('{{reply}} is in the prompt tokens', tokens.status === 200 && tokens.text.includes('{{reply}}'));
 
+    // ── Several values (#947) — documented, round-trips, no phantom dirty.
+    // The runtime (writes, {{dc:…}} injection, conditions, run record) is
+    // proven offline by scripts/test-multi-value-fields.js. ──
+    section('several values (#947)');
+    check('entry page teaches several values', doc.text.includes('multiple: true') && doc.text.includes('targetedKb')
+      && doc.text.includes('replaces the old one'));
+    check('types say FieldDef.multiple', (await get('/code/builder/types/index.ts')).text.includes('multiple?: boolean'));
+    check('{{dc:…}} tokens document the multi-value rendering', tokens.text.includes('MULTI-VALUE field'));
+    const svA = (await hydrate(TEST_SLUG)).agents[0];
+    const svBody = JSON.parse(JSON.stringify(svA.versions.find(v => v.id === svA.activeVersionId).body));
+    const svEnum = { id: 'enum_zzmv', name: 'zz_mv_motives', sections: [{ name: 'path' }], values: [
+      { id: 'zzmv1', value: 'business', sectionTexts: { path: 'P-b' } }, { id: 'zzmv2', value: 'savings', sectionTexts: { path: 'P-s' } }] };
+    svBody.enums = [...(svBody.enums || []).filter(e => e.id !== svEnum.id), svEnum];
+    svBody.fields = [...(svBody.fields || []).filter(f => f.id !== 'f_zzmv'),
+      { id: 'f_zzmv', name: 'zz_motives', type: 'enum', enumType: svEnum.id, source: 'explicit', howToExtract: 'every motive', multiple: true }];
+    const svW = await post(`/agents/${TEST_SLUG}`, { body: svBody, description: 'battery (several values)' });
+    const svB = (await hydrate(TEST_SLUG)).agents[0];
+    check('a field with multiple: true saves and the Builder shows it', svW.status === 200
+      && svB.fields.some(f => f.id === 'f_zzmv' && f.multiple === true), svW.text.slice(0, 160));
+    check('no phantom "unsaved changes" with a multi-value field', agentDirty(svB).length === 0, agentDirty(svB).join(', '));
+    const svClean = JSON.parse(JSON.stringify(svB.versions.find(v => v.id === svB.activeVersionId).body));
+    svClean.fields = (svClean.fields || []).filter(f => f.id !== 'f_zzmv');
+    svClean.enums = (svClean.enums || []).filter(e => e.id !== svEnum.id);
+    await post(`/agents/${TEST_SLUG}`, { body: svClean, description: 'battery (several values removed)' });
+    check('…and is removed again', !(await hydrate(TEST_SLUG)).agents[0].fields.some(f => f.id === 'f_zzmv'));
+
     // ── create ──
     section('create');
     await removeIfPresent(BORN_CLEAN_SLUG);

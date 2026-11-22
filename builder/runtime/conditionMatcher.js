@@ -140,7 +140,8 @@ function evaluateCondition(blob, condition, ctx) {
       if (fields.length === 0) return { ok: false, why: 'no fields configured' };
       const missing = fields.filter(name => {
         const v = builderMemory.findFieldValue(blob, name, 'memory');
-        return v === undefined || v === null || v === '';
+        return v === undefined || v === null || v === ''
+          || (Array.isArray(v) && v.length === 0);   // empty selection (#947)
       });
       return missing.length === 0
         ? { ok: true,  why: `all ${fields.length} fields populated` }
@@ -180,7 +181,8 @@ function evaluateCondition(blob, condition, ctx) {
       // match a never-collected field (every other op requires a
       // value to exist). '' counts as empty, same as fields-collected.
       if (op === 'is-null' || op === 'is-not-null') {
-        const empty = v === undefined || v === null || v === '';
+        const empty = v === undefined || v === null || v === ''
+          || (Array.isArray(v) && v.length === 0);
         const ok = op === 'is-null' ? empty : !empty;
         return {
           ok,
@@ -197,7 +199,11 @@ function evaluateCondition(blob, condition, ctx) {
           if (r.error) return { ok: false, why: r.error };
           resolved.push(r);
         }
-        const inSet = v !== undefined && resolved.some(x => String(x.value) === String(v));
+        // A multi-value field (#947) holds a list: `in` = includes ANY of
+        // the values, `not-in` = includes NONE of them.
+        const inSet = Array.isArray(v)
+          ? v.some(m => resolved.some(x => String(x.value) === String(m)))
+          : v !== undefined && resolved.some(x => String(x.value) === String(v));
         const ok = op === 'in' ? inSet : !inSet;
         return {
           ok,
@@ -206,7 +212,14 @@ function evaluateCondition(blob, condition, ctx) {
       }
       const operand = resolveOperandValue(condition.value, parameters);
       if (operand.error) return { ok: false, why: operand.error };
-      const ok = v !== undefined && applyOp(op, v, operand.value);
+      // A multi-value field (#947) holds a list, read as "contains":
+      // `equals X` = X is one of the selected values, `not-equals X` = it
+      // isn't; any other op matches when some member satisfies it.
+      const ok = Array.isArray(v)
+        ? (op === 'not-equals'
+            ? !v.some(m => applyOp('equals', m, operand.value))
+            : v.some(m => applyOp(op, m, operand.value)))
+        : v !== undefined && applyOp(op, v, operand.value);
       return {
         ok,
         why: ok
