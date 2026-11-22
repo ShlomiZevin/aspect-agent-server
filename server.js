@@ -4629,6 +4629,19 @@ app.post('/api/admin/users/:userId/suspend', async (req, res) => {
   }
 });
 
+// Turn a user's auto-suspend off (#1002) — the limit picked in Add user
+app.delete('/api/admin/users/:userId/auto-suspend', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    const updated = await adminService.clearAutoSuspend(userId);
+    res.json(updated);
+  } catch (err) {
+    console.error('❌ Error turning auto-suspend off:', err.message);
+    const status = err.message === 'User not found' ? 404 : /already suspended/.test(err.message) ? 409 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
 // Real customer or not (#968) — decides whether the user's NEW customer-chat
 // conversations are born 'real' (triggers reach them) or 'test'.
 app.post('/api/admin/users/:userId/real-customer', async (req, res) => {

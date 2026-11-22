@@ -33,6 +33,7 @@
 
 const db = require('../../services/db.pg');
 const manageAccess = require('./manageAccess');
+const { suspensionOf } = require('../runtime/userSuspension');
 
 const MAX_USERS = 1000;
 const MAX_CONVERSATIONS = 50;
@@ -64,6 +65,7 @@ const MEMBERS = `
          u.external_id, u.created_at, u.last_active_at,
          (u.metadata->>'realCustomer') = 'true' AS real_customer,
          u.metadata->>'suspendedAt' AS suspended_at,
+         u.metadata->>'autoSuspendAt' AS auto_suspend_at,
          m.slug, COALESCE(l.conversations, 0) AS conversations,
          GREATEST(u.last_active_at, l.last_customer_at) AS last_seen,
          (EXISTS (SELECT 1 FROM conversations c2 LEFT JOIN agents a2 ON a2.id = c2.agent_id
@@ -86,6 +88,9 @@ async function agentNames() {
 
 function shape(r, names) {
   const agent = names.get(r.slug);
+  // Suspended by an admin, or by the auto-suspend time passing (#1002) —
+  // decided as of now, the same helper the runtime enforces with.
+  const s = suspensionOf({ suspendedAt: r.suspended_at, autoSuspendAt: r.auto_suspend_at });
   return {
     id: r.id,
     name: r.name || null,
@@ -93,8 +98,10 @@ function shape(r, names) {
     email: r.email || null,
     externalId: r.external_id || null,
     audience: r.real_customer ? 'real' : 'test',
-    suspended: !!r.suspended_at,
-    suspendedAt: r.suspended_at || null,
+    suspended: s.suspended,
+    suspendedAt: s.suspendedAt,
+    autoSuspendAt: s.autoSuspendAt,
+    autoSuspended: s.auto,
     agentSlug: agent ? agent.slug : r.slug,
     agentName: agent ? agent.name : r.slug,
     conversations: Number(r.conversations) || 0,

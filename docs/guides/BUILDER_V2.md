@@ -2771,3 +2771,41 @@ for the people of the agent's CUSTOMER chat, in two parts.
   (offline — the routes, access, shared refusal, Admin's operations called,
   the MCP pages) and the "users" section of `test-builder-mcp.js` (live DB).
   **Not touched:** Alfred.
+
+### 65. Auto-suspend a new user after 24 h / 48 h (task #1002)
+
+Admin → Users → **Add user** has an "Auto-suspend" pick: Off / After 24 h /
+After 48 h (default **48 h**). When the time is up the user is suspended
+with the existing suspension (#909): can't chat, nothing deleted.
+
+- **Data:** `users.metadata.autoSuspendAt` (ISO; absent = off), next to
+  `suspendedAt` (#909) and `realCustomer` (#968). No column, no migration.
+  `services/admin.service.js` `createUser({ autoSuspendHours: 24 | 48 | null })`
+  stamps it (any other number is refused).
+- **Decided when read, no scheduler:** `builder/runtime/userSuspension.js`
+  `suspensionOf(metadata, now)` → `{ suspended, suspendedAt, autoSuspendAt,
+  auto }`: suspended = `suspendedAt` set, OR `autoSuspendAt` passed (then
+  `suspendedAt` = that time, `auto` = true). Nothing is written when the
+  time passes. Every reader uses it: the runtime's two checks
+  (`runtimeRoute.js` — conversation create and every turn, 403 /
+  `user_suspended` as before), `admin.service` (every user it returns
+  carries a computed `suspension`), and `manageUsers.js` (management center
+  + MCP: `suspended`, `suspendedAt`, `autoSuspendAt`, `autoSuspended`).
+- **Writes:** suspend now → `suspendedAt` set, `autoSuspendAt` dropped (moot);
+  **reactivate drops both** — otherwise a user whose limit ran out would be
+  suspended again at once; **Turn off** = `DELETE /api/admin/users/:id/auto-suspend`
+  (`clearAutoSuspend`) drops `autoSuspendAt` only (409 when the limit
+  already suspended the user — reactivate instead).
+- **Users list:** a small `⏱ 47h` / `⏱ 42m` pill in the Source cell, where the
+  Suspended badge sits (never both, so the row doesn't grow); the tooltip has
+  the exact time; a 30 s clock flips the row to Suspended when the time passes
+  with the page open. Clicking the pill opens `AutoSuspendModal`
+  (when · Turn off · Close). The management center's Users page has no new
+  UI: auto-suspended users simply show as suspended there.
+- **MCP (read only):** the users list and one-user pages say
+  "auto-suspends at <time>", and "SUSPENDED since … (auto-suspend)" once it
+  passed; the entry page explains it.
+- **Tests:** the "auto-suspend" parts of `node scripts/test-manage-access.js`
+  (offline — the helper, the real `admin.service` writes on a stand-in
+  drizzle, the management center rows, the MCP pages, the runtime using the
+  helper). **Not touched:** Alfred.

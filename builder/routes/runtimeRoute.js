@@ -26,6 +26,7 @@ const conversationPush = require('../../services/conversation-push.service');
 const errorCenter = require('../services/errorCenter');
 const errorRules = require('../services/errorRules');
 const conversationAudience = require('../runtime/conversationAudience');
+const { suspensionOf } = require('../runtime/userSuspension');
 const { mergeMetadata } = require('../runtime/conversationMeta');
 
 const router = express.Router({ mergeParams: true });
@@ -69,10 +70,10 @@ async function userRowOf(userId) {
   return u || null;
 }
 
-/** True when an admin suspended this user (Admin → Users, #909). */
+/** True when this user is suspended right now — by an admin (#909) or by their auto-suspend time passing (#1002). */
 async function isSuspended(userId) {
   const u = await userRowOf(userId);
-  return !!(u && u.metadata && u.metadata.suspendedAt);
+  return !!u && suspensionOf(u.metadata).suspended;
 }
 
 async function resolveUserId(ownerUserId) {
@@ -112,7 +113,7 @@ router.post('/:slug/conversations', async (req, res) => {
     const agentId = await resolveLegacyAgentId(slug);
     const userId = await resolveUserId(ownerUserId);
     const owner = await userRowOf(userId);
-    if (owner && owner.metadata && owner.metadata.suspendedAt) return res.status(403).json({ error: SUSPENDED_MESSAGE, code: 'user_suspended' });
+    if (owner && suspensionOf(owner.metadata).suspended) return res.status(403).json({ error: SUSPENDED_MESSAGE, code: 'user_suspended' });
     const surface = source === 'live' ? 'live' : source === 'simulation' ? 'simulation' : 'builder-preview';
     // metadata.kind records which V2 surface the conversation was born in:
     // 'live' = customer-facing chat, 'builder-preview' = builder chat,

@@ -875,7 +875,7 @@ one line, the error list above. Read only.
 
 | To see | Fetch |
 |---|---|
-| The people of the agent's customer chat, in two lists: REAL customers (marked "Real customer") and TEST users — name, phone, conversations, created, last active, suspended | \`${base}/agents/<slug>/users\` |
+| The people of the agent's customer chat, in two lists: REAL customers (marked "Real customer") and TEST users — name, phone, conversations, created, last active, suspended, auto-suspend time | \`${base}/agents/<slug>/users\` |
 | One user and their customer conversations (each with a link to read it) | \`${base}/agents/<slug>/users/<user id>\` |
 
 A user = anyone who talked to the agent in the customer chat, or was added
@@ -883,6 +883,9 @@ for it in Admin → Users. Builder test-chat owners, simulations and
 synthetic personas are not listed. The same lists as the management
 center's Users page (\`/lybi/manage/<slug>/users\`), where a person
 suspends, marks real / test or deletes a user. Read only here.
+A user added with an auto-suspend (24 h / 48 h, Admin → Users → Add user)
+shows "auto-suspends at <time>"; once it passes they are SUSPENDED
+"(auto-suspend)" — cannot chat, nothing deleted — until reactivated.
 
 **Who can open the management center**
 
@@ -3143,7 +3146,8 @@ router.get('/agents/:slug/users', async (req, res) => {
     const line = u => `- user ${u.id} · ${u.name || '(no name)'}${u.phone ? ` · phone ${u.phone}` : ''}${u.email ? ` · ${u.email}` : ''}`
       + `${!u.name && u.externalId ? ` · id ${u.externalId}` : ''}`
       + ` · ${u.conversations} customer conversation(s) · created ${u.createdAt ? u.createdAt.slice(0, 10) : '—'}`
-      + ` · last active ${u.lastActiveAt || '—'}${u.suspended ? ` · SUSPENDED since ${String(u.suspendedAt).slice(0, 10)}` : ''}`
+      + ` · last active ${u.lastActiveAt || '—'}${u.suspended ? ` · SUSPENDED since ${String(u.suspendedAt).slice(0, 10)}${u.autoSuspended ? ' (auto-suspend)' : ''}` : ''}`
+      + `${u.autoSuspendAt ? ` · auto-suspends at ${u.autoSuspendAt}` : ''}`
       + `${u.shared ? ' · also on other agents' : ''}`;
     const real = data.users.filter(u => u.audience === 'real');
     const test = data.users.filter(u => u.audience === 'test');
@@ -3179,7 +3183,7 @@ router.get('/agents/:slug/users/:userId', async (req, res) => {
     }
     const convs = await manageUsers.listConversations({ slug, userId: u.id });
     sendText(res, [
-      `User ${u.id} of "${slug}": ${u.name || '(no name)'} — ${u.audience === 'real' ? 'REAL customer' : 'TEST user'}${u.suspended ? `, SUSPENDED since ${String(u.suspendedAt).slice(0, 10)} (cannot chat; nothing deleted)` : ''}.`,
+      `User ${u.id} of "${slug}": ${u.name || '(no name)'} — ${u.audience === 'real' ? 'REAL customer' : 'TEST user'}${u.suspended ? `, SUSPENDED since ${String(u.suspendedAt).slice(0, 10)}${u.autoSuspended ? ' by their auto-suspend time' : ''} (cannot chat; nothing deleted)` : ''}${u.autoSuspendAt ? `, auto-suspends at ${u.autoSuspendAt} (set when the user was added; Admin → Users can turn it off)` : ''}.`,
       `Phone: ${u.phone || '—'} · email: ${u.email || '—'} · id: ${u.externalId || '—'}`,
       `Created ${u.createdAt || '—'} · last active ${u.lastActiveAt || '—'}${u.shared ? ' · also belongs to other agents' : ''}`,
       '',

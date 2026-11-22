@@ -1,6 +1,10 @@
 const db = require('./db.pg');
 const { users, conversations, messages, thinkingSteps, agents } = require('../db/schema');
 const { eq, and, or, like, desc, asc, sql, count, inArray } = require('drizzle-orm');
+const { suspensionOf, AUTO_SUSPEND_HOURS } = require('../builder/runtime/userSuspension');
+
+/** A user row plus its suspension as of now (#909, #1002) — the Users page reads `suspension`, never the raw keys. */
+const withSuspension = (user) => (user ? { ...user, suspension: suspensionOf(user.metadata) } : user);
 
 /**
  * Admin Service
@@ -154,10 +158,10 @@ class AdminService {
             )
           );
 
-        return {
+        return withSuspension({
           ...user,
           conversationCount: convCountResult[0]?.count || 0,
-        };
+        });
       })
     );
 
@@ -226,6 +230,9 @@ class AdminService {
    * Suspend or reactivate a user (#909). Kept in metadata.suspendedAt so
    * nothing about the user or their conversations is removed: a suspended
    * user simply can't start conversations or send messages until reactivated.
+   * Both directions also drop metadata.autoSuspendAt (#1002): suspending
+   * now makes it moot, and reactivating a user whose limit ran out must not
+   * suspend them again the next moment.
    */
   async setSuspended(userId, suspended) {
     if (!this.drizzle) this.initialize();
@@ -234,11 +241,30 @@ class AdminService {
     const metadata = { ...(row.metadata || {}) };
     if (suspended) metadata.suspendedAt = new Date().toISOString();
     else delete metadata.suspendedAt;
+    delete metadata.autoSuspendAt;
     const [updated] = await this.drizzle.update(users)
       .set({ metadata, updatedAt: new Date() })
       .where(eq(users.id, userId))
       .returning();
-    return updated;
+    return withSuspension(updated);
+  }
+
+  /**
+   * Turn a user's auto-suspend off (#1002) — drops metadata.autoSuspendAt.
+   * A user it already suspended stays suspended: that is Reactivate's job.
+   */
+  async clearAutoSuspend(userId) {
+    if (!this.drizzle) this.initialize();
+    const [row] = await this.drizzle.select({ metadata: users.metadata }).from(users).where(eq(users.id, userId)).limit(1);
+    if (!row) throw new Error('User not found');
+    if (suspensionOf(row.metadata).suspended) throw new Error('User is already suspended — reactivate instead');
+    const metadata = { ...(row.metadata || {}) };
+    delete metadata.autoSuspendAt;
+    const [updated] = await this.drizzle.update(users)
+      .set({ metadata, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning();
+    return withSuspension(updated);
   }
 
   /**
@@ -259,7 +285,7 @@ class AdminService {
       .set({ metadata, updatedAt: new Date() })
       .where(eq(users.id, userId))
       .returning();
-    return updated;
+    return withSuspension(updated);
   }
 
   async updateUser(userId, updates) {
@@ -304,18 +330,24 @@ class AdminService {
    * @param {string} userData.role - User role
    * @param {string} userData.name - User name
    * @param {string} userData.email - User email
+   * @param {number|null} userData.autoSuspendHours - 24 / 48 = suspended by
+   *   itself that long after creation (#1002); null / absent = no limit
    * @returns {Promise<Object>} - Created user
    */
   async createUser(userData) {
     if (!this.drizzle) this.initialize();
 
-    const { phone, tenant, subscription, role, name, email } = userData;
+    const { phone, tenant, subscription, role, name, email, autoSuspendHours = null } = userData;
 
     if (!name) {
       throw new Error('Name is required');
     }
     if (!phone) {
       throw new Error('Phone number is required');
+    }
+    const hours = autoSuspendHours == null || autoSuspendHours === '' ? null : Number(autoSuspendHours);
+    if (hours !== null && !AUTO_SUSPEND_HOURS.includes(hours)) {
+      throw new Error(`Auto-suspend must be ${AUTO_SUSPEND_HOURS.join(' or ')} hours, or off`);
     }
 
     // Uniqueness key is (name, phone, tenant). The same phone can recur across
@@ -344,6 +376,10 @@ class AdminService {
     const externalIdParts = ['manual', tenantValue || 'no-tenant', phone, Date.now()];
     const externalId = externalIdParts.join('_');
 
+    const now = new Date();
+    const metadata = { createdManually: true, createdAt: now.toISOString() };
+    if (hours !== null) metadata.autoSuspendAt = new Date(now.getTime() + hours * 3600 * 1000).toISOString();
+
     const [newUser] = await this.drizzle
       .insert(users)
       .values({
@@ -355,12 +391,12 @@ class AdminService {
         source: 'web', // Manual creation is considered web source
         subscription: subscription || 'demo',
         tenant: tenant || null,
-        metadata: { createdManually: true, createdAt: new Date().toISOString() },
+        metadata,
       })
       .returning();
 
-    console.log(`✅ Created manual user: ${newUser.id} (phone: ${phone})`);
-    return newUser;
+    console.log(`✅ Created manual user: ${newUser.id} (phone: ${phone})${hours ? ` — auto-suspends in ${hours} h` : ''}`);
+    return withSuspension(newUser);
   }
 
   /**

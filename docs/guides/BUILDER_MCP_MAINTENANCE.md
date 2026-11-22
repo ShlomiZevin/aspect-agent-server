@@ -462,6 +462,10 @@ Exits `1` on any failure. What it covers:
   `/agents/<slug>/users/<id>` (unknown agent / user → 404, no POST). Offline
   twin: the "users" part of `node scripts/test-manage-access.js` (the
   management center's Users routes + the MCP pages on a stand-in DB).
+  Auto-suspend (#1002): a user's line says "auto-suspends at <time>" while
+  the limit is ahead and "SUSPENDED since … (auto-suspend)" once it passed —
+  worked out when read (`builder/runtime/userSuspension.js`); offline twin:
+  the "auto-suspend" parts of the same battery.
 - **Crew tree (#855)** — on two throwaway crews of `zz-mcp-test` (deleted
   in `finally`, tree emptied): write → stored as `crewTree.parents`, **no
   new version**, no phantom dirty; read renders the indented tree; a loop

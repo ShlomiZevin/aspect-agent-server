@@ -11,7 +11,9 @@
  * mounted on a local port: builder/routes/manageRoute.js (sign-in, /me, the
  * per-agent and every-agent doors, the conversation window) and the Builder
  * MCP's read-only access pages. Also checks migration 070 is safe to run
- * twice and the CORS header list carries Authorization.
+ * twice and the CORS header list carries Authorization, and the users'
+ * auto-suspend (#1002: the helper, admin.service's writes on a stand-in
+ * drizzle, the rows and MCP pages).
  */
 
 const path = require('path');
@@ -65,7 +67,8 @@ const adminCalls = [];
 const fakeAdmin = {
   async setSuspended(id, suspended) {
     adminCalls.push(['suspend', id, suspended]);
-    USERS.filter(u => u.id === id).forEach(u => { u.suspended_at = suspended ? T0.toISOString() : null; });
+    // As admin.service: both directions drop the auto-suspend time (#1002).
+    USERS.filter(u => u.id === id).forEach(u => { u.suspended_at = suspended ? T0.toISOString() : null; u.auto_suspend_at = null; });
     return { id };
   },
   async setRealCustomer(id, real) {
@@ -313,6 +316,36 @@ function check(name, cond, extra = '') {
     check('MCP users are read only (no POST / DELETE)', (await call('POST', '/builder/mcp/agents/acme/users/1/suspend', { body: {} })).status === 404
       && (await call('DELETE', '/builder/mcp/agents/acme/users/1')).status === 404);
 
+    // ─── Auto-suspend (#1002): decided when read, no scheduler ──────
+    console.log('\n-- auto-suspend');
+    const HOUR = 3600 * 1000;
+    const ahead = new Date(Date.now() + 47 * HOUR).toISOString();
+    const passed = new Date(Date.now() - HOUR).toISOString();
+    USERS.push(
+      { id: 5, name: 'Avi', phone: '0502222222', email: null, external_id: 'manual_acme_0502222222_1', created_at: T0, last_active_at: null,
+        real_customer: false, suspended_at: null, auto_suspend_at: ahead, slug: 'acme', conversations: 0, last_seen: null, shared: false },
+      { id: 6, name: 'Dana', phone: '0503333333', email: null, external_id: 'manual_acme_0503333333_1', created_at: T0, last_active_at: null,
+        real_customer: false, suspended_at: null, auto_suspend_at: passed, slug: 'acme', conversations: 0, last_seen: null, shared: false },
+    );
+    const al = await call('GET', '/api/manage/agents/acme/users', { token: acmeT });
+    const avi = al.json && al.json.users.find(x => x.id === 5);
+    const dana = al.json && al.json.users.find(x => x.id === 6);
+    check('a limit still ahead: not suspended, the time is shown', !!avi && avi.suspended === false && avi.autoSuspendAt === ahead && avi.autoSuspended === false, JSON.stringify(avi));
+    check('a limit that passed: suspended since that time, by the limit, nothing written',
+      !!dana && dana.suspended === true && dana.suspendedAt === passed && dana.autoSuspended === true && dana.autoSuspendAt === null
+      && USERS.find(u => u.id === 6).suspended_at === null, JSON.stringify(dana));
+    const usersSql2 = queries.filter(q => /WITH live AS/.test(q.sql)).at(-1);
+    check('…the Users query reads the auto-suspend key', !!usersSql2 && /'autoSuspendAt' AS auto_suspend_at/.test(usersSql2.sql));
+    const mau = await call('GET', '/builder/mcp/agents/acme/users');
+    check('MCP users: "auto-suspends at" and "(auto-suspend)"',
+      mau.status === 200 && mau.text.includes(`auto-suspends at ${ahead}`) && /Dana[^\n]*SUSPENDED since [^\n]*\(auto-suspend\)/.test(mau.text), mau.text.slice(0, 600));
+    check('MCP entry page teaches auto-suspend', entry.text.includes('shows "auto-suspends at <time>"') && entry.text.includes('"(auto-suspend)"'));
+    const mav = await call('GET', '/builder/mcp/agents/acme/users/5');
+    check('MCP one user: the auto-suspend time', mav.status === 200 && mav.text.includes(`auto-suspends at ${ahead}`), mav.text.slice(0, 300));
+    const re = await call('POST', '/api/manage/agents/acme/users/6/suspend', { token: acmeT, body: { suspended: false } });
+    check('reactivating an auto-suspended user clears the limit too (not suspended again)',
+      re.status === 200 && re.json.user.suspended === false && re.json.user.autoSuspendAt === null, re.text.slice(0, 300));
+
     check('MCP entry page points at /access (template literal intact)', entry.status === 200 && entry.text.includes('/access') && entry.text.includes('/agents/<slug>/access'));
     const all = await call('GET', '/builder/mcp/access');
     check('MCP /access lists every grant', all.status === 200 && all.text.includes('noa@lybi.ai → EVERY agent') && all.text.includes('two@partner.com → Other (other)') && /3 address\(es\), 4 grant\(s\)/.test(all.text), all.text.slice(0, 300));
@@ -326,6 +359,64 @@ function check(name, cond, extra = '') {
     check('MCP has no way to grant (POST /access is not a route)', (await call('POST', '/builder/mcp/access', { body: { email: 'x@y.z' } })).status === 404);
   } finally {
     srv.close();
+  }
+
+  // ─── Auto-suspend writes + enforcement (#1002) ──────────────────
+  console.log('\n-- auto-suspend: admin.service + runtime');
+  {
+    const { suspensionOf } = require('../builder/runtime/userSuspension');
+    const now = new Date('2026-11-22T12:00:00Z');
+    check('helper: no keys → not suspended', JSON.stringify(suspensionOf(null, now)) === JSON.stringify({ suspended: false, suspendedAt: null, autoSuspendAt: null, auto: false }));
+    check('helper: suspended by hand wins over a limit', suspensionOf({ suspendedAt: '2026-11-21T00:00:00Z', autoSuspendAt: '2026-11-20T00:00:00Z' }, now).auto === false);
+    check('helper: the limit passes exactly on time',
+      suspensionOf({ autoSuspendAt: '2026-11-22T12:00:00.000Z' }, now).suspended === true
+      && suspensionOf({ autoSuspendAt: '2026-11-22T12:00:01.000Z' }, now).suspended === false);
+    check('helper: a broken time is ignored', suspensionOf({ autoSuspendAt: 'soon' }, now).suspended === false && suspensionOf({ autoSuspendAt: 'soon' }, now).autoSuspendAt === null);
+
+    // The real admin.service on a one-row stand-in for drizzle.
+    const fakeEntry = require.cache[adminPath];
+    delete require.cache[adminPath];
+    const admin = require('../services/admin.service');
+    require.cache[adminPath] = fakeEntry;
+    let row = null;
+    const writes = [];
+    admin.drizzle = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => (row ? [{ ...row }] : []) }) }) }),
+      update: () => ({ set: (v) => ({ where: () => ({ returning: async () => { writes.push(v); row = { ...row, ...v }; return [{ ...row }]; } }) }) }),
+      insert: () => ({ values: (v) => ({ returning: async () => { row = { id: 7, ...v }; return [{ ...row }]; } }) }),
+    };
+    const t = Date.now();
+    const made = await admin.createUser({ name: 'Gal', phone: '0504444444', tenant: 'acme', autoSuspendHours: 48 });
+    const at = new Date(made.metadata.autoSuspendAt).getTime();
+    check('create with 48 h: autoSuspendAt = now + 48 h, not suspended yet',
+      Math.abs(at - (t + 48 * 3600 * 1000)) < 5000 && made.suspension.suspended === false && made.suspension.autoSuspendAt === made.metadata.autoSuspendAt);
+    row = null; const made24 = await admin.createUser({ name: 'Gal', phone: '0504444445', tenant: 'acme', autoSuspendHours: 24 });
+    check('create with 24 h', Math.abs(new Date(made24.metadata.autoSuspendAt).getTime() - (t + 24 * 3600 * 1000)) < 5000);
+    row = null; const off = await admin.createUser({ name: 'Gal', phone: '0504444446', tenant: 'acme' });
+    check('create with no limit: no key', !('autoSuspendAt' in off.metadata) && off.suspension.autoSuspendAt === null);
+    let bad = null;
+    row = null; try { await admin.createUser({ name: 'Gal', phone: '0504444447', tenant: 'acme', autoSuspendHours: 5 }); } catch (e) { bad = e; }
+    check('create with any other number is refused', !!bad && /24 or 48/.test(bad.message));
+
+    row = { id: 7, metadata: { createdManually: true, autoSuspendAt: new Date(Date.now() + 3600 * 1000).toISOString() } };
+    const cleared = await admin.clearAutoSuspend(7);
+    check('turn off: the key goes, the rest of metadata stays', !('autoSuspendAt' in cleared.metadata) && cleared.metadata.createdManually === true && cleared.suspension.suspended === false);
+    row = { id: 7, metadata: { autoSuspendAt: new Date(Date.now() - 3600 * 1000).toISOString() } };
+    let late = null;
+    try { await admin.clearAutoSuspend(7); } catch (e) { late = e; }
+    check('turn off after it already suspended → refused (reactivate instead)', !!late && /already suspended/.test(late.message));
+    const react = await admin.setSuspended(7, false);
+    check('reactivate clears both keys — not suspended again', !('autoSuspendAt' in react.metadata) && !('suspendedAt' in react.metadata) && react.suspension.suspended === false);
+    row = { id: 7, metadata: { autoSuspendAt: new Date(Date.now() + 3600 * 1000).toISOString() } };
+    const sNow = await admin.setSuspended(7, true);
+    check('suspend now: suspended by hand, the pending limit dropped', sNow.suspension.suspended === true && sNow.suspension.auto === false && !('autoSuspendAt' in sNow.metadata));
+    admin.drizzle = null;
+
+    const rt = fs.readFileSync(path.join(__dirname, '..', 'builder', 'routes', 'runtimeRoute.js'), 'utf8');
+    check('runtime enforces through the helper (conversation create + every turn), never the raw key',
+      (rt.match(/suspensionOf\(/g) || []).length >= 2 && !/metadata\.suspendedAt/.test(rt));
+    const srvJs = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    check('Admin route to turn it off', /app\.delete\('\/api\/admin\/users\/:userId\/auto-suspend'/.test(srvJs));
   }
 
   // ─── Migration 070, schema, CORS ────────────────────────────────
