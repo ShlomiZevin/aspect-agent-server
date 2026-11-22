@@ -341,7 +341,7 @@ async function agentExists(slug) {
   return (await agentNames(slug)).length > 0;
 }
 
-async function errorRows(from, to, slug) {
+async function errorRows(from, to, slug, conversationId = null) {
   const { rows } = await db.query(
     `SELECT e.agent_slug, e.conversation_id, e.message_id, e.area, e.kind, e.created_at,
             e.detail->'addon'->>'label' AS addon_label,
@@ -351,15 +351,16 @@ async function errorRows(from, to, slug) {
        LEFT JOIN error_groups g ON g.agent_slug = e.agent_slug AND g.fingerprint = e.fingerprint
       WHERE e.source = 'customer' AND e.created_at >= $1 AND e.created_at < $3
         AND ($2::text IS NULL OR e.agent_slug = $2)
+        AND ($4::int IS NULL OR e.conversation_id = $4)
         AND g.status IS DISTINCT FROM 'ignored'
       ORDER BY e.created_at DESC
       LIMIT 2000`,
-    [from, slug || null, to],
+    [from, slug || null, to, conversationId],
   );
   return rows;
 }
 
-async function noReplyRows(from, to, slug) {
+async function noReplyRows(from, to, slug, conversationId = null) {
   const { rows } = await db.query(
     `SELECT c.id AS conversation_id, a.url_slug AS agent_slug, lu.id AS user_msg_id, lu.content AS user_msg,
             c.last_user_message_at AS at
@@ -374,13 +375,14 @@ async function noReplyRows(from, to, slug) {
         AND c.last_user_message_at >= $1 AND c.last_user_message_at < $4
         AND c.last_user_message_at < now() - make_interval(mins => $3)
         AND ($2::text IS NULL OR a.url_slug = $2)
+        AND ($5::int IS NULL OR c.id = $5)
         AND NOT EXISTS (
           SELECT 1 FROM messages r
            WHERE r.conversation_id = c.id AND r.role = 'assistant' AND r.id > lu.id AND r.content <> ''
         )
       ORDER BY c.last_user_message_at DESC
       LIMIT ${MAX_PROBLEMS}`,
-    [from, slug || null, NO_REPLY_MINUTES, to],
+    [from, slug || null, NO_REPLY_MINUTES, to, conversationId],
   );
   return rows;
 }
@@ -495,7 +497,7 @@ async function turnFacts(groups) {
  * read from `messages.metadata.replyTiming` (builder/runtime/replyTiming.js),
  * so only replies since that was deployed. Customer chat only.
  */
-async function slowReplyRows(from, to, slug) {
+async function slowReplyRows(from, to, slug, conversationId = null) {
   const { rows } = await db.query(
     `SELECT r.id AS reply_id, r.conversation_id, a.url_slug AS agent_slug,
             (r.metadata->'replyTiming'->>'replyMs')::numeric AS reply_ms,
@@ -514,9 +516,10 @@ async function slowReplyRows(from, to, slug) {
         AND (r.metadata->'replyTiming'->>'replyMs')::numeric > $3
         AND (r.metadata->'replyTiming'->>'receivedAt')::timestamptz >= $1
         AND (r.metadata->'replyTiming'->>'receivedAt')::timestamptz < $4
+        AND ($5::int IS NULL OR c.id = $5)
       ORDER BY r.id DESC
       LIMIT ${MAX_PROBLEMS}`,
-    [from, slug || null, SLOW_REPLY_MS, to],
+    [from, slug || null, SLOW_REPLY_MS, to, conversationId],
   );
   return rows;
 }
@@ -568,15 +571,19 @@ const periodFields = p => ({
 /**
  * Every problem of the scope that a period's read needs: `all` (also the
  * last 24 h, for "new") and `inRange` (the period, newest first, capped).
+ * `conversationId` narrows every read to one conversation (its window).
+ * Each problem carries `messageId` — the message it happened on: the
+ * turn's reply (errors, slow replies; may be an empty, unsent reply) or the
+ * unanswered customer message (no reply); null when unknown.
  */
-async function readProblems(slug, p) {
+async function readProblems(slug, p, conversationId = null) {
   const dayAgo = p.b.now.getTime() - 24 * 3600 * 1000;
   // One read covers both the period and "new" (24 h).
   const fetchFrom = new Date(Math.min(p.from.getTime(), dayAgo));
   const [errs, silent, slow, names] = await Promise.all([
-    errorRows(fetchFrom, p.to, slug),
-    noReplyRows(fetchFrom, p.to, slug),
-    slowReplyRows(fetchFrom, p.to, slug),
+    errorRows(fetchFrom, p.to, slug, conversationId),
+    noReplyRows(fetchFrom, p.to, slug, conversationId),
+    slowReplyRows(fetchFrom, p.to, slug, conversationId),
     agentNames(slug),
   ]);
 
@@ -595,6 +602,7 @@ async function readProblems(slug, p) {
     all.push({
       id: g.key, type: 'error',
       at: new Date(g.first).toISOString(),
+      messageId: g.messageId || null,
       agentSlug: g.agentSlug, agentName: nameOf.get(g.agentSlug) || g.agentSlug,
       conversationId: g.conversationId || null,
       customerName: who(g.conversationId).name,
@@ -614,6 +622,7 @@ async function readProblems(slug, p) {
     all.push({
       id: `n${s.conversation_id}-${s.user_msg_id}`, type: 'no_reply',
       at: iso(s.at),
+      messageId: s.user_msg_id,
       agentSlug: s.agent_slug, agentName: nameOf.get(s.agent_slug) || s.agent_slug,
       conversationId: s.conversation_id,
       customerName: who(s.conversation_id).name,
@@ -636,6 +645,7 @@ async function readProblems(slug, p) {
     all.push({
       id: `s${s.reply_id}`, type: 'slow_reply',
       at: iso(s.at),
+      messageId: s.reply_id,
       agentSlug: s.agent_slug, agentName: nameOf.get(s.agent_slug) || s.agent_slug,
       conversationId: s.conversation_id,
       customerName: who(s.conversation_id).name,
@@ -687,6 +697,19 @@ async function servedAmong(ids, from, to) {
     [list, from, to],
   );
   return new Set(rows.map(r => r.id));
+}
+
+/**
+ * Every problem of ONE customer conversation, from its start until now —
+ * the conversation window's markers (#1001 follow-up,
+ * builder/services/manageConversation.js). Oldest first; each with `messageId`.
+ * @param {{ slug: string, conversationId: number, since: Date|string }} a
+ */
+async function problemsOfConversation({ slug, conversationId, since }) {
+  const b = await bounds();
+  const from = since ? new Date(since) : b.week;
+  const { inRange } = await readProblems(slug, { b, from, to: b.tomorrow }, conversationId);
+  return inRange.filter(x => x.conversationId === conversationId).reverse();
 }
 
 /**
@@ -856,7 +879,7 @@ function buildConversations(convRows, problems, nameOf) {
 }
 
 module.exports = {
-  listProblems, listConversations, agentExists, plainWords, detailOf, BadRangeError,
+  listProblems, listConversations, problemsOfConversation, agentExists, plainWords, detailOf, BadRangeError,
   ACTIONS, OUTCOMES, KINDS, FALLBACK, SPECIAL, RANGES, NO_REPLY_MINUTES, SLOW_REPLY_MS, SLOW_REPEAT_PER_DAY,
   MAX_RANGE_DAYS, MAX_CONVERSATIONS, REASONS_BY_CODE, REASONS_BY_KIND,
   _internal: { groupErrors, buildConversations },

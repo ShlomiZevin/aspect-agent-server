@@ -2876,6 +2876,19 @@ and every error says what happened.
   "which part and why" line; new `…/agents/<slug>/customer-conversations`
   (counts, one line per conversation with its status and the problem's
   words; `?status=act|info|ok|problem`).
+- **The whole conversation in "צפייה"** (follow-up): the window used to show
+  the last 8 messages; `manageConversation.getConversation` now returns every
+  message with text (the newest 1,000, `truncated` beyond; 8,000 characters
+  a message) with ids, plus `problems` — the conversation's problems
+  (`customerProblems.problemsOfConversation`: the same reads narrowed to one
+  conversation, from its start), each with `messageId` (the turn's reply, or
+  the unanswered customer message) and `anchorMessageId` (that message, or —
+  when the reply was never sent — the last shown message before it). The
+  window lists the messages in order (customer / agent, time) with each
+  problem as a marker under its message (kind · sentence · detail · what to
+  do); opened from a problem it scrolls to it. Fixed height while showing a
+  conversation, the body scrolls — nothing resizes. The MCP already reads
+  whole conversations (`/conversations/<id>`).
 - **Tests:** `node scripts/test-customer-problems.js` (offline — the detail
   line incl. conversation 313's case, the period and its refusals, the
   conversations list and its cap, tiles = conversations counts, the routes

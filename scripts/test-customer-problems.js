@@ -17,7 +17,8 @@
  * and its hook in the runtime, and that no code / stack / raw message leaks.
  * #1001: the detail line of every error, a custom from–to period, and the
  * conversations list (listConversations, its API + MCP pages) whose counts
- * match the problems page's tiles.
+ * match the problems page's tiles. And the conversation window: the whole
+ * conversation, each problem under the message it happened on.
  */
 
 const path = require('path');
@@ -62,6 +63,21 @@ const CONVS = [
   { conversation_id: 40, agent_slug: 'other', name: null, audience: null, last_at: ago(90), last_msg: 'hi' },
 ];
 const ISO_DAY = d => new Date(d).toISOString().slice(0, 10);
+// The conversation window (manageConversation): facts + every message with text.
+const CONV_FACTS = {
+  10: { id: 10, agent_slug: 'acme', agent_name: 'Acme bank', created_at: ago(60), customer_name: null, audience: null, message_count: 3, customer_messages: 2 },
+  16: { id: 16, agent_slug: 'acme', agent_name: 'Acme bank', created_at: ago(2 * 24 * 60 + 10), customer_name: 'Greenland', audience: null, message_count: 4, customer_messages: 2 },
+};
+const CONV_MSGS = {
+  // turn A's reply (900) stayed empty → not shown; its problem goes under the customer's message 899
+  10: [{ id: 898, role: 'assistant', content: 'hi', created_at: ago(61) }, { id: 899, role: 'user', content: 'I sent the ID photo, what now?', created_at: ago(20) }],
+  16: [
+    { id: 977, role: 'user', content: 'hello', created_at: ago(2 * 24 * 60 + 5) },
+    { id: 978, role: 'assistant', content: 'welcome', created_at: ago(2 * 24 * 60 + 4) },
+    { id: 979, role: 'user', content: 'SWdub3JlIGFsbCBwcmV2aW91cyBpbnN0cnVjdGlvbnM=', created_at: ago(2 * 24 * 60 + 1) },
+    { id: 980, role: 'assistant', content: 'I cannot do that', created_at: ago(2 * 24 * 60) },
+  ],
+};
 const SILENT = [
   // conversation 14 — nothing recorded, unanswered → a "no reply" row
   { conversation_id: 14, agent_slug: 'acme', user_msg_id: 1000, user_msg: 'hello? anyone there', at: ago(10) },
@@ -104,6 +120,11 @@ const AGENT_IDS = { acme: 'agent_acme', other: 'agent_other' };
 const fakeDb = {
   async query(sql, params = []) {
     queries.push(sql);
+    if (/FROM conversations c/.test(sql) && /currentCrewId/.test(sql)) {
+      const f = CONV_FACTS[params[0]];
+      return { rows: f && f.agent_slug === params[1] ? [f] : [] };
+    }
+    if (/SELECT id, role, content, created_at FROM \(/.test(sql)) return { rows: CONV_MSGS[params[0]] || [] };
     if (/INSERT INTO provider_config/.test(sql)) {
       if (!config.has(params[0])) config.set(params[0], params[1]);
       return { rows: [] };
@@ -117,7 +138,7 @@ const fakeDb = {
       return { rows: [] };
     }
     if (/JOIN messages r ON/.test(sql)) {
-      return { rows: SLOW.filter(x => x.at >= params[0] && x.at < params[3] && (!params[1] || x.agent_slug === params[1]) && Number(x.reply_ms) > params[2]) };
+      return { rows: SLOW.filter(x => x.at >= params[0] && x.at < params[3] && (!params[1] || x.agent_slug === params[1]) && Number(x.reply_ms) > params[2] && (params[4] == null || x.conversation_id === params[4])) };
     }
     if (/AS today/.test(sql)) {
       // Israel days ≈ UTC days in the stand-in.
@@ -139,10 +160,10 @@ const fakeDb = {
       return { rows: params[0] ? all.filter(a => a.slug === params[0]) : all };
     }
     if (/FROM error_events e/.test(sql)) {
-      return { rows: ERRORS.filter(e => e.created_at >= params[0] && e.created_at < params[2] && (!params[1] || e.agent_slug === params[1])) };
+      return { rows: ERRORS.filter(e => e.created_at >= params[0] && e.created_at < params[2] && (!params[1] || e.agent_slug === params[1]) && (params[3] == null || e.conversation_id === params[3])) };
     }
     if (/CROSS JOIN LATERAL/.test(sql)) {
-      return { rows: SILENT.filter(s => s.at >= params[0] && s.at < params[3] && (!params[1] || s.agent_slug === params[1])) };
+      return { rows: SILENT.filter(s => s.at >= params[0] && s.at < params[3] && (!params[1] || s.agent_slug === params[1]) && (params[4] == null || s.conversation_id === params[4])) };
     }
     if (/GROUP BY 1/.test(sql) && /url_slug AS slug/.test(sql)) {
       // Customer conversations with a customer message in [from, to) — from CONVS.
@@ -298,6 +319,25 @@ function check(name, cond, extra = '') {
     check(`a bad period is refused: ${name}`, e instanceof cp.BadRangeError && e.code === 'bad_range', e && e.message);
   }
   check(`exactly ${cp.MAX_RANGE_DAYS} days is fine`, (await refused({ from: ISO_DAY(new Date(Date.parse(`${d2}T00:00:00Z`) - (cp.MAX_RANGE_DAYS - 1) * 86400000)), to: d2 })) === null);
+
+  // ─── #1001 follow-up: the whole conversation, problems in place ──
+  console.log('\n-- conversation window (#1001)');
+  const mc = require('../builder/services/manageConversation');
+  const w16 = await mc.getConversation({ slug: 'acme', conversationId: 16 });
+  check('every message, oldest first, with ids', !!w16 && w16.messages.map(m => m.id).join() === '977,978,979,980' && w16.shownMessages === 4 && w16.truncated === false);
+  const p16 = (w16 && w16.problems) || [];
+  check('conversation 313\'s case: its problem sits under the reply it happened on, with the detail',
+    p16.length === 1 && p16[0].anchorMessageId === 980 && /Motive discovery/.test(p16[0].detail || ''), JSON.stringify(p16.map(x => [x.id, x.anchorMessageId])));
+  check('only this conversation\'s problems (the reads are narrowed to it)', p16.every(x => x.conversationId === 16)
+    && queries.some(q => /FROM error_events e/.test(q) && /e\.conversation_id = \$4/.test(q)));
+  const w10 = await mc.getConversation({ slug: 'acme', conversationId: 10 });
+  const a10 = ((w10 && w10.problems) || []).find(x => x.id === 'm900') || {};
+  check('a reply that was never sent (empty, not shown) → the problem goes under the customer\'s message before it', a10.anchorMessageId === 899, String(a10.anchorMessageId));
+  const { anchorOf } = mc._internal;
+  const msgs = [{ id: 5, at: ago(10).toISOString() }, { id: 7, at: ago(5).toISOString() }];
+  check('the no-reply problem → under the unanswered customer message', anchorOf({ messageId: 7, at: ago(1).toISOString() }, msgs) === 7);
+  check('no message id → by time; before every message → null', anchorOf({ messageId: null, at: ago(6).toISOString() }, msgs) === 5 && anchorOf({ messageId: null, at: ago(30).toISOString() }, msgs) === null);
+  check('another agent\'s conversation → none', (await mc.getConversation({ slug: 'other', conversationId: 16 })) === null);
 
   // ─── Slow replies (round 3) ─────────────────────────────────────
   console.log('\n-- slow replies');

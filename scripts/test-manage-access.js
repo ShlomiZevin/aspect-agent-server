@@ -133,6 +133,9 @@ const fakeDb = {
       return { rows: params[0] === CONVERSATION.id && params[1] === CONVERSATION.agent_slug ? [CONVERSATION] : [] };
     }
     if (/ORDER BY m\.id DESC LIMIT/.test(sql)) return { rows: params[0] === CONVERSATION.id ? [...LAST].reverse() : [] };
+    // The conversation window's problem markers (#1001; customerProblems.problemsOfConversation) — none here.
+    if (/AS today/.test(sql)) return { rows: [{ today: T0, week: T0, tomorrow: new Date(Date.now() + 864e5), now: new Date(), today_day: '2026-11-22', custom_from: null, custom_to: null }] };
+    if (/FROM error_events e|CROSS JOIN LATERAL|replyTiming/.test(sql)) return { rows: [] };
     throw new Error(`unexpected query in the stand-in: ${sql.slice(0, 80)}`);
   },
   getDrizzle() { throw new Error('no drizzle in the offline battery'); },
