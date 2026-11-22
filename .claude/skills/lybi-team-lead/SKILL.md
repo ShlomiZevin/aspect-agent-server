@@ -298,6 +298,7 @@ Shlomi brings it up. Still apply the board holds (tasks he parked or said to ign
 5. **Review the result yourself** against the design and the agreed architecture
    (screenshots side by side, the data, the MCP). Send every flaw back without asking
    Shlomi. Repeat until it's right. He sees only the final version.
+   **A Builder feature comes with a test agent** (Shlomi, 2026-11-22): before asking him to check, have an agent ready that exercises it. Reuse and enrich an existing test agent when one fits. Give him the exact messages to type and what he should see. Every test agent, and every agent of his own, lives under the Builder domain **Shlomi** (`ws_8bhctox2mqhlzb43`), never at the root or in a customer domain.
 6. **Deploy from a clean copy while anyone is still working in the tree** (2026-11-18:
    a deploy from the shared folder picked up a developer's half-built next phase).
    - Commit exactly the approved files.
