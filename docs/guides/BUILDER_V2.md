@@ -2800,12 +2800,83 @@ with the existing suspension (#909): can't chat, nothing deleted.
   Suspended badge sits (never both, so the row doesn't grow); the tooltip has
   the exact time; a 30 s clock flips the row to Suspended when the time passes
   with the page open. Clicking the pill opens `AutoSuspendModal`
-  (when · Turn off · Close). The management center's Users page has no new
-  UI: auto-suspended users simply show as suspended there.
+  (when · Turn off · Close).
+- **Management center (phase 2 — managing goes there, not Admin):** the
+  Users page has "הוספת משתמש" (`src/manage/components/AddUserModal/`: name,
+  phone, auto-suspend Off / 24 h / 48 h, default 48 h; on "all" the agent is
+  picked too) → `POST /api/manage/agents/:slug/users` →
+  `manageUsers.createUser` → Admin's own `createUser` with tenant = the
+  agent's slug, demo / user (400 `bad_user`, 409 `user_exists`). A new user
+  is a test user, so the test part opens to show the row. The same ⏱ pill
+  sits where the "מושעה" tag goes (grey tag; a 30 s clock flips it); click →
+  `ConfirmModal` "כיבוי" → `DELETE /api/manage/agents/:slug/users/:id/auto-suspend`
+  (`manageUsers.clearAutoSuspend`; shared person → 409 `user_shared`, already
+  suspended → 409 `already_suspended`). Same per-agent access as every action.
 - **MCP (read only):** the users list and one-user pages say
   "auto-suspends at <time>", and "SUSPENDED since … (auto-suspend)" once it
   passed; the entry page explains it.
 - **Tests:** the "auto-suspend" parts of `node scripts/test-manage-access.js`
   (offline — the helper, the real `admin.service` writes on a stand-in
-  drizzle, the management center rows, the MCP pages, the runtime using the
-  helper). **Not touched:** Alfred.
+  drizzle, the management center rows, add user + turn off routes and their
+  refusals, the MCP pages, the runtime using the helper). **Not touched:** Alfred.
+
+### 66. Management center — a date range, the "שיחות" page, and what failed (task #1001)
+
+Noa's four asks on the problems page ("תקלות בשיחות עם לקוחות", #985): a date
+range, all conversations (not only errors), a tile opens its conversations,
+and every error says what happened.
+
+- **Period:** היום · השבוע · **טווח** (`src/manage/components/PeriodPicker/`).
+  "טווח" opens a small window (from / to — Israel days, inclusive, up to
+  92 days, never past today); once set the segment shows "1.11–15.11" in a
+  fixed-width slot. The period lives in the address (`?range=week` ·
+  `?from=2026-11-01&to=2026-11-15`, nothing = today; `src/manage/period.ts`)
+  on both pages. Server: `customerProblems.listProblems({ range | from, to })`
+  — every read now has an upper bound (`[from, to)`), "conversations in the
+  period" = a customer message INSIDE it (EXISTS on messages, not
+  `last_user_message_at >= from`, which was wrong for a past period). A bad
+  period → `BadRangeError` → 400 `bad_range` (API) / 400 text (MCP).
+- **What failed (the bug):** an error row only had the kind's sentence; for
+  an answered turn that is the vague "הלקוח קיבל תשובה, אבל משהו קטן מאחורי
+  הקלעים לא עבד". Staging conversation 313 (a team member pasting a base64
+  "ignore all previous instructions…" — the quoted string on the row is the
+  customer's own message): the thinker "Motive discovery" and two offline
+  extractors returned empty output; the page never said so because
+  `errorRows` didn't read `error_events.detail`. Now it reads the add-on
+  label / trigger name / errorCode, and every error problem carries
+  `detail` — "<part>: <reason>" (+ "ועוד N חלקים"): the add-on's own name
+  (the author knows it from the Builder; FSI/PDI-isolated) or the area in
+  words, and a plain reason (`REASONS_BY_CODE`, else `REASONS_BY_KIND`).
+  Never empty. Shown under the sentence, in the conversation window
+  ("פירוט") and on the MCP lines ("which part and why").
+- **"שיחות" — a new menu entry** (`/lybi/manage/<slug>/conversations`,
+  `src/manage/pages/ConversationsPage/`; menu: תקלות · שיחות · משתמשים).
+  The simple, Hebrew version of Admin → Conversations for a manager: every
+  customer conversation of the period, newest first — time, agent (all
+  only), customer (+ real / test tag, conversation number), its last
+  customer message, the problem's sentence + detail (or "השיחה עברה בלי
+  תקלות"), kind, and a status chip: תקין / הייתה תקלה / דורש טיפול;
+  "צפייה" opens the existing `ConversationModal`. Server:
+  `customerProblems.listConversations` — the customer conversations with a
+  customer message in the period, plus any conversation (or conversation-
+  less problem) that only has a problem in it; each with `status`
+  ('act' | 'info' | 'ok') and `problemIds` (the one that speaks for it
+  first). At most 500 rows (the ones with a problem always kept,
+  `truncated` says so). The problems endpoint stays problems-only.
+- **Tiles → the conversations page.** Each tile on the problems page is a
+  button that opens "שיחות" on the same scope and period with `?filter=`
+  (act · ok · all · problems · slow · test); the card shows "מסונן: …" with
+  a clear button. The tiles now count **conversations** (`conversationCounts`,
+  the same `tally` both reads use), so a tile's number = the rows it opens.
+- **API:** `GET /api/manage/agents/:slug/customer-problems` and
+  `GET /api/manage/customer-problems` take `from`/`to`; new
+  `GET /api/manage/agents/:slug/conversations` and `GET /api/manage/conversations[?agent]`
+  (every-agent grant only), same access as every page.
+- **MCP (read only):** `…/agents/<slug>/customer-problems?from=&to=` and the
+  "which part and why" line; new `…/agents/<slug>/customer-conversations`
+  (counts, one line per conversation with its status and the problem's
+  words; `?status=act|info|ok|problem`).
+- **Tests:** `node scripts/test-customer-problems.js` (offline — the detail
+  line incl. conversation 313's case, the period and its refusals, the
+  conversations list and its cap, tiles = conversations counts, the routes
+  and the MCP pages). **Not touched:** Alfred.

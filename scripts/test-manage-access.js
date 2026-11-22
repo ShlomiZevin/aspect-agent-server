@@ -76,6 +76,23 @@ const fakeAdmin = {
     USERS.filter(u => u.id === id).forEach(u => { u.real_customer = real; });
     return { id };
   },
+  // #1002: Add user + turn auto-suspend off, as admin.service does them.
+  async createUser(d) {
+    adminCalls.push(['create', d.name, d.phone, d.tenant, d.subscription, d.role, d.autoSuspendHours]);
+    if (USERS.some(u => u.name === d.name && u.phone === d.phone && u.slug === String(d.tenant).toLowerCase())) {
+      throw new Error(`User "${d.name}" with phone ${d.phone} already exists in tenant "${d.tenant}"`);
+    }
+    const id = Math.max(...USERS.map(u => u.id)) + 1;
+    USERS.push({ id, name: d.name, phone: d.phone, email: null, external_id: `manual_${d.tenant}_${d.phone}_1`, created_at: new Date(), last_active_at: null,
+      real_customer: false, suspended_at: null, auto_suspend_at: d.autoSuspendHours ? new Date(Date.now() + d.autoSuspendHours * 3600 * 1000).toISOString() : null,
+      slug: String(d.tenant).toLowerCase(), conversations: 0, last_seen: null, shared: false });
+    return { id };
+  },
+  async clearAutoSuspend(id) {
+    adminCalls.push(['autoOff', id]);
+    USERS.filter(u => u.id === id).forEach(u => { u.auto_suspend_at = null; });
+    return { id };
+  },
   async deleteUser(id) {
     adminCalls.push(['delete', id]);
     const n = USERS.filter(u => u.id === id).reduce((s, u) => s + u.conversations, 0);
@@ -345,6 +362,44 @@ function check(name, cond, extra = '') {
     const re = await call('POST', '/api/manage/agents/acme/users/6/suspend', { token: acmeT, body: { suspended: false } });
     check('reactivating an auto-suspended user clears the limit too (not suspended again)',
       re.status === 200 && re.json.user.suspended === false && re.json.user.autoSuspendAt === null, re.text.slice(0, 300));
+
+    // ─── Add user + turn off, in the management center (#1002 phase 2) ─
+    console.log('\n-- add user (management center)');
+    const add = await call('POST', '/api/manage/agents/acme/users', { token: acmeT, body: { name: ' Noga ', phone: '0505555555', autoSuspendHours: 48 } });
+    const noga = add.json && add.json.user;
+    check('add user: Admin\'s own createUser, tenant = the agent, demo / user, 48 h',
+      add.status === 201 && JSON.stringify(adminCalls.at(-1)) === '["create","Noga","0505555555","acme","demo","user",48]', add.text.slice(0, 300));
+    check('…comes back as a user of the agent: test, not suspended, auto-suspend time set',
+      !!noga && noga.agentSlug === 'acme' && noga.audience === 'test' && noga.suspended === false
+      && Math.abs(Date.parse(noga.autoSuspendAt) - (Date.now() + 48 * HOUR)) < 10000);
+    const add24 = await call('POST', '/api/manage/agents/acme/users', { token: acmeT, body: { name: 'Tal', phone: '0506666666', autoSuspendHours: 24 } });
+    check('add user with 24 h', add24.status === 201 && Math.abs(Date.parse(add24.json.user.autoSuspendAt) - (Date.now() + 24 * HOUR)) < 10000);
+    const addOff = await call('POST', '/api/manage/agents/acme/users', { token: acmeT, body: { name: 'Rina', phone: '0507777777', autoSuspendHours: null } });
+    check('add user with auto-suspend off', addOff.status === 201 && addOff.json.user.autoSuspendAt === null);
+    let n = adminCalls.length;
+    check('add user: same name + phone on the agent → 409 user_exists',
+      (await call('POST', '/api/manage/agents/acme/users', { token: acmeT, body: { name: 'Noga', phone: '0505555555', autoSuspendHours: 48 } })).json?.code === 'user_exists');
+    n = adminCalls.length;
+    check('add user: no phone / other hours → 400 bad_user, nothing created',
+      (await call('POST', '/api/manage/agents/acme/users', { token: acmeT, body: { name: 'X', phone: ' ' } })).json?.code === 'bad_user'
+      && (await call('POST', '/api/manage/agents/acme/users', { token: acmeT, body: { name: 'X', phone: '1', autoSuspendHours: 5 } })).json?.code === 'bad_user'
+      && adminCalls.length === n);
+    check('add user on another agent → 403, without a token → 401',
+      (await call('POST', '/api/manage/agents/other/users', { token: acmeT, body: { name: 'X', phone: '1' } })).status === 403
+      && (await call('POST', '/api/manage/agents/acme/users', { body: { name: 'X', phone: '1' } })).status === 401 && adminCalls.length === n);
+    const offNoga = await call('DELETE', `/api/manage/agents/acme/users/${noga.id}/auto-suspend`, { token: acmeT });
+    check('turn auto-suspend off: Admin\'s own operation, the row comes back without it',
+      offNoga.status === 200 && offNoga.json.user.autoSuspendAt === null && offNoga.json.user.suspended === false
+      && JSON.stringify(adminCalls.at(-1)) === `["autoOff",${noga.id}]`, offNoga.text.slice(0, 300));
+    USERS.find(u => u.id === 5).auto_suspend_at = passed; // Avi's limit ran out
+    n = adminCalls.length;
+    check('turn off after the limit already suspended → 409 already_suspended',
+      (await call('DELETE', '/api/manage/agents/acme/users/5/auto-suspend', { token: acmeT })).json?.code === 'already_suspended' && adminCalls.length === n);
+    check('turn off: shared person → 409, another agent → 403, MCP has no such route',
+      (await call('DELETE', '/api/manage/agents/acme/users/3/auto-suspend', { token: acmeT })).json?.code === 'user_shared'
+      && (await call('DELETE', '/api/manage/agents/other/users/4/auto-suspend', { token: acmeT })).status === 403
+      && (await call('DELETE', '/builder/mcp/agents/acme/users/5/auto-suspend')).status === 404
+      && (await call('POST', '/builder/mcp/agents/acme/users', { body: { name: 'X', phone: '1' } })).status === 404 && adminCalls.length === n);
 
     check('MCP entry page points at /access (template literal intact)', entry.status === 200 && entry.text.includes('/access') && entry.text.includes('/agents/<slug>/access'));
     const all = await call('GET', '/builder/mcp/access');

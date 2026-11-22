@@ -6,7 +6,9 @@
  * API `builder/routes/manageRoute.js`) and by the Builder MCP
  * (`GET /builder/mcp/agents/:slug/customer-problems`). Both print the
  * sentences from THIS file, so the page and an AI assistant say the same
- * words. Change wording here, nowhere else.
+ * words. Change wording here, nowhere else. The conversations page
+ * (`/lybi/manage/<slug>/conversations`, MCP `…/customer-conversations`, #1001)
+ * reads listConversations — the same problems, put on their conversations.
  *
  * ── What counts as a problem ───────────────────────────────────────
  *
@@ -35,6 +37,22 @@
  * Every row carries `audience` ('real' | 'test', #968, fail closed) so the
  * page can tag test conversations — rows are never hidden for it.
  *
+ * Every error row also carries `detail` (#1001): WHICH part failed and why,
+ * one plain line — the add-on's own name as the author sees it in the
+ * Builder (or the area when there is no add-on) + a plain reason from
+ * REASONS_BY_CODE / REASONS_BY_KIND. Never empty.
+ *
+ * ── The period and every conversation (#1001) ─────────────────────
+ *
+ *  The period is `today`, `week` (today + 6 days before) or a custom
+ *  `from`–`to` (Israel days, inclusive, at most MAX_RANGE_DAYS, never past
+ *  today). listConversations lists EVERY customer conversation with a customer
+ *  message in the period — plus any conversation (or conversation-less
+ *  problem) that only has a problem in it — each with its status:
+ *  'act' (a problem someone should act on), 'info' (a problem, nothing to
+ *  do) or 'ok', and the ids of its problems. At most MAX_CONVERSATIONS rows;
+ *  the ones with a problem always make the cut.
+ *
  * ── Did the customer get an answer? ────────────────────────────────
  *
  *  A turn's reply message with text → answered (the platform got past
@@ -59,7 +77,18 @@ const SLOW_REPEAT_PER_DAY = 3;
 const MAX_PROBLEMS = 200;
 const LAST_MESSAGE_CHARS = 280;
 const TZ = 'Asia/Jerusalem';
-const RANGES = ['today', 'week'];
+const RANGES = ['today', 'week', 'custom'];
+/** A custom period: at most this many days (inclusive). */
+const MAX_RANGE_DAYS = 92;
+/** The conversations list: at most this many rows (problems always included). */
+const MAX_CONVERSATIONS = 500;
+/** How many conversations one read looks at (the tiles count all of them). */
+const CONVERSATIONS_READ = 5000;
+
+/** A refused period — the routes answer 400 { code: 'bad_range' }. */
+class BadRangeError extends Error {
+  constructor(message) { super(message); this.code = 'bad_range'; this.status = 400; }
+}
 
 // ─── The plain-language table — one place ──────────────────────────
 
@@ -131,6 +160,79 @@ function slowOutcome(replyMs) {
   return sec < 120 ? `התשובה הגיעה אחרי ${sec} שניות` : `התשובה הגיעה אחרי ${Math.round(sec / 60)} דקות`;
 }
 
+// ─── The detail line (#1001): which part failed, and why ───────────
+// "<part>: <reason>" — the part is the add-on's own name (the author knows
+// it from the Builder), a trigger's name, or the area in words. The reason
+// is plain Hebrew; a known error code says it most precisely, else the kind.
+
+/** The runtime's add-on failure codes (builder/runtime/addonRunner.js). */
+const REASONS_BY_CODE = {
+  empty_output:      'חזרה תשובה ריקה',
+  output_cut_off:    'התשובה נקטעה באמצע',
+  bad_json:          'חזרה תשובה לא תקינה',
+  no_verdict:        'חזרה תשובה לא תקינה',
+  bad_output_type:   'חזרה תשובה לא תקינה',
+  no_model:          'לא נבחר מודל',
+  assemble_failed:   'לא הצלחנו להרכיב את ההנחיות',
+  unknown_plugin:    'סוג החלק לא מוכר למערכת',
+  plugin_run_failed: 'תקלה בהרצה',
+};
+const REASONS_BY_KIND = {
+  model_no_credit:    'נגמרה המכסה אצל ספק ה־AI',
+  model_rate_limit:   'עומס אצל ספק ה־AI',
+  model_timeout:      'עבר הזמן ולא חזרה תשובה',
+  model_refusal:      'ה־AI סירב לענות',
+  model_bad_answer:   'חזרה תשובה ריקה או לא תקינה',
+  model_other:        'תקלה זמנית אצל ספק ה־AI',
+  database:           'תקלה בשמירת הנתונים',
+  external:           'תקלה בשירות חיצוני',
+  server_unavailable: 'השרת היה עמוס',
+  user_input:         'לא הצלחנו לקרוא את ההודעה של הלקוח',
+  code:               'תקלה בקוד של המערכת',
+};
+const REASON_FALLBACK = 'תקלה לא מוכרת';
+/** The part, when the row names no add-on / trigger. */
+const AREA_PARTS = {
+  turn: 'הטיפול בהודעה',
+  server: 'השרת',
+  model: 'הפנייה לספק ה־AI',
+  addon: 'אחד החלקים של הסוכן',
+  trigger: 'הודעה מתוזמנת',
+  offline: 'עיבוד ברקע',
+  profiler: 'הפרופיילר',
+  'live-brain': 'ה־Live Brain',
+  simulation: 'סימולציה',
+};
+const PART_FALLBACK = 'המערכת';
+// FSI … PDI: an English add-on name stays one piece inside the Hebrew line.
+const isolate = t => `⁨${t}⁩`;
+const partOf = r => {
+  const name = r.addon_label || r.trigger_name;
+  return name ? isolate(String(name).trim()) : (AREA_PARTS[r.area] || PART_FALLBACK);
+};
+const reasonOf = r => REASONS_BY_CODE[r.error_code] || REASONS_BY_KIND[r.kind] || REASON_FALLBACK;
+const moreParts = n => (n === 1 ? ' (ועוד חלק אחד)' : ` (ועוד ${n} חלקים)`);
+
+const named = r => !!(r.addon_label || r.trigger_name);
+
+/**
+ * The detail line of one customer turn's errors: the most specific row (one
+ * that names its add-on / trigger, most customer-visible area first; else the
+ * turn's lead row) — its part and reason — plus how many OTHER named parts
+ * failed on that turn. (A retried model call and the turn around it are the
+ * same failure, so unnamed rows never count as "more parts".)
+ * @param {object} lead   the row that speaks for the turn (groupErrors)
+ * @param {object[]} rows every row of the turn, in AREA_ORDER or any order
+ * @returns {string} never empty
+ */
+function detailOf(lead, rows = [lead]) {
+  const rank = r => { const i = AREA_ORDER.indexOf(r.area); return i < 0 ? 99 : i; };
+  const speaker = [...rows].filter(named).sort((a, b) => rank(a) - rank(b))[0] || lead;
+  const part = partOf(speaker);
+  const others = new Set(rows.filter(named).map(partOf).filter(p => p !== part)).size;
+  return `${part}: ${reasonOf(speaker)}${others ? moreParts(others) : ''}`;
+}
+
 const BACKGROUND_AREAS = new Set(['offline', 'profiler', 'live-brain']);
 /** Which row of a turn speaks for it: the most customer-visible area first. */
 const AREA_ORDER = ['turn', 'server', 'model', 'addon', 'trigger', 'offline', 'profiler', 'live-brain', 'simulation'];
@@ -176,14 +278,50 @@ const clip = s => {
   return t.length > LAST_MESSAGE_CHARS ? `${t.slice(0, LAST_MESSAGE_CHARS - 1)}…` : t;
 };
 
-/** Israel midnight today and six days before, and the server's now. */
-async function bounds() {
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** A real calendar day "YYYY-MM-DD" → its UTC midnight (ms), else NaN. */
+function dayMs(d) {
+  if (!DAY_RE.test(String(d || ''))) return NaN;
+  const ms = Date.parse(`${d}T00:00:00Z`);
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === d ? ms : NaN;
+}
+
+/**
+ * Check a custom period before any query: two real days, from ≤ to, at most
+ * MAX_RANGE_DAYS. (Not after today is checked against the database's day.)
+ * @throws {BadRangeError}
+ */
+function checkCustomDays(from, to) {
+  const f = dayMs(from);
+  const t = dayMs(to);
+  if (!Number.isFinite(f) || !Number.isFinite(t)) throw new BadRangeError('from and to must be days, YYYY-MM-DD');
+  if (f > t) throw new BadRangeError('from is after to');
+  if ((t - f) / 86400000 + 1 > MAX_RANGE_DAYS) throw new BadRangeError(`at most ${MAX_RANGE_DAYS} days`);
+}
+
+/**
+ * Israel midnight today, six days before and tomorrow, the server's now,
+ * today's Israel day — and, for a custom period, Israel midnight of `from`
+ * and of the day after `to`.
+ */
+async function bounds(fromDay = null, toDay = null) {
   const { rows } = await db.query(
     `SELECT (date_trunc('day', now() AT TIME ZONE '${TZ}') AT TIME ZONE '${TZ}') AS today,
             ((date_trunc('day', now() AT TIME ZONE '${TZ}') - interval '6 days') AT TIME ZONE '${TZ}') AS week,
+            ((date_trunc('day', now() AT TIME ZONE '${TZ}') + interval '1 day') AT TIME ZONE '${TZ}') AS tomorrow,
+            to_char(now() AT TIME ZONE '${TZ}', 'YYYY-MM-DD') AS today_day,
+            ($1::date::timestamp AT TIME ZONE '${TZ}') AS custom_from,
+            (($2::date + 1)::timestamp AT TIME ZONE '${TZ}') AS custom_to,
             now() AS now`,
+    [fromDay, toDay],
   );
-  return { today: new Date(rows[0].today), week: new Date(rows[0].week), now: new Date(rows[0].now) };
+  const r = rows[0];
+  return {
+    today: new Date(r.today), week: new Date(r.week), tomorrow: new Date(r.tomorrow), now: new Date(r.now),
+    todayDay: r.today_day,
+    customFrom: r.custom_from ? new Date(r.custom_from) : null,
+    customTo: r.custom_to ? new Date(r.custom_to) : null,
+  };
 }
 
 /** Builder agents' display names (active version), optionally one slug. */
@@ -203,22 +341,25 @@ async function agentExists(slug) {
   return (await agentNames(slug)).length > 0;
 }
 
-async function errorRows(from, slug) {
+async function errorRows(from, to, slug) {
   const { rows } = await db.query(
-    `SELECT e.agent_slug, e.conversation_id, e.message_id, e.area, e.kind, e.created_at
+    `SELECT e.agent_slug, e.conversation_id, e.message_id, e.area, e.kind, e.created_at,
+            e.detail->'addon'->>'label' AS addon_label,
+            e.detail->'trigger'->>'name' AS trigger_name,
+            e.detail->>'errorCode' AS error_code
        FROM error_events e
        LEFT JOIN error_groups g ON g.agent_slug = e.agent_slug AND g.fingerprint = e.fingerprint
-      WHERE e.source = 'customer' AND e.created_at >= $1
+      WHERE e.source = 'customer' AND e.created_at >= $1 AND e.created_at < $3
         AND ($2::text IS NULL OR e.agent_slug = $2)
         AND g.status IS DISTINCT FROM 'ignored'
       ORDER BY e.created_at DESC
       LIMIT 2000`,
-    [from, slug || null],
+    [from, slug || null, to],
   );
   return rows;
 }
 
-async function noReplyRows(from, slug) {
+async function noReplyRows(from, to, slug) {
   const { rows } = await db.query(
     `SELECT c.id AS conversation_id, a.url_slug AS agent_slug, lu.id AS user_msg_id, lu.content AS user_msg,
             c.last_user_message_at AS at
@@ -230,7 +371,7 @@ async function noReplyRows(from, slug) {
           ORDER BY m.id DESC LIMIT 1
        ) lu
       WHERE c.kind = 'user' AND c.metadata->>'kind' = 'live'
-        AND c.last_user_message_at >= $1
+        AND c.last_user_message_at >= $1 AND c.last_user_message_at < $4
         AND c.last_user_message_at < now() - make_interval(mins => $3)
         AND ($2::text IS NULL OR a.url_slug = $2)
         AND NOT EXISTS (
@@ -239,23 +380,59 @@ async function noReplyRows(from, slug) {
         )
       ORDER BY c.last_user_message_at DESC
       LIMIT ${MAX_PROBLEMS}`,
-    [from, slug || null, NO_REPLY_MINUTES],
+    [from, slug || null, NO_REPLY_MINUTES, to],
   );
   return rows;
 }
 
-/** Customer conversations with customer activity since `from`, per agent. */
-async function servedCounts(from, slug) {
+/**
+ * Customer conversations with a customer message in [from, to), per agent.
+ * (`last_user_message_at >= from` only narrows the scan: a conversation
+ * that had a customer message in the period was last written to after `from`.)
+ */
+async function servedCounts(from, to, slug) {
   const { rows } = await db.query(
     `SELECT a.url_slug AS slug, COUNT(*)::int AS n
        FROM conversations c JOIN agents a ON a.id = c.agent_id
       WHERE c.kind = 'user' AND c.metadata->>'kind' = 'live'
         AND c.last_user_message_at >= $1
         AND ($2::text IS NULL OR a.url_slug = $2)
+        AND EXISTS (
+          SELECT 1 FROM messages m
+           WHERE m.conversation_id = c.id AND m.role = 'user' AND m.created_at >= $1 AND m.created_at < $3
+        )
       GROUP BY 1`,
-    [from, slug || null],
+    [from, slug || null, to],
   );
   return new Map(rows.map(r => [r.slug, r.n]));
+}
+
+/**
+ * Every customer conversation with a customer message in [from, to) — its
+ * customer, real / test, and its last customer message in the period.
+ * Newest first, light columns, up to CONVERSATIONS_READ — the counts are over
+ * all of them; the list keeps MAX_CONVERSATIONS (buildConversations).
+ */
+async function conversationRows(from, to, slug) {
+  const { rows } = await db.query(
+    `SELECT c.id AS conversation_id, a.url_slug AS agent_slug, NULLIF(u.name, '') AS name,
+            c.metadata->>'audience' AS audience, lm.created_at AS last_at, left(lm.content, ${LAST_MESSAGE_CHARS + 20}) AS last_msg
+       FROM conversations c
+       JOIN agents a ON a.id = c.agent_id
+       LEFT JOIN users u ON u.id = c.user_id
+       CROSS JOIN LATERAL (
+         SELECT m.created_at, m.content FROM messages m
+          WHERE m.conversation_id = c.id AND m.role = 'user' AND m.created_at >= $1 AND m.created_at < $3
+          ORDER BY m.id DESC LIMIT 1
+       ) lm
+      WHERE c.kind = 'user' AND c.metadata->>'kind' = 'live'
+        AND c.last_user_message_at >= $1
+        AND ($2::text IS NULL OR a.url_slug = $2)
+      ORDER BY lm.created_at DESC
+      LIMIT ${CONVERSATIONS_READ}`,
+    [from, slug || null, to],
+  );
+  return rows;
 }
 
 /** One customer turn's errors → one group. */
@@ -318,7 +495,7 @@ async function turnFacts(groups) {
  * read from `messages.metadata.replyTiming` (builder/runtime/replyTiming.js),
  * so only replies since that was deployed. Customer chat only.
  */
-async function slowReplyRows(from, slug) {
+async function slowReplyRows(from, to, slug) {
   const { rows } = await db.query(
     `SELECT r.id AS reply_id, r.conversation_id, a.url_slug AS agent_slug,
             (r.metadata->'replyTiming'->>'replyMs')::numeric AS reply_ms,
@@ -336,9 +513,10 @@ async function slowReplyRows(from, slug) {
         AND r.role = 'assistant' AND r.metadata ? 'replyTiming'
         AND (r.metadata->'replyTiming'->>'replyMs')::numeric > $3
         AND (r.metadata->'replyTiming'->>'receivedAt')::timestamptz >= $1
+        AND (r.metadata->'replyTiming'->>'receivedAt')::timestamptz < $4
       ORDER BY r.id DESC
       LIMIT ${MAX_PROBLEMS}`,
-    [from, slug || null, SLOW_REPLY_MS],
+    [from, slug || null, SLOW_REPLY_MS, to],
   );
   return rows;
 }
@@ -357,29 +535,48 @@ async function customerInfo(conversationIds) {
 }
 
 /**
- * The problems page / MCP read.
- *
- * @param {object} a
- * @param {string|null} a.slug       one agent, or null for every agent
- * @param {'today'|'week'} [a.range] default 'today' (Israel time; week = today + 6 days before)
- * @returns {Promise<{ range, from, checkedAt, newCount, noReplyMinutes, problems, agents }>}
- *   problems newest first; `isNew` = in the last 24 h (no read-tracking).
- *   agents: [{ slug, name, archived, conversations, problems, needsAction }] — every
- *   Builder agent in scope with its customer conversations and problems in the range.
+ * The period of a read: today, this week, or a custom from–to (#1001).
+ * @returns {{ r: 'today'|'week'|'custom', b: object, from: Date, to: Date, fromDay: string|null, toDay: string|null }}
+ * @throws {BadRangeError}
  */
-async function listProblems({ slug = null, range = 'today' } = {}) {
-  const r = RANGES.includes(range) ? range : 'today';
-  const b = await bounds();
-  const from = r === 'today' ? b.today : b.week;
-  const dayAgo = b.now.getTime() - 24 * 3600 * 1000;
-  // One read covers both the range and "new" (24 h) — the week always reaches back past 24 h.
-  const fetchFrom = new Date(Math.min(b.week.getTime(), dayAgo));
+async function periodOf({ range = 'today', from: fromDay = null, to: toDay = null } = {}) {
+  const custom = !!(fromDay || toDay);
+  if (custom) checkCustomDays(fromDay, toDay);
+  const r = custom ? 'custom' : (range === 'week' ? 'week' : 'today');
+  const b = await bounds(custom ? fromDay : null, custom ? toDay : null);
+  if (custom && toDay > b.todayDay) throw new BadRangeError('to is after today');
+  return {
+    r, b,
+    from: r === 'custom' ? b.customFrom : r === 'today' ? b.today : b.week,
+    to: r === 'custom' ? b.customTo : b.tomorrow,
+    fromDay: custom ? fromDay : null,
+    toDay: custom ? toDay : null,
+  };
+}
 
-  const [errs, silent, slow, served, names] = await Promise.all([
-    errorRows(fetchFrom, slug),
-    noReplyRows(fetchFrom, slug),
-    slowReplyRows(fetchFrom, slug),
-    servedCounts(from, slug),
+/** The period's own fields, the same on every read. */
+const periodFields = p => ({
+  range: p.r,
+  from: p.from.toISOString(),
+  to: p.to.toISOString(),
+  fromDay: p.fromDay,
+  toDay: p.toDay,
+  maxRangeDays: MAX_RANGE_DAYS,
+  checkedAt: p.b.now.toISOString(),
+});
+
+/**
+ * Every problem of the scope that a period's read needs: `all` (also the
+ * last 24 h, for "new") and `inRange` (the period, newest first, capped).
+ */
+async function readProblems(slug, p) {
+  const dayAgo = p.b.now.getTime() - 24 * 3600 * 1000;
+  // One read covers both the period and "new" (24 h).
+  const fetchFrom = new Date(Math.min(p.from.getTime(), dayAgo));
+  const [errs, silent, slow, names] = await Promise.all([
+    errorRows(fetchFrom, p.to, slug),
+    noReplyRows(fetchFrom, p.to, slug),
+    slowReplyRows(fetchFrom, p.to, slug),
     agentNames(slug),
   ]);
 
@@ -406,6 +603,7 @@ async function listProblems({ slug = null, range = 'today' } = {}) {
       answered: f.answered,
       replyMs: null,
       ...words,
+      detail: detailOf(g.lead, g.rows),
     });
   }
   for (const s of silent) {
@@ -424,6 +622,7 @@ async function listProblems({ slug = null, range = 'today' } = {}) {
       answered: false,
       replyMs: null,
       ...plainWords({ type: 'no_reply' }),
+      detail: null,
     });
   }
   // Slow replies — the customer got an answer, late. A turn that also has an
@@ -445,17 +644,81 @@ async function listProblems({ slug = null, range = 'today' } = {}) {
       answered: true,
       replyMs,
       ...plainWords({ type: 'slow_reply', replyMs, repeats: (slowPerDay.get(`${s.agent_slug}|${s.day}`) || 0) >= SLOW_REPEAT_PER_DAY }),
+      detail: null,
     });
   }
   all.sort((x, y) => (x.at < y.at ? 1 : x.at > y.at ? -1 : 0));
-  for (const p of all) p.isNew = new Date(p.at).getTime() >= dayAgo;
+  for (const x of all) x.isNew = new Date(x.at).getTime() >= dayAgo;
 
-  const inRange = all.filter(p => new Date(p.at).getTime() >= from.getTime());
+  const inRange = all
+    .filter(x => { const t = new Date(x.at).getTime(); return t >= p.from.getTime() && t < p.to.getTime(); })
+    .slice(0, MAX_PROBLEMS);
+  return { all, inRange, names, nameOf };
+}
+
+/** The row a problem belongs to on the conversations page: its conversation, or itself. */
+const rowKey = x => (x.conversationId ? `c${x.conversationId}` : `p${x.id}`);
+
+/**
+ * The tile numbers (#1001) — conversations, not problem rows, so each tile's
+ * number = the rows it opens on the conversations page.
+ * @param {object[]} rows  [{ audience, problems: [...] }] — every row WITH a problem
+ * @param {number} all     every row of the period (with a problem or not)
+ */
+function tally(rows, all) {
+  const act = rows.filter(x => x.problems.some(y => y.action.tone === 'act')).length;
+  return {
+    all,
+    act,
+    ok: all - act,
+    problems: rows.length,
+    slow: rows.filter(x => x.problems.some(y => y.type === 'slow_reply')).length,
+    test: rows.filter(x => x.audience === 'test').length,
+  };
+}
+
+/** Of these conversations, the ones with a customer message in [from, to). */
+async function servedAmong(ids, from, to) {
+  const list = [...new Set(ids.filter(Boolean))];
+  if (!list.length) return new Set();
+  const { rows } = await db.query(
+    `SELECT DISTINCT m.conversation_id AS id FROM messages m
+      WHERE m.conversation_id = ANY($1::int[]) AND m.role = 'user' AND m.created_at >= $2 AND m.created_at < $3`,
+    [list, from, to],
+  );
+  return new Set(rows.map(r => r.id));
+}
+
+/**
+ * The problems page / MCP read.
+ *
+ * @param {object} a
+ * @param {string|null} a.slug       one agent, or null for every agent
+ * @param {'today'|'week'} [a.range] default 'today' (Israel time; week = today + 6 days before)
+ * @param {string} [a.from] [a.to]   a custom period instead (#1001): Israel days
+ *   "YYYY-MM-DD", inclusive, at most MAX_RANGE_DAYS, `to` not after today.
+ *   Both or neither; a bad one throws BadRangeError (code 'bad_range').
+ * @returns {Promise<{ range, from, to, fromDay, toDay, maxRangeDays, checkedAt, newCount,
+ *   noReplyMinutes, slowReplySeconds, problems, conversationCounts, agents }>}
+ *   problems newest first; `isNew` = in the last 24 h (no read-tracking; on a
+ *   custom period only those inside it).
+ *   conversationCounts: the tiles, in conversations — the same numbers
+ *   listConversations gives.
+ *   agents: [{ slug, name, archived, conversations, problems, needsAction }] — every
+ *   Builder agent in scope with its customer conversations and problems in the range.
+ */
+async function listProblems({ slug = null, range = 'today', from = null, to = null } = {}) {
+  const p = await periodOf({ range, from, to });
+  const [{ all, inRange, names }, served] = await Promise.all([
+    readProblems(slug, p),
+    servedCounts(p.from, p.to, slug),
+  ]);
+
   const problemsBySlug = new Map();
   const actBySlug = new Map();
-  for (const p of inRange) {
-    problemsBySlug.set(p.agentSlug, (problemsBySlug.get(p.agentSlug) || 0) + 1);
-    if (p.action.tone === 'act') actBySlug.set(p.agentSlug, (actBySlug.get(p.agentSlug) || 0) + 1);
+  for (const x of inRange) {
+    problemsBySlug.set(x.agentSlug, (problemsBySlug.get(x.agentSlug) || 0) + 1);
+    if (x.action.tone === 'act') actBySlug.set(x.agentSlug, (actBySlug.get(x.agentSlug) || 0) + 1);
   }
 
   // Every Builder agent in scope, plus any slug that only shows up in the data.
@@ -473,20 +736,128 @@ async function listProblems({ slug = null, range = 'today' } = {}) {
     };
   }).sort((x, y) => (y.conversations - x.conversations) || (y.problems - x.problems) || x.name.localeCompare(y.name));
 
+  // The tiles in conversations: every customer conversation of the period,
+  // plus each problem's row that had no customer message in it.
+  const rows = new Map();
+  for (const x of inRange) {
+    const k = rowKey(x);
+    if (!rows.has(k)) rows.set(k, { conversationId: x.conversationId, audience: x.audience, problems: [] });
+    rows.get(k).problems.push(x);
+  }
+  const servedIds = await servedAmong([...rows.values()].map(x => x.conversationId), p.from, p.to);
+  const extra = [...rows.values()].filter(x => !x.conversationId || !servedIds.has(x.conversationId)).length;
+  const servedTotal = [...served.values()].reduce((n, v) => n + v, 0);
+
   return {
-    range: r,
-    from: from.toISOString(),
-    checkedAt: b.now.toISOString(),
-    newCount: all.filter(p => p.isNew).length,
+    ...periodFields(p),
+    newCount: all.filter(x => x.isNew).length,
     noReplyMinutes: NO_REPLY_MINUTES,
     slowReplySeconds: SLOW_REPLY_MS / 1000,
-    problems: inRange.slice(0, MAX_PROBLEMS),
+    problems: inRange,
+    conversationCounts: tally([...rows.values()], servedTotal + extra),
     agents,
   };
 }
 
+/**
+ * The conversations page / MCP read (#1001): every conversation of the
+ * period, newest first — the customer conversations with a customer message
+ * in it, plus any conversation (or conversation-less problem) that only has
+ * a problem in it. Each: status 'act' | 'info' | 'ok' and `problemIds` (the
+ * one that speaks for it first). At most MAX_CONVERSATIONS rows, the ones
+ * with a problem always included.
+ *
+ * @param {object} a  slug / range / from / to — as listProblems
+ * @returns {Promise<{ range, from, to, fromDay, toDay, maxRangeDays, checkedAt,
+ *   conversations, conversationCounts, truncated, problems }>}
+ *   problems: the problems the rows point at (the same objects listProblems gives).
+ */
+async function listConversations({ slug = null, range = 'today', from = null, to = null } = {}) {
+  const p = await periodOf({ range, from, to });
+  const [{ inRange, nameOf }, convs] = await Promise.all([
+    readProblems(slug, p),
+    conversationRows(p.from, p.to, slug),
+  ]);
+  const { conversations, counts, truncated } = buildConversations(convs, inRange, nameOf);
+  return {
+    ...periodFields(p),
+    conversations,
+    conversationCounts: counts,
+    truncated,
+    problems: inRange,
+  };
+}
+
+/** Which problem speaks for a conversation: someone should act, then error > no reply > slow, then newest. */
+const TYPE_ORDER = { error: 0, no_reply: 1, slow_reply: 2 };
+function problemRank(x, y) {
+  return ((x.action.tone === 'act' ? 0 : 1) - (y.action.tone === 'act' ? 0 : 1))
+    || ((TYPE_ORDER[x.type] ?? 9) - (TYPE_ORDER[y.type] ?? 9))
+    || (x.at < y.at ? 1 : x.at > y.at ? -1 : 0);
+}
+
+/**
+ * The rows of listConversations — see there. `counts` are over ALL rows
+ * (tally), the list keeps MAX_CONVERSATIONS.
+ */
+function buildConversations(convRows, problems, nameOf) {
+  const byKey = new Map();
+  for (const c of convRows) {
+    byKey.set(`c${c.conversation_id}`, {
+      id: `c${c.conversation_id}`,
+      conversationId: c.conversation_id,
+      agentSlug: c.agent_slug,
+      agentName: nameOf.get(c.agent_slug) || c.agent_slug,
+      customerName: c.name || null,
+      audience: audienceOf({ audience: c.audience }),
+      at: iso(c.last_at),
+      lastCustomerMessage: c.last_msg ? clip(c.last_msg) : null,
+      status: 'ok',
+      problemIds: [],
+      problems: [],
+    });
+  }
+  for (const x of problems) {
+    const key = rowKey(x);
+    let e = byKey.get(key);
+    if (!e) {
+      e = {
+        id: key,
+        conversationId: x.conversationId,
+        agentSlug: x.agentSlug,
+        agentName: x.agentName,
+        customerName: x.customerName,
+        audience: x.audience,
+        at: x.at,
+        lastCustomerMessage: x.lastCustomerMessage,
+        status: 'ok',
+        problemIds: [],
+        problems: [],
+      };
+      byKey.set(key, e);
+    }
+    e.problems.push(x);
+    if (x.at > e.at) e.at = x.at;
+  }
+  const every = [...byKey.values()];
+  for (const e of every) {
+    e.problems.sort(problemRank);
+    e.problemIds = e.problems.map(x => x.id);
+    e.status = !e.problems.length ? 'ok' : e.problems.some(x => x.action.tone === 'act') ? 'act' : 'info';
+  }
+  const withProblem = every.filter(e => e.problems.length);
+  const counts = tally(withProblem, every.length);
+  const newest = (x, y) => (x.at < y.at ? 1 : x.at > y.at ? -1 : 0);
+  const clean = every.filter(e => !e.problems.length).sort(newest);
+  const kept = [...withProblem, ...clean.slice(0, Math.max(MAX_CONVERSATIONS - withProblem.length, 0))]
+    .sort(newest)
+    .map(({ problems: _p, ...row }) => row);
+  return { conversations: kept, counts, truncated: kept.length < every.length };
+}
+
 module.exports = {
-  listProblems, agentExists, plainWords,
+  listProblems, listConversations, agentExists, plainWords, detailOf, BadRangeError,
   ACTIONS, OUTCOMES, KINDS, FALLBACK, SPECIAL, RANGES, NO_REPLY_MINUTES, SLOW_REPLY_MS, SLOW_REPEAT_PER_DAY,
-  _internal: { groupErrors },
+  MAX_RANGE_DAYS, MAX_CONVERSATIONS, REASONS_BY_CODE, REASONS_BY_KIND,
+  _internal: { groupErrors, buildConversations },
 };

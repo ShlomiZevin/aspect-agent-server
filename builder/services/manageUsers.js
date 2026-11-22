@@ -1,8 +1,8 @@
 /**
  * The users of an agent's customer chat (tasks #999, #982, #991) — the
  * management center's "Users" page and the Builder MCP's
- * `/agents/<slug>/users`. Read here; the actions (suspend, real customer,
- * delete) reuse services/admin.service.js — the same operations Admin →
+ * `/agents/<slug>/users`. Read here; the actions (add user, suspend, real
+ * customer, turn auto-suspend off, delete) reuse services/admin.service.js — the same operations Admin →
  * Users runs — after the checks below. No table or column of its own: it
  * reads `users` and `conversations` as they are.
  *
@@ -33,7 +33,7 @@
 
 const db = require('../../services/db.pg');
 const manageAccess = require('./manageAccess');
-const { suspensionOf } = require('../runtime/userSuspension');
+const { suspensionOf, AUTO_SUSPEND_HOURS } = require('../runtime/userSuspension');
 
 const MAX_USERS = 1000;
 const MAX_CONVERSATIONS = 50;
@@ -198,6 +198,42 @@ async function setRealCustomer({ slug, userId, real }) {
   return getUser({ slug, userId: user.id });
 }
 
+/**
+ * Add a user for one agent (#1002 phase 2) — admin.service `createUser`,
+ * the operation Admin → Users → Add user runs for a Builder agent: tenant =
+ * the agent's slug (so they are its user before their first conversation),
+ * demo / user, a test user until marked real. `autoSuspendHours` 24 / 48 /
+ * null — suspended by itself that long after creation.
+ */
+async function createUser({ slug, name, phone, autoSuspendHours = null }) {
+  const names = await agentNames();
+  const agent = names.get(String(slug).toLowerCase());
+  if (!agent) throw new UserActionError('No such agent', 404, 'no_agent');
+  const n = String(name || '').trim();
+  const ph = String(phone || '').trim();
+  if (!n || !ph) throw new UserActionError('Name and phone are required', 400, 'bad_user');
+  const hours = autoSuspendHours == null || autoSuspendHours === '' ? null : Number(autoSuspendHours);
+  if (hours !== null && !AUTO_SUSPEND_HOURS.includes(hours)) {
+    throw new UserActionError(`Auto-suspend must be ${AUTO_SUSPEND_HOURS.join(' or ')} hours, or off`, 400, 'bad_user');
+  }
+  let made;
+  try {
+    made = await admin().createUser({ name: n, phone: ph, tenant: agent.slug, subscription: 'demo', role: 'user', autoSuspendHours: hours });
+  } catch (err) {
+    if (/already exists/.test(err.message)) throw new UserActionError('This agent already has a user with this name and phone', 409, 'user_exists');
+    throw err;
+  }
+  return getUser({ slug: agent.slug, userId: made.id });
+}
+
+/** Turn the user's auto-suspend off — admin.service `clearAutoSuspend` (#1002). */
+async function clearAutoSuspend({ slug, userId }) {
+  const user = await actionable({ slug, userId });
+  if (user.suspended) throw new UserActionError('Already suspended — reactivate instead', 409, 'already_suspended');
+  await admin().clearAutoSuspend(user.id);
+  return getUser({ slug, userId: user.id });
+}
+
 /** Delete the user and their conversations — admin.service `deleteUser`. */
 async function deleteUser({ slug, userId }) {
   const user = await actionable({ slug, userId });
@@ -206,6 +242,6 @@ async function deleteUser({ slug, userId }) {
 }
 
 module.exports = {
-  listUsers, getUser, listConversations, setSuspended, setRealCustomer, deleteUser,
+  listUsers, getUser, listConversations, setSuspended, setRealCustomer, deleteUser, createUser, clearAutoSuspend,
   UserActionError, MAX_USERS, MAX_CONVERSATIONS,
 };

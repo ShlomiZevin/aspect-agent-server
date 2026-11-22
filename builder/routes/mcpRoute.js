@@ -859,7 +859,8 @@ person who is not technical, read this instead of the error list:
 
 | To see | Fetch |
 |---|---|
-| The agent's customer-chat problems, newest first — what happened in one plain Hebrew sentence, what to do ("כדאי לפנות ללקוח", "פנו לשלומי", "תוקן אוטומטית"), how it ended, and the customer's last message | \`${base}/agents/<slug>/customer-problems\` — optional \`?range=week\` (default \`today\`, Israel time) |
+| The agent's customer-chat problems, newest first — what happened in one plain Hebrew sentence, which part failed and why (the add-on's name), what to do ("כדאי לפנות ללקוח", "פנו לשלומי", "תוקן אוטומטית"), how it ended, and the customer's last message | \`${base}/agents/<slug>/customer-problems\` — optional \`?range=week\` (default \`today\`, Israel time) or a period \`?from=2026-11-01&to=2026-11-15\` (Israel days, inclusive, up to 92 days) |
+| Every customer conversation of a period, newest first — the management center's "שיחות" page: customer, real / test, last customer message, and its status (ok / a problem, nothing to do / needs someone to act) with the problem's plain words | \`${base}/agents/<slug>/customer-conversations\` — same \`?range=week\` / \`?from=&to=\` as customer-problems; optional \`&status=act\` (or \`info\`, \`ok\`, \`problem\`) |
 
 Only the outside customer chat — never the Builder's test chat or
 simulations. One line per customer turn that went wrong, plus "no reply"
@@ -3096,15 +3097,19 @@ router.get('/agents/:slug/customer-problems', async (req, res) => {
     if (!(await customerProblems.agentExists(slug))) {
       return res.status(404).type('text/plain').send(`No agent "${slug}". Fetch ${urls(req).base}/agents for the list of agents.`);
     }
-    const range = req.query.range === 'week' ? 'week' : 'today';
-    const data = await customerProblems.listProblems({ slug, range });
+    const period = (req.query.from || req.query.to)
+      ? { from: req.query.from ? String(req.query.from) : null, to: req.query.to ? String(req.query.to) : null }
+      : { range: req.query.range === 'week' ? 'week' : 'today' };
+    const data = await customerProblems.listProblems({ slug, ...period });
+    const range = data.range;
     const me = data.agents.find(a => a.slug === slug) || { conversations: 0 };
-    const when = range === 'week' ? 'this week (today and the 6 days before, Israel time)' : 'today (since 00:00 Israel time)';
+    const when = range === 'custom' ? `${data.fromDay} to ${data.toDay} (Israel days, inclusive)`
+      : range === 'week' ? 'this week (today and the 6 days before, Israel time)' : 'today (since 00:00 Israel time)';
     const env = environments.currentEnvironment(urls(req).origin);
     const page = `${env ? env.app : '<the Lybi site>'}/lybi/manage/${encodeURIComponent(slug)}`;
     const head = [
       `Customer-chat problems of "${slug}" — ${when}. Checked ${data.checkedAt}.`,
-      `Customer conversations in this period: ${me.conversations}. Problems: ${data.problems.length}. New in the last 24 h: ${data.newCount}.`,
+      `Customer conversations in this period: ${me.conversations}. Problems: ${data.problems.length}, in ${data.conversationCounts.problems} conversation(s), ${data.conversationCounts.act} of them need someone to act. New in the last 24 h: ${data.newCount}.`,
       `The Hebrew lines are the exact words the management page shows the person (${page}) — quote them as they are.`,
       `"No reply" = a customer message still unanswered ${data.noReplyMinutes} minutes later. "Slow reply" = the customer got an answer, but it took more than ${data.slowReplySeconds} seconds (timed only for replies since this was added).`,
       'Each line says whether the conversation is a REAL customer\'s or a TEST (someone on the team trying the customer chat — real only when the user is marked "Real customer" in Admin → Users).',
@@ -3112,11 +3117,12 @@ router.get('/agents/:slug/customer-problems', async (req, res) => {
     if (!data.problems.length) {
       return sendText(res, [...head, '', range === 'today'
         ? `No problems in customer conversations today — ${me.conversations} customer conversation(s), all went through. For the week: ?range=week`
-        : `No problems in customer conversations this week — ${me.conversations} customer conversation(s), all went through.`].join('\n'));
+        : `No problems in customer conversations ${range === 'week' ? 'this week' : 'in this period'} — ${me.conversations} customer conversation(s), all went through.`].join('\n'));
     }
     const line = p => [
       `- ${p.at} · ${p.isNew ? 'NEW · ' : ''}${p.conversationId ? `conversation ${p.conversationId}` : 'no conversation'}${p.customerName ? ` · customer: ${p.customerName}` : ''}${p.audience ? ` · ${p.audience === 'real' ? 'REAL customer' : 'TEST conversation'}` : ''}${p.replyMs ? ` · reply took ${Math.round(p.replyMs / 1000)} s` : ''}`,
       `  what happened: ${p.title}`,
+      ...(p.detail ? [`  which part and why: ${p.detail}`] : []),
       `  what to do: ${p.action.text}`,
       `  how it ended: ${p.outcome}`,
       ...(p.lastCustomerMessage ? [`  the customer's last message: "${p.lastCustomerMessage}"`] : []),
@@ -3126,6 +3132,53 @@ router.get('/agents/:slug/customer-problems', async (req, res) => {
       `Technical details (kinds, codes, every occurrence): ${urls(req).base}/agents/${encodeURIComponent(slug)}/errors?source=customer`].join('\n'));
   } catch (err) {
     simFail(res, err, 'list the customer-chat problems');
+  }
+});
+
+// ─── Every customer conversation of a period (#1001) — read only ─
+// Same rows as the management center's conversations page
+// (/lybi/manage/<slug>/conversations): customerProblems.listConversations.
+
+router.get('/agents/:slug/customer-conversations', async (req, res) => {
+  try {
+    const slug = req.params.slug;
+    if (!(await customerProblems.agentExists(slug))) {
+      return res.status(404).type('text/plain').send(`No agent "${slug}". Fetch ${urls(req).base}/agents for the list of agents.`);
+    }
+    const period = (req.query.from || req.query.to)
+      ? { from: req.query.from ? String(req.query.from) : null, to: req.query.to ? String(req.query.to) : null }
+      : { range: req.query.range === 'week' ? 'week' : 'today' };
+    const data = await customerProblems.listConversations({ slug, ...period });
+    const want = String(req.query.status || '');
+    const pick = { act: c => c.status === 'act', info: c => c.status === 'info', ok: c => c.status === 'ok', problem: c => c.status !== 'ok' }[want];
+    const rows = pick ? data.conversations.filter(pick) : data.conversations;
+    const byId = new Map(data.problems.map(p => [p.id, p]));
+    const k = data.conversationCounts;
+    const when = data.range === 'custom' ? `${data.fromDay} to ${data.toDay} (Israel days, inclusive)`
+      : data.range === 'week' ? 'this week (today and the 6 days before, Israel time)' : 'today (since 00:00 Israel time)';
+    const env = environments.currentEnvironment(urls(req).origin);
+    const page = `${env ? env.app : '<the Lybi site>'}/lybi/manage/${encodeURIComponent(slug)}/conversations`;
+    const head = [
+      `Customer conversations of "${slug}" — ${when}. Checked ${data.checkedAt}.`,
+      `All: ${k.all} · need someone to act: ${k.act} · nothing to do: ${k.ok} · with a problem: ${k.problems} · with a slow reply: ${k.slow} · test conversations with a problem: ${k.test}.`,
+      `The management page: ${page}. Hebrew lines are the page's own words — quote them as they are.`,
+      ...(pick ? [`Showing status=${want}: ${rows.length}.`] : []),
+      ...(data.truncated ? [`The list is cut to the newest ${data.conversations.length} (every conversation with a problem is kept).`] : []),
+    ];
+    if (!rows.length) return sendText(res, [...head, '', 'No conversations.'].join('\n'));
+    const STATUS = { act: 'NEEDS SOMEONE TO ACT', info: 'a problem, nothing to do', ok: 'ok' };
+    const line = c => {
+      const lead = c.problemIds.length ? byId.get(c.problemIds[0]) : null;
+      return [
+        `- ${c.at} · ${c.conversationId ? `conversation ${c.conversationId}` : 'no conversation'}${c.customerName ? ` · customer: ${c.customerName}` : ''}${c.audience ? ` · ${c.audience === 'real' ? 'REAL customer' : 'TEST conversation'}` : ''} · ${STATUS[c.status]}${c.problemIds.length > 1 ? ` · ${c.problemIds.length} problems` : ''}`,
+        ...(lead ? [`  what happened: ${lead.title}`, ...(lead.detail ? [`  which part and why: ${lead.detail}`] : []), `  what to do: ${lead.action.text}`] : []),
+        ...(c.lastCustomerMessage ? [`  the customer's last message: "${c.lastCustomerMessage}"`] : []),
+        ...(c.conversationId ? [`  read it: ${urls(req).base}/conversations/${c.conversationId}`] : []),
+      ].join('\n');
+    };
+    sendText(res, [...head, '', ...rows.map(line)].join('\n'));
+  } catch (err) {
+    simFail(res, err, 'list the customer conversations');
   }
 });
 

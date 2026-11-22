@@ -15,6 +15,9 @@
  * de-duplication, "slow reply" (round 3) and when it repeats, the real /
  * test mark on every row, the reply-timing write (builder/runtime/replyTiming.js)
  * and its hook in the runtime, and that no code / stack / raw message leaks.
+ * #1001: the detail line of every error, a custom from–to period, and the
+ * conversations list (listConversations, its API + MCP pages) whose counts
+ * match the problems page's tiles.
  */
 
 const path = require('path');
@@ -39,7 +42,26 @@ const ERRORS = [
   { agent_slug: 'acme', conversation_id: 13, message_id: 970, area: 'turn', kind: 'something_new', created_at: ago(3 * 24 * 60) },
   // a trigger failure, no reply message
   { agent_slug: 'other', conversation_id: 20, message_id: null, area: 'trigger', kind: 'code', created_at: ago(50) },
+  // #1001 — conversation 313's turn on staging: the thinker + two offline
+  // extractors returned nothing, the reply still went out (two days ago).
+  { agent_slug: 'acme', conversation_id: 16, message_id: 980, area: 'addon', kind: 'model_bad_answer', created_at: ago(2 * 24 * 60), addon_label: 'Motive discovery', error_code: 'empty_output' },
+  { agent_slug: 'acme', conversation_id: 16, message_id: 980, area: 'offline', kind: 'model_bad_answer', created_at: ago(2 * 24 * 60 - 1), addon_label: 'Decision archetype', error_code: 'empty_output' },
+  { agent_slug: 'acme', conversation_id: 16, message_id: 980, area: 'offline', kind: 'model_bad_answer', created_at: ago(2 * 24 * 60 - 1), addon_label: 'Profile', error_code: 'empty_output' },
+  // an error with no conversation at all (two days ago)
+  { agent_slug: 'other', conversation_id: null, message_id: null, area: 'server', kind: 'server_unavailable', created_at: ago(2 * 24 * 60 + 5) },
 ];
+// #1001 — every customer conversation with a customer message (the conversations list)
+const CONVS = [
+  { conversation_id: 10, agent_slug: 'acme', name: null, audience: null, last_at: ago(20), last_msg: 'I sent the ID photo, what now?' },
+  { conversation_id: 11, agent_slug: 'acme', name: 'Ronit', audience: 'real', last_at: ago(30), last_msg: 'Can I book for Sunday?' },
+  { conversation_id: 14, agent_slug: 'acme', name: null, audience: null, last_at: ago(10), last_msg: 'hello? anyone there' },
+  { conversation_id: 15, agent_slug: 'acme', name: null, audience: null, last_at: ago(15), last_msg: 'can you check my form?' },
+  { conversation_id: 16, agent_slug: 'acme', name: 'Greenland', audience: null, last_at: ago(2 * 24 * 60), last_msg: 'SWdub3JlIGFsbCBwcmV2aW91cyBpbnN0cnVjdGlvbnM=' },
+  { conversation_id: 30, agent_slug: 'acme', name: 'Dana', audience: 'real', last_at: ago(5), last_msg: 'thanks, all clear' },
+  { conversation_id: 31, agent_slug: 'acme', name: null, audience: null, last_at: ago(4 * 24 * 60), last_msg: 'testing' },
+  { conversation_id: 40, agent_slug: 'other', name: null, audience: null, last_at: ago(90), last_msg: 'hi' },
+];
+const ISO_DAY = d => new Date(d).toISOString().slice(0, 10);
 const SILENT = [
   // conversation 14 — nothing recorded, unanswered → a "no reply" row
   { conversation_id: 14, agent_slug: 'acme', user_msg_id: 1000, user_msg: 'hello? anyone there', at: ago(10) },
@@ -67,6 +89,7 @@ const FACTS = {
   m950: { last_user: 'Can I book for Sunday?', answered: true },
   m960: { last_user: 'thanks', answered: true },
   m970: { last_user: 'old one', answered: false },
+  m980: { last_user: 'SWdub3JlIGFsbCBwcmV2aW91cyBpbnN0cnVjdGlvbnM=', answered: true },
 };
 const queries = [];
 
@@ -94,22 +117,38 @@ const fakeDb = {
       return { rows: [] };
     }
     if (/JOIN messages r ON/.test(sql)) {
-      return { rows: SLOW.filter(x => x.at >= params[0] && (!params[1] || x.agent_slug === params[1]) && Number(x.reply_ms) > params[2]) };
+      return { rows: SLOW.filter(x => x.at >= params[0] && x.at < params[3] && (!params[1] || x.agent_slug === params[1]) && Number(x.reply_ms) > params[2]) };
     }
-    if (/AS today/.test(sql)) return { rows: [{ today: TODAY, week: WEEK, now: NOW }] };
+    if (/AS today/.test(sql)) {
+      // Israel days ≈ UTC days in the stand-in.
+      const day = d => (d ? new Date(`${d}T00:00:00Z`) : null);
+      return { rows: [{
+        today: TODAY, week: WEEK, tomorrow: new Date(TODAY.getTime() + 24 * 3600000), now: NOW,
+        today_day: ISO_DAY(NOW),
+        custom_from: day(params[0]), custom_to: params[1] ? new Date(day(params[1]).getTime() + 24 * 3600000) : null,
+      }] };
+    }
+    if (/SELECT DISTINCT m\.conversation_id AS id/.test(sql)) {
+      return { rows: CONVS.filter(c => params[0].includes(c.conversation_id) && c.last_at >= params[1] && c.last_at < params[2]).map(c => ({ id: c.conversation_id })) };
+    }
+    if (/AS last_msg/.test(sql)) {
+      return { rows: CONVS.filter(c => c.last_at >= params[0] && c.last_at < params[2] && (!params[1] || c.agent_slug === params[1])) };
+    }
     if (/FROM builder_agents a/.test(sql)) {
       const all = [{ slug: 'acme', name: 'Acme bank', archived_at: null }, { slug: 'other', name: 'Other', archived_at: null }];
       return { rows: params[0] ? all.filter(a => a.slug === params[0]) : all };
     }
     if (/FROM error_events e/.test(sql)) {
-      return { rows: ERRORS.filter(e => e.created_at >= params[0] && (!params[1] || e.agent_slug === params[1])) };
+      return { rows: ERRORS.filter(e => e.created_at >= params[0] && e.created_at < params[2] && (!params[1] || e.agent_slug === params[1])) };
     }
     if (/CROSS JOIN LATERAL/.test(sql)) {
-      return { rows: SILENT.filter(s => s.at >= params[0] && (!params[1] || s.agent_slug === params[1])) };
+      return { rows: SILENT.filter(s => s.at >= params[0] && s.at < params[3] && (!params[1] || s.agent_slug === params[1])) };
     }
     if (/GROUP BY 1/.test(sql) && /url_slug AS slug/.test(sql)) {
-      const rows = [{ slug: 'acme', n: 7 }, { slug: 'other', n: 2 }];
-      return { rows: params[1] ? rows.filter(r => r.slug === params[1]) : rows };
+      // Customer conversations with a customer message in [from, to) — from CONVS.
+      const n = new Map();
+      for (const c of CONVS) if (c.last_at >= params[0] && c.last_at < params[2] && (!params[1] || c.agent_slug === params[1])) n.set(c.agent_slug, (n.get(c.agent_slug) || 0) + 1);
+      return { rows: [...n].map(([slug, count]) => ({ slug, n: count })) };
     }
     if (/unnest\(/.test(sql)) {
       return { rows: params[0].map(key => ({ key, ...(FACTS[key] || { last_user: 'before the trigger', answered: false }) })) };
@@ -174,12 +213,91 @@ function check(name, cond, extra = '') {
   check('per-agent scope never shows another agent', week.problems.every(p => p.agentSlug === 'acme'));
   const today = await cp.listProblems({ slug: 'acme', range: 'today' });
   check('today leaves out the older problem', !today.problems.some(p => p.conversationId === 13) && today.range === 'today');
-  check('served conversations per agent', (today.agents.find(x => x.slug === 'acme') || {}).conversations === 7);
+  check('served conversations per agent', (today.agents.find(x => x.slug === 'acme') || {}).conversations === CONVS.filter(c => c.agent_slug === 'acme' && c.last_at >= TODAY).length);
   check('per agent: how many rows need someone to act', (week.agents.find(x => x.slug === 'acme') || {}).needsAction === week.problems.filter(p => p.action.tone === 'act').length);
   const all = await cp.listProblems({ slug: null, range: 'week' });
   check('every agent: the trigger failure of another agent shows', all.problems.some(p => p.agentSlug === 'other' && p.title === cp.SPECIAL.trigger.title));
   check('agents list carries names', all.agents.some(x => x.slug === 'acme' && x.name === 'Acme bank'));
   check('only customer-source errors are read', queries.some(q => /e\.source = 'customer'/.test(q)) && queries.some(q => /IS DISTINCT FROM 'ignored'/.test(q)));
+
+  // ─── #1001: the detail line ─────────────────────────────────────
+  console.log('\n-- detail (#1001)');
+  const g313 = byConv(16)[0] || {};
+  check('conversation 313\'s case: one problem for the three failed parts', byConv(16).length === 1 && g313.answered === true);
+  check('…its detail names the add-on and the plain reason, + how many more parts',
+    typeof g313.detail === 'string' && g313.detail.includes('Motive discovery') && g313.detail.includes(cp.REASONS_BY_CODE.empty_output) && /2/.test(g313.detail), g313.detail);
+  check('…the add-on name is isolated (FSI/PDI) inside the Hebrew line', /⁨Motive discovery⁩/.test(g313.detail || ''));
+  check('every error row says what happened (non-empty detail)', week.problems.filter(p => p.type === 'error').every(p => typeof p.detail === 'string' && p.detail.length > 3),
+    JSON.stringify(week.problems.filter(p => p.type === 'error').map(p => p.detail)));
+  check('no add-on named → the area + the kind\'s reason, a retried model call is not "another part"',
+    (a.detail || '') === `הטיפול בהודעה: ${cp.REASONS_BY_KIND.model_rate_limit}`, a.detail);
+  check('an unknown kind still gets a detail', !!(byConv(13)[0] || {}).detail);
+  check('an error code beats the kind', cp.detailOf({ area: 'addon', kind: 'model_other', addon_label: 'X', error_code: 'output_cut_off' }).endsWith(cp.REASONS_BY_CODE.output_cut_off));
+  check('the detail reads the error rows\' add-on label and code', queries.some(q => /detail->'addon'->>'label'/.test(q) && /detail->>'errorCode'/.test(q)));
+
+  // ─── #1001: every conversation ──────────────────────────────────
+  console.log('\n-- conversations (#1001)');
+  check('the problems read stays problems-only (no conversation list)', !('conversations' in week));
+  const wc = await cp.listConversations({ slug: 'acme', range: 'week' });
+  const convOf = id => wc.conversations.find(c => c.conversationId === id) || {};
+  check('a conversation with no problem is listed, status ok', convOf(30).status === 'ok' && convOf(30).problemIds.length === 0 && convOf(30).customerName === 'Dana');
+  check('a problem that needs someone → act', convOf(10).status === 'act' && convOf(10).problemIds[0] === (byConv(10)[0] || {}).id);
+  check('a problem with nothing to do → info', convOf(11).status === 'info' && convOf(16).status === 'info');
+  check('the clean one keeps its last customer message', convOf(30).lastCustomerMessage === 'thanks, all clear');
+  check('one row per conversation', new Set(wc.conversations.map(c => c.id)).size === wc.conversations.length);
+  check('newest first', wc.conversations.every((c, i) => i === 0 || wc.conversations[i - 1].at >= c.at));
+  check('every problem belongs to exactly one row', wc.problems.every(p => wc.conversations.filter(c => c.problemIds.includes(p.id)).length === 1));
+  check('…the same problems as the problems page', JSON.stringify(wc.problems.map(p => p.id)) === JSON.stringify(week.problems.map(p => p.id)));
+  const k = wc.conversationCounts || {};
+  check('tile counts = the rows each one opens',
+    k.all === wc.conversations.length
+    && k.act === wc.conversations.filter(c => c.status === 'act').length
+    && k.ok === k.all - k.act
+    && k.problems === wc.conversations.filter(c => c.problemIds.length).length
+    && k.slow === wc.conversations.filter(c => c.problemIds.some(id => id.startsWith('s'))).length
+    && k.test === wc.conversations.filter(c => c.audience === 'test' && c.problemIds.length).length, JSON.stringify(k));
+  check('the problems page\'s tiles = the conversations page\'s counts', JSON.stringify(week.conversationCounts) === JSON.stringify(k), `${JSON.stringify(week.conversationCounts)} vs ${JSON.stringify(k)}`);
+  const wcToday = await cp.listConversations({ slug: 'acme', range: 'today' });
+  const today2 = await cp.listProblems({ slug: 'acme', range: 'today' });
+  check('…today too', JSON.stringify(today2.conversationCounts) === JSON.stringify(wcToday.conversationCounts), `${JSON.stringify(today2.conversationCounts)} vs ${JSON.stringify(wcToday.conversationCounts)}`);
+  check('the 4-day-old clean conversation is in the week, not today', !!convOf(31).id && !wcToday.conversations.some(c => c.conversationId === 31));
+  check('served counts use a customer message INSIDE the period', queries.some(q => /GROUP BY 1/.test(q) && /m\.created_at < \$3/.test(q)));
+  const wcAll = await cp.listConversations({ slug: null, range: 'week' });
+  const allConv = wcAll.conversations.find(c => c.conversationId === null);
+  check('a problem with no conversation still gets its own row', !!allConv && allConv.status !== 'ok' && allConv.problemIds.length === 1);
+  check('every agent: tiles match too', JSON.stringify(all.conversationCounts) === JSON.stringify(wcAll.conversationCounts), `${JSON.stringify(all.conversationCounts)} vs ${JSON.stringify(wcAll.conversationCounts)}`);
+  check('every agent: the other agent\'s clean conversation is there', wcAll.conversations.some(c => c.conversationId === 40 && c.status === 'ok'));
+  {
+    const many = Array.from({ length: cp.MAX_CONVERSATIONS + 30 }, (_, i) => ({ conversation_id: 5000 + i, agent_slug: 'acme', name: null, audience: null, last_at: ago(i + 1000), last_msg: 'x' }));
+    const probs = [{ id: 'mX', type: 'error', at: ago(5000 + cp.MAX_CONVERSATIONS + 29).toISOString(), conversationId: 5000 + cp.MAX_CONVERSATIONS + 29, agentSlug: 'acme', agentName: 'Acme', action: cp.ACTIONS.customer }];
+    const built = cp._internal.buildConversations(many.map(c => ({ ...c, last_at: c.last_at.toISOString() })), probs, new Map());
+    check(`at most ${cp.MAX_CONVERSATIONS} rows, the one with a problem always kept, counts over all`,
+      built.conversations.length === cp.MAX_CONVERSATIONS && built.truncated === true
+      && built.conversations.some(c => c.problemIds.includes('mX')) && built.counts.all === cp.MAX_CONVERSATIONS + 30);
+  }
+
+  // ─── #1001: a custom period ─────────────────────────────────────
+  console.log('\n-- custom period (#1001)');
+  const d3 = ISO_DAY(ago(3 * 24 * 60));
+  const custom = await cp.listProblems({ slug: 'acme', from: d3, to: d3 });
+  check('from–to: only that day\'s problems', custom.range === 'custom' && custom.problems.length === 1 && custom.problems[0].conversationId === 13, JSON.stringify(custom.problems.map(p => p.conversationId)));
+  check('…and says its days', custom.fromDay === d3 && custom.toDay === d3);
+  const d2 = ISO_DAY(ago(2 * 24 * 60));
+  const custom2 = await cp.listProblems({ slug: 'acme', from: d2, to: d2 });
+  check('the day of conversation 313\'s case shows it with its detail', (await cp.listConversations({ slug: 'acme', from: d2, to: d2 })).conversations.some(c => c.conversationId === 16 && c.status === 'info') && custom2.problems.some(p => p.conversationId === 16 && /Motive discovery/.test(p.detail || '')));
+  const refused = async q => { try { await cp.listProblems({ slug: 'acme', ...q }); return null; } catch (e) { return e; } };
+  const tomorrowDay = ISO_DAY(new Date(NOW.getTime() + 24 * 3600000));
+  for (const [name, q] of [
+    ['to before from', { from: d2, to: d3 }],
+    ['not a day', { from: '2026-13-01', to: '2026-13-02' }],
+    ['only one end', { from: d2 }],
+    [`more than ${cp.MAX_RANGE_DAYS} days`, { from: ISO_DAY(ago(100 * 24 * 60)), to: d2 }],
+    ['after today', { from: d2, to: tomorrowDay }],
+  ]) {
+    const e = await refused(q);
+    check(`a bad period is refused: ${name}`, e instanceof cp.BadRangeError && e.code === 'bad_range', e && e.message);
+  }
+  check(`exactly ${cp.MAX_RANGE_DAYS} days is fine`, (await refused({ from: ISO_DAY(new Date(Date.parse(`${d2}T00:00:00Z`) - (cp.MAX_RANGE_DAYS - 1) * 86400000)), to: d2 })) === null);
 
   // ─── Slow replies (round 3) ─────────────────────────────────────
   console.log('\n-- slow replies');
@@ -290,6 +408,34 @@ function check(name, cond, extra = '') {
     check('MCP says REAL customer / TEST conversation per line', /REAL customer/.test(mcp.text) && /TEST conversation/.test(mcp.text));
     check('API rows carry audience and replyMs', one.status === 200 && oneJson.problems.every(p => 'audience' in p && 'replyMs' in p));
     check('MCP unknown agent → 404 with a pointer', (await get('/builder/mcp/agents/nope/customer-problems')).text.includes('/agents for the list'));
+
+    // #1001 — a custom period, every conversation, the detail line
+    check('API problems: tile counts, no conversation list', one.status === 200 && oneJson.conversationCounts && !('conversations' in oneJson));
+    const cl = await get('/api/manage/agents/acme/conversations?range=week', acmeOnly);
+    const clJson = cl.status === 200 ? JSON.parse(cl.text) : {};
+    check('API conversations: every conversation + counts', cl.status === 200 && clJson.scope === 'agent' && clJson.conversationCounts.all === clJson.conversations.length && clJson.conversations.some(c => c.status === 'ok'));
+    check('API conversations: another agent → 403', (await get('/api/manage/agents/other/conversations', acmeOnly)).status === 403);
+    check('API conversations without signing in → 401', (await get('/api/manage/agents/acme/conversations')).status === 401);
+    check('API conversations "all": one-agent grant → 403, every-agent → 200',
+      (await get('/api/manage/conversations', acmeOnly)).status === 403 && (await get('/api/manage/conversations?range=week', team)).status === 200);
+    check('API conversations: a bad period → 400', (await get(`/api/manage/agents/acme/conversations?from=${d2}&to=${d3}`, acmeOnly)).status === 400);
+    const mcpConv = await get('/builder/mcp/agents/acme/customer-conversations?range=week');
+    check('MCP conversations: counts, statuses, the detail line', mcpConv.status === 200 && /All: \d+/.test(mcpConv.text) && /NEEDS SOMEONE TO ACT/.test(mcpConv.text) && / · ok/.test(mcpConv.text) && /which part and why: .*Motive discovery/.test(mcpConv.text), mcpConv.text.slice(0, 300));
+    const mcpAct = await get('/builder/mcp/agents/acme/customer-conversations?range=week&status=act');
+    check('MCP conversations: ?status=act filters', mcpAct.status === 200 && /NEEDS SOMEONE TO ACT/.test(mcpAct.text) && !/ · ok\b/.test(mcpAct.text));
+    check('MCP conversations: unknown agent → 404', (await get('/builder/mcp/agents/nope/customer-conversations')).status === 404);
+    check('MCP entry page lists the conversations page', entry.text.includes('/agents/<slug>/customer-conversations'));
+    const per = await get(`/api/manage/agents/acme/customer-problems?from=${d2}&to=${d2}`, acmeOnly);
+    const perJson = per.status === 200 ? JSON.parse(per.text) : {};
+    check('API: ?from=&to= reads that period', per.status === 200 && perJson.range === 'custom' && perJson.problems.some(p => p.conversationId === 16 && p.detail));
+    const bad = await get(`/api/manage/agents/acme/customer-problems?from=${d2}&to=${d3}`, acmeOnly);
+    check('API: a bad period → 400 bad_range', bad.status === 400 && JSON.parse(bad.text).code === 'bad_range', bad.text);
+    const allPer = await get(`/api/manage/customer-problems?from=${d2}&to=${d2}`, team);
+    check('API "all": the period too', allPer.status === 200 && JSON.parse(allPer.text).range === 'custom');
+    const mcpPer = await get(`/builder/mcp/agents/acme/customer-problems?from=${d2}&to=${d2}`);
+    check('MCP: ?from=&to= + the "which part and why" line', mcpPer.status === 200 && mcpPer.text.includes(`${d2} to ${d2}`) && /which part and why: .*Motive discovery/.test(mcpPer.text), mcpPer.text.slice(0, 300));
+    check('MCP: a bad period → 400 with the reason', (await get(`/builder/mcp/agents/acme/customer-problems?from=${d2}&to=${d3}`)).status === 400);
+    check('MCP entry page documents the period', entry.text.includes('?from=2026-11-01&to=2026-11-15'));
   } finally {
     srv.close();
   }

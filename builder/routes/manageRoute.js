@@ -13,14 +13,21 @@
  * code 'no_access'), re-read on every request:
  *   GET /api/manage/me
  *       { email, name, picture, all, agents: [{ slug, name, archived }] }
- *   GET /api/manage/agents/:slug/customer-problems?range=today|week
- *       one agent's customer-chat problems (403 'no_agent_access' if not theirs)
+ *   GET /api/manage/agents/:slug/customer-problems?range=today|week  (or ?from=YYYY-MM-DD&to=YYYY-MM-DD)
+ *       one agent's customer-chat problems of the period
+ *       (403 'no_agent_access' if not theirs; 400 'bad_range' for a bad period)
+ *   GET /api/manage/agents/:slug/conversations?range=… (or from/to)
+ *       every customer conversation of the period, each with its status (#1001)
  *   GET /api/manage/agents/:slug/conversations/:id
  *       one customer conversation's basic facts + last messages (the "צפייה" window)
- *   GET /api/manage/customer-problems?range=today|week[&agent=<slug>]
+ *   GET /api/manage/customer-problems?range=today|week (or from/to)[&agent=<slug>]
+ *   GET /api/manage/conversations?range=… (or from/to)[&agent=<slug>]
  *       every agent — only for an every-agent grant (403 'not_all' otherwise)
  *   GET    /api/manage/agents/:slug/users               the agent's customer-chat users (real / test)
  *   GET    /api/manage/agents/:slug/users/:id           one user + their customer conversations
+ *   POST   /api/manage/agents/:slug/users               { name, phone, autoSuspendHours: 24|48|null } — add a user (#1002)
+ *          (400 'bad_user', 409 'user_exists' — same name + phone on this agent)
+ *   DELETE /api/manage/agents/:slug/users/:id/auto-suspend   turn the auto-suspend off (409 'already_suspended')
  *   POST   /api/manage/agents/:slug/users/:id/suspend        { suspended: bool }
  *   POST   /api/manage/agents/:slug/users/:id/real-customer  { real: bool }
  *   DELETE /api/manage/agents/:slug/users/:id
@@ -48,6 +55,7 @@ const googleAuth = () => require('../../services/google-auth.service');
 const router = express.Router();
 
 function fail(res, err, what) {
+  if (err instanceof customerProblems.BadRangeError) return res.status(400).json({ error: err.message, code: err.code });
   console.error(`[manage] ${what} failed:`, err);
   res.status(500).json({ error: err.message });
 }
@@ -136,13 +144,29 @@ router.get('/me', async (req, res) => {
 
 // ─── Pages ─────────────────────────────────────────────────────────
 
+/** The period of a problems read: ?range=today|week, or ?from=&to= (Israel days, #1001). */
+function periodOf(req) {
+  const q = req.query;
+  if (q.from || q.to) return { from: q.from ? String(q.from) : null, to: q.to ? String(q.to) : null };
+  return { range: q.range === 'week' ? 'week' : 'today' };
+}
+
 router.get('/agents/:slug/customer-problems', requireAgentAccess, async (req, res) => {
   try {
     const slug = String(req.params.slug);
-    const data = await customerProblems.listProblems({ slug, range: req.query.range });
+    const data = await customerProblems.listProblems({ slug, ...periodOf(req) });
     res.json({ scope: 'agent', agent: data.agents.find(a => a.slug === slug) || { slug, name: slug }, ...data });
   } catch (err) {
     fail(res, err, 'customer problems');
+  }
+});
+
+router.get('/agents/:slug/conversations', requireAgentAccess, async (req, res) => {
+  try {
+    const slug = String(req.params.slug);
+    res.json({ scope: 'agent', agentSlug: slug, ...(await customerProblems.listConversations({ slug, ...periodOf(req) })) });
+  } catch (err) {
+    fail(res, err, 'conversations');
   }
 });
 
@@ -188,6 +212,25 @@ router.get('/agents/:slug/users/:userId', requireAgentAccess, async (req, res) =
   }
 });
 
+router.post('/agents/:slug/users', requireAgentAccess, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const user = await manageUsers.createUser({ slug: req.params.slug, name: b.name, phone: b.phone, autoSuspendHours: b.autoSuspendHours ?? null });
+    res.status(201).json({ user });
+  } catch (err) {
+    userFail(res, err, 'add user');
+  }
+});
+
+router.delete('/agents/:slug/users/:userId/auto-suspend', requireAgentAccess, async (req, res) => {
+  try {
+    const user = await manageUsers.clearAutoSuspend({ slug: req.params.slug, userId: req.params.userId });
+    res.json({ user });
+  } catch (err) {
+    userFail(res, err, 'turn auto-suspend off');
+  }
+});
+
 router.post('/agents/:slug/users/:userId/suspend', requireAgentAccess, async (req, res) => {
   try {
     const user = await manageUsers.setSuspended({ slug: req.params.slug, userId: req.params.userId, suspended: req.body?.suspended !== false });
@@ -224,12 +267,21 @@ router.get('/users', requireAll, async (req, res) => {
   }
 });
 
+router.get('/conversations', requireAll, async (req, res) => {
+  try {
+    const agent = req.query.agent ? String(req.query.agent) : null;
+    res.json({ scope: 'all', agentSlug: null, filter: agent, ...(await customerProblems.listConversations({ slug: agent, ...periodOf(req) })) });
+  } catch (err) {
+    fail(res, err, 'all conversations');
+  }
+});
+
 router.get('/customer-problems', requireAll, async (req, res) => {
   try {
     const agent = req.query.agent ? String(req.query.agent) : null;
     const [everyone, data] = await Promise.all([
-      customerProblems.listProblems({ slug: null, range: req.query.range }),
-      agent ? customerProblems.listProblems({ slug: agent, range: req.query.range }) : null,
+      customerProblems.listProblems({ slug: null, ...periodOf(req) }),
+      agent ? customerProblems.listProblems({ slug: agent, ...periodOf(req) }) : null,
     ]);
     const view = data || everyone;
     res.json({ scope: 'all', agent: null, filter: agent, ...view, agents: everyone.agents });
