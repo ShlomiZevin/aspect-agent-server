@@ -218,6 +218,14 @@ function assemble(template, mem, extra = {}) {
   check('not-in with one selected → false', !cond('not-in', { values: ['kids', 'savings'] }).ok);
   check('is-not-null with a selection', cond('is-not-null').ok);
   check('is-null on an empty list', evaluateCondition({ memory: { _general: { motives: [] } } }, { type: 'field', field: 'motives', op: 'is-null' }, {}).ok);
+  // The run card's "why" line uses the editor's words on a list.
+  const DOESNT = "doesn't include";
+  check('why: equals on a list says "includes"', cond('equals', { value: 'savings' }).why === 'motives=["business","savings"] includes "savings"', cond('equals', { value: 'savings' }).why);
+  check('why: a failed equals says "doesn\'t include"', cond('equals', { value: 'kids' }).why === `motives=["business","savings"] ${DOESNT} "kids"`, cond('equals', { value: 'kids' }).why);
+  check('why: not-equals reads the same facts, never "equals"', cond('not-equals', { value: 'kids' }).why.endsWith(`${DOESNT} "kids"`) && !/equals/.test(cond('not-equals', { value: 'kids' }).why));
+  check('why: in / not-in say "includes any of" / "includes none of"',
+    cond('in', { values: ['kids'] }).why.includes('includes any of') && cond('not-in', { values: ['kids'] }).why.includes('includes none of'));
+  check('why: single field keeps "equals"', /equals/.test(evaluateCondition(blob, { type: 'field', field: 'primary_motive', op: 'equals', value: 'kids' }, {}).why));
   check('single field equals unchanged', evaluateCondition(blob, { type: 'field', field: 'primary_motive', op: 'equals', value: 'kids' }, {}).ok);
   check('fields-collected: empty list counts as missing',
     !evaluateCondition({ memory: { _general: { motives: [] } } }, { type: 'fields-collected', fields: ['motives'] }, {}).ok);

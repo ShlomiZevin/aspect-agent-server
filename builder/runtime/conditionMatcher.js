@@ -25,6 +25,15 @@
  */
 
 const builderMemory = require('./builderMemory');
+
+/** How the ops read on a multi-value field's list (#947) — the same words
+ *  the condition editor shows (ConditionsEditor MULTI_OP_LABELS). */
+const LIST_WORDS = {
+  'equals':     'includes',
+  'not-equals': "doesn't include",
+  'in':         'includes any of',
+  'not-in':     'includes none of',
+};
 const formulaEval = require('./formulaEval');
 
 /**
@@ -207,7 +216,7 @@ function evaluateCondition(blob, condition, ctx) {
         const ok = op === 'in' ? inSet : !inSet;
         return {
           ok,
-          why: `${subject.label}=${shown} ${op} [${resolved.map(x => x.label).join(', ')}]`,
+          why: `${subject.label}=${shown} ${Array.isArray(v) ? LIST_WORDS[op] : op} [${resolved.map(x => x.label).join(', ')}]`,
         };
       }
       const operand = resolveOperandValue(condition.value, parameters);
@@ -220,6 +229,15 @@ function evaluateCondition(blob, condition, ctx) {
             ? !v.some(m => applyOp('equals', m, operand.value))
             : v.some(m => applyOp(op, m, operand.value)))
         : v !== undefined && applyOp(op, v, operand.value);
+      // On a list the words are the editor's (#947): "includes" /
+      // "doesn't include", never equals / not-equals.
+      if (Array.isArray(v) && (op === 'equals' || op === 'not-equals')) {
+        const has = v.some(m => applyOp('equals', m, operand.value));
+        return {
+          ok,
+          why: `${subject.label}=${shown} ${has ? LIST_WORDS.equals : LIST_WORDS['not-equals']} ${operand.label}`,
+        };
+      }
       return {
         ok,
         why: ok
