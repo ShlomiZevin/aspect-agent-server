@@ -47,10 +47,10 @@
  *
  * ── Origin is frozen (2026-10-26) ──────────────────────────────────
  *
- * Shlomi: no more deploys to Origin. Its server keeps running exactly as
- * it is — agents and conversations all work — but
- * it gets no new features, so its own Builder MCP page is an older
- * version that does not know about the other environments.
+ * Shlomi: no more deploys to Origin. Its own server (`aspect-agent-server`)
+ * was shut down on 2026-11-23. Its database was kept: Aspect's server
+ * (`aspect-server`) runs on the same one, so Origin's agents, conversations
+ * and knowledge bases are read through that server now.
  */
 
 const ENVIRONMENTS = [
@@ -59,8 +59,9 @@ const ENVIRONMENTS = [
     name: 'Origin',
     what: 'The first environment (Boostart\'s Google Cloud, Belgium). Every agent built so far and all their conversations live here. Its old task board is retired — the LYBI board is on Lybi Staging.',
     app: 'https://lybi.ai',
-    mcp: 'https://lybi.ai/builder/mcp',
-    server: 'https://aspect-agent-server-1018338671074.europe-west1.run.app',
+    // Aspect's server, on Origin's database (Origin's own server is gone).
+    mcp: 'https://aspect-server-1018338671074.europe-west1.run.app/builder/mcp',
+    server: 'https://aspect-server-1018338671074.europe-west1.run.app',
     hosts: ['lybi.ai', 'aspect-agent-server-1018338671074.europe-west1.run.app'],
     service: 'aspect-agent-server',
     frozen: true,

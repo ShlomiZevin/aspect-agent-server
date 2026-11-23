@@ -11,7 +11,7 @@
  *   node scripts/test-zer4u-flow.js N            — run canned question #N
  *   node scripts/test-zer4u-flow.js all          — run the whole battery, print a summary
  *   node scripts/test-zer4u-flow.js "your question here"
- *   API_BASE=https://aspect-agent-server-1018338671074.europe-west1.run.app node ...   — target prod
+ *   API_BASE=https://aspect-server-1018338671074.europe-west1.run.app node ...   — target prod
  */
 
 require('dotenv').config();

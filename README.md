@@ -308,7 +308,7 @@ cd aspect-agent-server
 - Service: `aspect-agent-server`
 - Region: `europe-west1`
 - Cloud SQL: `aspect-agents:europe-west1:aspect-agents-db`
-- URL: https://aspect-agent-server-1018338671074.europe-west1.run.app
+- URL: https://aspect-server-1018338671074.europe-west1.run.app
 
 ### Local Development
 

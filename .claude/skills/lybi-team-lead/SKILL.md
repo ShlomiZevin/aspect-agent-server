@@ -86,8 +86,8 @@ unless Shlomi asks (2026-11-18: "alfred is not important, mcp is").
 |---|---|---|
 | Owner account | `shlomi@lybi.ai` (Lybi's Google org / billing "Lybi", ILS) | Boostart (`shlomi@boostart.io`) |
 | Site | https://lybi-staging.web.app (Firebase `lybi-staging`) | https://lybi.ai (Firebase `freeda-2b4af`) |
-| Server | Cloud Run `lybi-server`, project `lybi-staging`, `me-west1` (Tel Aviv) | `aspect-agent-server`, `aspect-agents`, europe-west1 |
-| API | https://lybi-server-700084613835.me-west1.run.app | https://aspect-agent-server-1018338671074.europe-west1.run.app |
+| Server | Cloud Run `lybi-server`, project `lybi-staging`, `me-west1` (Tel Aviv) | `aspect-server`, `aspect-agents`, europe-west1 (Origin's own `aspect-agent-server` was shut down 2026-11-23; Aspect's server runs on the same DB) |
+| API | https://lybi-server-700084613835.me-west1.run.app | https://aspect-server-1018338671074.europe-west1.run.app |
 | Database | Cloud SQL `lybi-staging-db` / `agents_platform_db` | `aspect-agents-db` (live data) |
 | Settings + keys | `aspect-agent-server/.env.production.staging` | `.env.production.aspect` |
 | Deploy | server `CLOUDSDK_CORE_DISABLE_PROMPTS=1 ./deploy.sh staging`, client `npm run deploy:staging` | **none — frozen since 2026-10-26** |

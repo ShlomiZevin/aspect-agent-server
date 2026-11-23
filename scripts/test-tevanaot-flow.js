@@ -15,7 +15,7 @@
 require('dotenv').config();
 const crypto = require('crypto');
 
-const API_BASE = process.env.API_BASE || 'https://aspect-agent-server-1018338671074.europe-west1.run.app';
+const API_BASE = process.env.API_BASE || 'https://aspect-server-1018338671074.europe-west1.run.app';
 const AGENT_NAME = 'Teva Naot';
 
 const QUESTIONS = [
