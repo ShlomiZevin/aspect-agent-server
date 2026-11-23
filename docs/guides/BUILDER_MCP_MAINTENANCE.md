@@ -230,22 +230,24 @@ door learn it at once.
 
 - [ ] **`normalizeAgentBody()` in `mcpRoute.js` — decide whether it needs
       a default.** Open the client's `bodyOfAgent` in
-      `aspect-react-client/src/builder/state/BuilderContext.tsx`:
+      `aspect-react-client/src/builder/state/entityBody.ts`:
   - The key is emitted **unconditionally** (`domains: agent.domains ?? []`)
     → **add it** to `normalizeAgentBody` with the same empty default.
   - The key is behind the **empty == absent** trick
     (`...(x?.length ? { x } : {})`) → **do NOT add it.**
 
-  Getting this wrong in either direction produces the same symptom: an
-  agent written through the door opens in the Builder with
-  *"Agent has unsaved changes"* before anyone has touched it.
+  The goal: a body written through the door has exactly the shape a
+  Builder Save writes. (Since #69 in BUILDER_V2.md the Builder's dirty
+  check canonicalises both sides, so a shape mismatch no longer shows
+  phantom *"Agent has unsaved changes"* — but the battery below still
+  asserts the exact shape.)
 - [ ] Update the `bodyOfAgent` replica in `scripts/test-builder-mcp.js` to
       match the client, or the battery will test the wrong thing.
 - [ ] If the section has a trap an assistant will fall into, add a line to
       **"Things that are easy to get wrong"** in `entryDoc()`.
 
 (The Alfred protocol's §3.1 covers the other places a new section must
-go — `hydrateProject`, both client `bodyOfAgent` copies, the patch
+go — `hydrateProject`, the client `bodyOfAgent` (`entityBody.ts`), the patch
 generator. Those are prerequisites: if `hydrateProject` does not map the
 key, the door cannot show it either.)
 
@@ -613,5 +615,5 @@ aspect-react-client/
   firebase.json                                       lybi.ai/builder/mcp → 302
   src/builder/components/FolderDrafts/aiSetupContent.ts   MCP_URL · MCP_NOTE
   src/builder/components/FolderDrafts/FolderDraftsModal.tsx  the link card
-  src/builder/state/BuilderContext.tsx                bodyOfAgent / bodyOfCrew — what "unsaved" means
+  src/builder/state/entityBody.ts                     bodyOfAgent / bodyOfCrew + canonical forms — what "unsaved" means
 ```

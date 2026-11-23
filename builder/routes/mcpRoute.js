@@ -101,23 +101,22 @@ function newVersionId() {
 }
 
 /**
- * Fill in the keys the Builder's dirty check always emits.
+ * Fill in the keys a Builder Save always writes, so a body written through
+ * this door has the same shape as one the Builder saves.
  *
- * The client decides "unsaved changes" by comparing its working copy
- * (`bodyOfAgent` in BuilderContext.tsx) against the saved version body.
- * That function emits `personas`, `domains`, `parameters`, `enums`,
- * `cortex` and `snippets` UNCONDITIONALLY, defaulting each to `[]`, and
- * coerces `spec`/`persona` to `''`. A body written from outside that
- * simply omits them is therefore not equal to the working copy the
- * instant it loads, and the Builder announces "Agent has unsaved changes"
- * on an agent nobody has touched. That is exactly what happened to the
- * first real agent built through this door; pressing Save appeared to fix
- * it, but only by rewriting the body with the complete key set.
+ * The Builder's save body (`bodyOfAgent` in the client's
+ * src/builder/state/entityBody.ts) emits `personas`, `domains`,
+ * `parameters`, `enums`, `cortex` and `snippets` UNCONDITIONALLY,
+ * defaulting each to `[]`, and the load fills `spec`/`persona` with `''`.
+ * Before the client compared canonical bodies (BUILDER_V2.md #69), a body
+ * that omitted them showed "Agent has unsaved changes" on an agent nobody
+ * had touched — the first real agent built through this door did. The
+ * client no longer depends on this, but the shape parity stays: the
+ * battery (`test-builder-mcp.js`) still asserts it byte for byte.
  *
  * The keys guarded by the "empty == absent" trick over there — `tags`,
- * `liveBrain`, `profiler`, `triggers` — must NOT be defaulted here: the
- * client omits them when empty, so adding them would cause the very
- * mismatch this prevents.
+ * `liveBrain`, `profiler`, `triggers` — must NOT be defaulted here: a
+ * Builder Save omits them when empty.
  *
  * Only ever adds absent keys. Never changes a value it was given.
  */

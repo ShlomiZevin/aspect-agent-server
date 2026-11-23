@@ -2989,3 +2989,35 @@ none of it, so it no longer receives it.
 - **Tests:** `node scripts/test-stream-surface.js` (offline — the pass-through,
   every event's /go fields, the one filter point in the route, the client
   wiring). **Not touched:** the MCP (no agent setting), Alfred, the Builder.
+
+### 69. "Unsaved changes" compares canonical bodies
+
+An agent saved from outside the Builder (MCP, a script, the environment copy,
+an older client) with e.g. `tags: []` showed "Agent has unsaved changes" on
+open: the dirty check compared the working copy's projection against the RAW
+saved body, and the projection drops empty sections.
+
+- **One file:** `aspect-react-client/src/builder/state/entityBody.ts`.
+  `bodyOfAgent` / `bodyOfCrew` = the projection — what Save writes, the
+  runtime-preview override, the local snapshot (one copy each; the second
+  copies in `BuilderContext` and `useProjectSync` are gone).
+  `canonicalAgentBody` / `canonicalCrewBody` = ANY body given the defaults
+  `hydrateProject` applies (missing text → `''`, lists → `[]`), then the
+  projection. `agentBodiesEqual` / `crewBodiesEqual` canonicalise BOTH sides;
+  `isAgentDirty`, `isCrewDirty`, the localStorage draft rule and the folder
+  draft fingerprints all go through them. A new body section needs a line in
+  the projection only.
+- **Discard = the inverse:** `applyAgentBody` / `applyCrewBody` put a saved
+  body back onto the working copy — EVERY body key, same load defaults, a
+  section the saved body lacks is cleared — so afterwards the entity is clean
+  and identical to a fresh load. `discardAgentChanges` / `discardCrewChanges`
+  use them (they used to restore a hand-picked six keys, so personas, tags,
+  Live Brain, a crew's data protection… stayed changed). Their key lists are
+  checked against `AgentBody` / `CrewBody` at compile time: a new body key
+  fails `tsc` until it is listed. (No screen calls Discard today: the
+  version menu's "Throw away unsaved changes" reloads from the server.)
+- **Saves:** byte-identical, except that a Builder save now keeps the agent's
+  declared `tags` (the save copy never had them — tags made on the Tags
+  screen were dropped from the saved body).
+- **Tests:** `node aspect-react-client/scripts/test-entity-body.mjs`
+  (offline, the pure functions).

@@ -59,8 +59,9 @@ Go through every row. Most features touch 2–4 of them.
 - [ ] **Client** `aspect-react-client/src/builder/state/BuilderContext.tsx`
       → `applyAlfredBodies` merge whitelist. **Missing = Alfred's applied
       change VANISHES between "generated OK" and the working copy.**
-- [ ] Client `bodyOfAgent` (same file) → snapshot the key on Save
-      (use the empty==absent pattern so old agents don't read dirty).
+- [ ] Client `bodyOfAgent` (`src/builder/state/entityBody.ts`, the one copy)
+      → snapshot the key on Save (use the empty==absent pattern; the dirty
+      check canonicalises both sides through it).
 - [ ] `bodyValidator.js` → light shape checks (see `checkProfiler` as
       the template: required keys, enum values, per-item checks).
 
@@ -204,7 +205,8 @@ aspect-agent-server/
   builder/promptPlaceholders.json     token vocabulary — both brains + mention picker
 
 aspect-react-client/src/builder/
-  state/BuilderContext.tsx            applyAlfredBodies whitelist · bodyOfAgent/bodyOf · workingBodiesOf
+  state/BuilderContext.tsx            applyAlfredBodies whitelist · workingBodiesOf
+  state/entityBody.ts                 bodyOfAgent/bodyOfCrew · canonical*Body (dirty check)
   components/ChatPanel/BuilderChat.tsx  chat UI · TOOL_LABELS · apply markers · save-first warning
   components/ApplyModal/ApplyPreviewModal.tsx  preview → generate flow
 ```

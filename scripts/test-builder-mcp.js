@@ -39,9 +39,11 @@ function section(title) {
 // ─── Replicas of the client's "unsaved changes" definition ─────────
 //
 // Mirrors bodyOfAgent / bodyOfCrew in
-// aspect-react-client/src/builder/state/BuilderContext.tsx. If those
-// change, change these — otherwise the phantom-dirty checks below test
-// the wrong thing and pass anyway.
+// aspect-react-client/src/builder/state/entityBody.ts. If those change,
+// change these — otherwise the checks below test the wrong thing and pass
+// anyway. Stricter than the client on purpose: the client canonicalises
+// BOTH sides (BUILDER_V2.md #69); this compares against the RAW saved
+// body, i.e. asserts the door stores exactly what a Builder Save would.
 
 function bodyOfAgent(a) {
   return {
