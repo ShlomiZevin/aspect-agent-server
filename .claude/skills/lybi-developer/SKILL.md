@@ -146,9 +146,12 @@ Read before touching code: `aspect-agent-server/docs/guides/BUILDER_V2.md`.
 | **Origin** | the first environment — Boostart's GCP `aspect-agents`, lybi.ai. **Frozen since 2026-10-26: no deploys.** Still runs; agents/conversations readable. |
 | **Lybi Staging** | Lybi's own cloud under `shlomi@lybi.ai` (project `lybi-staging`, Tel Aviv): Cloud Run `lybi-server`, Cloud SQL `lybi-staging-db`, Firebase site https://lybi-staging.web.app. Where new work is deployed and used, and where the LYBI task board lives (since 2026-11-01). Its scheduler is off on purpose. |
 
-List: `aspect-agent-server/builder/environments.js` (the MCP and Alfred read it).
-Copying an agent between environments = the `copy-agent` skill, **only from
-Shlomi's machine** (direct DB access) and only when asked. A new environment =
+List: `aspect-agent-server/builder/environments.js` — the one registry (the MCP,
+Alfred, the Builder and the copy script read it). Copying an agent between
+environments = the `copy-agent` skill, only when asked: through the TARGET's
+Builder MCP (`/environments/<from>/agents/<slug>/copy`, source read by its API),
+or the script from Shlomi's machine (direct DB). One engine:
+`builder/services/agentCopy.js`. A new environment =
 the `new-environment` skill. The local `.env` points at **Origin's live
 database** — a local server's writes are real.
 
@@ -301,3 +304,9 @@ database** — a local server's writes are real.
   check the Vite output says it started, and kill only your own PID after.
   A local Vite against staging works read-only with a Playwright route that
   aborts every non-GET and answers CORS itself.
+- 2026-11-23 — Our timestamp columns are `timestamp` WITHOUT time zone, and node-pg
+  sends a JS Date as LOCAL wall time (and reads it back as local). Cloud Run is UTC;
+  a laptop is UTC+2/3. So a local server or battery that writes to staging (any
+  `new Date()` param — `updatedAt`, a copied `createdAt`) stores times shifted by
+  2–3 h, and its own reads disagree with the deployed server. Run every local process
+  that writes to a shared DB with `TZ=UTC` (the copy door's battery says so too).

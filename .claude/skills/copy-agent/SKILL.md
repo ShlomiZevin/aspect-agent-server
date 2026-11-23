@@ -5,8 +5,29 @@ description: Copy a Lybi Builder agent's full setup from one environment to anot
 
 # Copy an agent between environments
 
-One script does it, reads the source, writes the target in one transaction, and
-verifies the result through both environments' own APIs:
+Two doors, ONE engine (`aspect-agent-server/builder/services/agentCopy.js`): both read
+the source, write the target in one transaction, and verify the result against both
+environments' own APIs.
+
+**1. The target's Builder MCP — anyone, no credentials.** The MCP of the environment
+you copy INTO reads the source through the source's public Builder API (Origin
+included) and writes into its own database. This is the default way:
+
+```
+GET  <target MCP>/environments/<from>/agents             the source's agents, marked here / not here
+GET  <target MCP>/environments/<from>/agents/<slug>      the plan — changes nothing
+POST <target MCP>/environments/<from>/agents/<slug>/copy  { "workspace": "<folder, optional>", "refresh": true? }
+```
+
+Staging's MCP: `https://lybi-server-700084613835.me-west1.run.app/builder/mcp`. A copy lands
+in the target's `copyInto` folder (staging: the Builder domain "Shlomi") unless
+`workspace` names another; a refresh keeps the copy's folder. A copy that has changes
+made on the target (versions / crews not on the source, a different published version)
+is refreshed only with `"refresh": true` — the 409 lists what would be lost. A
+different agent with the slug is never touched. Never into a production environment.
+
+**2. The script — Shlomi's machine, direct DB access** (needed only when an API can't
+be used, e.g. the target is production, or to mirror the source's folder chain):
 
 ```bash
 cd aspect-agent-server
@@ -17,13 +38,20 @@ node scripts/copy-agent-to-env.js <slug> --from origin --to staging --replace  #
 
 It ends with `VERIFIED — the agent loads identically from <from> and <to>` (exit 0)
 or `NOT IDENTICAL` (exit 1). Report that line, the per-crew ✓ list, and the link it
-prints (`<site>/<slug>/builder`).
+prints (`<site>/<slug>/builder`). `--workspace <id>` puts it in a target folder instead
+of mirroring the source's.
+
+Through the API the copy carries what the Builder sees: the KB links of the active
+Pinecone index (links to an old index are dead data and are left), the newest 100
+change-history entries, and no legacy `agents` row (the runtime makes it on the first
+chat). The script carries the raw rows.
 
 ## Environments
 
-`aspect-agent-server/scripts/environments.json` — one entry per environment
-(`origin` — the existing environment, `staging`, later `lybi-<customer>`): DB public IP, which
-git-ignored env file holds its credentials, API and site URLs, `isProduction`.
+`aspect-agent-server/builder/environments.js` — the ONE registry (the MCP, Alfred, the
+Builder and the script read it): `id`, `server` (API), `app` (site), `isProduction`,
+`copyInto` (default folder for copies into it) and `db` (public IP + which git-ignored
+env file holds the credentials — script only, never served).
 **A new environment = add an entry there.** No secrets in that file.
 
 ## What is copied — and what is not
@@ -55,7 +83,7 @@ Pinecone, the KB files must be re-uploaded there — the copy moves only the rec
    have the same slug.
 4. **Into production: ask Shlomi first.** Writing into an environment marked
    `isProduction` needs `--yes-production`; never pass it on your own.
-5. **This machine must reach both databases by IP.** A timeout = this machine's IP
+5. **The script: this machine must reach both databases by IP.** A timeout = this machine's IP
    rotated off an allow-list. Origin: `scripts/cloud-sql/authorize-ip.sh` (it
    appends, never removes; run it again with `aspect-data-db` for the data DB) —
    only with Shlomi's OK. Staging: `gcloud sql instances patch <instance>

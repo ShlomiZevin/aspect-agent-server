@@ -63,6 +63,8 @@ people type and paste this URL.
 | `GET /agents/:slug/crew-tree` · `POST /agents/:slug/crew-tree` `{ parents?, replace?, order? }` | **The CREWS sidebar hierarchy** (task #855) — read it as an indented tree; change which crew is shown under which (`parents` merges, `null` = top level, `replace: true` = whole tree) and the sidebar order (`order`). Display only — the runtime never reads it. Refuses unknown crew ids and loops. **Written in place** into the active (and viewing) agent version — no new version (§4 exception) | `builder/services/crewTree.js` (validate / render) + `builderProjects.setAgentCrewTree` (jsonb_set of the one key) + `reorderCrews` |
 | `GET /agents/:slug/model-route` · `POST /agents/:slug/model-route` `{ route: "direct" \| "vertex" }` | **The model route** (task #984, **BETA** — every answer and the entry page say Vertex is not active yet; drop those lines when it is) — Direct (our provider keys) or Vertex (every model call through Google Vertex AI). Read: the route, whether THIS server has `VERTEX_PROJECT_ID`, and every add-on that would fail on Vertex (model not on Vertex, or OpenAI web search). Write: a **new active version** with `modelRoute` set (Direct = key removed, as the Builder stores it), answer lists what now fails. `POST /agents/:slug` keeps the current route when the body omits `modelRoute` (same keep-rule as `crewTree`); `"direct"`/`null` clears it; anything else 400 | `services/modelRoute.js` (`vertexProblems`, `vertexConfig`) + `saveAsNewVersion`; offline proof `node scripts/test-vertex-route.js` (section E mounts the door alone) |
 | `GET /agents/:slug/triggers` · `GET /agents/:slug/triggers/:id/due` · `GET /agents/:slug/triggers/:id/explain?conversationId&at` | One agent's triggers (settings in words, next fire, heartbeat, recent events); who a trigger would act on now (calls `findDue` directly — never the dry-run sweep, which writes the heartbeat); why it did / didn't fire for one conversation at one moment. All read only | `mcpTriggers.agentTriggersText` / `dueText` / `explainText`. Not in `alfredTools` — #950 left Alfred untouched by request; move them there when Alfred learns triggers |
+| `GET /environments` · `GET /environments/:env/agents` · `GET /environments/:env/agents/:slug` | The environments (JSON, never the `db` entries); another environment's agents read from ITS server, each marked here / a copy / a different agent with the slug / not here; what copying one here would carry, where it lands, what a refresh would discard, the models it uses — changes nothing (text) | `builder/environments.js` + `builder/services/mcpCopy.js` → `listAgentsText` / `planText` |
+| `POST /environments/:env/agents/:slug/copy` `{ workspace?, refresh? }` | **Copy an agent from another environment INTO this one** — the whole setup, same ids (agent + every version, crews + every version, KB links + file records, change history), in one transaction, then checked against the source's own API: the answer ends `VERIFIED` / `NOT IDENTICAL`. Source read through its public Builder API — no other environment's DB credentials on this server. Lands in `workspace` (folder name or id) or the environment's `copyInto` folder (staging: "Shlomi"); a refresh keeps the copy's folder. Same agent (same id) here → refreshed, automatically only when nothing made here would be lost, else 409 listing it until `refresh: true`. A different agent with the slug → 409, never touched. Refused into an `isProduction` environment (403) and on a server that doesn't know its environment (409 — a local server sets `LYBI_ENV`) | `mcpCopy.copyHere` → **`builder/services/agentCopy.js`** — the ONE copy engine, shared with `scripts/copy-agent-to-env.js` (skill `copy-agent`) |
 | `GET /code/<path>` | Any allowlisted source file; directories list | `alfredTools.readPlatformFile` |
 | `POST /agents` | Create an agent (name is enough) | `builderProjects.createProject` |
 | `POST /agents/:slug` | Save an edited agent body | `saveAgentVersionAs` + `setAgentActive` |
@@ -363,13 +365,27 @@ transcript. That only wastes the reader's context.
 Each environment serves its own door from its own server, and the entry
 page opens with "Environments — which Lybi you are on": this one, the
 others, and the rule that agents never cross on their own (the person
-may name an agent that lives elsewhere). The list is
-`builder/environments.js` — **one entry per environment**:
+may name an agent that lives elsewhere — and an agent can be COPIED here
+from any other environment, below). The list is `builder/environments.js` —
+**the one registry** (the door, Alfred, the Builder, the copy door and
+`scripts/copy-agent-to-env.js` all read it; `scripts/environments.json` is
+gone) — **one entry per environment**:
 
 - [ ] Add it: `id`, `name`, `what` (one line, for the assistant), `app`,
       `mcp`, `server`, and `hosts` — every hostname the door can be
       reached on (the Cloud Run hostname is fixed per project, so this
       works with no setting). `LYBI_ENV=<id>` overrides the match.
+- [ ] `isProduction` (customers use it — no copies INTO it through the
+      door; the script needs `--yes-production`), `copyInto`
+      (`{ workspaceId, workspaceName }` — where agents copied INTO it land
+      by default; leave it out for the top level) and `db` (`host` = the
+      Cloud SQL public IP, `credentialsFrom` = the git-ignored env file,
+      `gcpProject`, `sqlInstance` — for the script only, never served).
+- [ ] `server` must answer the Builder API with no auth: the copy door
+      reads a source through `/api/builder/projects`, `/projects/list`,
+      `/workspaces`, `/api/library/kbs`, `/api/library/files` and
+      `/api/builder/alfred/agents/:id/log`. If those ever get auth, the
+      copy door needs a credential for that source — decide it then.
 - [ ] `mcp` is the **server's** address unless that site's hosting really
       reaches its own server. `lybi-staging.web.app/builder/mcp` does not:
       it shares lybi.ai's `firebase.json`, whose redirect goes to Origin.
@@ -383,7 +399,8 @@ may name an agent that lives elsewhere). The list is
 
 | Invariant | Why |
 |---|---|
-| **Never move `publishedVersionId`.** | It is the customer gate. Everything else here is undoable; that is not. |
+| **Never move `publishedVersionId`.** | It is the customer gate. Everything else here is undoable; that is not. One deliberate exception: a **copy** from another environment carries the source's published pointers as they are (a mirror). A brand-new copy is a new agent; a refresh that would CHANGE a published pointer here counts as a "change made here" and needs `refresh: true` after the person agreed. |
+| **Copies: one engine, source read by API.** `builder/services/agentCopy.js` is the only copy implementation (the script reads the source DB, the door reads the source API — same bundle, same write, same check). Never write a second one, and never put another environment's DB credentials on a server. | Two copy paths drift; a server holding Origin's DB password could write to Origin. |
 | **A write = new version + `setXActive`.** Never `saveAgentVersion` (in place). One deliberate exception: `POST /agents/:slug/crew-tree` (#855) writes ONLY `crewTree` in place (`setAgentCrewTree`), into active AND viewing — it is display-only organisation, and the Builder saves it the same way when someone drags a crew. | `hydrateProject` builds the working copy from **active** and reports `viewingVersionId` *as* active on load. `saveAgentVersionAs` alone moves only viewing — the version exists but the Builder never shows it. This was a real bug, caught only by testing the working copy. |
 | **Normalise every body** (`normalizeAgentBody` / `normalizeCrewBody`), adding absent keys only. | Otherwise the Builder shows phantom "unsaved changes" (§3.1). |
 | **No validator on writes.** | See §1. Versioning is the safety. Exception: `crewTree` (#855) is checked (unknown crew ids, loops → `400`, nothing saved) — it is saved in place, so there is no version to undo to. |
@@ -473,6 +490,20 @@ Exits `1` on any failure. What it covers:
   keeps it; a bad `crewTree` in a body is refused; `null` + `order` move
   and reorder; `replace: {}` clears it (empty == absent); nothing under
   `builder/runtime/` mentions it.
+- **Copy from another environment** — the entry page teaches it; `/environments`
+  serves no `db`; unknown environment 404, this environment as source 400;
+  the source's agent list reads (live GET to that server — Origin from
+  staging); unknown agent 404. On a known non-production environment it
+  copies a tiny source agent (`first`, else `test-3` — whichever is not
+  here): the plan changes nothing; a copy pretending to be production is
+  403; the copy is VERIFIED, reads back identical through the service and
+  the door, lands in `copyInto`, has no phantom dirty; a second copy
+  refreshes by itself; after a local edit it is 409 until `refresh: true`;
+  an unknown folder is 404; a different agent with the slug is 409 and
+  untouched. The probe is removed in `finally`. On a server without
+  `LYBI_ENV` (unknown environment) it only checks the refusal. Run it with
+  `TZ=UTC` from a laptop: timestamps are written as node-pg Dates, which
+  are local time — a non-UTC process writes shifted `created_at`s.
 - **Talking to an agent** — a simulated conversation is created with the
   stamp and the right version; unknown person / bad version / unknown crew
   are refused with a sentence; a real conversation cannot be written to;
@@ -557,7 +588,10 @@ aspect-agent-server/
   builder/routes/mcpRoute.js          THE DOOR — entryDoc, reads, /code, /addons, writes,
                                       normalizeAgentBody / normalizeCrewBody, urls(), sendText()
   server.js                           app.use('/builder/mcp', …)
-  builder/environments.js             the environments (Origin, Lybi Staging, …) — §3.10
+  builder/environments.js             the environments (Origin, Lybi Staging, …) — the one registry, §3.10
+  builder/services/agentCopy.js       THE copy engine: read (DB / API) · plan · inspect target · write · compare
+  builder/services/mcpCopy.js         the door's copy rules: source by API, guards, placement, refresh, answer text
+  scripts/copy-agent-to-env.js        the same engine from Shlomi's machine, source read from its DB
   alfred/services/alfredTools.js      the readers it wraps + READABLE_PREFIXES (shared allowlist)
   builder/services/builderProjects.js hydrateProject · createProject · save*VersionAs · set*Active · setAgentCrewTree
   builder/services/crewTree.js        the CREWS sidebar tree (#855): validate · merge · remap · render

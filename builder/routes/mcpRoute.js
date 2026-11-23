@@ -71,6 +71,7 @@ const manageUsers = require('../services/manageUsers');
 const { publicBaseOf } = require('./publicBase');
 const modelsService = require('../../services/models.service');
 const environments = require('../environments');
+const mcpCopy = require('../services/mcpCopy');
 const mcpTriggers = require('../services/mcpTriggers');
 const crewTree = require('../services/crewTree');
 const modelRoute = require('../../services/modelRoute');
@@ -376,6 +377,8 @@ saved for the others unless the person passes it on.
 | **An agent's triggers** — each one's settings in words, next fire (Schedule), last check, recent events | \`${base}/agents/<slug>/triggers\` |
 | Who a trigger would act on right now, and what blocks the rest — sends nothing | \`${base}/agents/<slug>/triggers/<triggerId>/due\` |
 | Why a trigger did or didn't fire for one conversation at one moment, clause by clause | \`${base}/agents/<slug>/triggers/<triggerId>/explain?conversationId=<id>&at=<ISO time>\` |
+| **Another environment's agents** — read from that environment's own server, each marked whether it is already here (a copy, or a different agent with the same slug) | \`${base}/environments/<env>/agents\` |
+| What copying one of them here would carry and do — changes nothing | \`${base}/environments/<env>/agents/<slug>\` |
 
 Costs are estimates at list price (the model list with prices: \`${origin}/api/models\`);
 cache discounts are not counted, so the real bill can only be lower. They
@@ -567,6 +570,43 @@ Name is all it needs; the slug, the ids and the first crew are made for
 you. Use THIS rather than the raw projects endpoint — it fills in the
 parts of a body the Builder expects, and an agent created without them
 opens showing "unsaved changes" before anyone has touched it.
+
+## Copying an agent from another environment
+
+An agent that lives in another environment (see "Environments") can be
+copied HERE — the whole setup, exactly, with the same ids: every agent
+version and crew version (active and published as they are), knowledge
+base links and their file records (every environment shares one Pinecone,
+so nothing is re-uploaded) and the change history. Conversations, users and
+other data stay where they are. **Ask the person before copying** — it
+creates an agent here.
+
+\`\`\`
+GET  ${base}/environments                          the environments (JSON)
+GET  ${base}/environments/<env>/agents             that environment's agents, and which are already here
+GET  ${base}/environments/<env>/agents/<slug>      what a copy would carry, where it lands — changes nothing
+POST ${base}/environments/<env>/agents/<slug>/copy
+{ "workspace": "<folder name or id>" }             optional — default: the folder this environment
+                                                   sets for copies (the plan names it)
+\`\`\`
+
+- **Read the plan first** and tell the person what will happen.
+- **Already here as a copy of the same agent?** Copying again REFRESHES it
+  to the source's current setup; its conversations here stay. If the copy
+  has changes made here (versions or crews that are not on the source, or a
+  different published version) the call refuses and lists them — tell the
+  person that exact list and send \`"refresh": true\` only if they agree to
+  lose them. Never send it on your own.
+- **A different agent here with the same slug** is never touched — the call
+  refuses. So is an environment marked production (ask Shlomi).
+- The answer ends **VERIFIED** (the copy loads here exactly as it does
+  there) or **NOT IDENTICAL** — report that line and the Builder link.
+- Every environment has its own model keys; the copy never changes a model.
+  The answer lists the models the agent uses — tell the person which ones
+  this environment may not run.
+- Copy, don't rebuild: never re-create another environment's agent through
+  \`POST ${base}/agents\` and edits — that loses versions, crews' ids and
+  knowledge links.
 
 ## Things that are easy to get wrong
 
@@ -1109,6 +1149,35 @@ router.get('/', (req, res) => {
 /** Which environment this is and the others — see builder/environments.js. */
 router.get('/environments', (req, res) => {
   res.json(environments.environmentsJson(urls(req).origin));
+});
+
+// ─── Copying an agent from another environment ─────────────────────
+// The engine is builder/services/agentCopy.js (shared with
+// scripts/copy-agent-to-env.js); the door's rules are in mcpCopy.js.
+
+function copyFail(res, err, what) {
+  if (err instanceof mcpCopy.CopyRefused) return res.status(err.status).type('text/plain').send(err.message);
+  console.error(`[builder-mcp] ${what} failed:`, err);
+  return res.status(500).type('text/plain').send(`Could not ${what}: ${err.message}`);
+}
+
+router.get('/environments/:env/agents', async (req, res) => {
+  try {
+    sendText(res, await mcpCopy.listAgentsText({ envId: req.params.env, ...urls(req) }));
+  } catch (err) { copyFail(res, err, 'list that environment\'s agents'); }
+});
+
+router.get('/environments/:env/agents/:slug', async (req, res) => {
+  try {
+    sendText(res, await mcpCopy.planText({ envId: req.params.env, slug: req.params.slug, workspace: req.query.workspace, ...urls(req) }));
+  } catch (err) { copyFail(res, err, 'plan that copy'); }
+});
+
+router.post('/environments/:env/agents/:slug/copy', async (req, res) => {
+  try {
+    const { workspace, refresh } = req.body || {};
+    sendText(res, await mcpCopy.copyHere({ envId: req.params.env, slug: req.params.slug, workspace, refresh, ...urls(req) }));
+  } catch (err) { copyFail(res, err, 'copy that agent'); }
 });
 
 // ─── Reading ───────────────────────────────────────────────────────

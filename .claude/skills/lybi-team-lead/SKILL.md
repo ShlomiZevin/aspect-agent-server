@@ -100,7 +100,7 @@ unless Shlomi asks (2026-11-18: "alfred is not important, mcp is").
 - Model calls go Direct or via **Vertex** per agent (#984).
 - Details: skills `deploy`, `new-environment` (a customer / production environment),
   `copy-agent`; build log `aspect-agent-server/docs/setup/lybi-staging-deploy-log.md`;
-  registry `aspect-agent-server/builder/environments.js` + `scripts/environments.json`.
+  registry `aspect-agent-server/builder/environments.js` (the only one).
 
 ## 5. The engineering bar — you are responsible for it
 

@@ -20,6 +20,23 @@
  *
  * A new environment (lybi-prod, lybi-<customer>) is one more entry here.
  *
+ * ── The one registry ───────────────────────────────────────────────
+ *
+ * This file is the ONLY list of environments: the Builder MCP, Alfred, the
+ * Builder (`/api/builder/environment`), the MCP's copy door
+ * (`builder/services/mcpCopy.js`) and the copy script
+ * (`scripts/copy-agent-to-env.js`) all read it. Static, baked into the
+ * image, never written at runtime.
+ *
+ *   server        the environment's API — copies READ the source through it
+ *   isProduction  customers use it: nothing copies INTO it through the MCP,
+ *                 and the script needs --yes-production (ask Shlomi)
+ *   copyInto      where an agent copied INTO this environment through its
+ *                 MCP lands when the caller names no folder
+ *   db            for the script only (Shlomi's machine, direct DB access):
+ *                 the Cloud SQL public IP and the git-ignored env file with
+ *                 the credentials. Never served by the MCP.
+ *
  * ── Which one am I ─────────────────────────────────────────────────
  *
  * `LYBI_ENV` (an id below) wins when set. Otherwise the address the
@@ -47,6 +64,8 @@ const ENVIRONMENTS = [
     hosts: ['lybi.ai', 'aspect-agent-server-1018338671074.europe-west1.run.app'],
     service: 'aspect-agent-server',
     frozen: true,
+    isProduction: true,
+    db: { host: '35.240.73.50', credentialsFrom: '.env', gcpProject: 'aspect-agents', sqlInstance: 'aspect-agents-db' },
   },
   {
     id: 'staging',
@@ -60,6 +79,11 @@ const ENVIRONMENTS = [
     server: 'https://lybi-server-700084613835.me-west1.run.app',
     hosts: ['lybi-staging.web.app', 'lybi-staging.firebaseapp.com', 'lybi-server-700084613835.me-west1.run.app'],
     service: 'lybi-server',
+    isProduction: false,
+    // Copies made through this MCP land in the Builder domain "Shlomi"
+    // (where his and the test agents live) unless the caller names a folder.
+    copyInto: { workspaceId: 'ws_8bhctox2mqhlzb43', workspaceName: 'Shlomi' },
+    db: { host: '34.165.76.81', credentialsFrom: '.env.production.staging', gcpProject: 'lybi-staging', sqlInstance: 'lybi-staging-db' },
     // Add-ons not offered here (#955): left out of the Builder's picker and
     // the MCP's add-on list. An agent that already has one keeps running it.
     retiredAddons: ['vibe-extractor', 'transition-router', 'field-interviewer'],
@@ -72,6 +96,11 @@ const BOARD_ENV = 'staging';
 /** Add-on ids this environment does not offer (#955). */
 function retiredAddons(origin) {
   return currentEnvironment(origin)?.retiredAddons || [];
+}
+
+/** One environment by id, or null. */
+function findEnvironment(id) {
+  return ENVIRONMENTS.find(e => e.id === id) || null;
 }
 
 /** The environment a request reached, or null for a local/unknown server. */
@@ -132,15 +161,26 @@ What this means for you:
   mean, ask — a change on the wrong environment is a change nobody sees.
 - **Work in another environment by switching URLs**: read that
   environment's Builder MCP page and use its addresses.
-- **Never copy an agent between environments yourself.** Re-creating it
-  through these addresses loses its crews, versions and knowledge links
-  and gives new ids. Copies are made by Shlomi with a copy tool that moves
-  everything exactly — when the person needs an agent here (or a fresh
-  copy of one), tell them to ask Shlomi.
-${aboutFrozen}- **The task board lives only on ${board.name}.** For tasks, use
+${copyBullet(here)}${aboutFrozen}- **The task board lives only on ${board.name}.** For tasks, use
   ${board.name}'s addresses (\`${board.mcp}/tasks\`…) whichever
   environment you are building on.
 - \`GET <Builder MCP>/environments\` returns this list as JSON.
+`;
+}
+
+/** The entry page's line on bringing an agent here from another environment. */
+function copyBullet(here) {
+  const never = `Never re-create an agent from another environment by hand
+  through these addresses — that loses its crews, versions and knowledge
+  links and gives new ids.`;
+  if (!here || here.isProduction) {
+    return `- **Copying an agent INTO ${here ? here.name : 'this server'} is not done through this
+  door.** ${never} When the person needs an agent here, tell them to ask Shlomi.
+`;
+  }
+  return `- **An agent from another environment can be copied here** — every crew,
+  version and knowledge link, exactly, with the same ids — see "Copying an
+  agent from another environment" below. ${never}
 `;
 }
 
@@ -178,8 +218,9 @@ function environmentsJson(origin) {
   return {
     current: here ? here.id : 'local',
     board: BOARD_ENV,
-    environments: ENVIRONMENTS.map(({ hosts, ...e }) => ({ ...e, current: e.id === here?.id })),
+    // `db` is for the copy script on Shlomi's machine — never served.
+    environments: ENVIRONMENTS.map(({ hosts, db, ...e }) => ({ ...e, current: e.id === here?.id })),
   };
 }
 
-module.exports = { ENVIRONMENTS, currentEnvironment, retiredAddons, environmentsSection, environmentsJson, environmentsBrief };
+module.exports = { ENVIRONMENTS, findEnvironment, currentEnvironment, retiredAddons, environmentsSection, environmentsJson, environmentsBrief };

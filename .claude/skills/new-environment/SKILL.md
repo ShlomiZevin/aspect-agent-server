@@ -114,8 +114,7 @@ a timeout means it fell off an allow-list.
 |---|---|
 | `aspect-agent-server/deploy.sh` | a `<env>)` target: PROJECT_ID, SERVICE_NAME `lybi-server`, REGION, CLOUD_SQL_INSTANCES `$P:me-west1:$P-db`, ENV_FILE, MIN_INSTANCES, SERVICE_ACCOUNT `lybi-server@$P.iam.gserviceaccount.com`. Every non-origin target automatically passes `--project` and never touches gcloud config |
 | `aspect-agent-server/server.js` | CORS allowlist: `https://$P.web.app`, `https://$P.firebaseapp.com` |
-| `aspect-agent-server/scripts/environments.json` | entry for the copy-agent skill (dbHost = public IP, credentialsFrom, apiUrl, siteUrl, isProduction) |
-| `aspect-agent-server/builder/environments.js` | entry for the Builder MCP (BUILDER_MCP_MAINTENANCE §3.10) |
+| `aspect-agent-server/builder/environments.js` | the one registry entry: Builder MCP + copy door + copy script (`server`, `app`, `hosts`, `isProduction`, `copyInto`, `db` = public IP + credentialsFrom) — BUILDER_MCP_MAINTENANCE §3.10 |
 | `aspect-react-client/.firebaserc` | alias `<env>: $P` |
 | `aspect-react-client/.env.<env>` | `VITE_API_URL=https://lybi-server-$N.me-west1.run.app` (predictable: `<service>-<number>.<region>.run.app`) |
 | `aspect-react-client/package.json` | `deploy:<env>`: `npm run sync-types && vite build --mode <env> && firebase deploy --only hosting --project <env>` |

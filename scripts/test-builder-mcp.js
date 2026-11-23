@@ -183,6 +183,19 @@ async function removeIfPresent(slug) {
   };
   const taskService = require('../services/task.service');
   let testTaskId = null;
+  const agentCopy = require('../builder/services/agentCopy');
+  let copiedProbe = null; // a source agent the copy checks brought here — removed in finally
+  /** Remove a copy the battery made: its project (when it holds nothing else), links, history. */
+  const removeCopy = async slug => {
+    const p = await hydrate(slug);
+    if (!p) return;
+    const agentId = p.agents[0].id;
+    await db.query('delete from kb_links where agent_id = $1', [agentId]);
+    await db.query('delete from agent_log where agent_id = $1', [agentId]);
+    const others = (await db.query('select 1 from builder_agents where project_id = $1 and id <> $2', [p.id, agentId])).rows.length;
+    if (others) throw new Error(`project ${p.id} holds other agents — not removing ${slug} automatically`);
+    await bp.deleteProject({ projectId: p.id });
+  };
 
   try {
     // ── surface ──
@@ -776,6 +789,83 @@ async function removeIfPresent(slug) {
       !!envs && envs.environments.some(e => e.id === 'origin' && e.frozen) && envs.environments.some(e => e.id === 'staging'),
       envs ? `current: ${envs.current}` : `status ${envRes.status}`);
 
+    // ── copying an agent from another environment — reads the source's public API ──
+    section('copy from another environment');
+    check('entry page teaches the copy door',
+      doc.text.includes('## Copying an agent from another environment')
+      && doc.text.includes(`${base}/environments/<env>/agents/<slug>/copy`) && doc.text.includes(`${base}/environments/<env>/agents`));
+    check('/environments never serves database addresses', !!envs && envs.environments.every(e => !('db' in e)));
+    const here = envs && envs.environments.find(e => e.current);
+    const srcEnv = envs && envs.environments.find(e => !e.current && e.id === 'origin') || envs.environments.find(e => !e.current);
+    check('unknown environment → 404 naming the known ones',
+      await get('/environments/zz-nowhere/agents').then(r => r.status === 404 && r.text.includes(srcEnv.id)));
+    if (here) check('this environment as the source → 400', (await get(`/environments/${here.id}/agents`)).status === 400);
+    const srcList = await get(`/environments/${srcEnv.id}/agents`);
+    check(`${srcEnv.name}'s agents read from its own server`, srcList.status === 200 && srcList.text.includes(`# Agents on ${srcEnv.name}`), srcList.text.slice(0, 120));
+    check('unknown agent on the source → 404', (await get(`/environments/${srcEnv.id}/agents/zz-no-such-agent-xyz`)).status === 404);
+    // The probe: a tiny source agent that is not here yet (no KB, one crew).
+    const probe = ['first', 'test-3'].find(s => srcList.text.includes(`(\`${s}\`)`) && new RegExp(`\\(\`${s}\`\\)[^\\n]*not here`).test(srcList.text));
+    const plan = probe ? await get(`/environments/${srcEnv.id}/agents/${probe}`) : null;
+    if (plan) check('the plan of a new copy changes nothing', plan.status === 200 && plan.text.includes('A new agent here') && !(await hydrate(probe)), plan.text.slice(0, 120));
+    const savedEnv = process.env.LYBI_ENV;
+    if (!here) {
+      const r = await post(`/environments/${srcEnv.id}/agents/${probe || 'first'}/copy`, {});
+      check('a server that does not know its environment refuses to copy (LYBI_ENV)', r.status === 409 && r.text.includes('LYBI_ENV'), r.text.slice(0, 120));
+    } else if (here.isProduction) {
+      const r = await post(`/environments/${srcEnv.id}/agents/${probe || 'first'}/copy`, {});
+      check('production refuses copies into it', r.status === 403, r.text.slice(0, 120));
+    } else if (!probe) {
+      check('a probe agent (first / test-3) exists on the source and is not here', false, 'copy writes not tested');
+    } else {
+      const prodEnv = envs.environments.find(e => e.isProduction);
+      if (prodEnv) {
+        process.env.LYBI_ENV = prodEnv.id; // this server, pretending to BE production
+        const prod = await post(`/environments/${here.id}/agents/${probe}/copy`, {});
+        process.env.LYBI_ENV = savedEnv;
+        check('copies INTO production are refused (403), nothing written', prod.status === 403 && !(await hydrate(probe)), prod.text.slice(0, 120));
+      }
+
+      copiedProbe = probe;
+      const made = await post(`/environments/${srcEnv.id}/agents/${probe}/copy`, {});
+      check('copy → a new agent, VERIFIED', made.status === 200 && made.text.includes('a new agent here') && made.text.includes('VERIFIED —'), made.text.slice(0, 200));
+      const srcDoc = await agentCopy.loadDocViaApi(srcEnv.server, probe);
+      const viaService = JSON.parse(JSON.stringify(await hydrate(probe)));
+      const viaDoor = JSON.parse((await get(`/agents/${probe}`)).text);
+      check('the copy reads back identical through the Builder API and the door',
+        agentCopy.compareDocs(srcDoc, viaService).ok && agentCopy.compareDocs(srcDoc, viaDoor).ok);
+      const placedIn = (await db.query('select workspace_id from builder_agents where slug = $1', [probe])).rows[0]?.workspace_id ?? null;
+      const want = here.copyInto?.workspaceId;
+      const wantExists = want ? (await db.query('select 1 from builder_workspaces where id = $1', [want])).rows.length > 0 : false;
+      check('it lands in this environment\'s copy folder', placedIn === (wantExists ? want : null), `${placedIn}`);
+      check('the copy opens with no phantom "unsaved changes"',
+        agentDirty(viaService.agents[0]).length === 0 && viaService.agents[0].crews.every(c => !crewDirty(c)));
+
+      const again = await post(`/environments/${srcEnv.id}/agents/${probe}/copy`, {});
+      check('copying again refreshes a clean copy by itself', again.status === 200 && again.text.includes('Refreshed') && again.text.includes('VERIFIED —'), again.text.slice(0, 160));
+
+      const cur = (await hydrate(probe)).agents[0];
+      const curBody = cur.versions.find(v => v.id === cur.activeVersionId).body;
+      await post(`/agents/${probe}`, { body: { ...curBody, spec: `${curBody.spec || ''} (battery local edit)` }, description: 'battery local edit' });
+      const refused = await post(`/environments/${srcEnv.id}/agents/${probe}/copy`, {});
+      const stillLocal = (await hydrate(probe)).agents[0].versions.some(v => v.description === 'battery local edit');
+      check('a copy with changes made here is NOT refreshed without "refresh": true — 409 listing them',
+        refused.status === 409 && refused.text.includes('battery local edit') && stillLocal, refused.text.slice(0, 160));
+      const forced = await post(`/environments/${srcEnv.id}/agents/${probe}/copy`, { refresh: true });
+      const goneLocal = !(await hydrate(probe)).agents[0].versions.some(v => v.description === 'battery local edit');
+      check('…with "refresh": true it is refreshed and the local version is gone', forced.status === 200 && forced.text.includes('VERIFIED —') && goneLocal, forced.text.slice(0, 160));
+      const badFolder = await post(`/environments/${srcEnv.id}/agents/${probe}/copy`, { workspace: 'zz-no-such-folder' });
+      check('an unknown folder → 404 listing the folders, nothing written', badFolder.status === 404 && /Folders:/.test(badFolder.text), badFolder.text.slice(0, 120));
+
+      // A DIFFERENT agent with the slug is never overwritten.
+      await removeCopy(probe);
+      await post('/agents', { name: 'ZZ battery slug clash', slug: probe });
+      const mineId = (await hydrate(probe))?.agents[0].id;
+      const clash = await post(`/environments/${srcEnv.id}/agents/${probe}/copy`, { refresh: true });
+      check('a different agent with the slug → 409, untouched',
+        clash.status === 409 && /different agent/i.test(clash.text) && (await hydrate(probe))?.agents[0].id === mineId, clash.text.slice(0, 160));
+    }
+    process.env.LYBI_ENV = savedEnv;
+
     // ── LLM usage and cost — read only ──
     section('usage');
     check('entry page teaches the cost pages', doc.text.includes(`${base}/usage?days=7`) && doc.text.includes(`${base}/agents/<slug>/usage`));
@@ -852,6 +942,7 @@ async function removeIfPresent(slug) {
     fails++;
   } finally {
     await removeIfPresent(BORN_CLEAN_SLUG).catch(() => {});
+    if (copiedProbe) await removeCopy(copiedProbe).catch(() => {});
     for (const id of TREE_CREWS) await bp.deleteCrew({ crewId: id }).catch(() => {});
     // Leave the test agent's tree empty again (the tree names the deleted crews).
     const tAgent = (await hydrate(TEST_SLUG).catch(() => null))?.agents?.[0];
