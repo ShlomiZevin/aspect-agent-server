@@ -28,6 +28,7 @@ const errorRules = require('../services/errorRules');
 const conversationAudience = require('../runtime/conversationAudience');
 const { suspensionOf } = require('../runtime/userSuspension');
 const { mergeMetadata } = require('../runtime/conversationMeta');
+const streamSurface = require('../runtime/streamSurface');
 
 const router = express.Router({ mergeParams: true });
 
@@ -1040,10 +1041,13 @@ router.post('/:slug/conversations/:convId/messages', async (req, res) => {
   res.write(':ok\n\n');
   if (res.flush) res.flush();
 
-  const emit = (type, payload) => {
+  // `surface` (#1011): the login-gated customer chat sends 'go' and gets
+  // only what it renders — builder/runtime/streamSurface.js is the one
+  // place that decides. Without it the stream is exactly as before.
+  const emit = streamSurface.emitterFor(req.body && req.body.surface, (type, payload) => {
     res.write(`data: ${JSON.stringify({ type, ...payload })}\n\n`);
     if (res.flush) res.flush();
-  };
+  });
 
   // The reply row of this turn, once reserved — the error center links to it.
   let replyMessageId = null;

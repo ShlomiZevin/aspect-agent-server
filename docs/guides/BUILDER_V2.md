@@ -2953,3 +2953,39 @@ bring two segments", but general: nothing in it knows about motives.
   every dc form, single-value unchanged, schema line, conditions, formula,
   and real `runAddon` runs: coerce/reject, replace, remove, clear, run
   record, Rules Set/Clear). **Not touched:** Alfred.
+
+### 68. The customer chat `/go` gets a trimmed stream (task #1011)
+
+A turn's runtime stream carries every add-on's full prompt (`addon.prompt`),
+its raw / parsed output (`addon.output`), the resolved Targeted KB text and
+the Live Brain / Profiler panels: 0.35–1.24 MB a turn on a real agent. The
+login-gated customer chat (`/<agent>/go`, `LiveChatPage restricted`) renders
+none of it, so it no longer receives it.
+
+- **The one filter point:** `builder/runtime/streamSurface.js`. The runtime
+  POST (`.../conversations/:convId/messages`) builds its `emit` with
+  `emitterFor(req.body.surface, emit)`. No `surface` (or an unknown one) →
+  the very same `emit`: the Builder chat, `/<agent>/live` (Debug mode), the
+  embed (`?embed=1`, which runs on /live) and simulations are byte-identical
+  to before.
+- **`surface: 'go'`** → a whitelist of events and fields: `conversation`,
+  `protection.blocked`, `addon.start` (instanceId, pluginId, label),
+  `addon.token`, `addon.websearch` (the pill: id, status, query, kind — no
+  sources), `addon.output` (instanceId, label, transition), `addon.error`
+  (instanceId, error.code / error.message — no rawOutput), `assistant.message`,
+  `turn.stopped`, `done`. Everything else is not sent: `addon.prompt`,
+  `addon.skipped`, `enum.resolved`, `dc.resolved`, `warning`, `brain.panel`,
+  `profiler.panel` — and any NEW event type until someone adds it to the
+  list on purpose. The runtime itself runs exactly as before (runs are still
+  stored, the error center still records); only the bytes on the wire change.
+- **Client:** `LiveChatPage` passes `surface: restricted ? 'go' : undefined`
+  to `useLiveChat` → `sendRuntimeMessage` → `runtimeMessageStream`, which puts
+  `surface` in the body only when set.
+- **Measured** (staging, `multi-select-test`): /go 4.5 KB a turn, no
+  prompt / raw / parsed field; /live and Builder streams have the same event
+  shape before and after, prompts byte-identical. Replaying the three biggest
+  staging turns of the last 30 days through the filter: ~950 KB of prompt +
+  output events → ~1.3 KB on /go.
+- **Tests:** `node scripts/test-stream-surface.js` (offline — the pass-through,
+  every event's /go fields, the one filter point in the route, the client
+  wiring). **Not touched:** the MCP (no agent setting), Alfred, the Builder.

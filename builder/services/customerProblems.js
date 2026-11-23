@@ -139,6 +139,7 @@ const KINDS = {
   database:           { problem: 'הלקוח לא קיבל תשובה בגלל תקלה במערכת', handled: SMALL_GLITCH, ask: 'shlomi', transient: false, icon: 'alert' },
   external:           { problem: 'הלקוח לא קיבל תשובה בגלל תקלה זמנית', handled: TEMP_GLITCH, ask: 'customer', transient: true, icon: 'busy' },
   server_unavailable: { problem: 'המערכת הייתה עמוסה וההודעה של הלקוח לא נקלטה', handled: BUSY_WAIT, ask: 'shlomi', transient: true, icon: 'busy' },
+  connection_lost:    { problem: 'האינטרנט של הלקוח התנתק באמצע, והוא לא קיבל תשובה', handled: 'האינטרנט של הלקוח התנתק באמצע, והתשובה הגיעה אליו בכל זאת', ask: 'customer', transient: true, icon: 'message' },
   user_input:         { problem: 'ההודעה של הלקוח לא נקלטה', handled: 'הלקוח קיבל תשובה, אבל חלק מההודעה שלו לא נקלט', ask: 'customer', transient: false, icon: 'message' },
   code:               { problem: 'הלקוח לא קיבל תשובה בגלל תקלה במערכת', handled: SMALL_GLITCH, ask: 'shlomi', transient: false, icon: 'alert' },
 };
@@ -187,6 +188,7 @@ const REASONS_BY_KIND = {
   database:           'תקלה בשמירת הנתונים',
   external:           'תקלה בשירות חיצוני',
   server_unavailable: 'השרת היה עמוס',
+  connection_lost:    'האינטרנט של הלקוח התנתק',
   user_input:         'לא הצלחנו לקרוא את ההודעה של הלקוח',
   code:               'תקלה בקוד של המערכת',
 };

@@ -46,7 +46,9 @@ const STACK_LINES = 8;
 const AREAS = ['turn', 'addon', 'model', 'offline', 'trigger', 'profiler', 'live-brain', 'simulation', 'server'];
 // server_unavailable: our own server / its front door could not take the request
 // (Cloud Run 429/5xx under load) — set by the caller that knows, never guessed.
-const KINDS = ['model_no_credit', 'model_rate_limit', 'model_timeout', 'model_refusal', 'model_bad_answer', 'model_other', 'database', 'external', 'server_unavailable', 'user_input', 'code'];
+// connection_lost: the customer's browser lost the reply stream mid-turn (#978) —
+// reported by the customer chat itself (POST /api/errors/client-drop), never guessed.
+const KINDS = ['model_no_credit', 'model_rate_limit', 'model_timeout', 'model_refusal', 'model_bad_answer', 'model_other', 'database', 'external', 'server_unavailable', 'connection_lost', 'user_input', 'code'];
 const SOURCES = ['builder', 'customer', 'simulation'];
 
 // ─── Context and "already recorded" ────────────────────────────────

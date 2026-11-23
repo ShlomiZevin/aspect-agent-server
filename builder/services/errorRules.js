@@ -54,6 +54,9 @@ const RULES = {
     alert: true,
     userMessage: 'I\'m very busy right now — please try again in a minute.',
   },
+  // The customer's own connection dropped mid-reply (#978) — the turn ran on;
+  // the chat fetches the saved reply by itself. Nothing for us to fix.
+  connection_lost: { alert: false },
   user_input: { alert: false },
   code: { alert: true },
 };
