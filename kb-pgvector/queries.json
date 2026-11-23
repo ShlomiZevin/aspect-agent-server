@@ -1,0 +1,26 @@
+{
+  "agent": "account-opening",
+  "note": "Real customer messages from account-opening conversations on Lybi Staging (verbatim; personal details never included). 'en-translated' = an English rendering of a real Hebrew message (staging has almost no English knowledge questions).",
+  "queries": [
+    { "q": "הי, מה הדמי ניהול של חשבון אצלכם?", "lang": "he", "source": "real" },
+    { "q": "כסף. כמה אני משלמת וכמה אוכל לקבל על פיקדון לשנה", "lang": "he", "source": "real" },
+    { "q": "הי, איזה פקדונות יש לכם?", "lang": "he", "source": "real" },
+    { "q": "אם יש תחנת יציאה בעוד כמה חודשים בלי קנס משמעותי, זה עדיף לי. אני לא רוצה לגלות שאני צריך את הכסף למקדמה ואין לי גישה אליו.", "lang": "he", "source": "real" },
+    { "q": "בעיקר ריבית נמוכה והאפשרות לפרוע מוקדם אם יתאפשר לי. וגם חשוב לי להבין אם הרכב משועבד לבנק.", "lang": "he", "source": "real" },
+    { "q": "מה המסמכים שאני צריכה להביא?", "lang": "he", "source": "real" },
+    { "q": "תעודת הזהות שלי ישנה, בלי שבב. איך אפשר להשלים את התהליך בכל זאת?", "lang": "he", "source": "real" },
+    { "q": "חשבון אישי, רק על שמי. כבר יש לי חשבון בבנק אחר — חייבים להעביר אליכם את כל הפעילות ולסגור אותו, או שאפשר להשאיר אותו פתוח ולהעביר אליכם רק את המשכורת?", "lang": "he", "source": "real" },
+    { "q": "מסגרת! כי אני מבזבזת מלא", "lang": "he", "source": "real" },
+    { "q": "מה לגבי כרטיס אשראי?", "lang": "he", "source": "real" },
+    { "q": "הי, אני רוצה לפתוח חשבון לי ולבעלי ביחד", "lang": "he", "source": "real" },
+    { "q": "הי, אני משלם כרגע עמלות גבוהות בבנק שלי ושוקל לעבור בנק", "lang": "he", "source": "real" },
+    { "q": "לא. אבל למה ההכנסה מההורים שלי לא נחשבת משכורת?", "lang": "he", "source": "real" },
+    { "q": "יש לי בערך 60 אלף לשים בצד. כנראה שאעדיף לנעול 45 אלף ואת השאר להשאיר זמין, לפחות עד שאדע יותר טוב מתי התשלומים.", "lang": "he", "source": "real" },
+    { "q": "Hi, I would like to open a bank account", "lang": "en", "source": "real" },
+    { "q": "hi, I am 16 and I want to open an account", "lang": "en", "source": "real" },
+    { "q": "How much is the monthly account management fee?", "lang": "en", "source": "en-translated" },
+    { "q": "If I break a one-year deposit early, do I lose the interest?", "lang": "en", "source": "en-translated" },
+    { "q": "I mostly want a low interest rate on a car loan and the option to repay early. Is the car pledged to the bank?", "lang": "en", "source": "en-translated" },
+    { "q": "My ID card is the old one without a chip. How can I still finish opening the account?", "lang": "en", "source": "en-translated" }
+  ]
+}

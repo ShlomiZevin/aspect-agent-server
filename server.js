@@ -188,6 +188,9 @@ app.use('/api/manage', require('./builder/routes/manageRoute'));
 // LLM usage — every model call by add-on and interaction; read by
 // Builder Admin → LLM Usage (task #953). See builder/services/llmUsageReport.js.
 app.use('/api/llm-usage', require('./builder/routes/llmUsageRoute'));
+// pgvector proof of concept — one KB searched in Pinecone and in this
+// environment's own Postgres side by side (/:agent/pgvector-poc). See kb-pgvector/.
+app.use('/api/kb-pgvector', require('./kb-pgvector/routes'));
 
 // ─── Aspect BI ─────────────────────────────────────────────────────
 // Standalone Qlik-style BI layer over customer data schemas (hypertoy

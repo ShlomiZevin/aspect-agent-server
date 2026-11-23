@@ -310,3 +310,10 @@ database** — a local server's writes are real.
   `new Date()` param — `updatedAt`, a copied `createdAt`) stores times shifted by
   2–3 h, and its own reads disagree with the deployed server. Run every local process
   that writes to a shared DB with `TZ=UTC` (the copy door's battery says so too).
+- 2026-11-23 — Pinecone serverless scores are APPROXIMATE (±0.001 vs exact cosine on the
+  same stored vectors), so near-ties swap and the last top-K hit can change; pgvector's
+  `<=>` is exact to 1e-7. And OpenAI embeddings of the same text differ slightly per call,
+  so a "flaky" ranking can be the query vector, not the store — compare stores with ONE
+  vector (`kb.pinecone.service.query` takes `options.embedding`). Also: `verification/`
+  git-ignores every `*.json`, so a script's INPUT json lives next to the script
+  (pgvector PoC: `verification/pgvector-poc/README.md`).

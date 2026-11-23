@@ -321,3 +321,21 @@ same index/namespaces, so copied agents keep their knowledge.
   `https://lybi-server-700084613835.me-west1.run.app/builder/mcp`. The Builder's
   "Connect my AI" now hands out that address on staging (`MCP_URL` follows `VITE_API_URL`).
 - New environment → one entry in `environments.js` (BUILDER_MCP_MAINTENANCE §3.10).
+
+### 18. pgvector in the staging database (2026-11-23, proof of concept)
+Goal: prove pgvector inside each environment's own Cloud SQL can replace Pinecone.
+- **Google Cloud: nothing created or enabled.** Cloud SQL for PostgreSQL 15 ships the
+  `vector` extension (0.8.5 here); `lybi_app` is a `cloudsqlsuperuser` member, so
+  `CREATE EXTENSION vector` needed no database flag, no API, no owner action.
+- **Database:** migration `073_pgvector_kb_vectors.sql`, applied with
+  `node db/migrations/run-073-pgvector-kb-vectors.js --env staging` (it resolves the
+  environment from `builder/environments.js`, refuses Origin). It created: extension
+  `vector`, table `kb_vectors` (index / namespace / Pinecone id, `vector(1536)`, text,
+  file, chunk, full metadata), HNSW cosine index `kb_vectors_embedding_hnsw`, and the
+  database setting `hnsw.iterative_scan = strict_order` (`ALTER DATABASE … SET`).
+- **Data:** `node kb-pgvector/copy-from-pinecone.js --env staging --namespace account-opening-kb`
+  → 86 vectors of `lybi/account-opening-kb` copied as they are (list + fetch, read-only on
+  Pinecone; sampled vectors identical to 3.6e-9).
+- **Result:** `verification/pgvector-poc/README.md`. Page: `/account-opening/pgvector-poc`
+  (live after the next server + client deploy).
+- New environments get it in the `new-environment` skill, step 7b.

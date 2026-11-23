@@ -305,11 +305,14 @@ async function listVectors(namespace, options = {}) {
  * @param {number} [options.topK=5] - Number of results per namespace
  * @param {number} [options.scoreThreshold=0.3] - Minimum similarity score
  * @param {number} [options.maxTokens=3000] - Max total tokens in results
+ * @param {number[]} [options.embedding] - A query vector already made with this
+ *   namespace's model (kb-pgvector compares the same vector on both sides); when
+ *   given, nothing is embedded here and queryTimeMs is the search alone.
  * @returns {Promise<{ results: Array, queryTimeMs: number, totalResults: number }>}
  */
 async function query(namespaces, queryText, options = {}) {
   init();
-  const { topK = 5, scoreThreshold = 0.3, maxTokens = 3000 } = options;
+  const { topK = 5, scoreThreshold = 0.3, maxTokens = 3000, embedding: givenEmbedding } = options;
   const startTime = Date.now();
 
   // Query each namespace (may use different embedding models)
@@ -325,7 +328,9 @@ async function query(namespaces, queryText, options = {}) {
     }
 
     // Embed with the right model for this namespace
-    const { embedding, model: usedModel } = await embeddingService.embedQuery(queryText, { namespace: nsName });
+    const { embedding } = givenEmbedding
+      ? { embedding: givenEmbedding }
+      : await embeddingService.embedQuery(queryText, { namespace: nsName });
     const ns = nsName === '__default__' ? pineconeIndex.namespace('') : pineconeIndex.namespace(nsName);
 
     const result = await ns.query({

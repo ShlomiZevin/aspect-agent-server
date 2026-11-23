@@ -120,6 +120,21 @@ a timeout means it fell off an allow-list.
 | `aspect-react-client/package.json` | `deploy:<env>`: `npm run sync-types && vite build --mode <env> && firebase deploy --only hosting --project <env>` |
 | `.claude/skills/deploy/SKILL.md` | a column in the environments table |
 
+### 7b. pgvector (knowledge-base vectors in the environment's own Postgres)
+Origin's schema dump (step 6) predates it, and Origin is frozen, so every new environment
+gets it from its migration — after the `environments.js` entry exists:
+```bash
+node db/migrations/run-073-pgvector-kb-vectors.js --env <env>
+#   → "vector 0.8.x, kb_vectors (0 rows) + HNSW cosine index, iterative scan on"
+```
+Nothing to enable in Google Cloud: Cloud SQL for PostgreSQL ships the `vector` extension
+and `lybi_app` is a `cloudsqlsuperuser` member, so `CREATE EXTENSION` needs no database
+flag and no API. The migration also sets `hnsw.iterative_scan = strict_order` on the
+database (one table holds every KB; without it a filtered HNSW search can come back short).
+A KB gets in with `node kb-pgvector/copy-from-pinecone.js --env <env> --namespace <ns>`
+(copies Pinecone's vectors as they are; read-only on Pinecone). Proof of concept since
+2026-11-23 — `verification/pgvector-poc/README.md`.
+
 ### 8. Server identities + first deploy
 The org grants Google's default accounts **nothing** — without these the build fails
 with `…-compute@developer.gserviceaccount.com does not have storage.objects.get`.
@@ -191,6 +206,7 @@ Without the rest, Noa's Codex gets `400 "Noa" is not on the board` (task #946). 
 | Builder works on the empty DB | `https://$P.web.app/builder` → "No agents yet" |
 | A real turn | create a test agent (or copy one) → one turn answers, reply saved |
 | Team list complete | `/api/assignees` lists Claude, Hila, Kosta, Noa, Shlomi |
+| pgvector ready | step 7b's runner prints `vector 0.8.x … iterative scan on`; `/api/kb-pgvector/<slug>/info` answers (404 "no knowledge base copied" until a KB is copied — not 503) |
 | Errors are caught | Admin → Errors shows nothing unexplained |
 | Keys are its own | fingerprints (last 4 chars + hash, never the key) of the live service's OpenAI/Anthropic/Gemini match nothing in origin's files |
 
