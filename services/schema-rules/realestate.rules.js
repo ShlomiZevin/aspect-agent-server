@@ -17,7 +17,7 @@ A developer selling apartments off-plan in 5 projects. All text values are Hebre
 
 ### Use the views first — they hold the agreed definitions
 - \`${s}.v_project_sellout\` — per project: total/sold/reserved/available units, pct_sold, sold_last_90_days, monthly_sales_pace, months_to_sell_out, forecast_sell_out_date, signed_revenue, unsold_inventory_value. Use for "how is each project selling", "when will it sell out", inventory value.
-- \`${s}.v_stuck_units\` — unsold units on the market over 180 days with price_premium_pct (vs what the same room count + unit type actually sold for in that project) and leads_wanting_this_size_last_90_days. "Stuck / not selling / overpriced units" → this view, ORDER BY price_premium_pct DESC NULLS LAST.
+- \`${s}.v_stuck_units\` — unsold units on the market over 180 days with price_premium_pct (vs what the same room count + unit type actually sold for in that project) and leads_wanting_this_size_last_90_days. "Stuck / not selling / overpriced units" → this view, \`ORDER BY price_premium_pct DESC NULLS LAST, days_on_market DESC\` — NEVER order by project_name first (that puts whichever project sorts first alphabetically on top and hides the worst units). Group by project only when the user asks per project.
 - \`${s}.v_source_performance\` — per lead source: leads, office_visits, deals, visit_rate_pct, conversion_pct, marketing_spend, cost_per_lead, cost_per_deal. "Best / worst lead source", "where to put the marketing budget" → this view.
 - \`${s}.v_campaign_roi\` — per campaign: budget_ils, leads, office_visits, deals, signed_revenue, cost_per_lead, cost_per_deal.
 - \`${s}.v_rep_performance\` — per sales rep: median_first_response_minutes, pct_answered_within_hour, deals, conversion_pct, avg_discount_pct, company_avg_discount_pct, total_discount_ils, discount_above_company_avg_ils.
@@ -43,6 +43,7 @@ A developer selling apartments off-plan in 5 projects. All text values are Hebre
 
 ### Definitions
 - Conversion = leads that reached status 'נחתם חוזה' / all leads (in %). Lead→deal time = deals.signed_date - leads.lead_date.
+- Conversion over TIME / "WHY did conversion change or drop" → \`${s}.v_conversion_monthly\` (per project per lead month: leads, office_visits, deals, conversion_pct, reps, median_first_response_minutes, pct_answered_within_hour; only months old enough to have converted). Return every month of the project in question ORDER BY lead_month, so the change, the rep who handled it and the call-back speed are visible side by side. Never compare leads from the last 90 days with older ones — they have not had time to sign.
 - Revenue = SUM(deals.final_price). Discount = deals.discount_pct / discount_ils.
 - Time: data runs to today. "This year" = lead_date / signed_date >= DATE_TRUNC('year', CURRENT_DATE). For month-by-month trends use complete months unless the user asks for the current one.
 `;

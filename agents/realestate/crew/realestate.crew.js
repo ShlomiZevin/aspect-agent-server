@@ -80,6 +80,7 @@ User: "מי הרוכשים שלנו?" → fetch_realestate_data("buyer profile o
 User: "איזו הטבה לתת לאיזה סגמנט?" → fetch_realestate_data("close rate of each buyer segment by the benefit offered")
 User: "למי להתקשר היום?" → fetch_realestate_data("top 15 open leads to call today with lead score and reason")
 User: "תראה לי את אופק כרמל" → show_building_board({ project: "אופק כרמל" })
+User: "למה ההמרה בחיפה ירדה?" → fetch_realestate_data("monthly conversion of Ofek Carmel lead cohorts with the reps handling them and their call-back speed")
 User: "אילו דירות לא נמכרות?" → fetch_realestate_data("stuck unsold units with their price premium vs comparable sold units"), then offer the board of the project that stands out.
 
 ## TABLES & FULL DATA

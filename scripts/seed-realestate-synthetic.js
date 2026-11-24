@@ -550,7 +550,24 @@ CREATE INDEX idx_re_deals_lead ON ${S}.deals(lead_id);
 // board all compute "sold", "stuck", "cost per deal" the same way.
 const VIEWS = `
 DROP VIEW IF EXISTS ${S}.v_units, ${S}.v_project_sellout, ${S}.v_stuck_units, ${S}.v_source_performance,
-  ${S}.v_campaign_roi, ${S}.v_rep_performance, ${S}.v_segment_benefit, ${S}.v_call_today, ${S}.v_deals CASCADE;
+  ${S}.v_campaign_roi, ${S}.v_rep_performance, ${S}.v_segment_benefit, ${S}.v_call_today, ${S}.v_deals,
+  ${S}.v_conversion_monthly CASCADE;
+
+-- Conversion per project per month of lead arrival, with who handled the leads
+-- and how fast they called back. Only cohorts at least 3 months old: younger
+-- leads have not had time to sign, and comparing them reads as a fake collapse.
+CREATE VIEW ${S}.v_conversion_monthly AS
+SELECT p.project_name, p.city, DATE_TRUNC('month', l.lead_date)::date AS lead_month,
+       COUNT(*) AS leads,
+       COUNT(*) FILTER (WHERE l.visit_date IS NOT NULL) AS office_visits,
+       COUNT(*) FILTER (WHERE l.status = 'נחתם חוזה') AS deals,
+       ROUND(100.0 * COUNT(*) FILTER (WHERE l.status = 'נחתם חוזה') / COUNT(*), 2) AS conversion_pct,
+       STRING_AGG(DISTINCT l.rep_name, ', ') AS reps,
+       ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY l.first_response_minutes)::numeric) AS median_first_response_minutes,
+       ROUND(100.0 * COUNT(*) FILTER (WHERE l.first_response_minutes <= 60) / COUNT(*), 1) AS pct_answered_within_hour
+  FROM ${S}.leads l JOIN ${S}.projects p USING (project_id)
+ WHERE l.lead_date < DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '2 months'
+ GROUP BY p.project_name, p.city, DATE_TRUNC('month', l.lead_date);
 
 -- Every unit with its project, price per sqm and days on the market.
 CREATE VIEW ${S}.v_units AS
