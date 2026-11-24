@@ -26,8 +26,8 @@ const PROJECT_ALIASES = {
   4: ['אופק הנגב', 'נגב', 'באר שבע', 'דרום', 'negev', 'beer sheva', "be'er sheva", 'south'],
   5: ['אופק העיר', 'העיר', 'ירושלים', 'ha-ir', 'hair', 'jerusalem'],
 };
-const STUCK_DAYS = 180;
-const CELL = { 'נמכרה': '🟥', 'שמורה': '🟨', 'פנויה': '🟩' };
+// Same colours as the live board page: green sold, yellow reserved, white free, orange stuck.
+const CELL = { 'נמכרה': '🟩', 'שמורה': '🟨', 'פנויה': '⬜' };
 
 function resolveProject(text) {
   const t = String(text || '').toLowerCase().trim();
@@ -58,8 +58,14 @@ You speak to the owner and the sales manager. They are not data people — they 
 - Projects: sales pace and the forecast sell-out date
 - Marketing: lead sources and campaigns — spend, cost per lead, cost per deal
 - Sales reps: speed of first call-back, conversion, discounts — and discounts above the company average in ₪
-- Benefits by segment: which benefit (20/80 financing, free kitchen, price cut, spec upgrade, extra parking) actually closes which buyer segment
+- Benefits by segment: which benefit (20/80 financing, no linkage to the construction-input index, free kitchen, price cut, spec upgrade, extra parking) actually closes which buyer segment
+- Deal terms: payment plan, mortgage, linkage to מדד תשומות הבנייה (full / 50% / none)
 - Who to call today: open leads ranked by a lead score with the reason
+- "Stuck" apartments: ONLY the ones the data marks stuck (over 180 days on the market AND priced 10%+ above comparable sold units) — never count all unsold units as stuck
+
+## HOW A DEVELOPER MOVES STOCK — shape every recommendation this way
+- Developers rarely cut the list price: it re-prices every unsold unit and angers buyers who already signed. Recommend, in this order: payment terms (20/80, no index linkage until delivery), a benefit that fits the segment (spec upgrade, kitchen, parking), a targeted campaign to the leads who want that size — and a price change only as a last resort, framed as "הטבה בשווי ₪X" on specific units.
+- Discount problems: recommend a discount ceiling with manager approval above it, and swapping discounts for the segment's best benefit.
 
 ## TOOLS
 1. \`fetch_realestate_data\` — pass ONE clean business question (Hebrew or English). It writes and runs the SQL.
@@ -76,7 +82,7 @@ You speak to the owner and the sales manager. They are not data people — they 
 ## EXAMPLES — pass a CLEAN business question (no table or column names)
 User: "כמה לידים עברו לרכישה?" → fetch_realestate_data("conversion from lead to signed contract overall and by project")
 User: "מאיפה מגיעים הלידים הכי טובים?" → fetch_realestate_data("lead sources ranked by conversion and cost per deal")
-User: "מי הרוכשים שלנו?" → fetch_realestate_data("buyer profile of signed deals: purchase purpose, age group, income decile, family status")
+User: "מי הרוכשים שלנו?" → fetch_realestate_data("share of signed deals by purchase purpose, with the average age, income decile and share of first-home buyers of each purpose") — ONE small table (a row per purpose), never a cross-tab of every combination
 User: "איזו הטבה לתת לאיזה סגמנט?" → fetch_realestate_data("close rate of each buyer segment by the benefit offered")
 User: "למי להתקשר היום?" → fetch_realestate_data("top 15 open leads to call today with lead score and reason")
 User: "תראה לי את אופק כרמל" → show_building_board({ project: "אופק כרמל" })
@@ -84,6 +90,7 @@ User: "למה ההמרה בחיפה ירדה?" → fetch_realestate_data("monthl
 User: "אילו דירות לא נמכרות?" → fetch_realestate_data("stuck unsold units with their price premium vs comparable sold units"), then offer the board of the project that stands out.
 
 ## TABLES & FULL DATA
+- Ask for SMALL tables: at most 5 columns and about 12 rows. The chat opens in a panel — a wide table gets cut. Profiles and segments: aggregate (share, average) per group, not one row per combination; leave out ids and phone numbers unless the user asks for a list of people.
 - The fetch result's \`summary\` already contains a FULLY FORMATTED markdown table — the COMPLETE result (20 rows or fewer) or a 20-row preview. When showing a table, paste it EXACTLY as given.
 - More than 20 rows: the user automatically gets a full paginated table with Excel export below your reply — say it is there.
 - ALWAYS pass a short \`table_title\` in the user's language.
@@ -206,16 +213,17 @@ User: "אילו דירות לא נמכרות?" → fetch_realestate_data("stuck 
       const [{ rows: [proj] }, { rows: units }] = await Promise.all([
         pool.query('SELECT project_name, city, floors, buildings FROM realestate.projects WHERE project_id = $1', [projectId]),
         pool.query(
-          `SELECT building, floor, position, unit_number, rooms, unit_type, status, list_price,
-                  CURRENT_DATE - listed_date AS days_on_market
-             FROM realestate.units
-            WHERE project_id = $1
-            ORDER BY building, floor DESC, position`,
+          // stuck = in v_stuck_units, the one definition the brief, board page and reports use.
+          `SELECT u.building, u.floor, u.position, u.unit_number, u.rooms, u.unit_type, u.status, u.list_price,
+                  CURRENT_DATE - u.listed_date AS days_on_market, s.unit_id IS NOT NULL AS stuck
+             FROM realestate.units u LEFT JOIN realestate.v_stuck_units s USING (unit_id)
+            WHERE u.project_id = $1
+            ORDER BY u.building, u.floor DESC, u.position`,
           [projectId]
         ),
       ]);
 
-      const isStuck = (u) => u.status === 'פנויה' && u.days_on_market > STUCK_DAYS;
+      const isStuck = (u) => u.stuck;
       const cell = (u) => (u ? `${isStuck(u) ? '🟧' : CELL[u.status]} ${u.rooms}` : '·');
       const sections = [];
       const totals = { 'נמכרה': 0, 'שמורה': 0, 'פנויה': 0, stuck: 0 };
@@ -230,7 +238,7 @@ User: "אילו דירות לא נמכרות?" → fetch_realestate_data("stuck 
         for (const u of inB) { totals[u.status]++; if (isStuck(u)) totals.stuck++; }
         sections.push(lines.join('\n'));
       }
-      const legend = `🟥 נמכרה · 🟨 שמורה · 🟩 פנויה · 🟧 פנויה מעל ${STUCK_DAYS} יום — המספר בכל תא = מספר החדרים`;
+      const legend = '🟩 נמכרה · 🟨 שמורה · ⬜ פנויה · 🟧 תקועה (מעל 180 יום ומעל 10% ממחיר עסקאות דומות) — המספר בכל תא = מספר החדרים';
       const board_markdown = `### לוח דירות — ${proj.project_name}, ${proj.city}\n\n${sections.join('\n\n')}\n\n${legend}`;
 
       // What the board shows, as facts the talker can read out.
@@ -249,10 +257,10 @@ User: "אילו דירות לא נמכרות?" → fetch_realestate_data("stuck 
         sold: totals['נמכרה'],
         reserved: totals['שמורה'],
         free: totals['פנויה'],
-        free_over_180_days: totals.stuck,
-        free_over_180_days_by_kind: stuckByKind,
+        stuck: totals.stuck,
+        stuck_by_kind: stuckByKind,
         unsold_list_value_ils: units.filter(u => u.status !== 'נמכרה').reduce((a, u) => a + Number(u.list_price), 0),
-        instruction: 'Paste board_markdown verbatim, then 2-3 sentences on what stands out (e.g. a column or unit kind that stays green/orange) and one recommendation.',
+        instruction: 'Paste board_markdown verbatim, then 2-3 sentences on what stands out (e.g. a column or unit kind that stays white/orange) and one recommendation.',
       };
     } catch (err) {
       console.error('Building board failed:', err);

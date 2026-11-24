@@ -79,6 +79,14 @@ const PROJECTS = [
   { project_id: 5, project_name: 'אופק העיר', city: 'ירושלים', region: 'ירושלים', start: '2025-09-07', delivery: '2028-03-31', buildings: 2, floors: 10, sqmPrice: 30500, leadsPerDay: 2.4, nearby: ['ירושלים', 'מבשרת ציון', 'בית שמש', 'מודיעין', 'גבעת זאב'] },
 ];
 for (const p of PROJECTS) p.startDate = new Date(`${p.start}T12:00:00`);
+// Units go on sale in release waves, not all on launch day: each building a few
+// months after the previous one, its upper floors (from the middle up) one more
+// price list later. So "days on the market" differs between buildings and floors.
+const BUILDING_GAP_DAYS = { 1: 95, 2: 120, 3: 85, 4: 70, 5: 110 };
+function releaseDate(p, building, floor) {
+  const days = (building - 1) * BUILDING_GAP_DAYS[p.project_id] + (floor > p.floors / 2 ? 55 : 0);
+  return iso(addDays(p.startDate, days));
+}
 // Price list rises 0.4% a month after launch — the developer's normal escalation.
 const escalation = (p, date) => 1 + 0.004 * Math.max(0, daysBetween(p.startDate, date) / 30.4);
 
@@ -129,7 +137,7 @@ for (const p of PROJECTS) {
           base_price: (sqm + s.outdoor * 0.3) * p.sqmPrice * factor,
           overpriced,
           status: 'פנויה',
-          listed_date: p.start,
+          listed_date: releaseDate(p, b, floor),
           sold_date: null,
         });
       }
@@ -139,10 +147,14 @@ for (const p of PROJECTS) {
 
 // ── Sales reps ──────────────────────────────────────────────────────────────
 // responseMedian = minutes to the first call back. discountMean = % off list.
+// driftFrom/driftMean: from that date the rep's discounts creep up to driftMean —
+// Ronen's quarter-end "closing at any price" since May 2026, the leakage finding
+// (recent enough that nobody has caught it yet).
 const REPS = [
-  { rep_id: 1, rep_name: 'רונן לוי', projects: [1, 2], from: '2025-01-01', to: null, responseMedian: 35, discountMean: 6.8 },
+  { rep_id: 1, rep_name: 'רונן לוי', projects: [1], from: '2025-01-01', to: null, responseMedian: 35, discountMean: 2.6, driftFrom: '2026-05-01', driftMean: 6.9 },
   { rep_id: 2, rep_name: 'שירן כהן', projects: [1], from: '2025-01-01', to: null, responseMedian: 25, discountMean: 2.4 },
   { rep_id: 3, rep_name: 'יעל מזרחי', projects: [2], from: '2025-04-01', to: null, responseMedian: 70, discountMean: 2.7 },
+  { rep_id: 9, rep_name: 'עומר שושן', projects: [2], from: '2025-04-01', to: null, responseMedian: 40, discountMean: 2.3 },
   { rep_id: 4, rep_name: 'מיכל אברהם', projects: [3], from: '2025-02-01', to: '2026-04-30', responseMedian: 30, discountMean: 2.6 },
   { rep_id: 5, rep_name: 'אלון ברק', projects: [3], from: '2026-05-01', to: null, responseMedian: 1350, discountMean: 2.9 },
   { rep_id: 6, rep_name: 'דניאל פרץ', projects: [4], from: '2026-02-15', to: null, responseMedian: 45, discountMean: 2.2 },
@@ -216,15 +228,18 @@ function purposeFor(p, date) {
 // Multiplier on the chance a contacted lead comes to the sales office.
 const SOURCE_VISIT = { 'פייסבוק': 0.42, 'אינסטגרם': 0.33, 'גוגל': 0.95, 'יד2': 0.85, 'מדלן': 0.9, 'יריד נדל"ן': 2.4, 'ערב השקה': 2.7, 'המלצת חבר': 3.0, 'שלט באתר הבנייה': 1.8, 'אתר החברה': 1.25, 'מתווך': 2.0 };
 const SOURCE_BASE = { 'פייסבוק': 0.12, 'אינסטגרם': 0.05, 'גוגל': 0.15, 'יד2': 0.10, 'מדלן': 0.07, 'שלט באתר הבנייה': 0.09, 'אתר החברה': 0.10, 'המלצת חבר': 0.07, 'מתווך': 0.05 };
-const BENEFITS = ['מימון 20/80', 'מטבח מתנה', 'הנחה במחיר', 'שדרוג מפרט', 'חניה נוספת'];
+// "ללא הצמדה למדד" = the price is not linked to the construction-input index
+// (מדד תשומות הבנייה) until delivery — the developer absorbs the index rise.
+const BENEFITS = ['מימון 20/80', 'ללא הצמדה למדד', 'מטבח מתנה', 'הנחה במחיר', 'שדרוג מפרט', 'חניה נוספת'];
 // How much each benefit raises the close rate of each segment (1 = no effect).
 const BENEFIT_MATCH = {
-  'דירה ראשונה': { 'מימון 20/80': 2.3, 'מטבח מתנה': 1.0, 'הנחה במחיר': 1.1, 'שדרוג מפרט': 0.85, 'חניה נוספת': 0.7 },
-  'משפרי דיור': { 'מימון 20/80': 0.9, 'מטבח מתנה': 1.6, 'הנחה במחיר': 1.0, 'שדרוג מפרט': 1.8, 'חניה נוספת': 1.2 },
-  'השקעה': { 'מימון 20/80': 1.2, 'מטבח מתנה': 0.6, 'הנחה במחיר': 2.1, 'שדרוג מפרט': 0.6, 'חניה נוספת': 0.8 },
-  'עבור הילדים': { 'מימון 20/80': 0.8, 'מטבח מתנה': 1.1, 'הנחה במחיר': 1.0, 'שדרוג מפרט': 1.3, 'חניה נוספת': 2.0 },
+  'דירה ראשונה': { 'מימון 20/80': 2.3, 'ללא הצמדה למדד': 1.6, 'מטבח מתנה': 1.0, 'הנחה במחיר': 1.1, 'שדרוג מפרט': 0.85, 'חניה נוספת': 0.7 },
+  'משפרי דיור': { 'מימון 20/80': 0.9, 'ללא הצמדה למדד': 1.2, 'מטבח מתנה': 1.6, 'הנחה במחיר': 1.0, 'שדרוג מפרט': 1.8, 'חניה נוספת': 1.2 },
+  'השקעה': { 'מימון 20/80': 1.2, 'ללא הצמדה למדד': 1.9, 'מטבח מתנה': 0.6, 'הנחה במחיר': 2.1, 'שדרוג מפרט': 0.6, 'חניה נוספת': 0.8 },
+  'עבור הילדים': { 'מימון 20/80': 0.8, 'ללא הצמדה למדד': 1.1, 'מטבח מתנה': 1.1, 'הנחה במחיר': 1.0, 'שדרוג מפרט': 1.3, 'חניה נוספת': 2.0 },
 };
-const BENEFIT_COST = { 'מימון 20/80': (price) => price * 0.03, 'מטבח מתנה': () => 45000, 'הנחה במחיר': (price) => price * 0.02, 'שדרוג מפרט': () => 60000, 'חניה נוספת': () => 140000 };
+// What the benefit costs the developer. No indexation ≈ the index rise until delivery (~2.5%).
+const BENEFIT_COST = { 'מימון 20/80': (price) => price * 0.03, 'ללא הצמדה למדד': (price) => price * 0.025, 'מטבח מתנה': () => 45000, 'הנחה במחיר': (price) => price * 0.02, 'שדרוג מפרט': () => 60000, 'חניה נוספת': () => 140000 };
 const PROJECT_CLOSE = { 1: 0.9, 2: 1.05, 3: 1.0, 4: 0.95, 5: 0.8 };
 const LOST = {
   'חדש': ['לא ענה'],
@@ -359,7 +374,7 @@ const DEALS = [];
 SIGNINGS.sort((a, b) => a.date - b.date);
 for (const s of SIGNINGS) {
   const { lead, date, rep } = s;
-  const free = UNITS.filter(u => u.project_id === lead.project_id && u.status === 'פנויה');
+  const free = UNITS.filter(u => u.project_id === lead.project_id && u.status === 'פנויה' && u.listed_date <= iso(date));
   let options = free.filter(u => u.rooms === Number(lead.rooms_wanted));
   if (!options.length) options = free.filter(u => Math.abs(u.rooms - lead.rooms_wanted) === 1);
   if (!options.length) { lead.status = 'אבוד'; lead.lost_reason = 'לא מצא דירה מתאימה'; continue; }
@@ -376,7 +391,8 @@ for (const s of SIGNINGS) {
 
   const project = PROJECTS.find(p => p.project_id === lead.project_id);
   const listPrice = Math.round(unit.base_price * escalation(project, date) / 1000) * 1000;
-  const discountPct = Math.max(0, Math.min(12, rep.discountMean + (rand() * 2 - 1) * 1.6 + (lead.offered_benefit === 'הנחה במחיר' ? 2 : 0)));
+  const repMean = rep.driftFrom && iso(date) >= rep.driftFrom ? rep.driftMean : rep.discountMean;
+  const discountPct = Math.max(0, Math.min(12, repMean + (rand() * 2 - 1) * 1.6 + (lead.offered_benefit === 'הנחה במחיר' ? 2 : 0)));
   const finalPrice = Math.round(listPrice * (1 - discountPct / 100) / 1000) * 1000;
   unit.status = 'נמכרה';
   unit.sold_date = iso(date);
@@ -389,6 +405,8 @@ for (const s of SIGNINGS) {
     benefit: lead.offered_benefit, benefit_cost_ils: Math.round(BENEFIT_COST[lead.offered_benefit](listPrice)),
     payment_plan: lead.offered_benefit === 'מימון 20/80' ? '20/80' : chance(0.8) ? 'לפי התקדמות הבנייה' : '10/90',
     with_mortgage: chance(lead.purchase_purpose === 'השקעה' ? 0.5 : 0.75),
+    // Linkage to the construction-input index until delivery: full by default.
+    index_linkage: lead.offered_benefit === 'ללא הצמדה למדד' ? 'ללא הצמדה' : chance(0.18) ? 'הצמדה חלקית (50%)' : 'הצמדה מלאה',
   });
 }
 
@@ -535,7 +553,8 @@ CREATE TABLE ${S}.deals (
   benefit          TEXT,
   benefit_cost_ils NUMERIC(12,0) NOT NULL,
   payment_plan     TEXT NOT NULL,
-  with_mortgage    BOOLEAN NOT NULL
+  with_mortgage    BOOLEAN NOT NULL,
+  index_linkage    TEXT NOT NULL
 );
 
 CREATE INDEX idx_re_leads_project_date ON ${S}.leads(project_id, lead_date);
@@ -551,7 +570,7 @@ CREATE INDEX idx_re_deals_lead ON ${S}.deals(lead_id);
 const VIEWS = `
 DROP VIEW IF EXISTS ${S}.v_units, ${S}.v_project_sellout, ${S}.v_stuck_units, ${S}.v_source_performance,
   ${S}.v_campaign_roi, ${S}.v_rep_performance, ${S}.v_segment_benefit, ${S}.v_call_today, ${S}.v_deals,
-  ${S}.v_conversion_monthly CASCADE;
+  ${S}.v_conversion_monthly, ${S}.v_rep_discount_monthly CASCADE;
 
 -- Conversion per project per month of lead arrival, with who handled the leads
 -- and how fast they called back. Only cohorts at least 3 months old: younger
@@ -581,7 +600,7 @@ SELECT u.unit_id, u.project_id, p.project_name, p.city, p.region, u.building, u.
 CREATE VIEW ${S}.v_deals AS
 SELECT d.deal_id, d.signed_date, p.project_name, p.city, u.building, u.floor, u.unit_number, u.rooms, u.unit_type, u.sqm, u.direction,
        d.rep_name, d.list_price, d.discount_pct, d.discount_ils, d.final_price, ROUND(d.final_price / u.sqm) AS final_price_per_sqm,
-       d.benefit, d.benefit_cost_ils, d.payment_plan, d.with_mortgage,
+       d.benefit, d.benefit_cost_ils, d.payment_plan, d.with_mortgage, d.index_linkage,
        l.lead_id, l.full_name AS buyer_name, l.source, l.purchase_purpose, l.age, l.gender, l.profession, l.income_decile,
        l.family_status, l.children, l.city_of_residence, l.owned_apartments, l.lead_date, d.signed_date - l.lead_date AS days_lead_to_deal
   FROM ${S}.deals d
@@ -611,9 +630,10 @@ SELECT p.project_id, p.project_name, p.city, p.region, p.marketing_start, p.expe
        COALESCE(r.signed_revenue, 0) AS signed_revenue, s.unsold_inventory_value
   FROM ${S}.projects p JOIN s USING (project_id) LEFT JOIN r USING (project_id);
 
--- Unsold units on the market over 180 days, priced against what the same kind of
--- unit (room count + type: a garden unit's price includes its garden) actually
--- sold for in the project.
+-- THE definition of a "stuck" apartment, used by the brief, the board, the
+-- reports and the chat alike: unsold, on the market over 180 days AND priced at
+-- least 10% above what the same kind of unit (room count + type: a garden unit's
+-- price includes its garden) actually sold for in the project.
 CREATE VIEW ${S}.v_stuck_units AS
 WITH sold AS (
   SELECT u.project_id, u.rooms, u.unit_type, AVG(d.final_price / u.sqm) AS sold_price_per_sqm, COUNT(*) AS sold_count
@@ -630,7 +650,7 @@ SELECT v.unit_id, v.project_name, v.city, v.building, v.floor, v.unit_number, v.
   FROM ${S}.v_units v
   LEFT JOIN sold s ON s.project_id = v.project_id AND s.rooms = v.rooms AND s.unit_type = v.unit_type
   LEFT JOIN demand dm ON dm.project_id = v.project_id AND dm.rooms = v.rooms
- WHERE v.status = 'פנויה' AND v.days_on_market > 180;
+ WHERE v.status = 'פנויה' AND v.days_on_market > 180 AND v.price_per_sqm >= 1.10 * s.sold_price_per_sqm;
 
 -- Lead source economics: volume, funnel, deals, spend and cost per deal.
 CREATE VIEW ${S}.v_source_performance AS
@@ -688,6 +708,19 @@ SELECT l.rep_name, l.leads, l.median_first_response_minutes, l.pct_answered_with
        COALESCE(d.total_discount_ils, 0) AS total_discount_ils, COALESCE(d.discount_above_company_avg_ils, 0) AS discount_above_company_avg_ils
   FROM l LEFT JOIN d USING (rep_name);
 
+-- Per rep per month of signing: deals and average discount — shows WHEN a rep's
+-- discounts started to drift, against the company average of the same month.
+CREATE VIEW ${S}.v_rep_discount_monthly AS
+WITH m AS (
+  SELECT DATE_TRUNC('month', signed_date)::date AS signed_month, AVG(discount_pct) AS company_avg_discount_pct
+    FROM ${S}.deals GROUP BY 1
+)
+SELECT d.rep_name, DATE_TRUNC('month', d.signed_date)::date AS signed_month, COUNT(*) AS deals,
+       ROUND(AVG(d.discount_pct), 2) AS avg_discount_pct, ROUND(m.company_avg_discount_pct, 2) AS company_avg_discount_pct,
+       SUM(d.discount_ils) AS total_discount_ils
+  FROM ${S}.deals d JOIN m ON m.signed_month = DATE_TRUNC('month', d.signed_date)::date
+ GROUP BY d.rep_name, DATE_TRUNC('month', d.signed_date), m.company_avg_discount_pct;
+
 -- Close rate of each buyer segment by the benefit it was offered (decided negotiations only).
 CREATE VIEW ${S}.v_segment_benefit AS
 SELECT purchase_purpose, offered_benefit,
@@ -708,8 +741,9 @@ WITH last AS (
     FROM ${S}.units WHERE status = 'פנויה' GROUP BY 1, 2
 ), base AS (
   SELECT l.lead_id, l.full_name, l.phone_masked AS phone, p.project_name, l.status, l.purchase_purpose, l.rooms_wanted, l.budget,
-         l.mortgage_preapproved, l.source, l.rep_name, l.visit_date, l.offered_benefit,
+         l.mortgage_preapproved, l.source, l.rep_name, l.lead_date, l.visit_date, l.negotiation_date, l.offered_benefit,
          CURRENT_DATE - last.last_contact_ts::date AS days_without_contact,
+         CURRENT_DATE - COALESCE(l.negotiation_date, l.visit_date, l.lead_date) AS days_since_last_step,
          a.cheapest_free_price, COALESCE(a.free_units, 0) AS free_units_of_wanted_size,
          (a.cheapest_free_price IS NOT NULL AND a.cheapest_free_price <= l.budget * 1.05) AS budget_fits
     FROM ${S}.leads l
@@ -718,18 +752,28 @@ WITH last AS (
     LEFT JOIN avail a ON a.project_id = l.project_id AND a.rooms = l.rooms_wanted
    WHERE l.status IN ('בטיפול', 'ביקר במשרד', 'משא ומתן')
 )
+-- lead_score 0-99: how far along, can they pay, is there a unit for them, how
+-- fresh the last step is, and how long they have been left alone (a few days of
+-- silence makes a call urgent; a month means the lead is going cold).
 SELECT b.*,
-       LEAST(100, (CASE b.status WHEN 'משא ומתן' THEN 40 WHEN 'ביקר במשרד' THEN 25 ELSE 8 END)
-         + (CASE WHEN b.mortgage_preapproved THEN 20 ELSE 0 END)
-         + (CASE WHEN b.budget_fits THEN 20 ELSE 0 END)
-         + (CASE WHEN b.source IN ('המלצת חבר', 'יריד נדל"ן', 'ערב השקה') THEN 10 ELSE 0 END)
-         + LEAST(10, b.days_without_contact)) AS lead_score,
+       GREATEST(0, LEAST(99, (CASE b.status WHEN 'משא ומתן' THEN 42 WHEN 'ביקר במשרד' THEN 26 ELSE 8 END)
+         + (CASE WHEN b.mortgage_preapproved THEN 14 ELSE 0 END)
+         + (CASE WHEN b.budget_fits THEN 12 WHEN b.free_units_of_wanted_size > 0 THEN 4 ELSE 0 END)
+         + (CASE WHEN b.source IN ('המלצת חבר', 'יריד נדל"ן', 'ערב השקה', 'מתווך') THEN 6 ELSE 0 END)
+         + (CASE WHEN b.days_since_last_step <= 21 THEN 12 WHEN b.days_since_last_step <= 45 THEN 6 ELSE 0 END)
+         + LEAST(9, b.days_without_contact)
+         - GREATEST(0, b.days_without_contact - 30) / 3)) AS lead_score,
        CONCAT_WS(' · ',
-         CASE b.status WHEN 'משא ומתן' THEN 'בשלב משא ומתן' WHEN 'ביקר במשרד' THEN 'ביקר במשרד המכירות' ELSE 'בטיפול' END,
-         CASE WHEN b.mortgage_preapproved THEN 'משכנתא מאושרת' END,
-         CASE WHEN b.budget_fits THEN 'יש דירת ' || b.rooms_wanted || ' חד׳ פנויה שמתאימה לתקציב' END,
-         CASE WHEN b.source IN ('המלצת חבר', 'יריד נדל"ן', 'ערב השקה') THEN 'הגיע מ' || b.source END,
-         'אין קשר כבר ' || b.days_without_contact || ' ימים') AS reason
+         CASE b.status
+           WHEN 'משא ומתן' THEN 'הצעת מחיר' || COALESCE(' עם ' || b.offered_benefit, '') || ' נשלחה לפני ' || (CURRENT_DATE - b.negotiation_date) || ' ימים'
+           WHEN 'ביקר במשרד' THEN 'ביקור במשרד המכירות לפני ' || (CURRENT_DATE - b.visit_date) || ' ימים'
+           ELSE 'פנייה ראשונה לפני ' || (CURRENT_DATE - b.lead_date) || ' ימים' END,
+         CASE WHEN b.mortgage_preapproved THEN 'משכנתא מאושרת' WHEN b.status = 'משא ומתן' THEN 'עדיין בלי אישור משכנתא' END,
+         CASE WHEN b.budget_fits THEN 'יש דירת ' || b.rooms_wanted || ' חד׳ פנויה בתקציב'
+              WHEN b.free_units_of_wanted_size > 0 THEN 'הדירות הפנויות מעט מעל התקציב — מתאים להטבה'
+              ELSE 'אין כרגע דירת ' || b.rooms_wanted || ' חד׳ פנויה — להציע חלופה' END,
+         CASE WHEN b.source IN ('המלצת חבר', 'יריד נדל"ן', 'ערב השקה', 'מתווך') THEN 'מקור: ' || b.source END,
+         'בלי קשר ' || b.days_without_contact || ' ימים') AS reason
   FROM base b
  WHERE b.days_without_contact >= 3;
 `;
@@ -806,7 +850,7 @@ async function main() {
   await insertAll(pool, 'campaigns', ['campaign_id', 'project_id', 'source', 'campaign_name', 'start_date', 'end_date', 'budget_ils'], CAMPAIGNS);
   await insertAll(pool, 'leads', ['lead_id', 'lead_date', 'lead_ts', 'project_id', 'source', 'campaign_id', 'first_name', 'last_name', 'full_name', 'phone_masked', 'gender', 'age', 'family_status', 'children', 'profession', 'income_decile', 'city_of_residence', 'purchase_purpose', 'owned_apartments', 'rooms_wanted', 'budget', 'mortgage_preapproved', 'rep_name', 'first_response_minutes', 'status', 'lost_reason', 'visit_date', 'negotiation_date', 'offered_benefit'], LEADS, 500);
   await insertAll(pool, 'activities', ['lead_id', 'activity_ts', 'activity_type', 'rep_name', 'outcome'], ACTIVITIES, 2000);
-  await insertAll(pool, 'deals', ['deal_id', 'lead_id', 'unit_id', 'project_id', 'signed_date', 'rep_name', 'list_price', 'discount_pct', 'discount_ils', 'final_price', 'benefit', 'benefit_cost_ils', 'payment_plan', 'with_mortgage'], DEALS);
+  await insertAll(pool, 'deals', ['deal_id', 'lead_id', 'unit_id', 'project_id', 'signed_date', 'rep_name', 'list_price', 'discount_pct', 'discount_ils', 'final_price', 'benefit', 'benefit_cost_ils', 'payment_plan', 'with_mortgage', 'index_linkage'], DEALS);
   await pool.query(VIEWS);
   await pool.query(`ANALYZE ${S}.leads; ANALYZE ${S}.activities; ANALYZE ${S}.units; ANALYZE ${S}.deals; ANALYZE ${S}.campaigns;`);
   await refreshDescription();

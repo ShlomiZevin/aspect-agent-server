@@ -117,6 +117,13 @@ const HE_WORD_MAP = {
   direction: 'כיוון', premium: 'פרמיה', purpose: 'מטרת', purchase: 'רכישה', benefit: 'הטבה',
   negotiations: 'משא ומתן', age: 'גיל', gender: 'מגדר', profession: 'מקצוע', income: 'הכנסה', decile: 'עשירון',
   pace: 'קצב', forecast: 'תחזית', months: 'חודשים', available: 'פנויות', reserved: 'שמורות',
+  // Words the generator uses in its own aliases ("rank_within_segment", "pct_of_all_deals").
+  rank: 'דירוג', within: 'בתוך', segment: 'סגמנט', segments: 'סגמנטים', all: 'כל', of: 'מתוך', share: 'נתח',
+  children: 'ילדים', grandchildren: 'נכדים', band: 'טווח', group: 'קבוצה', index: 'מדד', linkage: 'הצמדה', linked: 'צמוד',
+  median: 'חציון', response: 'תגובה', minutes: 'דקות', hours: 'שעות', home: 'דירה', homes: 'דירות', investors: 'משקיעים',
+  upgraders: 'משפרי דיור', plan: 'תנאי', terms: 'תנאים', apartments: 'דירות', apartment: 'דירה', unsold: 'לא נמכרו',
+  stuck: 'תקועות', demand: 'ביקוש', supply: 'היצע', free: 'פנויות', close: 'סגירה', closed: 'נסגרו', top: 'מובילים',
+  best: 'הכי טוב', worst: 'הכי חלש', owned: 'בבעלות', by: 'לפי',
 };
 
 // Whole-column Hebrew headers, checked before the word-by-word fallback, for
@@ -164,6 +171,10 @@ const HE_COLUMN_LABELS = {
   unit_id: 'מזהה דירה', unit_number: 'מספר דירה', unit_type: 'סוג דירה',
   unsold_inventory_value: 'שווי מלאי לא מכור', view: 'נוף', visit_date: 'תאריך ביקור',
   visit_rate_pct: 'שיעור ביקור %', with_mortgage: 'עם משכנתא',
+  index_linkage: 'הצמדה למדד', signed_month: 'חודש חתימה', days_since_last_step: 'ימים מהצעד האחרון',
+  pct_of_all_deals: '% מכל העסקאות', pct_of_deals: '% מהעסקאות', pct_of_leads: '% מהלידים', share_pct: 'נתח %',
+  rank_within_segment: 'דירוג בסגמנט', age_group: 'קבוצת גיל', age_band: 'קבוצת גיל', decile_band: 'טווח עשירון',
+  avg_age: 'גיל ממוצע', avg_income_decile: 'עשירון ממוצע', first_home_pct: '% דירה ראשונה', children_deals: 'עסקאות עבור הילדים',
 };
 
 // Hebrew construct-state phrases usually put the "head" noun FIRST (e.g.
