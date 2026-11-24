@@ -222,6 +222,10 @@ app.use('/api/modules', require('./modules/routes/modules.routes'));
 // client from the admin Modules tab). See docs/features/otto.md.
 app.use('/api/otto', require('./otto/routes/otto.routes'));
 
+// The real-estate demo's two designed screens (live sales board, AI advisor
+// brief) — read-only, from the seeded `realestate` views. See agents/realestate/routes.js.
+app.use('/api/realestate', require('./agents/realestate/routes'));
+
 // The Aspect DEMO's financial statements as structure, for the Apps screens
 // that draw them like a company report (task #112). Read-only, and hardcoded
 // to the demo's own schema — no other client can reach it.
