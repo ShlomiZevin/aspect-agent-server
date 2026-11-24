@@ -42,7 +42,7 @@ class RealEstateCrew extends CrewMember {
   constructor() {
     super({
       name: 'realestate',
-      displayName: 'Ofek Development',
+      displayName: 'אופק יזמות', // shown above every reply and in the thinking steps of a Hebrew UI
       description: 'Sales and marketing intelligence for Ofek Development — leads, buyers, apartments, campaigns, sales reps',
       isDefault: true,
 
