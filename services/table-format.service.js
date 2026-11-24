@@ -108,13 +108,22 @@ const HE_WORD_MAP = {
   company: 'חברה', order: 'הזמנה', orders: 'הזמנות', branches: 'סניפים',
   category: 'קטגוריה', supplier_name: 'שם ספק',
   status: 'סטטוס', method: 'שיטה', channel: 'ערוץ', hour: 'שעה', minute: 'דקה',
+  // Real-estate vocabulary (the developer demo, schema realestate).
+  lead: 'ליד', leads: 'לידים', project: 'פרויקט', rep: 'נציג', score: 'ציון', reason: 'סיבה',
+  deal: 'עסקה', deals: 'עסקאות', budget: 'תקציב', rooms: 'חדרים', phone: 'טלפון', full: 'מלא',
+  buyer: 'רוכש', buyers: 'רוכשים', source: 'מקור', conversion: 'המרה', visit: 'ביקור', visits: 'ביקורים',
+  office: 'במשרד', rate: 'שיעור', days: 'ימים', without: 'ללא', contact: 'קשר', spend: 'הוצאה',
+  marketing: 'שיווק', signed: 'שנחתמו', per: 'לכל', sqm: 'מ"ר', pct: '%', floor: 'קומה', building: 'בניין',
+  direction: 'כיוון', premium: 'פרמיה', purpose: 'מטרת', purchase: 'רכישה', benefit: 'הטבה',
+  negotiations: 'משא ומתן', age: 'גיל', gender: 'מגדר', profession: 'מקצוע', income: 'הכנסה', decile: 'עשירון',
+  pace: 'קצב', forecast: 'תחזית', months: 'חודשים', available: 'פנויות', reserved: 'שמורות',
 };
 
 // Hebrew construct-state phrases usually put the "head" noun FIRST (e.g.
 // "קוד מחסן" — code of-warehouse — not "מחסן קוד"), the reverse of English
 // ("warehouse code"). When the last English token is one of these common
 // head nouns, its Hebrew translation is moved to the front of the label.
-const HE_HEAD_NOUNS = new Set(['code', 'name', 'description', 'number', 'count', 'id', 'price', 'value', 'balance', 'type', 'date', 'lines', 'units', 'items']);
+const HE_HEAD_NOUNS = new Set(['code', 'name', 'description', 'number', 'count', 'id', 'price', 'value', 'balance', 'type', 'date', 'lines', 'units', 'items', 'score', 'rate']);
 
 function isHebrewText(str) {
   return HEBREW_RE.test(String(str || ''));

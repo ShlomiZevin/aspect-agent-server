@@ -21,6 +21,7 @@ const zolstock = require('../../services/db.zolstock');
 const tevanaot = require('../../services/db.tevanaot');
 const superhist = require('../../services/db.superhist');
 const aspect = require('../../services/db.aspect');
+const realestate = require('../../services/db.realestate');
 
 // Exported so migration 056 writes the exact same text into the stored
 // admin override (intel_config_superhist), which otherwise wins over this.
@@ -281,6 +282,53 @@ const REGISTRY = {
           'כיצד מתפתח הרווח התפעולי חודש אחר חודש לעומת אשתקד',
           'אילו סניפים מובילים ואילו מפגרים ברווחיות מתחילת השנה',
           'כיצד השתנו המזומנים, המלאי והחוב לספקים במאזן לעומת אשתקד',
+        ],
+      },
+    },
+  },
+  realestate: {
+    id: 'realestate',
+    schemaName: 'realestate',
+    getPool: realestate.getPool,
+    defaultMeta: {
+      name: 'Ofek Development',
+      description: 'AI-powered sales intelligence for Ofek Development, a residential developer — leads, buyers, apartments, campaigns.',
+      logoText: 'OD',
+      gradientFrom: '#1F3A5F',
+      gradientTo: '#C8A165',
+    },
+    defaultBrandLabel: 'Ofek Development, a residential real-estate developer selling apartments off-plan',
+    // Synthetic demo data — see scripts/seed-realestate-synthetic.js and
+    // services/schema-rules/realestate.rules.js (which routes to the views).
+    defaultDataModelDescription: 'a residential developer selling apartments off-plan in 5 projects (אופק פארק ראשון לציון, אופק ים נתניה, אופק כרמל חיפה, אופק הנגב באר שבע, אופק העיר ירושלים). leads = one row per inquiry with source, campaign, buyer demographics (age, gender, profession, income decile, family), purchase_purpose (first home / upgraders / investment / for the children), rooms wanted, budget, sales rep, first-response minutes and funnel status (new → in progress → office visit → negotiation → signed / lost). deals = signed contracts (list price, discount, final price, benefit given). units = every apartment (building, floor, rooms, type, direction, price, status sold/reserved/free). campaigns = marketing spend per source. activities = calls, WhatsApp and visits per lead. Ready views hold the agreed definitions: v_project_sellout (pace + sell-out forecast), v_stuck_units (over-180-day units with price premium), v_source_performance and v_campaign_roi (cost per deal), v_rep_performance (response time, discounts above company average), v_segment_benefit (close rate per segment x benefit), v_call_today (open leads with a lead score), v_deals (deals with buyer profile). Money = deals.final_price in ₪. Conversion = signed leads / all leads.',
+    defaultBootstrapPrompts: [
+      'Which lead sources bring buyers at the lowest cost per deal, and where is marketing money wasted',
+      'Which apartments are stuck unsold, and is their price the reason',
+      'How does the speed of the first call-back affect conversion, and which reps are slow',
+      'Which benefit closes each buyer segment best',
+      'Which sales reps give discounts well above the company average, and what does it cost',
+    ],
+    defaultExamplePrompts: [
+      'Who should we call today',
+      'When will each project sell out at the current pace',
+      'Who are our buyers',
+    ],
+    // Shown to an Israeli developer in Hebrew; reports are generated in Hebrew.
+    reportLang: 'he',
+    i18n: {
+      he: {
+        name: 'אופק יזמות',
+        examplePrompts: [
+          'למי כדאי להתקשר היום',
+          'מתי כל פרויקט יימכר עד הסוף בקצב הנוכחי',
+          'מי הרוכשים שלנו — גיל, מקצוע, עשירון ומטרת הרכישה',
+        ],
+        bootstrapPrompts: [
+          'אילו מקורות לידים מביאים רוכשים בעלות הנמוכה ביותר לעסקה, ואיפה כסף השיווק מתבזבז',
+          'אילו דירות תקועות ולא נמכרות, והאם המחיר הוא הסיבה',
+          'איך מהירות החזרה הראשונה לליד משפיעה על ההמרה, ואילו אנשי מכירות איטיים',
+          'איזו הטבה סוגרת הכי טוב כל סגמנט של רוכשים',
+          'אילו אנשי מכירות נותנים הנחות גבוהות בהרבה מהממוצע בחברה, וכמה זה עולה',
         ],
       },
     },

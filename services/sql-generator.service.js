@@ -938,6 +938,12 @@ ORDER BY avg_order_value DESC
       return require('./schema-rules/aspect.rules').aspectRules(schemaName);
     }
 
+    // The real-estate developer demo: route every question to the views that
+    // hold the agreed definitions. See services/schema-rules/realestate.rules.js.
+    if (schemaName === 'realestate') {
+      return require('./schema-rules/realestate.rules').realestateRules(schemaName);
+    }
+
     if (schemaName === 'tevanaot') {
       return `
 ## tevanaot-Specific Rules (Teva Naot — footwear retail — CRITICAL, follow exactly)

@@ -36,6 +36,9 @@ const KNOWN_FACT_TABLES = {
   // order. Without this entry the data loader and the chat header showed no
   // "data from" date at all.
   superhist: 'orders',
+  // The real-estate developer demo (synthetic, seeded): leads are the freshest
+  // fact — one arrives most days, deals only a few times a month.
+  realestate: 'leads',
 };
 
 /** Date column candidates, most specific first. */
@@ -45,7 +48,7 @@ const KNOWN_FACT_TABLES = {
 // data-status panel can show their stored period instead of "snapshot".
 // pickDateColumn takes the first match, so appending here cannot change any
 // existing fact-table resolution.
-const DATE_COLUMNS = ['transaction_date', 'sale_date', 'order_date', 'row_date', 'cal_date', 'month'];
+const DATE_COLUMNS = ['transaction_date', 'sale_date', 'order_date', 'row_date', 'cal_date', 'month', 'lead_date'];
 
 const TTL_MS = 30 * 60 * 1000; // the answer can only change when a load lands
 const cache = new Map(); // schema -> { at, value }

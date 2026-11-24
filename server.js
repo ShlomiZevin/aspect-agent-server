@@ -3244,6 +3244,7 @@ const RERUN_POOL_GETTERS = {
   zolstock: () => require('./services/db.zolstock').getPool(),
   tevanaot: () => require('./services/db.tevanaot').getPool(),
   superhist: () => require('./services/db.superhist').getPool(),
+  realestate: () => require('./services/db.realestate').getPool(),
 };
 
 async function runBiSql(schema, sql) {
@@ -4036,8 +4037,9 @@ app.get('/api/admin/data-loader/:schema/data-info', async (req, res) => {
       // 2026-09-16: the demo should always read as freshly synced). Compute
       // the range live from the real table instead of the reload log, and
       // report the sync as NOW rather than a frozen date that would drift
-      // stale the same way a hardcoded one would.
-      if (schema === 'aspect') {
+      // stale the same way a hardcoded one would. The real-estate demo
+      // (scripts/seed-realestate-synthetic.js) is seeded the same way.
+      if (schema === 'aspect' || schema === 'realestate') {
         const { getPool } = require('./services/db.zer4u');
         const dataThroughService = require('./services/data-through.service');
         const range = await dataThroughService.resolveDataRange(getPool(), schema).catch(() => ({}));

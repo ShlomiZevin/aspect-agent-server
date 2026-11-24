@@ -50,8 +50,9 @@ function defaultsFor(datasetId) {
     // dashboard) and zolstock (33/33 figures matched in the 2026-08-11
     // accuracy suite — the best result of the 6 datasets — after the
     // items/stores dimension tables and schema-rules landed). The other four
-    // still default off until they get the same pass.
-    enabled: entry.id === 'hypertoy' || entry.id === 'zolstock',
+    // still default off until they get the same pass. realestate is the
+    // seeded real-estate demo — live by default, it exists only to be shown.
+    enabled: entry.id === 'hypertoy' || entry.id === 'zolstock' || entry.id === 'realestate',
     dataModelDescription: entry.defaultDataModelDescription,
     brandLabel: entry.defaultBrandLabel,
     bootstrapPrompts: entry.defaultBootstrapPrompts,
