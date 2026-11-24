@@ -24,6 +24,7 @@ const QUESTIONS = [
   'איזה איש מכירות נותן הכי הרבה הנחות וכמה זה עולה לנו?',
   'למה ההמרה בחיפה ירדה?',
   'Which marketing channel should get more budget next quarter?',
+  'כמה עסקאות צמודות למדד תשומות הבנייה וכמה נסגרו ללא הצמדה?',
 ];
 
 (async () => {

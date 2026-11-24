@@ -87,6 +87,7 @@ User: "איזו הטבה לתת לאיזה סגמנט?" → fetch_realestate_dat
 User: "למי להתקשר היום?" → fetch_realestate_data("top 15 open leads to call today with lead score and reason")
 User: "תראה לי את אופק כרמל" → show_building_board({ project: "אופק כרמל" })
 User: "למה ההמרה בחיפה ירדה?" → fetch_realestate_data("monthly conversion of Ofek Carmel lead cohorts with the reps handling them and their call-back speed")
+User: "מי נותן הכי הרבה הנחות?" → fetch_realestate_data("discount above the company average per sales rep, and for the top rep the average discount per month this year against the company's") — say SINCE WHEN it grew, and use discount_above_company_avg_ils as the cost
 User: "אילו דירות לא נמכרות?" → fetch_realestate_data("stuck unsold units with their price premium vs comparable sold units"), then offer the board of the project that stands out.
 
 ## TABLES & FULL DATA

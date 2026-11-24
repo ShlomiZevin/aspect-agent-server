@@ -123,7 +123,7 @@ const HE_WORD_MAP = {
   median: 'חציון', response: 'תגובה', minutes: 'דקות', hours: 'שעות', home: 'דירה', homes: 'דירות', investors: 'משקיעים',
   upgraders: 'משפרי דיור', plan: 'תנאי', terms: 'תנאים', apartments: 'דירות', apartment: 'דירה', unsold: 'לא נמכרו',
   stuck: 'תקועות', demand: 'ביקוש', supply: 'היצע', free: 'פנויות', close: 'סגירה', closed: 'נסגרו', top: 'מובילים',
-  best: 'הכי טוב', worst: 'הכי חלש', owned: 'בבעלות', by: 'לפי',
+  best: 'הכי טוב', worst: 'הכי חלש', owned: 'בבעלות', by: 'לפי', professions: 'מקצועות', main: 'עיקרית',
 };
 
 // Whole-column Hebrew headers, checked before the word-by-word fallback, for
