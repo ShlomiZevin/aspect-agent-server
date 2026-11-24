@@ -300,13 +300,13 @@ const REGISTRY = {
     defaultBrandLabel: 'Ofek Development, a residential real-estate developer selling apartments off-plan',
     // Synthetic demo data — see scripts/seed-realestate-synthetic.js and
     // services/schema-rules/realestate.rules.js (which routes to the views).
-    defaultDataModelDescription: 'a residential developer selling apartments off-plan in 5 projects (אופק פארק ראשון לציון, אופק ים נתניה, אופק כרמל חיפה, אופק הנגב באר שבע, אופק העיר ירושלים). leads = one row per inquiry with source, campaign, buyer demographics (age, gender, profession, income decile, family), purchase_purpose (first home / upgraders / investment / for the children), rooms wanted, budget, sales rep, first-response minutes and funnel status (new → in progress → office visit → negotiation → signed / lost). deals = signed contracts (list price, discount, final price, benefit given). units = every apartment (building, floor, rooms, type, direction, price, status sold/reserved/free). campaigns = marketing spend per source. activities = calls, WhatsApp and visits per lead. Ready views hold the agreed definitions: v_project_sellout (pace + sell-out forecast), v_stuck_units (over-180-day units with price premium), v_source_performance and v_campaign_roi (cost per deal), v_rep_performance (response time, discounts above company average), v_segment_benefit (close rate per segment x benefit), v_call_today (open leads with a lead score), v_deals (deals with buyer profile). Money = deals.final_price in ₪. Conversion = signed leads / all leads.',
+    defaultDataModelDescription: 'a residential developer selling apartments off-plan in 5 projects (אופק פארק ראשון לציון, אופק ים נתניה, אופק כרמל חיפה, אופק הנגב באר שבע, אופק העיר ירושלים). leads = one row per inquiry with source, campaign, buyer demographics (age, gender, profession, income decile, family), purchase_purpose (first home / upgraders / investment / for the children), rooms wanted, budget, sales rep, first-response minutes and funnel status (new → in progress → office visit → negotiation → signed / lost). deals = signed contracts (list price, discount, final price, benefit given). units = every apartment (building, floor, rooms, type, direction, price, status sold/reserved/free). campaigns = marketing spend per source. activities = calls, WhatsApp and visits per lead. Ready views hold the agreed definitions: v_project_sellout (pace + sell-out forecast), v_stuck_units (THE stuck apartments: over 180 days on the market AND 10%+ above comparable sales — count stuck units only from it), v_source_performance and v_campaign_roi (cost per deal), v_rep_performance (response time, discounts above company average — discount_above_company_avg_ils per rep), v_rep_discount_monthly (discount per rep per month), v_segment_benefit (close rate per segment x benefit), v_call_today (open leads with a lead score), v_deals (deals with buyer profile). Money = deals.final_price in ₪. Conversion = signed leads / all leads.',
     defaultBootstrapPrompts: [
       'Which lead sources bring buyers at the lowest cost per deal, and where is marketing money wasted',
-      'Which apartments are stuck unsold, and is their price the reason',
+      'How many apartments are stuck (v_stuck_units), in which project, size and side, how far above comparable sales, and which segment wants that size',
       'How does the speed of the first call-back affect conversion, and which reps are slow',
       'Which benefit closes each buyer segment best',
-      'Which sales reps give discounts well above the company average, and what does it cost',
+      'Which sales rep gives the highest discounts above the company average, since which month, and how much his discounts above the average cost',
     ],
     defaultExamplePrompts: [
       'Who should we call today',
@@ -325,10 +325,10 @@ const REGISTRY = {
         ],
         bootstrapPrompts: [
           'אילו מקורות לידים מביאים רוכשים בעלות הנמוכה ביותר לעסקה, ואיפה כסף השיווק מתבזבז',
-          'אילו דירות תקועות ולא נמכרות, והאם המחיר הוא הסיבה',
+          'כמה דירות תקועות (מעל 180 יום על המדף ומחיר גבוה ב־10% ומעלה מעסקאות דומות), באיזה פרויקט, גודל וכיוון, ואיזה סגמנט מחפש את הגודל הזה',
           'איך מהירות החזרה הראשונה לליד משפיעה על ההמרה, ואילו אנשי מכירות איטיים',
           'איזו הטבה סוגרת הכי טוב כל סגמנט של רוכשים',
-          'אילו אנשי מכירות נותנים הנחות גבוהות בהרבה מהממוצע בחברה, וכמה זה עולה',
+          'איזה איש מכירות נותן את ההנחות הגבוהות ביותר מעל ממוצע החברה, ממתי זה התחיל, וכמה עלו ההנחות שלו מעל הממוצע',
         ],
       },
     },
