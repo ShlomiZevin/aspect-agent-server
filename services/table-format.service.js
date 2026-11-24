@@ -119,6 +119,53 @@ const HE_WORD_MAP = {
   pace: 'קצב', forecast: 'תחזית', months: 'חודשים', available: 'פנויות', reserved: 'שמורות',
 };
 
+// Whole-column Hebrew headers, checked before the word-by-word fallback, for
+// names that word order can't fix ("purchase_purpose" is "מטרת רכישה", not
+// "רכישה מטרת"). Real-estate demo schema (realestate) — every column of its
+// tables and views.
+const HE_COLUMN_LABELS = {
+  activity_id: 'מזהה פעילות', activity_ts: 'מועד פעילות', activity_type: 'סוג פעילות',
+  age: 'גיל', available_units: 'דירות פנויות', avg_discount_pct: 'הנחה ממוצעת %',
+  avg_sold_price_per_sqm_same_rooms: 'מחיר ממוצע למ"ר (נמכרו, אותו מס׳ חדרים)',
+  benefit: 'הטבה', benefit_cost_ils: 'עלות ההטבה ₪', budget: 'תקציב', budget_fits: 'מתאים לתקציב', budget_ils: 'תקציב ₪',
+  building: 'בניין', buildings: 'בניינים', buyer_name: 'שם הרוכש',
+  campaign_id: 'מזהה קמפיין', campaign_name: 'שם קמפיין', cheapest_free_price: 'המחיר הפנוי הזול ביותר',
+  children: 'ילדים', city: 'עיר', city_of_residence: 'עיר מגורים', close_rate_pct: 'שיעור סגירה %',
+  company_avg_discount_pct: 'הנחה ממוצעת בחברה %', conversion_pct: 'שיעור המרה %',
+  cost_per_deal: 'עלות לעסקה', cost_per_lead: 'עלות לליד',
+  days_lead_to_deal: 'ימים מליד לעסקה', days_on_market: 'ימים על המדף', days_without_contact: 'ימים ללא קשר',
+  deal_id: 'מזהה עסקה', deals: 'עסקאות', direction: 'כיוון',
+  discount_above_company_avg_ils: 'הנחה מעל ממוצע החברה ₪', discount_ils: 'הנחה ₪', discount_pct: 'הנחה %',
+  end_date: 'תאריך סיום', expected_delivery: 'מסירה צפויה',
+  family_status: 'מצב משפחתי', final_price: 'מחיר סופי', final_price_per_sqm: 'מחיר סופי למ"ר',
+  first_name: 'שם פרטי', first_response_minutes: 'זמן תגובה ראשונה (דקות)', floor: 'קומה', floors: 'קומות',
+  forecast_sell_out_date: 'תאריך סיום מכירות צפוי', free_units_of_wanted_size: 'דירות פנויות בגודל המבוקש',
+  full_name: 'שם מלא', gender: 'מגדר', has_storage: 'מחסן', income_decile: 'עשירון הכנסה',
+  last_name: 'שם משפחה', lead_date: 'תאריך ליד', lead_id: 'מזהה ליד', lead_month: 'חודש ליד',
+  lead_score: 'ציון ליד', lead_ts: 'מועד ליד', leads: 'לידים',
+  leads_wanting_this_size_last_90_days: 'לידים שמחפשים גודל זה (90 יום)',
+  list_price: 'מחיר מחירון', listed_date: 'תאריך עלייה לשיווק', lost_reason: 'סיבת אובדן',
+  marketing_spend: 'הוצאות שיווק', marketing_start: 'תחילת שיווק',
+  median_first_response_minutes: 'חציון זמן תגובה ראשונה (דקות)', monthly_sales_pace: 'קצב מכירות חודשי',
+  months_to_sell_out: 'חודשים עד סיום המכירות', mortgage_preapproved: 'אישור עקרוני למשכנתא',
+  negotiation_date: 'תאריך משא ומתן', negotiations: 'משא ומתן',
+  offered_benefit: 'הטבה שהוצעה', office_visits: 'ביקורים במשרד', outcome: 'תוצאה',
+  outdoor_sqm: 'שטח חוץ (מ"ר)', owned_apartments: 'דירות בבעלות',
+  parking_spots: 'חניות', payment_plan: 'תנאי תשלום', pct_answered_within_hour: '% שנענו תוך שעה',
+  pct_sold: '% נמכר', phone: 'טלפון', phone_masked: 'טלפון', position: 'מיקום',
+  price_per_sqm: 'מחיר למ"ר', price_premium_pct: 'פרמיית מחיר %', profession: 'מקצוע',
+  project_id: 'מזהה פרויקט', project_ids: 'פרויקטים', project_name: 'פרויקט', purchase_purpose: 'מטרת רכישה',
+  reason: 'סיבה', region: 'אזור', rep_id: 'מזהה נציג', rep_name: 'נציג', reps: 'נציגים',
+  reserved_units: 'דירות שמורות', rooms: 'חדרים', rooms_wanted: 'חדרים מבוקשים',
+  signed: 'נחתמו', signed_date: 'תאריך חתימה', signed_revenue: 'הכנסות מעסקאות שנחתמו',
+  sold_date: 'תאריך מכירה', sold_last_90_days: 'נמכרו ב־90 יום', sold_units: 'דירות שנמכרו',
+  source: 'מקור', sqm: 'מ"ר', start_date: 'תאריך התחלה', status: 'סטטוס',
+  total_discount_ils: 'סה"כ הנחות ₪', total_units: 'סה"כ דירות',
+  unit_id: 'מזהה דירה', unit_number: 'מספר דירה', unit_type: 'סוג דירה',
+  unsold_inventory_value: 'שווי מלאי לא מכור', view: 'נוף', visit_date: 'תאריך ביקור',
+  visit_rate_pct: 'שיעור ביקור %', with_mortgage: 'עם משכנתא',
+};
+
 // Hebrew construct-state phrases usually put the "head" noun FIRST (e.g.
 // "קוד מחסן" — code of-warehouse — not "מחסן קוד"), the reverse of English
 // ("warehouse code"). When the last English token is one of these common
@@ -137,10 +184,17 @@ function prettifyLabel(key, hebrew = false) {
     .filter(Boolean);
 
   if (hebrew) {
+    const whole = HE_COLUMN_LABELS[String(key).toLowerCase()];
+    if (whole) return whole;
     const translated = words.map(w => HE_WORD_MAP[w.toLowerCase()] || w);
-    if (words.length > 1 && HE_HEAD_NOUNS.has(words[words.length - 1].toLowerCase())) {
+    // A trailing unit ("visit_rate_pct") stays last; the head noun before it
+    // still leads: "שיעור ביקור %", not "ביקור שיעור %".
+    const unit = words.length > 2 && PERCENT_KEY_RE.test(words[words.length - 1]) ? translated.pop() : null;
+    const core = unit ? words.slice(0, -1) : words;
+    if (core.length > 1 && HE_HEAD_NOUNS.has(core[core.length - 1].toLowerCase())) {
       translated.unshift(translated.pop());
     }
+    if (unit) translated.push(unit);
     return translated.join(' ');
   }
 
