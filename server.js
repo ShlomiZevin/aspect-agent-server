@@ -185,6 +185,8 @@ app.use('/api/errors', require('./builder/routes/errorsRoute'));
 // plain Hebrew (task #985). Google sign-in + per-agent grants
 // (manage_access); see builder/routes/manageRoute.js.
 app.use('/api/manage', require('./builder/routes/manageRoute'));
+// Lybi Gate (beta) — side project, gate_* tables only; see gate/index.js.
+app.use('/api/gate', require('./gate'));
 // LLM usage — every model call by add-on and interaction; read by
 // Builder Admin → LLM Usage (task #953). See builder/services/llmUsageReport.js.
 app.use('/api/llm-usage', require('./builder/routes/llmUsageRoute'));
