@@ -1,0 +1,110 @@
+{
+  "_about": "Vertex Lab — Sonnet: every add-on on Claude Sonnet 5.5 (the newest Sonnet), one crew whose chain runs the five test types each turn: Field Extractor (9 fields), Large Thinker (≈4–5K-token policy prompt, deep decision), Medium Thinker (short prompt, simple decision), Web-search Thinker (always one search), streaming Talker. Our Claude provider sends no thinking / effort parameter, so every call runs Sonnet 5.5's default adaptive thinking; 'large' vs 'medium' differ by context size and task depth. Built by scripts/setup-vertex-lab.js --fixture=vertex-lab-sonnet-agent.json. A prompt given as an array is joined; {\"file\": …} inlines a file from scripts/fixtures/.",
+  "name": "Vertex Lab — Sonnet",
+  "slug": "vertex-lab-sonnet",
+  "agent": {
+    "personas": [
+      { "id": "persona_vls_advisor", "name": "advisor", "appliesTo": ["*"], "content": "You are the savings advisor of Lybi Demo Bank. You help customers choose a savings plan that fits their goal and their budget. Reply in the customer's language. Be warm and precise; never promise a rate or a return." }
+    ],
+    "fields": [
+      { "id": "field_vls_name",     "name": "customer_name",           "type": "string", "domain": "profile", "source": "explicit", "howToExtract": "The customer's first name, only when stated." },
+      { "id": "field_vls_age",      "name": "age",                     "type": "int",    "domain": "profile", "source": "explicit", "howToExtract": "Age in years, as a whole number, only when stated or directly computable from a stated birth year (current year 2026)." },
+      { "id": "field_vls_employ",   "name": "employment_type",         "type": "string", "domain": "profile", "source": "inferred", "howToExtract": "Exactly one of: salaried, self_employed, pensioner, student, unemployed." },
+      { "id": "field_vls_income",   "name": "monthly_net_income",      "type": "int",    "domain": "finances", "source": "explicit", "howToExtract": "Take-home monthly income in shekels (for the self-employed: their stated monthly average). Whole number." },
+      { "id": "field_vls_loans",    "name": "monthly_loan_repayments", "type": "int",    "domain": "finances", "source": "explicit", "howToExtract": "Total monthly loan and mortgage repayments in shekels; 0 when they say they have no loans. Whole number." },
+      { "id": "field_vls_savings",  "name": "savings_now",             "type": "int",    "domain": "finances", "source": "explicit", "howToExtract": "Money already saved and accessible, in shekels. Whole number." },
+      { "id": "field_vls_goal",     "name": "goal",                    "type": "string", "domain": "goal", "source": "explicit", "howToExtract": "What they are saving for, in a few words." },
+      { "id": "field_vls_goalamt",  "name": "goal_amount",             "type": "int",    "domain": "goal", "source": "explicit", "howToExtract": "The total amount the goal needs, in shekels. Whole number." },
+      { "id": "field_vls_horizon",  "name": "horizon_months",          "type": "int",    "domain": "goal", "source": "explicit", "howToExtract": "In how many months they need the money (years × 12). Whole number." },
+      { "id": "field_vls_risk",     "name": "risk_tolerance",          "type": "string", "domain": "profile", "source": "inferred", "howToExtract": "Exactly one of: low, medium, high — only when the customer says something about risk." }
+    ],
+    "cortex": []
+  },
+  "crews": {
+    "lab": {
+      "name": "Lab",
+      "description": "Runs the five Sonnet 5.5 test types every turn.",
+      "addons": [
+        {
+          "instanceId": "addon_vls_extract",
+          "pluginId": "field-extractor",
+          "lane": "main",
+          "enabled": true,
+          "outputType": "json-to-memory",
+          "promptTemplate": "{{prompt}}",
+          "context": { "history": { "mode": "all" } },
+          "config": {
+            "name": "Field extractor",
+            "model": { "providerId": "anthropic", "modelId": "claude-sonnet-5-5" },
+            "extractsFields": ["field_vls_name", "field_vls_age", "field_vls_employ", "field_vls_income", "field_vls_loans", "field_vls_savings", "field_vls_goal", "field_vls_goalamt", "field_vls_horizon", "field_vls_risk"],
+            "prompt": "Extract field values from the customer's latest message and recent context.\n\nJSON keys MUST be the exact field names from the schema — character-for-character. Amounts are whole numbers in shekels (\"14k\" = 14000, \"300 thousand\" = 300000). Years become months (2 years = 24).\n\n## Fields\n{{fields_schema}}\n\n## Already collected\n{{fields_current}}\n\nOnly include keys you have a value for. Omit the rest. Never use null, empty strings, or placeholders like \"unknown\". Return {} when nothing was extracted."
+          }
+        },
+        {
+          "instanceId": "addon_vls_large",
+          "pluginId": "thinker",
+          "lane": "main",
+          "enabled": true,
+          "outputType": "json-to-memory",
+          "promptTemplate": "{{prompt}}",
+          "context": { "history": { "mode": "all" } },
+          "config": {
+            "name": "Large thinker",
+            "domain": "advice",
+            "model": { "providerId": "anthropic", "modelId": "claude-sonnet-5-5" },
+            "prompt": [
+              "{{persona}}\n\nYou are the senior advisor behind the chat. Today is {{today}}. Decide what to recommend to this customer by applying the bank's policy below exactly, step by step (section 5). Show your arithmetic in the calculation fields.\n\n",
+              { "file": "vertex-lab-sonnet-policy.md" },
+              "\n\n## What we know about the customer\n{{memory}}\n\n## Output\nReturn a JSON object with exactly these keys:\n- primary_product: one of \"FLEX\", \"STEP\", \"LOCK\", \"HOME\", \"GROW\", \"none\"\n- secondary_product: one of \"FLEX\", \"STEP\", \"LOCK\", \"HOME\", \"GROW\", \"none\"\n- banker_referral: true or false\n- deciding_rule: the policy rule number that decided the case (e.g. \"2.2\")\n- dti_percent: number (one decimal) or null if unknown\n- disposable_income: number or null\n- monthly_amount: number or null (the recommended monthly saving)\n- months_to_goal: number or null\n- reasoning: at most 4 sentences\n\nOutput JSON only — no preamble, no markdown fences."
+            ]
+          }
+        },
+        {
+          "instanceId": "addon_vls_medium",
+          "pluginId": "thinker",
+          "lane": "main",
+          "enabled": true,
+          "outputType": "json-to-memory",
+          "promptTemplate": "{{prompt}}",
+          "context": { "history": { "mode": "all" } },
+          "config": {
+            "name": "Medium thinker",
+            "domain": "next_step",
+            "model": { "providerId": "anthropic", "modelId": "claude-sonnet-5-5" },
+            "prompt": "{{persona}}\n\nDecide the conversation's next step.\n\nWhat we know:\n{{memory}}\n\nRules:\n- \"refer_to_banker\" if the customer is under 18, mentions missed loan payments or arrears, asks about stocks / crypto / insurance / pensions, or wants a managed fund.\n- otherwise \"ready_to_recommend\" if we know their income, their loan repayments, their goal amount and their horizon;\n- otherwise \"ask_more\".\n\nReturn a JSON object: { \"next_step\": \"ready_to_recommend\" | \"ask_more\" | \"refer_to_banker\", \"missing\": [field names still unknown], \"reason\": one sentence }\n\nOutput JSON only — no preamble, no markdown fences."
+          }
+        },
+        {
+          "instanceId": "addon_vls_web",
+          "pluginId": "thinker",
+          "lane": "main",
+          "enabled": true,
+          "outputType": "json-to-memory",
+          "promptTemplate": "{{prompt}}",
+          "context": { "history": { "mode": "none" } },
+          "config": {
+            "name": "Web search thinker",
+            "domain": "rates",
+            "model": { "providerId": "anthropic", "modelId": "claude-sonnet-5-5" },
+            "webSearch": { "enabled": true, "maxSearches": 1, "allowedDomains": ["boi.org.il"] },
+            "prompt": "Today is {{today}}. Your only job: find the current Bank of Israel interest rate.\n\nWeb search: you are explicitly allowed and required to search the web exactly once, every time, for the current Bank of Israel interest rate. Search for nothing else.\n\nReturn a JSON object: { \"boi_rate_percent\": number, \"as_of\": \"the date of the latest decision you found\", \"source_url\": \"...\" }\n\nOutput JSON only — no preamble, no markdown fences."
+          }
+        },
+        {
+          "instanceId": "addon_vls_talker",
+          "pluginId": "talker",
+          "lane": "main",
+          "enabled": true,
+          "outputType": "text-to-user",
+          "promptTemplate": "{{prompt}}",
+          "context": { "history": { "mode": "all" } },
+          "config": {
+            "name": "Talker",
+            "model": { "providerId": "anthropic", "modelId": "claude-sonnet-5-5" },
+            "prompt": "{{persona}}\n\nAnswer the customer in 3 to 5 sentences. Follow the advisor's decision below; if it says to refer to a banker, say what the banker will help with. Mention the current Bank of Israel rate only if it matters for the plan.\n\nWhat we know:\n{{memory}}\n\nThe advisor's decision and the facts behind it:\n{{thinking}}"
+          }
+        }
+      ]
+    }
+  }
+}

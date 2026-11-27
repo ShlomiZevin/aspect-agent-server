@@ -24,7 +24,12 @@
  *
  *      node scripts/compare-vertex-direct.js [--routes=direct,vertex] [--repeat=1]
  *           [--scenarios=happy-path,cascade] [--out=verification/vertex-vs-direct]
- *           [--tag=<name>]
+ *           [--tag=<name>] [--agent=vertex-lab] [--scenarios-file=vertex-lab-scenarios.json]
+ *
+ *    Per-type run (all-Sonnet 5.5 variant, every add-on reported on its own,
+ *    outputs compared by the fixture's `compare` keys):
+ *      node scripts/compare-vertex-direct.js --agent=vertex-lab-sonnet \
+ *           --scenarios-file=vertex-lab-sonnet-scenarios.json
  *
  *    Today (2026-11-27) the staging server has no VERTEX_PROJECT_ID, so a
  *    Vertex turn fails loudly with `model_route` — run --routes=direct until
@@ -138,7 +143,7 @@ async function streamTurn(server, convId, userMessage, overrideAgentBody) {
           const a = addon(ev.instanceId);
           Object.assign(a, {
             status: 'ok', endedAt: at, durationMs: ev.durationMs, firstTokenMs: ev.firstTokenMs ?? null,
-            sseTokens: ev.tokens, rawOutput: ev.rawOutput, memoryWrites: ev.memoryWrites,
+            sseTokens: ev.tokens, rawOutput: ev.rawOutput, parsedOutput: ev.parsedOutput ?? null, memoryWrites: ev.memoryWrites,
             webSearch: ev.webSearch ? { count: ev.webSearch.count ?? (ev.webSearch.queries || []).length, queries: ev.webSearch.queries } : null,
             transition: ev.transition || null,
           });
@@ -173,7 +178,7 @@ async function serverMode() {
     console.error(`Refusing: run against Lybi Staging (${STAGING}).`); process.exit(1);
   }
   const routes = arg('routes', 'direct,vertex').split(',').map(s => s.trim()).filter(Boolean);
-  const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'vertex-lab-scenarios.json'), 'utf8'));
+  const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', arg('scenarios-file', 'vertex-lab-scenarios.json')), 'utf8'));
   const want = arg('scenarios', '');
   const scenarios = fx.scenarios.filter(s => !want || want.split(',').includes(s.id));
 
@@ -240,7 +245,7 @@ async function serverMode() {
   const result = {
     kind: 'server', tag: TAG, server, agent: SLUG, agentVersion: (agent.versions.find(v => v.id === agent.activeVersionId) || {}).number,
     startedAt: started.toISOString(), finishedAt: new Date().toISOString(), routes, repeat: REPEAT,
-    modelRouteAnswer: routeInfo, errorsAnswer: errors, conversations: convs,
+    modelRouteAnswer: routeInfo, errorsAnswer: errors, compare: fx.compare || {}, conversations: convs,
     prices: (models && models.models || []).filter(m => m.providerId === 'anthropic').map(m => ({ id: m.id, price: m.price, vertex: m.vertex, vertexId: m.vertexId })),
   };
   result.summary = summarizeServer(result);
@@ -248,6 +253,7 @@ async function serverMode() {
   const file = path.join(OUT, `server-${TAG}.json`);
   fs.writeFileSync(file, JSON.stringify(result, null, 2));
   printServerSummary(result.summary);
+  printAddonSummary(result.summary.byAddon);
   console.log(`\nRaw: ${path.relative(ROOT, file)}`);
 }
 
@@ -309,7 +315,86 @@ function summarizeServer(r) {
       });
     }
   }
-  return { byRoute: by, pairs };
+  return { byRoute: by, pairs, byAddon: summarizeAddons(r) };
+}
+
+/**
+ * Per add-on ("per test type") — each route: runs, errors (exact text),
+ * first token (streaming add-ons) and total time from the stream, tokens and
+ * cost from LLM Usage (calls matched by the add-on's name); and per paired
+ * run, whether the two routes reached the same output: the keys named in the
+ * scenarios fixture's `compare` map (e.g. a Thinker's decision), or for an
+ * add-on that writes fields, the field values it wrote.
+ */
+function summarizeAddons(r) {
+  const parsedOf = a => {
+    if (a.parsedOutput && typeof a.parsedOutput === 'object') return a.parsedOutput;
+    try { return JSON.parse(String(a.rawOutput || '').replace(/^```(?:json)?\s*|\s*```$/g, '')); } catch { return null; }
+  };
+  const fieldWrites = a => Object.fromEntries((a.memoryWrites || []).filter(w => w.field && (w.kind === 'memory' || !w.kind)).map(w => [w.field, w.value]));
+  const signature = (label, a) => {
+    if (!a || a.status !== 'ok') return null;
+    const keys = (r.compare || {})[label];
+    if (keys) { const p = parsedOf(a) || {}; return Object.fromEntries(keys.map(k => [k, p[k] ?? null])); }
+    const fw = fieldWrites(a);
+    return Object.keys(fw).length ? fw : null;
+  };
+  const labels = [...new Set(r.conversations.flatMap(c => c.turns.flatMap(t => t.addons.map(a => a.label))).filter(Boolean))];
+  const out = {};
+  for (const label of labels) {
+    const entry = { routes: {}, pairs: [] };
+    for (const route of r.routes) {
+      const runs = r.conversations.filter(c => c.route === route).flatMap(c => c.turns.map(t => ({ t, a: t.addons.find(x => x.label === label) }))).filter(x => x.a);
+      const calls = runs.flatMap(({ t }) => (t.calls || []).filter(c => c.addon === label));
+      const modelCalls = calls.filter(c => c.kind !== 'web_search');
+      const perRun = runs.map(({ t }) => (t.calls || []).filter(c => c.addon === label && c.kind !== 'web_search'));
+      entry.routes[route] = {
+        runs: runs.length,
+        ok: runs.filter(x => x.a.status === 'ok').length,
+        errors: runs.filter(x => x.a.status === 'error').length,
+        errorTexts: [...new Set(runs.filter(x => x.a.status === 'error').map(x => `${x.a.error && x.a.error.code}: ${x.a.error && x.a.error.message}`))],
+        firstToken: { median: med(runs.map(x => x.a.firstTokenMs)), p90: pct(runs.map(x => x.a.firstTokenMs), 90) },
+        total: { median: med(runs.filter(x => x.a.status === 'ok').map(x => x.a.durationMs)), p90: pct(runs.filter(x => x.a.status === 'ok').map(x => x.a.durationMs), 90) },
+        callMs: { median: med(modelCalls.map(c => c.durationMs)), p90: pct(modelCalls.map(c => c.durationMs), 90) },
+        inputTokens: { median: med(perRun.map(cs => sum(cs.map(c => c.inputTokens)))), total: sum(modelCalls.map(c => c.inputTokens)) },
+        outputTokens: { median: med(perRun.map(cs => sum(cs.map(c => c.outputTokens)))), total: sum(modelCalls.map(c => c.outputTokens)) },
+        searches: sum(calls.map(c => c.searches || 0)),
+        cost: { total: sum(calls.map(c => c.cost)), perRun: runs.length ? sum(calls.map(c => c.cost)) / runs.length : null },
+        callRoutes: [...new Set(modelCalls.map(c => c.route))],
+      };
+    }
+    if (r.routes.length === 2) {
+      const [A, B] = r.routes;
+      for (const ca of r.conversations.filter(c => c.route === A)) {
+        const cb = r.conversations.find(c => c.route === B && c.scenario === ca.scenario && c.rep === ca.rep);
+        if (!cb) continue;
+        ca.turns.forEach((ta, i) => {
+          const tb = cb.turns[i]; if (!tb) return;
+          const sa = signature(label, ta.addons.find(x => x.label === label));
+          const sb = signature(label, tb.addons.find(x => x.label === label));
+          if (sa == null && sb == null) return;
+          entry.pairs.push({ scenario: ca.scenario, rep: ca.rep, turn: ta.turn, same: sa != null && sb != null && JSON.stringify(sa) === JSON.stringify(sb), [A]: sa, [B]: sb });
+        });
+      }
+    }
+    out[label] = entry;
+  }
+  return out;
+}
+
+function printAddonSummary(byAddon) {
+  console.log('\nPer add-on (median / p90; tokens = median per run; cost = per run)');
+  for (const [label, e] of Object.entries(byAddon)) {
+    console.log(`\n  ${label}`);
+    for (const [route, b] of Object.entries(e.routes)) {
+      console.log(`    ${route.padEnd(6)} ok ${b.ok}/${b.runs} · first ${ms(b.firstToken.median)} / ${ms(b.firstToken.p90)} · total ${ms(b.total.median)} / ${ms(b.total.p90)} · in ${b.inputTokens.median} out ${b.outputTokens.median} · ${usd(b.cost.perRun)}${b.searches ? ` · ${b.searches} searches` : ''} · routes ${b.callRoutes.join(',') || '-'}`);
+      for (const t of b.errorTexts) console.log(`           ERROR ${t}`);
+    }
+    if (e.pairs.length) {
+      const same = e.pairs.filter(p => p.same).length;
+      console.log(`    equivalent outputs: ${same}/${e.pairs.length}${same < e.pairs.length ? ' — differ: ' + e.pairs.filter(p => !p.same).map(p => p.scenario).join(', ') : ''}`);
+    }
+  }
 }
 
 function printServerSummary(s) {

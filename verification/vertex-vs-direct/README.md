@@ -17,7 +17,7 @@ commands below): `server-direct-2026-11-27.json`, `local-2026-11-27-all-addons.j
 | Our own code path, from this machine (`check-vertex-route.js --live --only=claude`, ADC) | **ALL OK** — `runAddon → Talker → llm.js → AnthropicVertex`, one request to `aiplatform.googleapis.com/…/claude-haiku-5-5:streamRawPredict`, usage row `anthropic@vertex`, no direct-API hit. |
 | Claude **web search** on Vertex | **Blocked by an organization policy**: `400 FAILED_PRECONDITION — Organization Policy constraint constraints/vertexai.allowedPartnerModelFeatures violated for projects/700084613835 … disallowed feature web_search for Partner model claude-sonnet-5-5`. Needs `publishers/anthropic/models/<model>:web_search` added to that constraint's allowed values (org admin). |
 | Regions | `global` ✓ · `eu` multi-region ✓ (Sonnet 5.5, 200) · `europe-west1` ✗ 429 (regional Claude 5.5 quota 0) · **`me-west1` ✗ 404 — Claude is not offered in Tel Aviv.** |
-| **On the staging server** | **Not yet.** A Vertex turn fails loudly, nothing sent anywhere: *"This agent's model route is Vertex, but VERTEX_PROJECT_ID is not set on this server…"*. The Cloud Run service account `lybi-server@lybi-staging.iam.gserviceaccount.com` has no `roles/aiplatform.user`. |
+| **On the staging server** | At first: not configured (*"This agent's model route is Vertex, but VERTEX_PROJECT_ID is not set on this server…"*; no `roles/aiplatform.user` on the Cloud Run service account). **Live since later on 2026-11-27** (#996: role granted, `VERTEX_PROJECT_ID` / `VERTEX_LOCATION` set, revision `lybi-server-00057`). A project-level policy now allows `web_search` for sonnet-5-5, sonnet-4-6, haiku-5-5, opus-5-5 — but see section 7: Vertex still refuses about 1 in 4 web-search calls with the same org-policy error. |
 
 The local calls ran as Shlomi's `shlomi@boostart.io` user, which is **Editor** on
 `lybi-staging` (that is why they were allowed). `shlomi@lybi.ai` needs an interactive
@@ -168,3 +168,73 @@ The final run used all 4 scenarios × 2, through the staging server (`--tag=serv
 | Cost per turn | $0.0134 | $0.0123 |
 
 **Open issue:** 4 Thinker calls (Sonnet 5.5 with web search) were still refused by the org policy 40 minutes after the policy was set, while 12 went through. This looks like the change still propagating; re-check before calling web search on Vertex done.
+**Re-checked (section 7): still happening** — 3 of 12 Vertex web-search calls refused between 09:18 and 09:26 UTC, the last at 09:25:58Z (vertex-lab's own list: last 09:03:43Z). Steady at about 1 in 4, not fading.
+
+## 7. Per type, all on Claude Sonnet 5.5 — staging server (2026-11-27, round 2)
+
+**Setup.** A second lab agent, **Vertex Lab — Sonnet** (`vertex-lab-sonnet`, domain "Shlomi",
+https://lybi-staging.web.app/vertex-lab-sonnet/builder, fixture
+`scripts/fixtures/vertex-lab-sonnet-agent.json`, built by
+`node scripts/setup-vertex-lab.js --fixture=vertex-lab-sonnet-agent.json`). Every add-on is on **Claude Sonnet 5.5** —
+the newest Sonnet in `models.service.js` (nothing newer exists there). One crew whose chain runs
+the five test types on every turn, one after another:
+
+| Type | Add-on | What it gets |
+|---|---|---|
+| Field extractor | Field Extractor | 10 fields (name, age, employment, income, loans, savings, goal, amount, horizon, risk) |
+| Large thinking | Thinker | ≈4,400 input tokens: a full savings/credit policy (`vertex-lab-sonnet-policy.md`) + the case; must apply a 6-step decision procedure with DTI / affordability arithmetic |
+| Medium thinking | Thinker | ≈750 input tokens: three rules, one decision (`ready_to_recommend` / `ask_more` / `refer_to_banker`) |
+| Web search thinker | Thinker + web search (boi.org.il, 1 search) | must search once, every time, for the Bank of Israel rate |
+| Talker | Talker (streaming) | the decisions above → a 3–5 sentence reply |
+
+**No effort setting exists.** Neither the add-ons nor our Claude provider (`services/llm.claude.js`)
+send `thinking` or `output_config.effort`, so every call runs Sonnet 5.5's default adaptive
+thinking (effort `high`). "Large" vs "medium" thinking is therefore done by **context size and
+task depth**, not by an effort level. (Adding a per-add-on effort setting would be a Builder
+feature — it isn't there today.)
+
+**Run.** 6 long customer cases (`scripts/fixtures/vertex-lab-sonnet-scenarios.json`) × 2 repeats ×
+2 routes = **12 runs per type per route**, routes interleaved (A/B, B/A), all through the staging
+server (`node scripts/compare-vertex-direct.js --agent=vertex-lab-sonnet
+--scenarios-file=vertex-lab-sonnet-scenarios.json --repeat=2 --tag=sonnet-2026-11-27`, raw
+`server-sonnet-2026-11-27.json`). Every call's route confirmed in LLM Usage (`direct` vs
+`vertex`). Spend: $1.18 Direct + $0.97 Vertex (+ $0.20 smoke test).
+
+Times are the add-on's own wall time from the stream. The one-shot add-ons (extractor, thinkers)
+use their answer whole, so "first token" applies to the Talker only. Tokens are the median per
+run; cost is per successful run.
+
+| Type | Route | OK | First token median / p90 | Total median / p90 | Tokens in / out | Cost / run | Same output |
+|---|---|---|---|---|---|---|---|
+| **Field extractor** | Direct | 12/12 | — | 1.92 s / 6.35 s | 876 / 118 | $0.0037 | **11/12** same field values¹ |
+| | Vertex | 12/12 | — | 1.90 s / 3.40 s | 876 / 104 | $0.0035 | |
+| **Large thinking** | Direct | 12/12 | — | 8.61 s / 11.03 s | 4,420 / 1,164 | $0.0208 | **12/12** same decision (product, second product, banker referral) |
+| | Vertex | 12/12 | — | 8.19 s / 10.40 s | 4,419 / 1,049 | $0.0200 | |
+| **Medium thinking** | Direct | 12/12 | — | 2.27 s / 3.22 s | 748 / 254 | $0.0037 | **11/12** same decision² |
+| | Vertex | 12/12 | — | 2.04 s / 3.59 s | 747 / 130 | $0.0037 | |
+| **Web search thinker** | Direct | 12/12 | — | 3.72 s / 5.08 s | 24,042 / 240 | $0.061 | **9/9** same rate (3.25%) where both answered |
+| | Vertex | **9/12** | — | 3.46 s / 4.66 s | 23,046 / 232 | $0.059 | 3 refused ³ |
+| **Talker** (streaming) | Direct | 12/12 | 3.90 s / 5.31 s | 5.64 s / 7.10 s | 1,199 / 687 | $0.0094 | (free text — not compared) |
+| | Vertex | 12/12 | 3.68 s / 4.93 s | 5.54 s / 6.64 s | 1,170 / 741 | $0.0095 | |
+
+¹ The one difference is wording only: goal "helping grandchildren buy their first apartments" vs
+"help grandchildren buy…"; every number and choice field identical.
+² Pensioner case, repeat 2: Direct said `refer_to_banker`, Vertex `ask_more` — and Direct itself
+said `ask_more` on repeat 1. That is the model varying run to run, not the route.
+³ **The exact Vertex refusal (3 of 12, 09:18–09:26 UTC):**
+`plugin_run_failed: Failed to get Claude response: 400 [{"error":{"code":400,"message":"Organization Policy constraint constraints/vertexai.allowedPartnerModelFeatures violated for projects/700084613835 attempting to use a disallowed feature web_search for Partner model claude-sonnet-5-5. Please contact your organization administrator to fix this violation by adding publishers/anthropic/models/claude-sonnet-5-5:web_search to the allowed values. …","status":"FAILED_PRECONDITION"}}]`
+— no fallback (by design), the Thinker's answer is simply missing that turn and the reply goes on
+without the rate. Same error in the Tasks session's run (4/16) and still at the same rate now, so
+it is not just propagation: the org-level `denyAll` default seems to win on some requests. Worth
+re-checking where the allow is set (organization vs project) with whoever administers the org.
+
+**Reading it.**
+- On the server, with Sonnet 5.5 everywhere, **the two routes take the same time** for every type —
+  differences are within run-to-run noise, Vertex a little faster in this sample. Sonnet 5.5 thinks
+  before it writes, so its 3–4 s to the first word hides the ~0.5 s extra that Vertex added to a
+  non-thinking Talker in the go-live run (Haiku 5.5 / Sonnet 4.6: 0.46 s → 0.97 s).
+- **Same tokens, same cost** (input counts match to the token; output varies with sampling).
+- **Same decisions**: the deep policy decision matched 12/12; the only differences are wording or a
+  case the model itself is unsure about on Direct too.
+- **Web search is the one thing not equal**: 25% of Vertex web-search calls are refused by the org
+  policy. Also the costliest type on both routes (~23K input tokens of search results per call).

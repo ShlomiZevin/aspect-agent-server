@@ -1,0 +1,52 @@
+{
+  "_about": "One long customer message per scenario for the Vertex Lab — Sonnet agent (scripts/compare-vertex-direct.js --agent=vertex-lab-sonnet --scenarios-file=vertex-lab-sonnet-scenarios.json). Each turn runs all five test types. The cases are built so the policy decides them differently (STEP+FLEX, no new plan because of DTI, LOCK + banker, student FLEX, HOME, arrears).",
+  "compare": {
+    "Large thinker": ["primary_product", "secondary_product", "banker_referral"],
+    "Medium thinker": ["next_step"],
+    "Web search thinker": ["boi_rate_percent"]
+  },
+  "scenarios": [
+    {
+      "id": "car-salaried",
+      "label": "Salaried, car in 18 months — policy example A shape",
+      "lines": [
+        "Hi, I'm Dana, 31. I've been working as a QA engineer at the same company for a bit over two years and I take home about 14,000 shekels a month. I rent an apartment in Haifa for 4,500 a month, I don't have any loans and no kids, it's just me. I already have around 25,000 shekels sitting in my current account doing nothing. What I want is to buy a car in about a year and a half, and the one I like costs roughly 60,000. I don't want anything risky, I'd rather know exactly what I'll have. I was thinking I could put away maybe 3,000 a month, but I honestly don't know if that's smart or whether I should keep some of the money aside. My friend told me to lock everything in a deposit but I'm not sure I can do that if I need the money for the car. What would you recommend, and how long will it take me?"
+      ]
+    },
+    {
+      "id": "self-employed-dti",
+      "label": "Self-employed, big income swings, DTI above 40%",
+      "lines": [
+        "Hello, my name is Yossi, I'm 44 and I run a small renovation business on my own, so I'm self-employed. My income really jumps around — on average I take home about 11,000 a month over the last year, but my best month was about 19,000 and the worst was only 6,000. We pay a mortgage of 3,800 a month and I still have a car loan of 1,200 a month for another two years. I'm married with two kids; my wife isn't here right now, she has her own account at another bank. We have about 8,000 in savings. I want to start saving 2,500 a month for my kids' bar and bat mitzvahs, which are in about three years, we think we need around 90,000 for both. I'm OK with some risk if it means more money. Can you open a monthly plan for me today?"
+      ]
+    },
+    {
+      "id": "pensioner-lump-sum",
+      "label": "Pensioner 71 with a large lump sum, medium risk",
+      "lines": [
+        "Good morning. I'm Rachel, I'm 71 and retired. My pension is about 9,000 shekels a month, which covers my living costs comfortably — I own my apartment outright and I have no loans of any kind. After selling my late husband's small shop I have about 300,000 shekels in the bank and it earns almost nothing. I'd like something better than the current account. I don't need this money for daily life, but I want to be able to help my grandchildren with their first apartments in maybe 6 or 7 years. I can tolerate some ups and downs, I'd call myself medium risk, but I don't want to lose the money. My neighbour put his money into some managed fund and he's very happy. What can you offer me, and can you set it up now?"
+      ]
+    },
+    {
+      "id": "student-young",
+      "label": "Student, 20, irregular income",
+      "lines": [
+        "hey, I'm Noam, 20, second-year computer science student. I work part time in a cafe and make around 3,200 a month, sometimes less in exam periods. I live with my parents so I don't pay rent and I have no loans. I've got about 4,000 saved. I really want to save for a trip to South America after my degree, in about 2 years, I think I need around 25,000. Could I start a monthly plan of like 900 a month? Also my uncle says I should open some kind of apartment savings already since I'll want an apartment one day — is that something I can do at my age? I don't want anything with risk."
+      ]
+    },
+    {
+      "id": "first-apartment",
+      "label": "Couple, first apartment in 4 years, both present",
+      "lines": [
+        "Hi! We're Maya and Tom, both 29, and we're both customers of your bank — we're writing together. Maya is a nurse (salaried, 6 years at the same hospital) and takes home 11,500; Tom is a salaried software developer for 3 years and takes home 16,000. We rent for 5,200 a month, no kids yet, and the only loan is Tom's student loan of 600 a month. Neither of us owns an apartment. We have 70,000 saved together, and we'd like to keep part of it for emergencies. Our goal is a down payment of around 450,000 for our first apartment in about four years. We're low risk. We think we could save 6,000 a month together. What's the best way to do this with you, and how long will it realistically take?"
+      ]
+    },
+    {
+      "id": "arrears-lock",
+      "label": "Recent arrears, asks for a fixed deposit and a fund",
+      "lines": [
+        "Hello, I'm Avi, 52, a salaried bus driver for 15 years, I take home 9,500 a month. Rent is 3,600 and I have a personal loan of 1,100 a month. To be honest, last year I fell behind on that loan for about three months when I was sick, but it's fine now. I'm divorced, I pay 1,500 a month alimony. I just received a 40,000 shekel inheritance and I want to put it in a fixed deposit for two years, or maybe in one of your investment funds so it grows faster, I'm willing to take some risk. I'd also like to add a bit every month. What do you suggest?"
+      ]
+    }
+  ]
+}

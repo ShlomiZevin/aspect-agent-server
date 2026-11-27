@@ -65,7 +65,7 @@
                   { "type": "field", "field": "savings_goal",   "op": "is-not-null" },
                   { "type": "field", "field": "monthly_amount", "op": "is-not-null" }
                 ],
-                "actions": [ { "type": "transition", "target": "__PLAN_CREW_ID__" } ]
+                "actions": [ { "type": "transition", "target": "__CREW_ID:plan__" } ]
               }
             ],
             "prompt": "",
