@@ -220,7 +220,8 @@ const repoEntries = pgTable('repo_entries', {
 }));
 
 // kb_links — KB↔agent visibility links (many-to-many). A KB is a
-// Pinecone namespace (global in the shared index); this table records
+// namespace of the environment's vector store (kb_vectors; index_name is
+// from the Pinecone era — one library, vectorStore.KB_LIBRARY); this table records
 // which builder agents a namespace is "related to" so the builder only
 // surfaces the relevant KBs per agent. Pure visibility — no owner, no
 // shared flag; a KB is visible to an agent iff a link row exists.

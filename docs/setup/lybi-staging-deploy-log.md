@@ -301,6 +301,9 @@ overrides (only the daily simulation counter).
 **Pinecone — decided: keep Shlomi's account.** It has no card (free plan → no cost),
 and a Lybi account would mean re-uploading every knowledge base. Staging reads the
 same index/namespaces, so copied agents keep their knowledge.
+**Superseded 2026-11-27 (#1014):** staging's knowledge bases moved into its own database
+(pgvector, `kb_vectors`, migration 075; 6 KBs, 1,127 chunks, counts equal to Pinecone's). The
+server no longer reads Pinecone; copies carry the chunks.
 
 ### 16. Still open
 - ~~Anthropic credit~~ — done 2026-10-25 (Claude add-ons answer on staging).

@@ -2351,8 +2351,9 @@ bank's own GCP project), all three providers.
   route (a save must never quietly move a Vertex agent back to direct);
   `'direct'` / `null` clears it; anything else is refused.
 - **Still DIRECT on both routes (by decision, for now):** knowledge-base
-  embeddings (`kb.embedding.service.js` → OpenAI `text-embedding-3-small` →
-  Pinecone — every KB Retriever search embeds the query directly, and file
+  embeddings (`kb.embedding.service.js` → OpenAI `text-embedding-3-small`;
+  the vectors are searched in the environment's own database since #1014 —
+  every KB Retriever search embeds the query directly, and file
   indexing), transcription, the simulated user of simulations / load tests
   (`mcpConversations.userReply` — our test harness, default model not on
   Vertex), Alfred and every other internal helper (`claudeOneShot`,
@@ -3021,3 +3022,52 @@ saved body, and the projection drops empty sections.
   screen were dropped from the saved body).
 - **Tests:** `node aspect-react-client/scripts/test-entity-body.mjs`
   (offline, the pure functions).
+
+### 70. Knowledge bases live in the environment's own database — pgvector replaces Pinecone (board #1014)
+
+Shlomi, meeting 24.11: "Replace Pinecone with pgvector completely." Until now
+every environment used ONE shared Pinecone index (US); a KB deleted on staging
+was gone on Origin too. Now each environment's knowledge is in its own Cloud SQL
+— the shape a dedicated environment per bank needs.
+
+- **One module:** `services/kb.vectorStore.service.js` is the only code that
+  reads or writes KB vectors — the KB screen's endpoints (`/api/pinecone/*`,
+  paths kept so the screens did not change), `kbLibrary.service`, the KB
+  Retriever add-on, the Builder MCP (`/kbs…`, through `alfredTools`' readers),
+  the agent copy, and Lybi HQ. Nothing in the server talks to Pinecone; the SDK
+  is a devDependency used only by the one-time `scripts/kb-copy-from-pinecone.js`.
+- **Data:** table `kb_vectors` (migration 075, which also folds 073's PoC):
+  key `(namespace, id)` — a KB is its namespace, a row is one chunk
+  (`file-<fileId>-chunk-<n>`); `embedding vector(1536)`, `embedding_model`,
+  `text`, `file_name`, `file_id` (text — HQ uses `atom-<id>`), `chunk_index`,
+  `metadata` jsonb (kbId, agentId, fileType, totalChunks). Indexes: HNSW cosine
+  (incremental, no training step, unlike IVFFlat) + `(namespace, file_id)`
+  (file deletes / listings, and small KBs are searched exactly through it);
+  `hnsw.iterative_scan = strict_order` on the database keeps a filtered search
+  at a full top K. `library_files` / `kb_links` keep their `index_name`
+  column, now one constant (`KB_LIBRARY = 'lybi'`); 075 folded rows under
+  other names into it.
+- **Same search:** cosine, score = 1 − distance (what Pinecone returned), top K
+  per KB, min score, token budget — byte-for-byte the same result shape. A
+  search compares only rows of the model the KB's queries are embedded with.
+  PoC: 98.5 % overlap, every difference was Pinecone's approximation
+  (`verification/pgvector-poc/README.md`).
+- **Writes are whole:** indexing a file replaces its chunks in one transaction
+  (no stale chunks on a re-index); a file delete and a KB delete remove chunks
+  and records together, in one transaction (`kbLibrary.deleteFileByRowId` /
+  `deleteKb`) — failures no longer leave orphans behind a warning.
+- **Copying an agent carries its knowledge:** `agentCopy` reads every chunk of
+  the linked KBs (DB reader: the store's export; API reader:
+  `GET /api/library/kbs/:namespace/vectors`, paged) and writes the ones the
+  target lacks in the copy's transaction. A source without a store (Origin)
+  copies records only and the plan says so.
+- **Screens:** the KB workbench's ⚙ "Pinecone indexes" panel and the
+  "index: …" footer are gone (no indexes to manage); the setup card says to run
+  migration 075. The PoC page `/:agent/pgvector-poc` and `kb-pgvector/` are removed.
+- **Moving an environment:** `run-075-kb-vectors-store.js --env <env>` →
+  `kb-copy-from-pinecone.js --env <env>` (counts, sampled vectors, a search
+  spot check per KB) → deploy. Origin is frozen and was not moved.
+- **Tests:** `node scripts/test-kb-vector-store.js --env staging [--api <server>]`
+  (store round trip, deletes, the copy carrying chunks — rolled back);
+  `test-builder-mcp.js` checks chunks appear / disappear with MCP uploads,
+  replaces and deletes.

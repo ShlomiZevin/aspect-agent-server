@@ -483,12 +483,14 @@ const llmUsage = pgTable('llm_usage', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
-// Pinecone indexed files - tracks files uploaded to Pinecone (Brain)
+// Knowledge-base files (KB V2) — one row per file indexed into the vector store
+// (kb_vectors, pgvector — services/kb.vectorStore.service). index_name is from the
+// Pinecone era: one library per environment now, always vectorStore.KB_LIBRARY.
 const libraryFiles = pgTable('library_files', {
   id: serial('id').primaryKey(),
   indexName: varchar('index_name', { length: 255 }).notNull(),
   namespace: varchar('namespace', { length: 255 }).notNull(),
-  fileId: varchar('file_id', { length: 255 }).notNull(), // unique ID used in Pinecone vector IDs
+  fileId: varchar('file_id', { length: 255 }).notNull(), // the file id in its vector ids (file-<fileId>-chunk-<n>)
   fileName: varchar('file_name', { length: 500 }).notNull(),
   fileSize: integer('file_size'), // bytes
   fileType: varchar('file_type', { length: 50 }),

@@ -41,8 +41,9 @@ or `NOT IDENTICAL` (exit 1). Report that line, the per-crew ✓ list, and the li
 prints (`<site>/<slug>/builder`). `--workspace <id>` puts it in a target folder instead
 of mirroring the source's.
 
-Through the API the copy carries what the Builder sees: the KB links of the active
-Pinecone index (links to an old index are dead data and are left), the newest 100
+Through the API the copy carries what the Builder sees: the KB links and file records
+(rows under an old Pinecone index name are folded into the one library, like
+migration 075 did), the newest 100
 change-history entries, and no legacy `agents` row (the runtime makes it on the first
 chat). The script carries the raw rows.
 
@@ -68,10 +69,14 @@ env file holds the credentials — script only, never served).
 Builder rows keep their text ids, so versions, crews and links line up exactly.
 Auto-numbered tables get fresh ids on the target.
 
-**Knowledge bases:** the vectors live in Pinecone. Every environment reads the same
-Pinecone account (decided 2026-10-25 — it's free and re-uploading KBs is costly), so a
-copied agent keeps its knowledge with no upload. If an environment ever gets its own
-Pinecone, the KB files must be re-uploaded there — the copy moves only the records.
+**Knowledge bases (since #1014, 2026-11-27):** each environment keeps its KB vectors in
+its OWN database (pgvector, table `kb_vectors`). The copy carries every chunk of every
+KB the agent is linked to, with its embedding (`kbVectors` in the plan — nothing
+re-uploaded or re-embedded; chunks the target already has are kept). The target needs
+migration 075. A source that keeps no vectors in its database (Origin, which predates
+pgvector) copies links and file records only, and the plan says so — bring its chunks
+with `node scripts/kb-copy-from-pinecone.js --env <target> --namespace <ns>` while the
+Pinecone key still works.
 
 ## Rules
 

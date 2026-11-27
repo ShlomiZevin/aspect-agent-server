@@ -8,7 +8,8 @@
  *     --site https://lybi-acme.web.app --billing 017787-4464F3-55E08C
  *
  * Writes `.env.production.<env>` (git-ignored) from `.env.production.aspect`:
- *   kept    Gmail, Pinecone, Leonardo, Google sign-in client, model names, pool size
+ *   kept    Gmail, Leonardo, Google sign-in client, model names, pool size
+ *           (no Pinecone since #1014: knowledge bases live in the environment's own database)
  *   new     database (Cloud SQL socket, user lybi_app, generated password),
  *           the three model keys (from the env vars above; missing → PENDING),
  *           billing account, the site's address
@@ -38,8 +39,7 @@ const base = read(path.join(ROOT, '.env.production.aspect'));
 const outFile = path.join(ROOT, `.env.production.${env}`);
 const prev = fs.existsSync(outFile) ? read(outFile) : {};
 
-const KEEP = ['NODE_ENV', 'CLAUDE_MODEL', 'OPENAI_MODEL', 'GMAIL_USER', 'GMAIL_APP_PASSWORD', 'PINECONE_API_KEY',
-  'PINECONE_INDEX_NAME', 'LEONARDO_API_KEY', 'LYBI_LEONARDO_API_KEY', 'GOOGLE_OAUTH_CLIENT_ID', 'DB_POOL_MAX', 'DB_POOL_MIN'];
+const KEEP = ['NODE_ENV', 'CLAUDE_MODEL', 'OPENAI_MODEL', 'GMAIL_USER', 'GMAIL_APP_PASSWORD', 'LEONARDO_API_KEY', 'LYBI_LEONARDO_API_KEY', 'GOOGLE_OAUTH_CLIENT_ID', 'DB_POOL_MAX', 'DB_POOL_MIN'];
 const pending = v => !v || v.startsWith('PENDING');
 const key = (name, fromEnv) => process.env[fromEnv] || (!pending(prev[name]) ? prev[name] : 'PENDING-new-lybi-key');
 const conn = `${project}:${region}:${instance}`;
@@ -64,7 +64,7 @@ const values = {
 
 const lines = [
   `# Lybi environment "${env}" — project ${project}, ${region}. Built by scripts/make-env-file.js from .env.production.aspect.`,
-  '# Shared with Origin on purpose: Gmail, Pinecone, Leonardo. Own: database, model keys, Google sign-in client.',
+  '# Shared with Origin on purpose: Gmail, Leonardo. Own: database (and with it the knowledge bases), model keys, Google sign-in client.',
   ...Object.entries(values).map(([k, v]) => `${k}=${v}`),
   '',
 ];

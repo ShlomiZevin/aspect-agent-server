@@ -296,7 +296,8 @@ function readPlatformFile(relPath) {
 
 // ─── Knowledge bases (task #868) ───────────────────────────────────
 //
-// A KB is a Pinecone NAMESPACE in the shared index. Two separate things
+// A KB is a NAMESPACE of this environment's vector store (pgvector in its
+// own database — services/kb.vectorStore.service). Two separate things
 // tie one to an agent, and outside assistants kept confusing them:
 //   - CONNECTED (`kb_links`): the Builder only offers / shows the KB for
 //     that agent. A KB Retriever naming an unconnected KB reads "MISSING"
@@ -307,19 +308,20 @@ function readPlatformFile(relPath) {
 // URLs, got "Cannot GET", and asked the person for the admin link (which
 // is a browser-only screen and shows it nothing).
 
-const KB_INDEX = () => process.env.PINECONE_INDEX_NAME || 'lybi';
-/** Lybi HQ keeps its own internal brain in the same index. It is not a KB
+/** The library name library_files / kb_links rows carry (one per environment). */
+const KB_INDEX = () => vectorStore().KB_LIBRARY;
+/** Lybi HQ keeps its own internal brain in the same store. It is not a KB
  *  any agent is built on, so it is never listed or offered to connect. */
 const NOT_AN_AGENT_KB = new Set(['hq']);
 
-function pinecone() {
-  return require('../../services/kb.pinecone.service');
+function vectorStore() {
+  return require('../../services/kb.vectorStore.service');
 }
 
-/** Every KB in the active index: chunks, files, connections, users. */
+/** Every KB in this environment: chunks, files, connections, users. */
 async function kbCatalog() {
   const idx = KB_INDEX();
-  const stats = await pinecone().getIndexStats();
+  const stats = await vectorStore().getStats();
   const kbs = new Map();
   const kb = name => {
     if (!kbs.has(name)) kbs.set(name, { name, chunks: 0, files: 0, connected: [], searchedBy: [] });
@@ -367,7 +369,7 @@ async function kbCatalog() {
 }
 
 async function listKnowledgeBases() {
-  const { idx, kbs, uses, label } = await kbCatalog();
+  const { kbs, uses, label } = await kbCatalog();
   const lines = [...kbs.values()].sort((a, b) => a.name.localeCompare(b.name)).map(k => [
     `- ${k.name} · ${k.chunks} chunks · ${k.files} file${k.files === 1 ? '' : 's'}`,
     `    connected to: ${k.connected.length ? k.connected.join(', ') : '(no agent)'}`,
@@ -375,14 +377,14 @@ async function listKnowledgeBases() {
   ].join('\n'));
   const broken = uses.filter(u => !kbs.has(u.namespace));
   return [
-    `Knowledge bases in the Pinecone index "${idx}". A KB is a namespace.`,
+    'Knowledge bases in this environment (stored in its own database). A KB is a namespace.',
     'CONNECTED = the Builder shows it for that agent (otherwise its KB Retriever reads "MISSING").',
     'SEARCHED = a KB Retriever addon lists it in config.kbNamespaces — that is what the agent reads.',
     '',
     ...(lines.length ? lines : ['(no knowledge bases)']),
     ...(broken.length ? [
       '',
-      `KB Retrievers naming a KB that does not exist in "${idx}" (they find nothing):`,
+      'KB Retrievers naming a KB that does not exist in this environment (they find nothing):',
       ...broken.map(u => `- ${label(u.agentId)} → ${u.where} / ${u.addon} → "${u.namespace}"`),
     ] : []),
   ].join('\n');
@@ -397,14 +399,14 @@ async function agentKnowledgeBases(slug) {
   const connected = new Set(links.rows.map(r => r.namespace));
   const mine = uses.filter(u => u.agentId === agent.id);
   const status = ns => !kbs.has(ns)
-    ? `does NOT exist in "${idx}" — the retriever finds nothing`
+    ? 'does NOT exist in this environment — the retriever finds nothing'
     : connected.has(ns) ? 'ok' : 'exists but NOT connected — the Builder shows it as MISSING; connect it';
   return [
-    `Knowledge bases of "${agent.name || slug}" (${slug}), Pinecone index "${idx}".`,
+    `Knowledge bases of "${agent.name || slug}" (${slug}).`,
     '',
     'Connected (shown in the Builder for this agent):',
     ...(connected.size
-      ? [...connected].map(ns => `- ${ns}${kbs.has(ns) ? ` · ${kbs.get(ns).chunks} chunks · ${kbs.get(ns).files} files` : ' · does NOT exist in this index'}`)
+      ? [...connected].map(ns => `- ${ns}${kbs.has(ns) ? ` · ${kbs.get(ns).chunks} chunks · ${kbs.get(ns).files} files` : ' · does NOT exist in this environment'}`)
       : ['- (none)']),
     '',
     'KB Retriever addons (what the agent actually searches):',
@@ -428,10 +430,10 @@ async function listKbFiles(namespace) {
     `select file_id, file_name, chunk_count, file_size, (created_at at time zone 'UTC') as created_at
        from library_files where index_name = $1 and namespace = $2 order by created_at desc`, [idx, namespace]);
   if (r.rows.length === 0) {
-    return `No files recorded for KB "${namespace}" in "${idx}". See the list of knowledge bases for valid names.`;
+    return `No files recorded for KB "${namespace}". See the list of knowledge bases for valid names.`;
   }
   return [
-    `Files in KB "${namespace}" (index "${idx}"). Read one with its file id.`,
+    `Files in KB "${namespace}". Read one with its file id.`,
     ...r.rows.map(f => `- file ${f.file_id} · ${f.file_name} · ${f.chunk_count} chunks${f.file_size ? ` · ${Math.round(f.file_size / 1024)} KB` : ''} · uploaded ${fmtTime(f.created_at)}`),
   ].join('\n');
 }
@@ -447,14 +449,13 @@ async function readKbFile(namespace, fileId, { maxChars = 0 } = {}) {
     [idx, namespace, String(fileId)]);
   const file = r.rows[0];
   if (!file) return `No file ${fileId} in KB "${namespace}". List the KB's files for valid ids.`;
-  // Pinecone stores fileId as a number; library_files as a string.
-  const vectors = await pinecone().listVectors(namespace, {
-    fileId: Number(fileId), limit: Math.max((file.chunk_count || 0) + 10, 50),
+  const vectors = await vectorStore().listVectors(namespace, {
+    fileId: String(fileId), limit: Math.max((file.chunk_count || 0) + 10, 50),
   });
   const chunks = vectors
     .map(v => ({ i: Number(v.metadata?.chunkIndex) || 0, text: String(v.metadata?.text || '') }))
     .sort((a, b) => a.i - b.i);
-  if (chunks.length === 0) return `File ${fileId} ("${file.file_name}") has no chunks in "${idx}".`;
+  if (chunks.length === 0) return `File ${fileId} ("${file.file_name}") has no chunks stored.`;
   const body = chunks.map(c => `--- chunk ${c.i} ---\n${c.text}`).join('\n\n');
   return [
     `"${file.file_name}" — KB "${namespace}", ${chunks.length} chunks (neighbouring chunks overlap a little).`,
@@ -463,11 +464,10 @@ async function readKbFile(namespace, fileId, { maxChars = 0 } = {}) {
   ].join('\n');
 }
 
-/** True when the KB exists in the active index with at least one chunk. */
+/** True when the KB exists in this environment with at least one chunk. */
 async function kbExists(namespace) {
   if (NOT_AN_AGENT_KB.has(namespace)) return false;
-  const stats = await pinecone().getIndexStats();
-  return (stats.namespaces || []).some(n => n.name === namespace && (n.vectorCount || 0) > 0);
+  return vectorStore().namespaceExists(namespace);
 }
 
 // ─── LLM usage and cost (MCP /usage) ───────────────────────────────

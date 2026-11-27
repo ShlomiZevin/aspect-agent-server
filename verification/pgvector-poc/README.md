@@ -1,5 +1,11 @@
 # pgvector proof of concept — Pinecone vs pgvector on the same KB
 
+> **Outcome (2026-11-27, board #1014):** pgvector replaced Pinecone. The PoC page,
+> `kb-pgvector/` and `kb.pinecone.service.js` were removed (git history has them);
+> the store is `services/kb.vectorStore.service.js` on `kb_vectors` (migration 075),
+> and the one-time move is `scripts/kb-copy-from-pinecone.js`. The reproduce steps
+> below describe the PoC as it ran.
+
 **Checked (2026-11-23):** can pgvector inside an environment's own Cloud SQL (Tel Aviv)
 replace Pinecone for knowledge-base retrieval? Same KB, same stored vectors, same query
 vector on both sides; compare the ranked lists and the latency.

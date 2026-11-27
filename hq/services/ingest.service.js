@@ -3,15 +3,16 @@
  *
  *   capture → normalise → chunk → embed → index → (Scribe, for meetings)
  *
- * Reuses the KB stack wholesale (chunker / embedding / Pinecone) so retrieval
- * behaves identically to the rest of the platform. Vectors land in the `hq`
- * namespace of the shared `lybi` index; chunk metadata carries `atomId` so a
+ * Reuses the KB stack wholesale (chunker / embedding / vector store) so
+ * retrieval behaves identically to the rest of the platform. Vectors land in
+ * the `hq` namespace of the environment's vector store (pgvector,
+ * services/kb.vectorStore.service); each chunk's file id is `atom-<id>` so a
  * hit maps straight back to its atom for citations.
  */
 
 const chunker = require('../../services/kb.chunker.service');
 const embedding = require('../../services/kb.embedding.service');
-const pinecone = require('../../services/kb.pinecone.service');
+const vectorStore = require('../../services/kb.vectorStore.service');
 const atomsService = require('./atoms.service');
 const scribe = require('./scribe.service');
 
@@ -49,9 +50,9 @@ async function indexAtom(atom) {
 
   // Clear prior vectors first so a re-sync of an edited page doesn't leave
   // stale chunks behind alongside the new ones.
-  await pinecone.deleteFile(HQ_NAMESPACE, `atom-${atom.id}`).catch(() => {});
+  await vectorStore.deleteFile(HQ_NAMESPACE, `atom-${atom.id}`).catch(() => {});
 
-  await pinecone.indexFile({
+  await vectorStore.indexFile({
     kbId: 0,
     namespace: HQ_NAMESPACE,
     fileId: `atom-${atom.id}`,
@@ -129,7 +130,7 @@ async function removeAtom(atomId) {
   const source = rows[0];
   const mediaId = source && source.config && source.config.mediaId;
 
-  await pinecone.deleteFile(HQ_NAMESPACE, `atom-${atomId}`).catch(() => {});
+  await vectorStore.deleteFile(HQ_NAMESPACE, `atom-${atomId}`).catch(() => {});
   await atomsService.deleteAtom(atomId);
 
   if (mediaId) {

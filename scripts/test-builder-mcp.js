@@ -298,7 +298,7 @@ async function removeIfPresent(slug) {
     section('knowledge bases');
     check('entry page lists the KB reads', doc.text.includes('/kbs') && doc.text.includes('config.kbNamespaces'));
     const kbsPage = await get('/kbs');
-    check('every KB', kbsPage.status === 200 && kbsPage.text.includes('Knowledge bases in the Pinecone index'));
+    check('every KB', kbsPage.status === 200 && kbsPage.text.includes('Knowledge bases in this environment'));
     check('hq is not offered as an agent KB', !/^- hq /m.test(kbsPage.text));
     const firstKb = (kbsPage.text.match(/^- ([a-z0-9-]+) · \d+ chunks/m) || [])[1];
     check('at least one KB to read', !!firstKb, kbsPage.text.slice(0, 200));
@@ -335,16 +335,20 @@ async function removeIfPresent(slug) {
     section('knowledge-base files + search (#949)');
     check('entry page teaches upload and search', doc.text.includes('/kbs/<name>/files') && doc.text.includes('/kbs/search'));
     const kbLibrary = require('../services/kbLibrary.service');
+    const vectorStore = require('../services/kb.vectorStore.service');
     const fileIds = async () => (await kbLibrary.listFiles(TEST_KB)).map(f => f.fileId);
+    const chunksOf = async fileId => (await vectorStore.listVectors(TEST_KB, { fileId, limit: 1000 })).length;
     const up1 = await post(`/kbs/${TEST_KB}/files`, { fileName: 'zz-fruit.md', text: 'The zebra fruit is purple and grows only on Tuesdays in the battery orchard.' });
     check('first file creates the KB', up1.status === 200 && up1.text.includes('Created knowledge base'), up1.text.slice(0, 120));
     const firstIds = await fileIds();
     check('…recorded like an admin upload', firstIds.length === 1);
+    check('…and its chunks are in this environment\'s store', firstIds.length === 1 && (await chunksOf(firstIds[0])) > 0);
     const s1 = await post('/kbs/search', { namespaces: [TEST_KB], query: 'what colour is the zebra fruit?' });
     check('search finds it, and shows what the prompt gets', s1.status === 200 && s1.text.includes('purple') && s1.text.includes('Relevant Knowledge Base Content'), s1.text.slice(0, 160));
     const up2 = await post(`/kbs/${TEST_KB}/files`, { fileName: 'zz-fruit.md', text: 'The zebra fruit is orange now.', replace: true });
     const afterReplace = await fileIds();
     check('replace swaps the file of that name', up2.status === 200 && up2.text.includes('Replaced') && afterReplace.length === 1 && afterReplace[0] !== firstIds[0], up2.text.slice(0, 120));
+    check('…and the replaced file\'s chunks are gone', (await chunksOf(firstIds[0])) === 0 && (await chunksOf(afterReplace[0])) > 0);
     check('base64 upload', (await post(`/kbs/${TEST_KB}/files`, { fileName: 'zz-b.txt', base64: Buffer.from('Battery base64 file.').toString('base64') })).status === 200);
     check('upload with no content → 400', (await post(`/kbs/${TEST_KB}/files`, { fileName: 'x.txt' })).status === 400);
     check('upload with no extension → 400', (await post(`/kbs/${TEST_KB}/files`, { fileName: 'x', text: 'a' })).status === 400);
@@ -353,6 +357,7 @@ async function removeIfPresent(slug) {
     check('search as an agent with no such retriever → 400 listing them', (await post('/kbs/search', { query: 'x', agent: TEST_SLUG, retriever: 'zz-none' })).status === 400);
     const delOne = await fetch(`${base}/kbs/${TEST_KB}/files/${afterReplace[0]}`, { method: 'DELETE' });
     check('delete a file', delOne.status === 200 && (await fileIds()).length === 1);
+    check('…its chunks are gone too', (await chunksOf(afterReplace[0])) === 0);
     check('delete an unknown file → 404', (await fetch(`${base}/kbs/${TEST_KB}/files/1`, { method: 'DELETE' })).status === 404);
 
     // ── the Spec (task #870) ──
@@ -949,7 +954,7 @@ async function removeIfPresent(slug) {
     // Leave the test agent's tree empty again (the tree names the deleted crews).
     const tAgent = (await hydrate(TEST_SLUG).catch(() => null))?.agents?.[0];
     if (tAgent?.crewTree) await bp.setAgentCrewTree({ agentId: tAgent.id, versionId: tAgent.activeVersionId, crewTree: null }).catch(() => {});
-    await require('../services/kb.pinecone.service').deleteNamespaceByName(TEST_KB).catch(() => {});
+    await require('../services/kb.vectorStore.service').deleteNamespaceByName(TEST_KB).catch(() => {});
     await db.query('delete from library_files where namespace = $1', [TEST_KB]).catch(() => {});
     if (simConvIds.length) {
       const { conversations } = require('../db/schema');

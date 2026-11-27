@@ -190,9 +190,6 @@ app.use('/api/gate', require('./gate'));
 // LLM usage — every model call by add-on and interaction; read by
 // Builder Admin → LLM Usage (task #953). See builder/services/llmUsageReport.js.
 app.use('/api/llm-usage', require('./builder/routes/llmUsageRoute'));
-// pgvector proof of concept — one KB searched in Pinecone and in this
-// environment's own Postgres side by side (/:agent/pgvector-poc). See kb-pgvector/.
-app.use('/api/kb-pgvector', require('./kb-pgvector/routes'));
 
 // ─── Aspect BI ─────────────────────────────────────────────────────
 // Standalone Qlik-style BI layer over customer data schemas (hypertoy
@@ -6250,11 +6247,16 @@ app.put('/api/admin/test-runs/config/:agentName', async (req, res) => {
   }
 });
 
-// ========== LIBRARY ENDPOINTS (Pinecone vector search — isolated from existing KB system) ==========
+// ========== LIBRARY ENDPOINTS (KB V2 — vector search, isolated from the old KB system) ==========
+//
+// The vectors live in this environment's own Postgres (pgvector, table
+// kb_vectors — services/kb.vectorStore.service, board #1014). Until 2026-11
+// they lived in Pinecone; the /api/pinecone/* paths keep that name so the
+// KB screens did not change, but nothing here talks to Pinecone.
 
 const chunkerService = require('./services/kb.chunker.service');
 const embeddingService = require('./services/kb.embedding.service');
-const pineconeService = require('./services/kb.pinecone.service');
+const vectorStore = require('./services/kb.vectorStore.service');
 const kbLibrary = require('./services/kbLibrary.service');
 const { libraryFiles, kbLinks, builderAgents, builderAgentVersions } = require('./db/schema');
 const { eq, and: drizzleAnd, desc: drizzleDesc } = require('drizzle-orm');
@@ -6263,63 +6265,41 @@ const { eq, and: drizzleAnd, desc: drizzleDesc } = require('drizzle-orm');
  * Multer decodes multipart filenames as latin1, which mangles UTF-8
  * names (Hebrew, Arabic, accents…) into mojibake — e.g. "הסכם.docx"
  * becomes "×××¡×.docx". Re-decode the bytes as UTF-8 so the real name
- * flows through to the preview title, the DB, and Pinecone metadata.
+ * flows through to the preview title, the DB, and the stored chunks.
  */
 function fixUploadName(name) {
   try { return Buffer.from(name, 'latin1').toString('utf8'); }
   catch { return name; }
 }
 
-// Connection status (no API call — just checks env vars)
-app.get('/api/pinecone/status', (req, res) => {
-  res.json(pineconeService.getConnectionStatus());
+/** A store error carries its HTTP status (503 = migration 075 not run here). */
+const kbErrorStatus = err => (err instanceof vectorStore.KbStoreError ? err.status : 500);
+
+// Is the knowledge store usable here? `hasApiKey` / `indexName` keep the
+// shape the KB screens read (they predate pgvector).
+app.get('/api/pinecone/status', async (req, res) => {
+  const s = await vectorStore.getStatus();
+  res.json({ configured: s.configured, hasApiKey: s.configured, indexName: s.library, store: s.store, ...(s.error ? { error: s.error } : {}) });
 });
 
-// List all indexes in the Pinecone account
+// The store, described the way the old index list was: one per environment.
 app.get('/api/pinecone/indexes', async (req, res) => {
-  try {
-    const indexes = await pineconeService.listIndexes();
-    res.json({ indexes, activeIndex: process.env.PINECONE_INDEX_NAME || null });
-  } catch (err) {
-    console.error('❌ List indexes error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+  const s = await vectorStore.getStatus();
+  res.json({
+    indexes: [{ name: s.library, dimension: vectorStore.DIMENSIONS, metric: 'cosine', host: 'postgres (pgvector)', status: s.configured ? 'ready' : 'not set up', cloud: 'this environment', region: 'this environment' }],
+    activeIndex: s.library,
+  });
 });
 
-// Create a new Pinecone index
-app.post('/api/pinecone/indexes', async (req, res) => {
-  try {
-    const { name, dimension = 1536, metric = 'cosine', cloud = 'aws', region = 'us-east-1' } = req.body;
-    if (!name) return res.status(400).json({ error: 'Index name is required' });
-    await pineconeService.createIndex(name, dimension, metric, cloud, region);
-    res.json({ success: true, message: `Index "${name}" created`, name, dimension, metric });
-  } catch (err) {
-    console.error('❌ Create index error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+// Index create / delete / activate were Pinecone account operations. The
+// store is part of the environment's database — there is nothing to create
+// or switch.
+const noIndexOps = (req, res) => res.status(410).json({
+  error: 'Knowledge bases are stored in this environment\'s database (pgvector) — there are no indexes to create, delete or switch.',
 });
-
-// Delete a Pinecone index
-app.delete('/api/pinecone/indexes/:name', async (req, res) => {
-  try {
-    await pineconeService.deleteIndex(req.params.name);
-    res.json({ success: true, message: `Index "${req.params.name}" deleted` });
-  } catch (err) {
-    console.error('❌ Delete index error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Set the active index
-app.post('/api/pinecone/indexes/:name/activate', async (req, res) => {
-  try {
-    pineconeService.setActiveIndex(req.params.name);
-    res.json({ success: true, activeIndex: req.params.name });
-  } catch (err) {
-    console.error('❌ Activate index error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
+app.post('/api/pinecone/indexes', noIndexOps);
+app.delete('/api/pinecone/indexes/:name', noIndexOps);
+app.post('/api/pinecone/indexes/:name/activate', noIndexOps);
 
 // Preview chunks for a file (no persistence — just extract + chunk)
 app.post('/api/pinecone/preview-chunks', upload.single('file'), async (req, res) => {
@@ -6380,7 +6360,7 @@ app.post('/api/pinecone/preview-embeddings', upload.single('file'), async (req, 
   }
 });
 
-// Index a single file to Pinecone (full pipeline: chunk → embed → upsert)
+// Index a single file into a numbered KB (kb-<id>) — full pipeline: chunk → embed → store
 app.post('/api/pinecone/index-file', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -6403,8 +6383,8 @@ app.post('/api/pinecone/index-file', upload.single('file'), async (req, res) => 
     // Step 3: generate a file ID (use timestamp + random for now since this is isolated)
     const fileId = Date.now();
 
-    // Step 4: index to Pinecone
-    const { vectorCount, namespace } = await pineconeService.indexFile({
+    // Step 4: store the vectors
+    const { vectorCount, namespace } = await vectorStore.indexFile({
       kbId: parseInt(kbId),
       fileId,
       fileName: req.file.originalname,
@@ -6425,11 +6405,11 @@ app.post('/api/pinecone/index-file', upload.single('file'), async (req, res) => 
     });
   } catch (err) {
     console.error('❌ Index file error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(kbErrorStatus(err)).json({ error: err.message });
   }
 });
 
-// Bulk index multiple files to Pinecone
+// Bulk index multiple files into a KB (namespace)
 app.post('/api/pinecone/index-bulk', upload.array('files', 200), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No files uploaded' });
@@ -6488,102 +6468,102 @@ app.post('/api/pinecone/index-bulk', upload.array('files', 200), async (req, res
   }
 });
 
-// Get Pinecone index stats
+// Every KB with its chunk count
 app.get('/api/pinecone/stats', async (req, res) => {
   try {
-    const stats = await pineconeService.getIndexStats();
-    res.json(stats);
+    res.json(await vectorStore.getStats());
   } catch (err) {
-    console.error('❌ Pinecone stats error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('❌ KB stats error:', err.message);
+    res.status(kbErrorStatus(err)).json({ error: err.message });
   }
 });
 
-// List vectors in a namespace (supports both kb ID and raw namespace name)
+// A KB's chunks (supports both kb ID and raw namespace name); a file's, in order, with ?fileId=
 app.get('/api/pinecone/namespace/:namespace/vectors', async (req, res) => {
   try {
     const namespace = req.params.namespace;
-    const fileId = req.query.fileId ? parseInt(req.query.fileId) : undefined;
+    const fileId = req.query.fileId ? String(req.query.fileId) : undefined;
     const limit = parseInt(req.query.limit) || 100;
-    const vectors = await pineconeService.listVectors(namespace, { fileId, limit });
+    const vectors = await vectorStore.listVectors(namespace, { fileId, limit });
     res.json({ namespace, vectors, count: vectors.length });
   } catch (err) {
     console.error('❌ List vectors error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(kbErrorStatus(err)).json({ error: err.message });
   }
 });
 
-// Delete file vectors from Pinecone
+// Delete a numbered KB's file vectors (legacy kb-<id> path)
 app.delete('/api/pinecone/file/:kbId/:fileId', async (req, res) => {
   try {
     const kbId = parseInt(req.params.kbId);
-    const fileId = parseInt(req.params.fileId);
-    await pineconeService.deleteFile(kbId, fileId);
-    res.json({ success: true, message: `Deleted vectors for file ${fileId} from kb-${kbId}` });
+    const fileId = req.params.fileId;
+    const removed = await vectorStore.deleteFile(kbId, fileId);
+    res.json({ success: true, message: `Deleted ${removed} vectors of file ${fileId} from kb-${kbId}` });
   } catch (err) {
     console.error('❌ Delete file error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(kbErrorStatus(err)).json({ error: err.message });
   }
 });
 
-// Delete entire namespace
+// Delete a numbered KB (legacy kb-<id> path)
 app.delete('/api/pinecone/namespace/:kbId', async (req, res) => {
   try {
     const kbId = parseInt(req.params.kbId);
-    await pineconeService.deleteNamespace(kbId);
+    await vectorStore.deleteNamespace(kbId);
     res.json({ success: true, message: `Deleted namespace kb-${kbId}` });
   } catch (err) {
     console.error('❌ Delete namespace error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(kbErrorStatus(err)).json({ error: err.message });
   }
 });
 
-// Delete an entire knowledge base by its raw namespace name (V2 workbench):
-// wipes its vectors AND its DB file rows so the two stay in sync.
+// Delete an entire knowledge base by its name (V2 workbench): its vectors
+// AND its file records, in one transaction.
 app.delete('/api/pinecone/kb/:namespace', async (req, res) => {
   try {
     const ns = req.params.namespace;
-    // Vectors first. An empty/never-indexed namespace 404s on deleteAll —
-    // that's fine, treat it as already-clean.
-    try {
-      await pineconeService.deleteNamespaceByName(ns);
-    } catch (pineErr) {
-      console.warn(`⚠️ deleteKB vectors note for "${ns}":`, pineErr.message);
-    }
-    // DB file rows for this namespace.
-    const drizzle = db.getDrizzle();
-    if (drizzle) {
-      await drizzle.delete(libraryFiles).where(eq(libraryFiles.namespace, ns));
-    }
-    res.json({ success: true, message: `Deleted knowledge base "${ns}"` });
+    const gone = await kbLibrary.deleteKb(ns);
+    res.json({ success: true, message: `Deleted knowledge base "${ns}" (${gone.files} files, ${gone.vectors} chunks)` });
   } catch (err) {
     console.error('❌ Delete KB error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(kbErrorStatus(err)).json({ error: err.message });
   }
 });
 
-// Query Pinecone (retrieval tester) — accepts namespace names or KB IDs
+// A KB's vectors, paged, for copying an agent's knowledge into another
+// environment (builder/services/agentCopy.js readFromApi). Read-only.
+app.get('/api/library/kbs/:namespace/vectors', async (req, res) => {
+  try {
+    const page = await vectorStore.exportVectors(req.params.namespace, { after: req.query.after || '', limit: req.query.limit });
+    res.json({ namespace: req.params.namespace, dimensions: vectorStore.DIMENSIONS, ...page });
+  } catch (err) {
+    console.error('❌ Export vectors error:', err.message);
+    res.status(kbErrorStatus(err)).json({ error: err.message });
+  }
+});
+
+// Search (retrieval tester) — accepts namespace names or KB IDs
 app.post('/api/pinecone/query', async (req, res) => {
   try {
     const { namespaces, kbIds, query: queryText, topK, scoreThreshold, maxTokens } = req.body;
     const nsInput = namespaces || kbIds;
     if (!nsInput || !queryText) return res.status(400).json({ error: 'namespaces and query are required' });
 
-    const results = await pineconeService.query(
+    const results = await vectorStore.query(
       Array.isArray(nsInput) ? nsInput : [nsInput],
       queryText,
       { topK, scoreThreshold, maxTokens }
     );
 
-    const formattedPrompt = pineconeService.formatForPrompt(results.results);
+    const formattedPrompt = vectorStore.formatForPrompt(results.results);
 
     res.json({
       ...results,
       formattedPrompt,
     });
   } catch (err) {
-    console.error('❌ Pinecone query error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('❌ KB query error:', err.message);
+    res.status(kbErrorStatus(err)).json({ error: err.message });
   }
 });
 
@@ -6596,7 +6576,7 @@ app.get('/api/library/files', async (req, res) => {
     const drizzle = db.getDrizzle();
     if (!drizzle) return res.json({ files: [], source: 'unavailable' });
 
-    const idx = indexName || process.env.PINECONE_INDEX_NAME || 'default';
+    const idx = indexName || vectorStore.KB_LIBRARY;
     const files = await drizzle
       .select()
       .from(libraryFiles)
@@ -6617,7 +6597,7 @@ app.get('/api/library/stats', async (req, res) => {
     const drizzle = db.getDrizzle();
     if (!drizzle) return res.json({ stats: [] });
     const { sql } = require('drizzle-orm');
-    const idx = req.query.indexName || process.env.PINECONE_INDEX_NAME || 'default';
+    const idx = req.query.indexName || vectorStore.KB_LIBRARY;
     const rows = await drizzle
       .select({
         namespace: libraryFiles.namespace,
@@ -6636,12 +6616,12 @@ app.get('/api/library/stats', async (req, res) => {
 });
 
 // ─── KB↔agent visibility links (many-to-many) ─────────────────────────
-// A KB is a Pinecone namespace (global). These endpoints record which
-// builder agents a namespace is "related to" so the builder shows only
-// the relevant KBs per agent. Pure visibility — no owner, no copies.
-const KB_ACTIVE_INDEX = () => process.env.PINECONE_INDEX_NAME || 'lybi';
+// A KB is a namespace of this environment's vector store. These endpoints
+// record which builder agents a namespace is "related to" so the builder
+// shows only the relevant KBs per agent. Pure visibility — no owner, no copies.
+const KB_ACTIVE_INDEX = () => vectorStore.KB_LIBRARY;
 
-// Scoped KB list. Merges Pinecone namespaces (live vector counts) +
+// Scoped KB list. Merges the store's namespaces (live vector counts) +
 // library_files aggregates (file count / cost) + this agent's links.
 //   scope='linked' (default when agentId given) → only the agent's KBs.
 //   scope='all'                                  → every KB + a `linked` flag.
@@ -6652,12 +6632,8 @@ app.get('/api/library/kbs', async (req, res) => {
     const agentId = req.query.agentId ? String(req.query.agentId) : null;
     const scope = req.query.scope === 'all' ? 'all' : (agentId ? 'linked' : 'all');
 
-    // Pinecone namespaces — authoritative existence + live vector counts.
-    let nsStats = [];
-    try {
-      const s = await pineconeService.getIndexStats();
-      nsStats = Array.isArray(s.namespaces) ? s.namespaces : [];
-    } catch (_) { nsStats = []; }
+    // The store's namespaces — authoritative existence + live vector counts.
+    const nsStats = (await vectorStore.getStats()).namespaces;
 
     // DB aggregates per namespace (file count / chunk / cost).
     const byNs = new Map();
@@ -6680,7 +6656,7 @@ app.get('/api/library/kbs', async (req, res) => {
       for (const l of links) linkedSet.add(l.namespace);
     }
 
-    // Union of pinecone + db + linked names (a link may point at a
+    // Union of store + db + linked names (a link may point at a
     // namespace whose vectors are gone — still surface it so it can be
     // fixed, matching the picker's "missing" handling).
     const names = new Set([...nsStats.map(n => n.name), ...byNs.keys(), ...linkedSet]);
@@ -6701,7 +6677,7 @@ app.get('/api/library/kbs', async (req, res) => {
     res.json({ kbs, scope, indexName: idx });
   } catch (err) {
     console.error('❌ KB list error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(kbErrorStatus(err)).json({ error: err.message });
   }
 });
 
@@ -6762,29 +6738,15 @@ app.get('/api/library/namespace/:namespace/agents', async (req, res) => {
   }
 });
 
-// Delete a file from library (DB + Pinecone vectors)
+// Delete a file from the library — its vectors and its record, in one transaction
 app.delete('/api/library/files/:id', async (req, res) => {
   try {
-    const drizzle = db.getDrizzle();
-    if (!drizzle) return res.status(500).json({ error: 'Database not available' });
-
-    // Get file record
-    const [file] = await drizzle.select().from(libraryFiles).where(eq(libraryFiles.id, parseInt(req.params.id)));
-    if (!file) return res.status(404).json({ error: 'File not found' });
-
-    // Delete vectors from Pinecone
-    try {
-      await pineconeService.deleteFile(file.namespace, parseInt(file.fileId));
-    } catch (pineconeErr) {
-      console.warn('⚠️ Could not delete vectors from Pinecone:', pineconeErr.message);
-    }
-
-    // Delete from DB
-    await drizzle.delete(libraryFiles).where(eq(libraryFiles.id, parseInt(req.params.id)));
-    res.json({ success: true, fileName: file.fileName });
+    const gone = await kbLibrary.deleteFileByRowId(req.params.id);
+    if (!gone) return res.status(404).json({ error: 'File not found' });
+    res.json({ success: true, fileName: gone.fileName });
   } catch (err) {
     console.error('❌ Delete library file error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(kbErrorStatus(err)).json({ error: err.message });
   }
 });
 

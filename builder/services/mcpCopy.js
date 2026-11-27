@@ -121,8 +121,9 @@ function carriedLine(plan, b) {
     n(plan.agentVersions, 'agent version'),
     n(plan.crews, 'crew'),
     n(plan.crewVersions, 'crew version'),
-    `${n(plan.kbLinks, 'knowledge-base link')}${kbs.length ? ` (${kbs.join(', ')} — same Pinecone, nothing re-uploaded)` : ''}`,
+    `${n(plan.kbLinks, 'knowledge-base link')}${kbs.length ? ` (${kbs.join(', ')})` : ''}`,
     n(plan.libraryFiles, 'KB file record'),
+    `${n(plan.kbVectors, 'KB chunk')}${plan.kbVectors ? ' (with their embeddings — nothing re-uploaded or re-embedded)' : ''}`,
     n(plan.agentLog, 'change-history entry'),
   ].join(', ');
 }
@@ -279,7 +280,7 @@ async function copyHere({ envId, slug, workspace, refresh, origin, base }) {
       ? `VERIFIED — it loads here exactly as it does on ${env.name} (${check.crews.map(c => `✓ ${c.name || c.id}`).join(', ')}).`
       : `NOT IDENTICAL — ${check.why || `crews: ${check.crews.map(c => `${c.same ? '✓' : '✗'} ${c.name || c.id}`).join(', ')}`}. Tell the person; the copy is saved, compare ${base}/agents/${slug} with ${env.server}/api/builder/projects?agentSlug=${slug}&ownerUserId=x.`,
     `Placed in: ${where}.`,
-    `Carried: ${carriedLine(plan, bundle)}${written.libraryFiles < plan.libraryFiles ? ` (${plan.libraryFiles - written.libraryFiles} file record(s) were already here)` : ''}.`,
+    `Carried: ${carriedLine(plan, bundle)}${written.libraryFiles < plan.libraryFiles ? ` (${plan.libraryFiles - written.libraryFiles} file record(s) were already here)` : ''}${written.kbVectors < plan.kbVectors ? ` (${plan.kbVectors - written.kbVectors} KB chunk(s) were already here)` : ''}.`,
     `Published: ${doc.agents[0].publishedVersionId ? `the same version as on ${env.name} — nothing new reaches a customer, but this agent's customer chat here serves that version` : 'nothing (not published on the source either)'}.`,
     NOT_CARRIED,
     ...bundle.notes.map(x => `Note: ${x}.`),

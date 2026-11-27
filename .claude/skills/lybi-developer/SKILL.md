@@ -317,3 +317,9 @@ database** — a local server's writes are real.
   vector (`kb.pinecone.service.query` takes `options.embedding`). Also: `verification/`
   git-ignores every `*.json`, so a script's INPUT json lives next to the script
   (pgvector PoC: `verification/pgvector-poc/README.md`).
+- 2026-11-27 — A local process pointed at STAGING's DB still runs `require('dotenv').config()`,
+  which fills every key staging's env file lacks from the local `.env` (Origin) — e.g.
+  `OPENAI_ORG_ID`, so staging's OpenAI key got "401 OpenAI-Organization header should
+  match". Load `.env.production.staging` first AND stub `dotenv.config` (or delete the
+  stray keys). KB vectors now live in each environment's own DB (pgvector, #1014):
+  `services/kb.vectorStore.service.js` is the only door; `scripts/test-kb-vector-store.js`.

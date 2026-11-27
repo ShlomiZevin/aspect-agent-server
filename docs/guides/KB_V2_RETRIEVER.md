@@ -2,7 +2,9 @@
 
 > Captures the **decided design** for how Builder V2 agents use a Knowledge
 > Base at runtime. Stage A (the admin KB workbench: create KBs, chunk →
-> embed → index into Pinecone, test retrieval) is built. This doc is the
+> embed → index, test retrieval) is built. Since #1014 (2026-11-27) the vectors
+> live in each environment's own database (pgvector, `kb_vectors`) — see
+> BUILDER_V2.md #70; nothing below changed. This doc is the
 > spec for Stage B — bringing KB retrieval into the addon/cortex engine.
 >
 > Guiding principle (see memory `project_kb_playable_atoms`): **no hidden
@@ -132,7 +134,7 @@ the trail with chunk text by default (size guard).
 - **Debug card** per §5.
 - **Multiple instances** for divergent behaviour; **no routing**.
 
-Runtime per turn: resolve Trigger → (fire?) → resolve Query → Pinecone
+Runtime per turn: resolve Trigger → (fire?) → resolve Query → vector store
 `query(namespaces, queryText, {topK,minScore,maxTokens})` →
 `formatForPrompt()` (or structured) → write/clear slot → token injects on
 downstream prompt assembly → emit debug card.
@@ -155,5 +157,5 @@ downstream prompt assembly → emit debug card.
 5. **KB selection in config** — list the agent's KBs (`/api/kb/*` /
    namespaces) in the multi-select.
 
-Reuses the Stage-A Pinecone service (`services/kb.pinecone.service.js`:
-`query`, `formatForPrompt`) unchanged.
+Reuses the KB vector store (`services/kb.vectorStore.service.js` — pgvector since
+#1014, Pinecone before: `query`, `formatForPrompt`), same search and settings.

@@ -24,8 +24,10 @@
  * Copied (what you see in the Builder): the project, the agent and EVERY
  * agent version (active / viewing / published pointers as they are), every
  * crew and crew version, knowledge-base links + their file records
- * (library_files — vectors stay in Pinecone, which every environment
- * shares), the change history (agent_log), the agent's folder (mirrored, or
+ * (library_files) + the knowledge itself (kb_vectors: every chunk of every
+ * linked KB with its embedding — each environment keeps its knowledge in
+ * its own database since #1014; nothing is re-embedded), the change history
+ * (agent_log), the agent's folder (mirrored, or
  * a folder the caller picks) and the legacy `agents` row conversations hang
  * off (DB reader only — the runtime makes it on the first chat otherwise).
  * NOT copied (data): conversations, messages, add-on runs, memory, customer
@@ -40,14 +42,75 @@
  * normalisation the runtime and the Builder apply to the stored row, so
  * the agent runs and opens identically. Through the API, crew `position`
  * becomes the crew order, the change history is the newest 100 entries
- * (the source API's limit), and the KB links are those of the active
- * Pinecone index.
+ * (the source API's limit).
+ *
+ * A source that keeps no vectors in its database (Origin, which predates
+ * pgvector) gives `kbVectors: null` and a note: its links and file records
+ * are copied, its chunks are not (scripts/kb-copy-from-pinecone.js brings
+ * them while its Pinecone key works).
  *
  * Nothing here opens a database or reads env: callers pass `q` (sql,
  * params → rows) and `connect` (→ a pg client).
  */
 
+const vectorStore = require('../../services/kb.vectorStore.service');
+
 const SKIP_IN_COMPARE = new Set(['ownerUserId', 'updatedAt']);
+
+// ─── Knowledge: one library, and the vectors ───────────────────────
+
+/**
+ * library_files / kb_links rows carry a library name from the Pinecone era;
+ * every environment now uses one (vectorStore.KB_LIBRARY). A source can
+ * still hold rows under an old index name — fold them in the way migration
+ * 075 does: a row that duplicates one already in the library (same KB and
+ * agent; same KB and file id or file name) is dropped, the rest renamed.
+ */
+function oneLibrary(b) {
+  const L = vectorStore.KB_LIBRARY;
+  const inLib = r => r.index_name === L;
+  const links = [...b.kbLinks.filter(inLib), ...b.kbLinks.filter(r => !inLib(r))];
+  const seenLink = new Set();
+  b.kbLinks = links.filter(r => {
+    const k = `${r.namespace}\u0000${r.agent_id}`;
+    if (seenLink.has(k)) return false;
+    seenLink.add(k);
+    return true;
+  }).map(r => ({ ...r, index_name: L }));
+  const files = [...b.libraryFiles.filter(inLib), ...b.libraryFiles.filter(r => !inLib(r))];
+  const seenId = new Set();
+  const seenName = new Set();
+  b.libraryFiles = files.filter(r => {
+    const byId = `${r.namespace}\u0000${r.file_id}`;
+    const byName = `${r.namespace}\u0000${r.file_name}`;
+    if (seenId.has(byId) || (!inLib(r) && seenName.has(byName))) return false;
+    seenId.add(byId);
+    seenName.add(byName);
+    return true;
+  }).map(r => ({ ...r, index_name: L }));
+  return b;
+}
+
+const NO_VECTORS_NOTE = from => `${from || 'the source'} keeps no knowledge-base chunks in its database (it predates pgvector), so a copy carries its KB links and file records but not the chunks — bring them with scripts/kb-copy-from-pinecone.js, or the agent's KB Retrievers find nothing here`;
+
+/**
+ * Every chunk of the linked KBs, page by page. `page(namespace, after)` →
+ * { vectors, next } | null (null = the source has no vectors to give).
+ * @returns {Promise<Array|null>}
+ */
+async function readVectors(namespaces, page) {
+  const out = [];
+  for (const ns of namespaces) {
+    let after = '';
+    do {
+      const p = await page(ns, after);
+      if (!p) return null;
+      out.push(...p.vectors);
+      after = p.next;
+    } while (after);
+  }
+  return out;
+}
 
 // ─── Readers ───────────────────────────────────────────────────────
 
@@ -73,10 +136,21 @@ async function readFromDb(q, slug, { from } = {}) {
     : [];
   const agentLog = await q('SELECT * FROM agent_log WHERE agent_id = $1 ORDER BY applied_at', [agent.id]);
   const legacy = await q('SELECT * FROM agents WHERE url_slug = $1', [slug]);
-  return {
+  // The chunks, through the store's own export (q adapted to a client).
+  const asClient = { query: (sql, params) => q(sql, params).then(rows => ({ rows })) };
+  const kbVectors = await readVectors([...new Set(kbLinks.map(k => k.namespace))], async (ns, after) => {
+    try {
+      return await vectorStore.exportVectors(ns, { after, limit: 500 }, asClient);
+    } catch (err) {
+      if (err instanceof vectorStore.KbStoreError && err.status === 503) return null; // no kb_vectors there
+      throw err;
+    }
+  });
+  return oneLibrary({
     from, via: 'db', slug, agent, folders, project, agentVersions, crews, crewVersions,
-    kbLinks, libraryFiles, agentLog, legacy, sourceDoc: null, notes: [],
-  };
+    kbLinks, libraryFiles, kbVectors, agentLog, legacy, sourceDoc: null,
+    notes: kbVectors ? [] : [NO_VECTORS_NOTE(from)],
+  });
 }
 
 const enc = encodeURIComponent;
@@ -169,21 +243,31 @@ async function readFromApi(apiUrl, slug, { from } = {}) {
     const files = await need(`/api/library/files?namespace=${enc(k.namespace)}&indexName=${enc(k.index_name)}`);
     for (const f of files.files || []) libraryFiles.push({ ...snakeRow(f), created_at: asDate(f.createdAt) });
   }
+  // The chunks: a source without the export (404) or without a store (503) has none to give.
+  const kbVectors = await readVectors([...new Set(kbLinks.map(k => k.namespace))], async (ns, after) => {
+    try {
+      return await getJson(apiUrl, `/api/library/kbs/${enc(ns)}/vectors?limit=500&after=${enc(after)}`);
+    } catch (err) {
+      if (/answered 503$/.test(err.message)) return null;
+      throw err;
+    }
+  });
   const entries = log.entries || [];
   const agentLog = [...entries].reverse()
     .map(e => ({ ...snakeRow(e), applied_at: asDate(e.appliedAt) }));
 
   const notes = [];
+  if (!kbVectors) notes.push(NO_VECTORS_NOTE(from));
   if (!listed.agentId) notes.push('it is not on the source agent list (delisted), so its folder and archive state are not known — placed at the top level unless a folder is given');
   if (entries.length >= 100) notes.push('only the newest 100 change-history entries come through the source API');
-  return {
+  return oneLibrary({
     from, via: 'api', slug, agent, folders,
     project: [{ id: doc.id, owner_user_id: `copy:${from || 'api'}`.slice(0, 64), name: doc.name || '', spec: doc.spec || '' }],
-    agentVersions, crews, crewVersions, kbLinks, libraryFiles, agentLog,
+    agentVersions, crews, crewVersions, kbLinks, libraryFiles, kbVectors, agentLog,
     legacy: [], // made by the runtime on the agent's first chat here
     sourceDoc: doc,
     notes,
-  };
+  });
 }
 
 /** Counts per part — the plan both the script and the MCP print. */
@@ -191,7 +275,8 @@ function planOf(b) {
   return {
     folders: b.folders.length, project: b.project.length, agent: 1, agentVersions: b.agentVersions.length,
     crews: b.crews.length, crewVersions: b.crewVersions.length, kbLinks: b.kbLinks.length,
-    libraryFiles: b.libraryFiles.length, agentLog: b.agentLog.length, legacyAgentRow: b.legacy.length,
+    libraryFiles: b.libraryFiles.length, kbVectors: b.kbVectors ? b.kbVectors.length : 0,
+    agentLog: b.agentLog.length, legacyAgentRow: b.legacy.length,
   };
 }
 
@@ -323,12 +408,17 @@ async function copyBundle({ connect, bundle: b, existing = null, placement = { m
       kbLinks: await insertRows(client, 'kb_links', b.kbLinks, 'fresh'),
       agentLog: await insertRows(client, 'agent_log', b.agentLog, 'fresh'),
       libraryFiles: 0,
+      kbVectors: 0,
       legacyAgentRow: 0,
     };
     // File records: only those the target doesn't have yet (several agents can share a namespace).
     for (const f of b.libraryFiles) {
       const [has] = (await client.query('SELECT 1 FROM library_files WHERE index_name = $1 AND namespace = $2 AND file_id = $3', [f.index_name, f.namespace, f.file_id])).rows;
       if (!has) done.libraryFiles += await insertRows(client, 'library_files', [f], 'fresh');
+    }
+    // The chunks: those the target doesn't have yet (a KB here may already hold them).
+    if (b.kbVectors && b.kbVectors.length) {
+      done.kbVectors = await vectorStore.insertVectors(client, b.kbVectors, { onConflict: 'skip' });
     }
     // The legacy agents row: only if the target has none (its conversations point at it).
     if (b.legacy.length) {
@@ -371,6 +461,6 @@ function compareDocs(source, target, { fromName = 'the source', toName = 'the ta
 }
 
 module.exports = {
-  readFromDb, readFromApi, loadDocViaApi, planOf,
+  readFromDb, readFromApi, loadDocViaApi, planOf, oneLibrary,
   inspectTarget, localChangesText, copyBundle, compareDocs,
 };

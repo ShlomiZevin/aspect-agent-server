@@ -4,7 +4,8 @@
  * Adaptive RAG as a chain step. Two independent axes:
  *   - Trigger (when): 'always' | 'llm' (a prompt → fire/skip)
  *   - Query   (what): 'history' (last N) | 'llm' (rewrite convo → query)
- * Searches the selected KBs (Pinecone namespaces), writes the formatted
+ * Searches the selected KBs (namespaces of this environment's vector store,
+ * pgvector — services/kb.vectorStore.service), writes the formatted
  * result (or the configured empty-sentinel) into an ephemeral named slot
  * (`brain.retrieval[NAME]`) that prompts inject via `{{kb:NAME}}`.
  *
@@ -24,7 +25,7 @@
 
 const { registerPlugin } = require('../../runtime/pluginRegistry');
 const descriptor = require('../../addons/kbRetriever.addon.json');
-const kbService = require('../../../services/kb.pinecone.service');
+const kbService = require('../../../services/kb.vectorStore.service');
 
 const KB_RETRIEVER_PLUGIN_ID = descriptor.pluginId;
 

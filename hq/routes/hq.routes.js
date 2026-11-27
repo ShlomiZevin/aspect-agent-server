@@ -9,7 +9,7 @@ const express = require('express');
 const router = express.Router();
 
 const db = require('../../services/db.pg');
-const pinecone = require('../../services/kb.pinecone.service');
+const vectorStore = require('../../services/kb.vectorStore.service');
 const notion = require('../services/notion.service');
 const atomsService = require('../services/atoms.service');
 const ingest = require('../services/ingest.service');
@@ -276,11 +276,11 @@ router.post('/reset', async (req, res) => {
     const { rows: [before] } = await db.query('SELECT COUNT(*)::int n FROM hq_atoms');
 
     // Vectors first: once the rows are gone we can no longer name what to drop.
-    // An absent namespace 404s from Pinecone, but that IS the desired state —
-    // otherwise pressing "start fresh" twice would fail the second time.
+    // An absent namespace deletes nothing, which IS the desired state —
+    // pressing "start fresh" twice must not fail the second time.
     let vectorsCleared = true;
     try {
-      await pinecone.deleteNamespaceByName(ingest.HQ_NAMESPACE);
+      await vectorStore.deleteNamespaceByName(ingest.HQ_NAMESPACE);
     } catch (err) {
       const missing = err?.status === 404 || /not found|does not exist/i.test(err?.message || '');
       if (!missing) throw err;

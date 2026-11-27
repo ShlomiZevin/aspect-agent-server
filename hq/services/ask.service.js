@@ -8,7 +8,7 @@
  * Tagged `agentName: 'hq'` / `crewMember: 'ask'` for free cost attribution.
  */
 
-const pinecone = require('../../services/kb.pinecone.service');
+const vectorStore = require('../../services/kb.vectorStore.service');
 const llmService = require('../../services/llm');
 const atomsService = require('./atoms.service');
 const budget = require('./budget.service');
@@ -199,7 +199,7 @@ async function ask(question, { topK = TOP_K } = {}) {
   // Merge across variants, keeping each chunk's best score.
   const byKey = new Map();
   for (const variant of variants) {
-    const { results: hits } = await pinecone.query([HQ_NAMESPACE], variant, {
+    const { results: hits } = await vectorStore.query([HQ_NAMESPACE], variant, {
       topK,
       scoreThreshold: SCORE_THRESHOLD,
       maxTokens: MAX_CONTEXT_TOKENS,

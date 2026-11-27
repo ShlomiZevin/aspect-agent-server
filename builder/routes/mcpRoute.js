@@ -575,8 +575,10 @@ opens showing "unsaved changes" before anyone has touched it.
 An agent that lives in another environment (see "Environments") can be
 copied HERE — the whole setup, exactly, with the same ids: every agent
 version and crew version (active and published as they are), knowledge
-base links and their file records (every environment shares one Pinecone,
-so nothing is re-uploaded) and the change history. Conversations, users and
+base links, their file records AND the knowledge itself (each environment
+keeps its knowledge bases in its own database, so the KB's chunks are copied
+here with their embeddings — nothing is re-uploaded or re-embedded) and the
+change history. Conversations, users and
 other data stay where they are. **Ask the person before copying** — it
 creates an agent here.
 
@@ -1501,7 +1503,7 @@ function modelRouteLines(base, agent, agentBody, crews) {
   }
   lines.push(
     '',
-    'Still direct on either route: knowledge-base search embeddings (OpenAI text-embedding-3-small → Pinecone), file indexing and transcription; the simulated user of simulations; Alfred.',
+    'Still direct on either route: knowledge-base search embeddings (OpenAI text-embedding-3-small; the vectors themselves are searched in the database of this environment), file indexing and transcription; the simulated user of simulations; Alfred.',
     `Change: POST ${base}/agents/${agent.slug}/model-route { "route": "vertex" | "direct" } — a new version, not live until published.`,
   );
   return lines;
@@ -2245,7 +2247,7 @@ router.get('/agents/:slug/spec', async (req, res) => {
 // Reads are the same functions Alfred's KB tools call, so what the
 // assistant sees here and what Alfred sees can't disagree. The one write
 // — connecting a KB to an agent — is add-only and refuses anything that
-// isn't a real KB in the active index: an assistant must never be able to
+// isn't a real KB in this environment: an assistant must never be able to
 // wire an agent to a KB that doesn't exist (that is exactly how a
 // retriever ends up "MISSING" and silently finding nothing).
 
@@ -2454,7 +2456,7 @@ router.post('/kbs/search', async (req, res) => {
     const minScore = num(b.minScore, num(cfg.minScore, 0.3));
     const maxTokens = num(b.maxTokens, num(cfg.maxTokens, 3000));
 
-    const kbService = require('../../services/kb.pinecone.service');
+    const kbService = require('../../services/kb.vectorStore.service');
     const r = await kbService.query(namespaces, query, { topK, scoreThreshold: minScore, maxTokens });
     const hits = Array.isArray(r.results) ? r.results : [];
     const { formatHits } = require('../plugins/kbRetriever/addon.kbRetriever');

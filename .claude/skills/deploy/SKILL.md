@@ -25,7 +25,7 @@ separate Lybi production yet. "staging" = Lybi's new environment in Tel Aviv.
 | **Client command** (in `aspect-react-client`) | `npm run deploy:freeda` | `npm run deploy:staging` |
 | Firebase project | `freeda-2b4af` (hosts lybi.ai) | `lybi-staging` |
 | Client talks to | `.env.freeda` → aspect-agent-server | `.env.staging` → lybi-server |
-| Shared by both | Pinecone, Leonardo (the one Lybi key), Gmail | |
+| Shared by both | Leonardo (the one Lybi key), Gmail. Knowledge bases are NOT shared: each environment's live in its own database (pgvector, #1014) | |
 
 **One override to know:** the `provider_config` table in that environment's database
 beats the env file (Admin → API Keys writes there). Checked 2026-10-25: neither

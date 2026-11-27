@@ -16,6 +16,9 @@
 -- sparse values, no reranker), so there is no full-text column here: the
 -- comparison is cosine against cosine on the same vectors.
 --
+-- Superseded by 075 (board #1014): kb_vectors's final shape, keyed by
+-- (namespace, id). A new environment runs 075 only.
+--
 -- Safe to run twice.
 
 CREATE EXTENSION IF NOT EXISTS vector;

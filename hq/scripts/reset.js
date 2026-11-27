@@ -2,7 +2,7 @@
  * Wipe everything HQ knows and start clean.
  *
  * Order matters: vectors go first, because a deleted atom row leaves no way to
- * find its chunks in Pinecone afterwards — they'd sit in the namespace forever
+ * find its chunks in the vector store afterwards — they'd sit in the namespace forever
  * and still surface in answers.
  *
  * The Notion inventory (hq_sync_items) is kept but reset to "not yet", so the

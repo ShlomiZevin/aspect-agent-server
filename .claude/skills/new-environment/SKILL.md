@@ -91,8 +91,8 @@ gcloud sql users create lybi_app --instance=$P-db --project=$P --password=<DB_PA
 ```
 Writes the git-ignored `.env.production.<env>`; prints only names. Keys not ready yet →
 `PENDING`; re-run later with them (password and other keys are kept). Shared with origin
-**on purpose**: Gmail, Pinecone (free plan; KBs aren't re-uploaded), Leonardo (the one
-Lybi key).
+**on purpose**: Gmail, Leonardo (the one Lybi key). Knowledge bases are not shared: they
+live in the environment's own database (step 7b).
 
 ### 6. Database structure — origin's, no data
 PostgreSQL client tools are in `C:\tools\pgsql\bin` (unpacked zip, no installer).
@@ -124,16 +124,20 @@ a timeout means it fell off an allow-list.
 Origin's schema dump (step 6) predates it, and Origin is frozen, so every new environment
 gets it from its migration — after the `environments.js` entry exists:
 ```bash
-node db/migrations/run-073-pgvector-kb-vectors.js --env <env>
-#   → "vector 0.8.x, kb_vectors (0 rows) + HNSW cosine index, iterative scan on"
+node db/migrations/run-075-kb-vectors-store.js --env <env>
+#   → "vector 0.8.x; kb_vectors (0 rows in 0 KBs) keyed (namespace, id), indexes …; iterative scan on"
 ```
+(075 is the final shape and needs nothing before it; 073 was the proof of concept.)
 Nothing to enable in Google Cloud: Cloud SQL for PostgreSQL ships the `vector` extension
 and `lybi_app` is a `cloudsqlsuperuser` member, so `CREATE EXTENSION` needs no database
 flag and no API. The migration also sets `hnsw.iterative_scan = strict_order` on the
 database (one table holds every KB; without it a filtered HNSW search can come back short).
-A KB gets in with `node kb-pgvector/copy-from-pinecone.js --env <env> --namespace <ns>`
-(copies Pinecone's vectors as they are; read-only on Pinecone). Proof of concept since
-2026-11-23 — `verification/pgvector-poc/README.md`.
+This IS the knowledge-base store (board #1014): the server reads and writes KB vectors
+only here (`services/kb.vectorStore.service.js`), there is no Pinecone key. KBs get in by
+upload (the KB screen / the MCP), with the agent copy (it carries the chunks), or — from
+the old shared Pinecone — once with `node scripts/kb-copy-from-pinecone.js --env <env>`
+(every KB the environment references; `--dry` first; read-only on Pinecone; needs the
+Pinecone key in the env file for that one run).
 
 ### 8. Server identities + first deploy
 The org grants Google's default accounts **nothing** — without these the build fails

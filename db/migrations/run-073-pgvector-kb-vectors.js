@@ -8,7 +8,8 @@
 // its credentials), like scripts/copy-agent-to-env.js — never the local .env,
 // which points at Origin. Frozen environments (Origin) are refused.
 // Run it per environment BEFORE deploying the server that reads the table.
-// A server without it still runs: only /api/kb-pgvector answers "not set up".
+// Superseded by 075 (board #1014), which puts kb_vectors in its final shape
+// and needs nothing before it: a NEW environment runs run-075 only.
 const path = require('path');
 const fs = require('fs');
 const { Pool } = require('pg');

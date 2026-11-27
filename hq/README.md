@@ -18,7 +18,7 @@ hq/
 ├── services/
 │   ├── notion.service.js    Notion REST + blocks→markdown. Zero dependencies.
 │   ├── atoms.service.js     atom/source persistence, hash-based upsert
-│   ├── ingest.service.js    normalise → chunk → embed → Pinecone
+│   ├── ingest.service.js    normalise → chunk → embed → vector store (pgvector)
 │   ├── scribe.service.js    meeting → summary + decisions + actions
 │   ├── ask.service.js       retrieve → answer → cite (bilingual retrieval)
 │   └── drop.service.js      "here, take this" — link or text → atoms
@@ -36,7 +36,7 @@ Environment:
 | Var | Required | Notes |
 |---|---|---|
 | `NOTION_TOKEN` | for Notion import | Internal integration secret (`ntn_…`). Everything else works without it. |
-| `PINECONE_API_KEY` / `PINECONE_INDEX_NAME` | yes | Reuses the shared `lybi` index; HQ lives in the `hq` namespace. |
+| — | — | Vectors live in the environment's own database (pgvector, `kb_vectors`, migration 075); HQ is the `hq` namespace. No vector-service key. |
 | `OPENAI_API_KEY` | yes | Embeddings + query expansion. |
 | `ANTHROPIC_API_KEY` | yes | Scribe + Ask. |
 | `HQ_SCRIBE_MODEL` | no | default `claude-sonnet-4-6` |

@@ -1238,8 +1238,8 @@ async function duplicateProject({ projectId, newSlug, newName, workspaceId }) {
 
     // ── KB links ────────────────────────────────────────────────────
     // Copy the SOURCE agent's KB↔agent visibility links to the NEW agent
-    // so the clone sees the same KBs (Pinecone namespaces) with zero
-    // vector copying — links are by name. Same index_name/namespace,
+    // so the clone sees the same KBs (namespaces of this environment's
+    // vector store) with zero vector copying — links are by name. Same index_name/namespace,
     // new agent_id. Best-effort: a fresh agent simply has no links.
     const srcLinks = await tx.select({ indexName: kbLinks.indexName, namespace: kbLinks.namespace })
       .from(kbLinks).where(eq(kbLinks.agentId, srcAgent.id));
