@@ -1,0 +1,40 @@
+{
+  "_about": "Fixed user lines for scripts/compare-vertex-direct.js on the Vertex Lab agent. The same lines run on both routes. Each scenario exercises something: the Rules transition mid-conversation, a cascade (transition on turn 1, Plan answers the same turn), the Thinker's web search, Hebrew.",
+  "scenarios": [
+    {
+      "id": "happy-path",
+      "label": "Trip to Japan — collects the goal over 3 turns, moves to Plan on turn 3",
+      "lines": [
+        "Hi, I'm Dana.",
+        "I want to save for a trip to Japan, about 12,000 shekels.",
+        "I can put aside 1,500 a month.",
+        "How long will that take? And what if I add 500 more each month?"
+      ]
+    },
+    {
+      "id": "cascade",
+      "label": "Everything in the first message — Intake hands over and Plan answers the same turn",
+      "lines": [
+        "I'm Lior, saving 5,000 shekels for a new laptop, I can do 800 a month. How long?",
+        "Can I get there two months faster?"
+      ]
+    },
+    {
+      "id": "web-search",
+      "label": "Plan Thinker searches the web for the current Bank of Israel rate (tool use)",
+      "lines": [
+        "Hi, I'm Avi. Saving for a car, 60,000 shekels, 2,000 a month.",
+        "What is the Bank of Israel interest rate right now? Would a savings deposit help me get there sooner?"
+      ]
+    },
+    {
+      "id": "hebrew",
+      "label": "Hebrew — apartment down payment",
+      "lines": [
+        "היי, אני נועה",
+        "אני חוסכת להון עצמי לדירה, בערך 200 אלף שקל. אני יכולה לשים 3,000 בחודש",
+        "תוך כמה זמן אגיע? ומה אם אעלה ל-4,000?"
+      ]
+    }
+  ]
+}

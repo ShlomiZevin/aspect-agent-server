@@ -1,0 +1,128 @@
+{
+  "_about": "Vertex Lab — the Direct vs Vertex lab agent (board #996). Anthropic models only, every add-on. Built on Lybi Staging by scripts/compare-vertex-direct.js --setup (or by hand through the Builder MCP). Two crews: Intake collects the goal + monthly amount, a Rules step moves to Plan; Plan has a Thinker (Claude Sonnet 5.5, web search allowed only for current interest rates) and a Talker. Agent cortex: an offline Summarizer.",
+  "name": "Vertex Lab",
+  "slug": "vertex-lab",
+  "agent": {
+    "personas": [
+      { "id": "persona_vl_coach", "name": "coach", "appliesTo": ["*"], "content": "You are Vertex Lab, a warm, concise savings coach at a demo bank. You help people turn a savings goal into a monthly plan. Reply in the user's language (Hebrew or English). Keep replies short: two to four sentences. Never promise returns or give investment advice." }
+    ],
+    "fields": [
+      { "id": "field_vl_name",    "name": "customer_name",  "type": "string", "domain": "profile", "source": "explicit", "howToExtract": "The user's first name, only when they state it." },
+      { "id": "field_vl_goal",    "name": "savings_goal",   "type": "string", "domain": "profile", "source": "explicit", "howToExtract": "What the user is saving for, in a few words (e.g. 'trip to Japan', 'car')." },
+      { "id": "field_vl_target",  "name": "target_amount",  "type": "int",    "domain": "profile", "source": "explicit", "howToExtract": "The total amount the user wants to save, in shekels, as a whole number. Only when stated." },
+      { "id": "field_vl_monthly", "name": "monthly_amount", "type": "int",    "domain": "profile", "source": "explicit", "howToExtract": "How much the user can put aside each month, in shekels, as a whole number. Only when stated." }
+    ],
+    "cortex": [
+      {
+        "instanceId": "addon_vl_summary",
+        "pluginId": "summarizer",
+        "lane": "offline",
+        "enabled": true,
+        "outputType": "json-to-memory",
+        "promptTemplate": "{{prompt}}",
+        "context": { "history": { "mode": "all" }, "trigger": { "kind": "every_n_messages", "n": 4 } },
+        "config": {
+          "name": "Summarizer",
+          "model": { "providerId": "anthropic", "modelId": "claude-haiku-5-5" },
+          "prompt": "{{persona}}\n\nSummarise this conversation so far for the other steps of the agent.\n\nWhat you know:\n{{memory}}\n\n- 3 to 6 bullet lines: the goal, the amounts, what was decided, what is still open.\n- Refer to the user as \"the user\".\n\nReturn a JSON object: { \"text\": \"<your summary>\" }\n\nOutput JSON only — no preamble, no markdown fences."
+        }
+      }
+    ]
+  },
+  "crews": {
+    "intake": {
+      "name": "Intake",
+      "description": "Learns the savings goal and the monthly amount.",
+      "addons": [
+        {
+          "instanceId": "addon_vl_extract",
+          "pluginId": "field-extractor",
+          "lane": "main",
+          "enabled": true,
+          "outputType": "json-to-memory",
+          "promptTemplate": "{{prompt}}",
+          "context": { "history": { "mode": "all" } },
+          "config": {
+            "name": "Goal extractor",
+            "model": { "providerId": "anthropic", "modelId": "claude-haiku-5-5" },
+            "extractsFields": ["field_vl_name", "field_vl_goal", "field_vl_target", "field_vl_monthly"],
+            "prompt": "Extract field values from the user's latest message and recent context.\n\nJSON keys MUST be the exact field names from the schema — character-for-character. Values can be in any language; keys must not. Amounts are whole numbers in shekels (\"12k\" = 12000, \"200 thousand\" = 200000).\n\n## Fields\n{{fields_schema}}\n\n## Already collected\n{{fields_current}}\n\nOnly include keys you have a value for. Omit the rest. Never use null, empty strings, or placeholders like \"unknown\". Return {} when nothing was extracted."
+          }
+        },
+        {
+          "instanceId": "addon_vl_rules",
+          "pluginId": "rules",
+          "lane": "main",
+          "enabled": true,
+          "outputType": "json-to-memory",
+          "promptTemplate": "{{prompt}}",
+          "context": { "history": { "mode": "none" } },
+          "config": {
+            "rules": [
+              {
+                "id": "rule_vl_to_plan",
+                "conditions": [
+                  { "type": "field", "field": "savings_goal",   "op": "is-not-null" },
+                  { "type": "field", "field": "monthly_amount", "op": "is-not-null" }
+                ],
+                "actions": [ { "type": "transition", "target": "__PLAN_CREW_ID__" } ]
+              }
+            ],
+            "prompt": "",
+            "extractsFields": []
+          }
+        },
+        {
+          "instanceId": "addon_vl_intake_talker",
+          "pluginId": "talker",
+          "lane": "main",
+          "enabled": true,
+          "outputType": "text-to-user",
+          "promptTemplate": "{{prompt}}",
+          "context": { "history": { "mode": "all" } },
+          "config": {
+            "name": "Intake talker",
+            "model": { "providerId": "anthropic", "modelId": "claude-haiku-5-5" },
+            "prompt": "{{persona}}\n\nThis phase: find out what the user is saving for and how much they can put aside each month (and the total, if they know it). Ask for one missing thing at a time, kindly. Use their name if you know it.\n\nWhat you know so far:\n{{memory}}"
+          }
+        }
+      ]
+    },
+    "plan": {
+      "name": "Plan",
+      "description": "Turns the goal into a monthly plan; may look up current interest rates.",
+      "addons": [
+        {
+          "instanceId": "addon_vl_thinker",
+          "pluginId": "thinker",
+          "lane": "main",
+          "enabled": true,
+          "outputType": "json-to-memory",
+          "promptTemplate": "{{prompt}}",
+          "context": { "history": { "mode": "all" } },
+          "config": {
+            "name": "Plan thinker",
+            "domain": "plan",
+            "model": { "providerId": "anthropic", "modelId": "claude-sonnet-5-5" },
+            "webSearch": { "enabled": true, "maxSearches": 1 },
+            "prompt": "{{persona}}\n\nYou plan the next reply of a savings coach. Today is {{today}}.\n\nWhat you know:\n{{memory}}\n\nWork out, from the amounts you know: how many months until the goal at the current monthly amount (round up), and what changes if the user adjusts the amount. Do the arithmetic carefully.\n\nWeb search: search the web ONLY when the user asks about current interest rates or the Bank of Israel rate — then search once and put what you found (the rate, the date, one link) under web_findings. Never search for anything else.\n\nReturn a JSON object with keys:\n- months_to_goal: number or null\n- plan: one or two sentences on what to tell the user this turn\n- web_findings: string, only if you searched\n\nOutput JSON only — no preamble, no markdown fences."
+          }
+        },
+        {
+          "instanceId": "addon_vl_plan_talker",
+          "pluginId": "talker",
+          "lane": "main",
+          "enabled": true,
+          "outputType": "text-to-user",
+          "promptTemplate": "{{prompt}}",
+          "context": { "history": { "mode": "all" } },
+          "config": {
+            "name": "Plan talker",
+            "model": { "providerId": "anthropic", "modelId": "claude-sonnet-4-6" },
+            "prompt": "{{persona}}\n\nThis phase: give the user a clear monthly savings plan and answer their questions about it. Follow the plan below; quote numbers exactly as it gives them.\n\nWhat you know:\n{{memory}}\n\nThe plan for this reply:\n{{thinking:plan}}"
+          }
+        }
+      ]
+    }
+  }
+}
