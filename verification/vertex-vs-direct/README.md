@@ -150,3 +150,21 @@ The command is ready; the same table then gets a Vertex column, plus "call route
 - **Location:** Claude isn't available in Google's Tel Aviv region. The choices are "global"
   or "EU" — worth knowing before a bank asks for data to stay in Israel.
 - **Control:** no API key — access is a Google permission the bank can own, see and revoke.
+
+## Server A/B after go-live (2026-11-27, Tasks session)
+
+Staging went live on Vertex on 27.11. The role `roles/aiplatform.user` is on the lybi-server service account. `VERTEX_PROJECT_ID=lybi-staging` and `VERTEX_LOCATION=global` are set (revision lybi-server-00057). A project-level org policy allows `web_search` for the Claude models we use (the org default is `denyAll`).
+
+The final run used all 4 scenarios × 2, through the staging server (`--tag=server-ab-final`):
+
+| | Direct | Vertex |
+|---|---|---|
+| Turns answered | 22/22 | 22/22 |
+| Same crew + transition / final fields | — | 22/22 / identical |
+| First reply token, median (p90) | 3.07 s (5.05 s) | 3.81 s (5.32 s) |
+| Talker first token, median | 0.46 s | 0.97 s |
+| Full reply, median | 5.30 s | 5.41 s |
+| Haiku 5.5 / Sonnet 5.5 / Sonnet 4.6 per call | 0.68 / 2.31 / 2.96 s | 1.14 / 2.56 / 3.29 s |
+| Cost per turn | $0.0134 | $0.0123 |
+
+**Open issue:** 4 Thinker calls (Sonnet 5.5 with web search) were still refused by the org policy 40 minutes after the policy was set, while 12 went through. This looks like the change still propagating; re-check before calling web search on Vertex done.
